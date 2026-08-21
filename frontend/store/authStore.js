@@ -3,7 +3,6 @@ import { create } from "zustand";
 const STORAGE_KEY = "oms_auth";
 
 function loadPersisted() {
-  if (typeof window === "undefined") return null;
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     return raw ? JSON.parse(raw) : null;
@@ -13,7 +12,6 @@ function loadPersisted() {
 }
 
 function persist(state) {
-  if (typeof window === "undefined") return;
   if (!state.accessToken) {
     window.localStorage.removeItem(STORAGE_KEY);
     return;
@@ -28,23 +26,38 @@ function persist(state) {
   );
 }
 
-const initial = loadPersisted();
-
 export const useAuthStore = create((set, get) => ({
-  accessToken: initial?.accessToken || null,
-  refreshToken: initial?.refreshToken || null,
-  user: initial?.user || null,
-  hydrated: typeof window !== "undefined",
+  // Always starts unauthenticated, on both the server render and the
+  // first client render - reading localStorage synchronously here would
+  // make that first client render diverge from the server-rendered HTML
+  // and trigger a hydration error. hydrateFromStorage() populates the
+  // real session from a useEffect (see ProtectedRoute), which only runs
+  // after hydration completes.
+  accessToken: null,
+  refreshToken: null,
+  user: null,
+  hydrated: false,
+
+  hydrateFromStorage: () => {
+    if (typeof window === "undefined" || get().hydrated) return;
+    const persisted = loadPersisted();
+    set({
+      accessToken: persisted?.accessToken || null,
+      refreshToken: persisted?.refreshToken || null,
+      user: persisted?.user || null,
+      hydrated: true,
+    });
+  },
 
   setSession: ({ accessToken, refreshToken, user }) => {
     const next = { accessToken, refreshToken, user };
     persist(next);
-    set(next);
+    set({ ...next, hydrated: true });
   },
 
   clearSession: () => {
     persist({ accessToken: null });
-    set({ accessToken: null, refreshToken: null, user: null });
+    set({ accessToken: null, refreshToken: null, user: null, hydrated: true });
   },
 
   isAuthenticated: () => Boolean(get().accessToken),

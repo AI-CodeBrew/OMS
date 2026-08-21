@@ -1,7 +1,18 @@
-import apiConfig from "../config/apiConfig";
-import { API_ENDPOINTS } from "../constants/apiEndpoints";
+import { getSupabaseBrowserClient } from "../lib/supabaseClient";
 import useAuthStore from "../store/authStore";
 import useTenantStore from "../store/tenantStore";
+
+function buildUser(session) {
+  if (!session?.user) return null;
+  const appMeta = session.user.app_metadata || {};
+  return {
+    id: session.user.id,
+    email: session.user.email,
+    role: appMeta.role || "org_user",
+    organization_id: appMeta.organization_id || null,
+    organization_name: appMeta.organization_name || null,
+  };
+}
 
 class AuthService {
   getAuthHeaders() {
@@ -16,54 +27,45 @@ class AuthService {
     return headers;
   }
 
+  // Signs in against Supabase Auth directly from the browser - Django never
+  // proxies login, it only verifies the JWT Supabase already issued.
   async login(email, password) {
-    const response = await fetch(
-      `${apiConfig.baseUrl}${API_ENDPOINTS.auth.login}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ email, password }),
-      }
-    );
+    const supabase = getSupabaseBrowserClient();
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) throw new Error(error.message);
 
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok || !data.success) {
-      const err = new Error(data.error || "Login failed");
-      err.code = data.code;
-      throw err;
-    }
-
+    const user = buildUser(data.session);
     useAuthStore.getState().setSession({
-      accessToken: data.access_token,
-      refreshToken: data.refresh_token,
-      user: data.user,
+      accessToken: data.session.access_token,
+      refreshToken: data.session.refresh_token,
+      user,
     });
     useTenantStore.getState().syncFromAuth();
 
-    return data;
+    return { user };
   }
 
-  async me() {
-    const response = await fetch(
-      `${apiConfig.baseUrl}${API_ENDPOINTS.auth.me}`,
-      { headers: this.getAuthHeaders() }
-    );
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok || !data.success) {
-      const err = new Error(data.error || "Failed to load profile");
-      err.code = data.code;
-      throw err;
-    }
+  // Rehydrates the store from Supabase's own session on page load, in case
+  // localStorage was cleared but Supabase's client still has a valid
+  // refresh token cached.
+  async restoreSession() {
+    const supabase = getSupabaseBrowserClient();
+    const { data } = await supabase.auth.getSession();
+    if (!data.session) return null;
+
+    const user = buildUser(data.session);
     useAuthStore.getState().setSession({
-      accessToken: useAuthStore.getState().accessToken,
-      refreshToken: useAuthStore.getState().refreshToken,
-      user: data.user,
+      accessToken: data.session.access_token,
+      refreshToken: data.session.refresh_token,
+      user,
     });
     useTenantStore.getState().syncFromAuth();
-    return data.user;
+    return user;
   }
 
-  logout() {
+  async logout() {
+    const supabase = getSupabaseBrowserClient();
+    await supabase.auth.signOut();
     useAuthStore.getState().clearSession();
     useTenantStore.getState().clear();
   }

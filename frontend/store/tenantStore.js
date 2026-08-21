@@ -2,22 +2,22 @@ import { create } from "zustand";
 import useAuthStore from "./authStore";
 
 export const useTenantStore = create((set) => ({
-  tenantId: null,
-  tenantName: null,
+  organizationId: null,
+  organizationName: null,
 
   syncFromAuth: () => {
     const user = useAuthStore.getState().user;
     set({
-      tenantId: user?.tenant_id || null,
-      tenantName: user?.tenant_name || null,
+      organizationId: user?.organization_id || null,
+      organizationName: user?.organization_name || null,
     });
   },
 
-  setTenant: ({ tenantId, tenantName }) => {
-    set({ tenantId, tenantName });
+  setOrganization: ({ organizationId, organizationName }) => {
+    set({ organizationId, organizationName });
   },
 
-  clear: () => set({ tenantId: null, tenantName: null }),
+  clear: () => set({ organizationId: null, organizationName: null }),
 }));
 
 export default useTenantStore;

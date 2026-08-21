@@ -39,10 +39,15 @@ function TenantShell({ children }) {
               <a href="/finance" className="hover:text-brand-600">
                 Finance
               </a>
+              <a href="/integrations" className="hover:text-brand-600">
+                Integrations
+              </a>
             </nav>
           </div>
           <div className="flex items-center gap-3">
-            <span className="text-xs text-slate-500">{user?.email}</span>
+            <a href="/settings" className="text-xs text-slate-500 hover:text-brand-600">
+              {user?.email}
+            </a>
             <Button variant="secondary" onClick={logout}>
               Log out
             </Button>

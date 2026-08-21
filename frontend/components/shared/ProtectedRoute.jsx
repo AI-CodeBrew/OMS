@@ -8,8 +8,15 @@ export default function ProtectedRoute({ children, requireSuperAdmin = false }) 
   const router = useRouter();
   const accessToken = useAuthStore((s) => s.accessToken);
   const user = useAuthStore((s) => s.user);
+  const hydrated = useAuthStore((s) => s.hydrated);
+  const hydrateFromStorage = useAuthStore((s) => s.hydrateFromStorage);
 
   useEffect(() => {
+    hydrateFromStorage();
+  }, [hydrateFromStorage]);
+
+  useEffect(() => {
+    if (!hydrated) return;
     if (!accessToken) {
       router.replace("/login");
       return;
@@ -17,12 +24,12 @@ export default function ProtectedRoute({ children, requireSuperAdmin = false }) 
     if (requireSuperAdmin && user?.role !== "super_admin") {
       router.replace("/orders");
     }
-  }, [accessToken, user, requireSuperAdmin, router]);
+  }, [hydrated, accessToken, user, requireSuperAdmin, router]);
 
-  if (!accessToken) {
+  if (!hydrated || !accessToken) {
     return (
       <div className="flex min-h-screen items-center justify-center text-slate-600">
-        Redirecting to login…
+        {hydrated ? "Redirecting to login…" : "Loading…"}
       </div>
     );
   }
