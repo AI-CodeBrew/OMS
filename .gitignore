@@ -1,7 +1,10 @@
 # Dependencies / env
 .env
+.env.*
 .env.local
 .env*.local
+!.env.example
+!.env.example.*
 backend/.venv/
 frontend/node_modules/
 frontend/.next/
