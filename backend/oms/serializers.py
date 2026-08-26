@@ -129,6 +129,7 @@ class OrderSerializer(serializers.ModelSerializer):
             "dispatched_at",
             "delivered_at",
             "returned_at",
+            "return_received_at",
             "created_at",
             "updated_at",
         ]
@@ -145,6 +146,7 @@ class OrderSerializer(serializers.ModelSerializer):
             "dispatched_at",
             "delivered_at",
             "returned_at",
+            "return_received_at",
             "created_at",
             "updated_at",
         ]

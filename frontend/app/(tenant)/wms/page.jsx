@@ -42,6 +42,8 @@ export default function WmsPage() {
   const [error, setError] = useState("");
   const [adjusting, setAdjusting] = useState(null);
   const [newItemOpen, setNewItemOpen] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [notice, setNotice] = useState("");
 
   const loadWarehouses = useCallback(async () => {
     try {
@@ -74,6 +76,25 @@ export default function WmsPage() {
     }
   }, [page, pageSize, appliedSearch, stockFilter]);
 
+  async function onImportSkus() {
+    setImporting(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await wmsService.importSkusFromOrders();
+      setNotice(
+        result.created > 0
+          ? `Imported ${result.created} SKU${result.created === 1 ? "" : "s"} at zero quantity — enter real counts with Adjust.`
+          : `Nothing new to import — all ${result.total_skus} SKUs from your orders are already listed.`
+      );
+      await load();
+    } catch (err) {
+      setError(err.message || "Failed to import SKUs");
+    } finally {
+      setImporting(false);
+    }
+  }
+
   useEffect(() => {
     loadWarehouses();
   }, [loadWarehouses]);
@@ -95,12 +116,20 @@ export default function WmsPage() {
           </p>
         </div>
         {hasWarehouse ? (
-          <Button onClick={() => setNewItemOpen(true)}>Add Stock Item</Button>
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={onImportSkus} disabled={importing}>
+              {importing ? "Importing…" : "Import SKUs from Orders"}
+            </Button>
+            <Button onClick={() => setNewItemOpen(true)}>Add Stock Item</Button>
+          </div>
         ) : null}
       </div>
 
       {error ? (
         <p className="mt-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
+      ) : null}
+      {notice ? (
+        <p className="mt-4 rounded-md bg-green-50 px-3 py-2 text-sm text-green-700">{notice}</p>
       ) : null}
 
       {!hasWarehouse ? (

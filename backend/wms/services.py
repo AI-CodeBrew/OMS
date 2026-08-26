@@ -3,6 +3,7 @@ oms/services.py) so OMS can call straight into it - the stock check that
 gates Ready to Print lives here, not in an HTTP handler."""
 
 from django.db import transaction
+from django.utils import timezone
 
 from .models import StockItem, StockMovement, Warehouse
 
@@ -148,6 +149,12 @@ def restock_from_return(order, *, actor_user_id=None, warehouse=None, note=""):
     if already:
         return []
 
+    # Mark the parcel as physically received, which is what moves it out
+    # of the returns desk's "awaiting scan" queue.
+    order.return_received_at = timezone.now()
+    order.return_received_by = actor_user_id
+    order.save(update_fields=["return_received_at", "return_received_by", "updated_at"])
+
     required, _unmatched = _order_line_requirements(order)
     movements = []
     for sku, need in required.items():
@@ -172,6 +179,50 @@ def restock_from_return(order, *, actor_user_id=None, warehouse=None, note=""):
             )
         )
     return movements
+
+
+@transaction.atomic
+def import_skus_from_orders(*, organization_id, warehouse):
+    """Creates a StockItem for every distinct SKU seen in order history.
+
+    Without this the inventory screen starts empty and only fills in as
+    orders consume stock - which means the first thing a SKU does is go
+    negative. Seeding the catalogue at zero instead lets the warehouse
+    enter real opening counts before any of it is drawn down.
+
+    Existing rows are left untouched, so it is safe to re-run as new
+    products appear.
+    """
+    from oms.models import OrderItem
+
+    rows = (
+        OrderItem.objects.filter(organization_id=organization_id)
+        .exclude(barcode="")
+        .values_list("barcode", "product_name")
+    )
+    seen = {}
+    for sku, product_name in rows:
+        seen.setdefault(sku, product_name)
+
+    existing = set(
+        StockItem.objects.filter(
+            organization_id=organization_id, warehouse=warehouse
+        ).values_list("sku", flat=True)
+    )
+
+    created = [
+        StockItem(
+            organization_id=organization_id,
+            warehouse=warehouse,
+            sku=sku,
+            product_name=product_name or "",
+            quantity=0,
+        )
+        for sku, product_name in seen.items()
+        if sku not in existing
+    ]
+    StockItem.objects.bulk_create(created)
+    return {"created": len(created), "skipped": len(seen) - len(created), "total_skus": len(seen)}
 
 
 @transaction.atomic

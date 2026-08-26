@@ -37,6 +37,18 @@ class OrdersService {
     return data;
   }
 
+  async returnsSummary(params = {}) {
+    const response = await fetch(
+      `${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderReturnsSummary}${buildQuery(params)}`,
+      { headers: authService.getAuthHeaders() }
+    );
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.detail || "Failed to load returns summary");
+    }
+    return data;
+  }
+
   async counts(params = {}) {
     const response = await fetch(
       `${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderCounts}${buildQuery(params)}`,

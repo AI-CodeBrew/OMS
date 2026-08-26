@@ -106,7 +106,14 @@ class Order(TenantScopedModel):
     placed_at = models.DateTimeField(null=True, blank=True)
     dispatched_at = models.DateTimeField(null=True, blank=True)
     delivered_at = models.DateTimeField(null=True, blank=True)
+    # When the courier reported the parcel as coming back.
     returned_at = models.DateTimeField(null=True, blank=True)
+    # When the warehouse physically received and scanned it back in - a
+    # separate, later event to returned_at, and the gap between the two is
+    # exactly the "returned by courier but not yet in our hands" queue the
+    # returns desk works from. Set by wms.services.restock_from_return.
+    return_received_at = models.DateTimeField(null=True, blank=True)
+    return_received_by = models.UUIDField(null=True, blank=True)
 
     # --- Customer/shipping profile (denormalized on Order, same convention
     # as customer_name/customer_phone - a real cross-order Customer model is

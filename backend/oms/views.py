@@ -111,6 +111,14 @@ class OrderViewSet(viewsets.ModelViewSet):
         if gateway:
             qs = qs.filter(payment_gateway=gateway)
 
+        # Returns desk: split courier-reported returns into what the
+        # warehouse has physically scanned back in and what it hasn't.
+        received = params.get("received")
+        if received == "yes":
+            qs = qs.filter(return_received_at__isnull=False)
+        elif received == "no":
+            qs = qs.filter(return_received_at__isnull=True)
+
         date_from = params.get("date_from")
         date_to = params.get("date_to")
         if date_from or date_to:
@@ -195,6 +203,30 @@ class OrderViewSet(viewsets.ModelViewSet):
             counts[row["status"]] = row["count"]
         counts["all"] = sum(counts.values())
         return Response(counts)
+
+    @action(detail=False, methods=["get"], url_path="returns-summary")
+    def returns_summary(self, request):
+        """Counts for the returns desk. `received` is driven by
+        return_received_at rather than by the presence of stock movements,
+        so an order whose SKUs aren't tracked in WMS still counts as
+        physically received once someone scans it."""
+        # Drop `received` before filtering - these counts must describe both
+        # sides of that split, not just whichever side is being viewed.
+        params = request.query_params.copy()
+        params.pop("received", None)
+        qs = self._apply_filters(
+            Order.objects.filter(organization_id=request.organization_id, status="returned"),
+            params,
+        )
+        total = qs.count()
+        received = qs.filter(return_received_at__isnull=False).count()
+        return Response(
+            {
+                "total_returns": total,
+                "received": received,
+                "awaiting_scan": total - received,
+            }
+        )
 
     @action(detail=False, methods=["get"])
     def dashboard(self, request):

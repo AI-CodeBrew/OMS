@@ -74,6 +74,18 @@ class StockItemViewSet(viewsets.ModelViewSet):
             }
         )
 
+    @action(detail=False, methods=["post"], url_path="import-skus")
+    def import_skus(self, request):
+        warehouse = services.get_default_warehouse(request.organization_id)
+        if warehouse is None:
+            return Response(
+                {"detail": "Create a warehouse first"}, status=status.HTTP_400_BAD_REQUEST
+            )
+        result = services.import_skus_from_orders(
+            organization_id=request.organization_id, warehouse=warehouse
+        )
+        return Response(result)
+
     @action(detail=True, methods=["post"])
     def adjust(self, request, pk=None):
         stock_item = self.get_object()

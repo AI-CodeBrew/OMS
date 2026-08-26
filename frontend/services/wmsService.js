@@ -51,6 +51,13 @@ class WmsService {
     });
   }
 
+  async importSkusFromOrders() {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.stockImportSkus}`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  }
+
   async adjustStock(id, { delta, note = "" }) {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.stockAdjust(id)}`, {
       method: "POST",
