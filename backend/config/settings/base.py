@@ -88,6 +88,14 @@ DATABASES = {
         "PASSWORD": unquote(_db.password or ""),
         "HOST": _db.hostname,
         "PORT": _db.port or 5432,
+        # Without this, a DNS/network blip while connecting to Supabase's
+        # pooler hangs indefinitely instead of raising - which is fatal for
+        # the background Shopify sync thread specifically: a hung connect()
+        # call inside job.save() never raises an exception for the thread's
+        # own try/except to catch, so it just silently stops making
+        # progress instead of failing loudly. A short timeout turns that
+        # into a real, catchable OperationalError instead.
+        "OPTIONS": {"connect_timeout": 10},
     }
 }
 
