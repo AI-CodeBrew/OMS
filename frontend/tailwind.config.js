@@ -10,10 +10,14 @@ module.exports = {
         brand: {
           50: "#f0f7ff",
           100: "#e0effe",
+          200: "#bfdbfe",
+          300: "#93c5fd",
           500: "#2563eb",
           600: "#1d4ed8",
           700: "#1e40af",
-          900: "#1e3a5f",
+          800: "#1a3560",
+          900: "#16294a",
+          950: "#0f1e38",
         },
         surface: {
           DEFAULT: "#f8fafc",
@@ -22,7 +26,7 @@ module.exports = {
         },
       },
       fontFamily: {
-        sans: ["var(--font-geist-sans)", "ui-sans-serif", "system-ui"],
+        sans: ["Calibri", "Segoe UI", "ui-sans-serif", "system-ui", "sans-serif"],
       },
     },
   },

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { getSupabaseBrowserClient } from "../../../lib/supabaseClient";
 import Button from "../../../components/shared/Button";
+import PasswordInput from "../../../components/shared/PasswordInput";
 import useAuthStore from "../../../store/authStore";
 
 export default function SettingsPage() {
@@ -114,21 +115,17 @@ export default function SettingsPage() {
           </p>
         ) : null}
         <form onSubmit={onChangePassword} className="mt-3 space-y-3">
-          <input
+          <PasswordInput
             required
-            type="password"
             placeholder="New password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
           />
-          <input
+          <PasswordInput
             required
-            type="password"
             placeholder="Confirm new password"
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}
-            className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
           />
           <Button type="submit" disabled={passwordLoading}>
             {passwordLoading ? "Saving…" : "Update password"}

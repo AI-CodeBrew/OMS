@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Button from "../../../components/shared/Button";
+import PasswordInput from "../../../components/shared/PasswordInput";
 import authService from "../../../services/authService";
 import healthService from "../../../services/healthService";
 
@@ -25,7 +26,7 @@ export default function LoginPage() {
       if (data.user?.role === "super_admin") {
         router.replace("/tenants");
       } else {
-        router.replace("/orders");
+        router.replace("/dashboard");
       }
     } catch (err) {
       setError(err.message || "Login failed");
@@ -76,13 +77,11 @@ export default function LoginPage() {
             <span className="mb-1 block text-sm font-medium text-slate-700">
               Password
             </span>
-            <input
-              type="password"
+            <PasswordInput
               required
               autoComplete="current-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
             />
           </label>
 

@@ -22,7 +22,7 @@ export default function ProtectedRoute({ children, requireSuperAdmin = false }) 
       return;
     }
     if (requireSuperAdmin && user?.role !== "super_admin") {
-      router.replace("/orders");
+      router.replace("/dashboard");
     }
   }, [hydrated, accessToken, user, requireSuperAdmin, router]);
 

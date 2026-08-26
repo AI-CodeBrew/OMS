@@ -1,0 +1,257 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import integrationsService from "../../../../services/integrationsService";
+import Button from "../../../../components/shared/Button";
+import PasswordInput from "../../../../components/shared/PasswordInput";
+
+const EMPTY_FORM = { api_key: "", webhook_secret: "" };
+
+function TruckIcon({ className }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+      <path d="M2 7h11v9H2z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+      <path d="M13 10h4l4 3v3h-8z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+      <circle cx="6.5" cy="18" r="1.8" stroke="currentColor" strokeWidth="1.5" />
+      <circle cx="17.5" cy="18" r="1.8" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+export default function SmartlaneIntegrationPage() {
+  const [status, setStatus] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [connecting, setConnecting] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [form, setForm] = useState(EMPTY_FORM);
+  const [copied, setCopied] = useState(false);
+
+  async function loadStatus() {
+    setLoading(true);
+    setError("");
+    try {
+      const data = await integrationsService.getSmartlaneStatus();
+      setStatus(data);
+    } catch (err) {
+      setError(err.message || "Failed to load integration status");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadStatus();
+  }, []);
+
+  const connected = Boolean(status?.connected);
+
+  async function onConnect(e) {
+    e.preventDefault();
+    setConnecting(true);
+    setError("");
+    setNotice("");
+    try {
+      const data = await integrationsService.connectSmartlane(form);
+      setStatus(data);
+      setForm(EMPTY_FORM);
+      setNotice("Connected. Copy the webhook URL below into your Smartlane account's shipment webhook settings.");
+    } catch (err) {
+      setError(err.message || "Failed to connect");
+    } finally {
+      setConnecting(false);
+    }
+  }
+
+  async function onDisconnect() {
+    if (!window.confirm("Disconnect Smartlane? You can reconnect any time.")) return;
+    setDisconnecting(true);
+    setError("");
+    try {
+      await integrationsService.disconnectSmartlane();
+      setNotice("Disconnected.");
+      await loadStatus();
+    } catch (err) {
+      setError(err.message || "Failed to disconnect");
+    } finally {
+      setDisconnecting(false);
+    }
+  }
+
+  async function onCopyWebhookUrl() {
+    try {
+      await navigator.clipboard.writeText(status.webhook_url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard API unavailable - user can still select/copy manually.
+    }
+  }
+
+  if (loading) {
+    return <p className="text-sm text-slate-500">Loading…</p>;
+  }
+
+  return (
+    <div>
+      <nav className="mb-4 flex items-center gap-1.5 text-sm text-slate-500">
+        <Link href="/integrations" className="hover:text-brand-600">
+          Integrations
+        </Link>
+        <span>/</span>
+        <span className="font-medium text-slate-700">Smartlane</span>
+      </nav>
+
+      <div className="flex items-start gap-3">
+        <div className="rounded-lg bg-brand-50 p-2.5 text-brand-600">
+          <TruckIcon className="h-6 w-6" />
+        </div>
+        <div>
+          <h1 className="text-xl font-semibold text-slate-900">Smartlane</h1>
+          <p className="mt-1 text-sm text-slate-500">
+            Get real-time rates, create bookings, and receive live shipment tracking updates via
+            webhook.
+          </p>
+        </div>
+      </div>
+
+      <div className="my-6 border-t border-surface-border" />
+
+      {error ? (
+        <p className="mb-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
+      ) : null}
+      {notice ? (
+        <p className="mb-4 rounded-md bg-green-50 px-3 py-2 text-sm text-green-700">{notice}</p>
+      ) : null}
+
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[360px_1fr]">
+        <div className="rounded-lg border border-surface-border bg-white p-5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="rounded-lg bg-brand-50 p-2 text-brand-600">
+                <TruckIcon className="h-6 w-6" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-slate-900">Smartlane</p>
+                <p className="text-xs text-slate-500">Courier &amp; Logistics</p>
+              </div>
+            </div>
+            <span
+              className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${
+                connected ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-500"
+              }`}
+            >
+              <span className={`h-1.5 w-1.5 rounded-full ${connected ? "bg-green-500" : "bg-slate-400"}`} />
+              {connected ? "Connected" : "Not Connected"}
+            </span>
+          </div>
+
+          {connected ? (
+            <>
+              <div className="mt-4 space-y-2 border-t border-surface-border pt-4 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Webhooks:</span>
+                  <span className="font-medium text-slate-900">
+                    {status.webhooks_active ? "Active" : "Inactive"}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Events Received:</span>
+                  <span className="font-medium text-slate-900">{status.events_received_count ?? 0}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Last Event:</span>
+                  <span className="font-medium text-slate-900">
+                    {status.last_event_at ? new Date(status.last_event_at).toLocaleString() : "Never"}
+                  </span>
+                </div>
+              </div>
+
+              <div className="mt-4">
+                <span className="mb-1 block text-xs font-medium text-slate-700">Webhook URL</span>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    readOnly
+                    value={status.webhook_url || ""}
+                    onFocus={(e) => e.target.select()}
+                    className="w-full truncate rounded-md border border-surface-border bg-surface px-2 py-1.5 text-xs text-slate-600 outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={onCopyWebhookUrl}
+                    className="shrink-0 rounded-md border border-surface-border px-2 py-1.5 text-xs font-medium text-slate-600 hover:bg-surface"
+                  >
+                    {copied ? "Copied" : "Copy"}
+                  </button>
+                </div>
+                <span className="mt-1 block text-xs text-slate-400">
+                  Paste this into Smartlane&apos;s dashboard as your shipment status webhook callback.
+                </span>
+              </div>
+
+              <button
+                type="button"
+                onClick={onDisconnect}
+                disabled={disconnecting}
+                className="mt-4 w-full rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-100 disabled:opacity-50"
+              >
+                {disconnecting ? "Disconnecting…" : "Disconnect"}
+              </button>
+            </>
+          ) : (
+            <p className="mt-4 border-t border-surface-border pt-4 text-sm text-slate-500">
+              Not connected yet — enter your credentials to the right to connect Smartlane.
+            </p>
+          )}
+        </div>
+
+        <div className="rounded-lg border border-surface-border bg-white p-6">
+          <h2 className="text-base font-semibold text-slate-900">
+            {connected ? "Update Smartlane Credentials" : "Connect Smartlane"}
+          </h2>
+          <p className="mt-1 text-sm text-slate-500">
+            Smartlane pushes shipment status updates (picked, dispatched, delivered, returned) to
+            this system in real time via webhook — orders update automatically without any manual
+            syncing.
+          </p>
+
+          <form onSubmit={onConnect} className="mt-4 space-y-4">
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-slate-700">
+                API Key <span className="text-slate-400">(for creating bookings — optional for now)</span>
+              </span>
+              <PasswordInput
+                placeholder="smln_..."
+                value={form.api_key}
+                onChange={(e) => setForm((f) => ({ ...f, api_key: e.target.value }))}
+              />
+            </label>
+
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-slate-700">
+                Webhook Secret <span className="text-red-500">*</span>
+              </span>
+              <PasswordInput
+                required
+                value={form.webhook_secret}
+                onChange={(e) => setForm((f) => ({ ...f, webhook_secret: e.target.value }))}
+              />
+              <span className="mt-1 block text-xs text-slate-400">
+                Used to verify that incoming webhook calls really came from Smartlane. Set the same
+                secret on both sides.
+              </span>
+            </label>
+
+            <div className="border-t border-surface-border pt-4">
+              <Button type="submit" disabled={connecting} className="w-full justify-center">
+                {connecting ? "Saving…" : connected ? "Update Credentials" : "Connect Smartlane"}
+              </Button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+}
