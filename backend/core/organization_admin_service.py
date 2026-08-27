@@ -13,27 +13,82 @@ class OrganizationAdminError(Exception):
         self.status_code = status_code
 
 
-def list_organizations():
-    orgs = Organization.objects.prefetch_related("memberships", "modules").order_by("-created_at")
+def _emails_for_user_ids(user_ids):
+    """Resolve Auth emails for many user ids with bounded concurrency.
+
+    Avoids the old sequential N+1 (one HTTP round-trip per membership), which
+    made the super-admin list feel slower than heavy tenant order pages.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    unique = []
+    seen = set()
+    for uid in user_ids:
+        key = str(uid)
+        if key and key not in seen:
+            seen.add(key)
+            unique.append(key)
+    if not unique:
+        return {}
+
+    def fetch(uid):
+        try:
+            user = supabase_admin.get_user(uid)
+            return uid, (user or {}).get("email")
+        except SupabaseAdminError:
+            return uid, None
+
+    emails = {}
+    workers = min(8, len(unique))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(fetch, uid) for uid in unique]
+        for fut in as_completed(futures):
+            uid, email = fut.result()
+            emails[uid] = email
+    return emails
+
+
+def _members_payload(memberships, email_map=None):
+    email_map = email_map or {}
+    members = []
+    for membership in memberships:
+        uid = str(membership.user_id)
+        members.append(
+            {
+                "user_id": uid,
+                "email": email_map.get(uid),
+                "role": membership.role,
+                "allowed_modules": list(membership.allowed_modules or []),
+                "created_at": membership.created_at.isoformat(),
+            }
+        )
+    return members
+
+
+def list_organizations(*, include_emails=False):
+    """List orgs from Postgres. Emails are optional (extra Auth Admin calls).
+
+    Org list UI only needs member counts — keep include_emails=False there.
+    Users tab should pass include_emails=True.
+    """
+    orgs = Organization.objects.prefetch_related("memberships", "modules").order_by(
+        "-created_at"
+    )
+    email_map = {}
+    if include_emails:
+        user_ids = [
+            membership.user_id
+            for org in orgs
+            for membership in org.memberships.all()
+        ]
+        email_map = _emails_for_user_ids(user_ids)
+
     results = []
     for org in orgs:
-        members = []
-        for membership in org.memberships.all():
-            email = None
-            try:
-                user = supabase_admin.get_user(str(membership.user_id))
-                if user:
-                    email = user.get("email")
-            except SupabaseAdminError:
-                email = None
-            members.append(
-                {
-                    "user_id": str(membership.user_id),
-                    "email": email,
-                    "role": membership.role,
-                    "created_at": membership.created_at.isoformat(),
-                }
-            )
+        memberships = list(org.memberships.all())
+        members = _members_payload(
+            memberships, email_map if include_emails else None
+        )
         results.append(_serialize_org(org, members))
     return results
 
@@ -46,24 +101,9 @@ def get_organization(organization_id):
     except Organization.DoesNotExist as exc:
         raise OrganizationAdminError("Organization not found", 404) from exc
 
-    members = []
-    for membership in org.memberships.all():
-        email = None
-        try:
-            user = supabase_admin.get_user(str(membership.user_id))
-            if user:
-                email = user.get("email")
-        except SupabaseAdminError:
-            email = None
-        members.append(
-            {
-                "user_id": str(membership.user_id),
-                "email": email,
-                "role": membership.role,
-                "created_at": membership.created_at.isoformat(),
-            }
-        )
-    return _serialize_org(org, members)
+    memberships = list(org.memberships.all())
+    email_map = _emails_for_user_ids([m.user_id for m in memberships])
+    return _serialize_org(org, _members_payload(memberships, email_map))
 
 
 @transaction.atomic
@@ -117,6 +157,7 @@ def create_organization_with_admin(
                 "organization_id": str(organization.id),
                 "organization_name": organization.name,
                 "role": "org_admin",
+                "modules": module_list,
             },
         )
     except SupabaseAdminError as exc:
@@ -130,6 +171,7 @@ def create_organization_with_admin(
         organization=organization,
         user_id=user_id,
         role="org_admin",
+        allowed_modules=module_list,
     )
 
     return get_organization(organization.id)
@@ -172,6 +214,27 @@ def update_member_credentials(user_id, *, email=None, password=None):
 
 
 def _serialize_org(org, members):
+    shopify = None
+    try:
+        from integrations.models import ShopifyConnection
+
+        conn = (
+            ShopifyConnection.all_objects.filter(organization_id=org.id)
+            .order_by("-updated_at")
+            .first()
+        )
+        if conn:
+            shopify = {
+                "shop_domain": conn.shop_domain,
+                "shop_name": conn.shop_name,
+                "is_connected": conn.is_connected,
+                "last_synced_at": (
+                    conn.last_synced_at.isoformat() if conn.last_synced_at else None
+                ),
+            }
+    except Exception:
+        shopify = None
+
     return {
         "id": str(org.id),
         "name": org.name,
@@ -183,4 +246,5 @@ def _serialize_org(org, members):
             {"module": m.module, "is_enabled": m.is_enabled} for m in org.modules.all()
         ],
         "members": members,
+        "shopify": shopify,
     }

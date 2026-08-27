@@ -230,7 +230,7 @@ def adjust_stock(*, organization_id, stock_item, delta, actor_user_id=None, note
     """Manual correction (stock count, damage, receiving new inventory)."""
     stock_item.quantity += delta
     stock_item.save(update_fields=["quantity", "updated_at"])
-    return StockMovement.objects.create(
+    movement = StockMovement.objects.create(
         organization_id=organization_id,
         stock_item=stock_item,
         delta=delta,
@@ -239,3 +239,23 @@ def adjust_stock(*, organization_id, stock_item, delta, actor_user_id=None, note
         note=note,
         actor_user_id=actor_user_id,
     )
+    try:
+        from core.rbac import write_audit_log
+
+        write_audit_log(
+            organization_id=organization_id,
+            action="wms.stock_adjust",
+            summary=f"Stock adjust {stock_item.sku}: {delta:+d} (balance {stock_item.quantity})",
+            actor_user_id=actor_user_id,
+            entity_type="stock_item",
+            entity_id=str(stock_item.id),
+            metadata={
+                "sku": stock_item.sku,
+                "delta": delta,
+                "balance_after": stock_item.quantity,
+                "note": note or "",
+            },
+        )
+    except Exception:
+        pass
+    return movement

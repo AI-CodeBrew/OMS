@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import Dropdown from "../shared/Dropdown";
 import authService from "../../services/authService";
 import useAuthStore from "../../store/authStore";
-import { MODULES } from "./moduleNav";
+import { getVisibleModules } from "./moduleNav";
 
 function BellIcon({ className }) {
   return (
@@ -32,6 +32,7 @@ function ChevronIcon({ className }) {
 export default function TenantHeader({ activeModule }) {
   const router = useRouter();
   const user = useAuthStore((s) => s.user);
+  const modules = getVisibleModules(user);
 
   function logout() {
     authService.logout();
@@ -46,7 +47,7 @@ export default function TenantHeader({ activeModule }) {
         </div>
 
         <nav className="flex items-center gap-1 text-sm">
-          {MODULES.map((m) => {
+          {modules.map((m) => {
             const isActive = m.key === activeModule;
             return (
               <Link

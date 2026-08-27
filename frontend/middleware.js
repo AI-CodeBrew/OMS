@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-const PUBLIC_PATHS = ["/login"];
+const PUBLIC_PATHS = ["/", "/login"];
 
 /** Super-admin UI — hidden entirely unless client IP is allowlisted. */
 const SUPER_ADMIN_PATHS = ["/superadmin", "/admin", "/system-health", "/tenants"];

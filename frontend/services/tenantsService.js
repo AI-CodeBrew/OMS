@@ -21,8 +21,9 @@ async function request(url, options = {}) {
 }
 
 class TenantsService {
-  listOrganizations() {
-    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.organizations}`);
+  listOrganizations({ includeEmails = false } = {}) {
+    const qs = includeEmails ? "?include_emails=1" : "";
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.organizations}${qs}`);
   }
 
   getOrganization(id) {

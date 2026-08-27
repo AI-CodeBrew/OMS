@@ -129,14 +129,24 @@ def ensure_user(*, email, password, app_metadata=None):
         raise
 
 
-def set_org_claims(user_id, organization, role):
+def set_org_claims(user_id, organization, role, modules=None):
+    """Write org identity into Supabase app_metadata (source of truth for JWT)."""
+    from .rbac import build_org_app_metadata, enabled_modules_for_org, resolve_modules_for_membership
+
+    if modules is None:
+        if role == "org_admin":
+            modules = enabled_modules_for_org(organization.id)
+        else:
+            modules = []
+    else:
+        modules = resolve_modules_for_membership(
+            role=role,
+            allowed_modules=modules,
+            organization_id=organization.id,
+        )
     return update_user(
         user_id,
-        app_metadata={
-            "organization_id": str(organization.id),
-            "organization_name": organization.name,
-            "role": role,
-        },
+        app_metadata=build_org_app_metadata(organization, role=role, modules=modules),
     )
 
 

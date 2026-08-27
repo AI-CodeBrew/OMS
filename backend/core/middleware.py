@@ -56,7 +56,10 @@ class TenantMiddleware:
         request.user_id = None
         request.organization_id = None
         request.is_super_admin = False
+        request.is_org_admin = False
+        request.modules = []
         request.auth_claims = None
+        request.auth_email = None
 
         auth_header = request.META.get("HTTP_AUTHORIZATION", "")
         if auth_header.startswith("Bearer "):
@@ -69,10 +72,21 @@ class TenantMiddleware:
                 app_meta = claims.get("app_metadata") or {}
                 user_meta = claims.get("user_metadata") or {}
                 request.user_id = claims.get("sub")
-                request.is_super_admin = app_meta.get("role") == "super_admin"
+                request.auth_email = claims.get("email") or ""
+                role = app_meta.get("role") or ""
+                request.is_super_admin = role == "super_admin"
+                request.is_org_admin = role == "org_admin"
                 request.organization_id = (
                     app_meta.get("organization_id") or user_meta.get("organization_id")
                 )
+                modules = app_meta.get("modules")
+                if isinstance(modules, list):
+                    request.modules = [str(m) for m in modules if m]
+                elif request.is_org_admin and request.organization_id:
+                    # Legacy org_admin JWTs without modules claim → full enabled set
+                    from .rbac import enabled_modules_for_org
+
+                    request.modules = enabled_modules_for_org(request.organization_id)
                 request.auth_claims = claims
 
         org_token = current_organization_id.set(request.organization_id)

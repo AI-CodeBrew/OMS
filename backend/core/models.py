@@ -78,6 +78,9 @@ class Membership(models.Model):
     # are managed by Supabase Auth, not Django's own auth system.
     user_id = models.UUIDField()
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default="org_user")
+    # For org_user: exactly one of oms|wms|finance. Org admin may store all
+    # enabled modules or leave empty (treated as full access at runtime).
+    allowed_modules = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -115,3 +118,26 @@ class OrganizationModule(models.Model):
 
     def __str__(self):
         return f"{self.organization_id}:{self.module}={'on' if self.is_enabled else 'off'}"
+
+
+class OrganizationAuditLog(TenantScopedModel):
+    """Org-wide activity log for the org admin Logs tab."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    actor_user_id = models.UUIDField(null=True, blank=True)
+    actor_email = models.CharField(max_length=255, blank=True, default="")
+    action = models.CharField(max_length=64)
+    entity_type = models.CharField(max_length=64, blank=True, default="")
+    entity_id = models.CharField(max_length=64, blank=True, default="")
+    summary = models.CharField(max_length=500)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        db_table = '"core"."organization_audit_logs"'
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["organization", "-created_at"], name="core_audit_org_created"),
+        ]
+
+    def __str__(self):
+        return f"{self.action} @ {self.organization_id}"

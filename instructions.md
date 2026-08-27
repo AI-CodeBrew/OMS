@@ -66,7 +66,7 @@ project/
 └── backend/    # Django API (Render) + Supabase Auth/Postgres
 
 Tenancy: organization_id on business tables; JWT app_metadata carries role + org.
-Super admin: /superadmin login → /admin dashboard (IP-allowlisted); org users: /login → /dashboard.
+Super admin: /superadmin login → /admin/organizations (sidebar: Organizations, Users; IP-allowlisted); org users: /login → /dashboard.
 Async third-party work must not block request/response cycles.
 
 ================================================================================

@@ -95,13 +95,13 @@ export const BookmarkIcon = ({ className }) => (
 
 export const GearIcon = ({ className }) => (
   <Base className={className}>
-    <circle cx="10" cy="10" r="2.5" stroke="currentColor" strokeWidth="1.5" />
     <path
-      d="M10 3v1.6M10 15.4V17M17 10h-1.6M4.6 10H3M14.8 5.2l-1.1 1.1M6.3 13.7l-1.1 1.1M14.8 14.8l-1.1-1.1M6.3 6.3 5.2 5.2"
+      d="M11.07 2.5h-2.14l-.27 1.55a5.9 5.9 0 0 0-1.28.74L5.9 4.17 4.17 5.9l.62 1.48a5.9 5.9 0 0 0-.74 1.28L2.5 8.93v2.14l1.55.27c.18.46.43.9.74 1.28l-.62 1.48L5.9 15.83l1.48-.62c.38.31.82.56 1.28.74l.27 1.55h2.14l.27-1.55c.46-.18.9-.43 1.28-.74l1.48.62 1.73-1.73-.62-1.48c.31-.38.56-.82.74-1.28l1.55-.27V8.93l-1.55-.27a5.9 5.9 0 0 0-.74-1.28l.62-1.48L14.1 4.17l-1.48.62a5.9 5.9 0 0 0-1.28-.74L11.07 2.5Z"
       stroke="currentColor"
       strokeWidth="1.5"
-      strokeLinecap="round"
+      strokeLinejoin="round"
     />
+    <circle cx="10" cy="10" r="2.25" stroke="currentColor" strokeWidth="1.5" />
   </Base>
 );
 
@@ -188,6 +188,32 @@ export const LinkIcon = ({ className }) => (
   <Base className={className}>
     <path
       d="M8.5 11.5 11.5 8.5M7 12.5 4.8 14.7a2.3 2.3 0 0 1-3.2-3.2L4 9.3M13 7.5l2.2-2.2a2.3 2.3 0 0 1 3.2 3.2L16.2 10.7"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </Base>
+);
+
+/** Stacked layers — same mark as the Integrations page header. */
+export const IntegrationsIcon = ({ className }) => (
+  <Base className={className}>
+    <path
+      d="M10 2.5 17.5 6.5 10 10.5 2.5 6.5 10 2.5Z"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinejoin="round"
+    />
+    <path
+      d="M2.5 10.5 10 14.5l7.5-4"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <path
+      d="M2.5 14 10 18l7.5-4"
       stroke="currentColor"
       strokeWidth="1.5"
       strokeLinecap="round"

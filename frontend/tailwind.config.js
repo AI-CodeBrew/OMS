@@ -26,7 +26,15 @@ module.exports = {
         },
       },
       fontFamily: {
-        sans: ["Calibri", "Segoe UI", "ui-sans-serif", "system-ui", "sans-serif"],
+        sans: [
+          "var(--font-outfit)",
+          "Calibri",
+          "Segoe UI",
+          "ui-sans-serif",
+          "system-ui",
+          "sans-serif",
+        ],
+        display: ["var(--font-fraunces)", "Georgia", "serif"],
       },
     },
   },

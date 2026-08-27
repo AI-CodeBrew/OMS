@@ -8,7 +8,7 @@ export default function OrdersFilterPanel({ filters, onChange, onApply, onClear,
   }
 
   return (
-    <div className="mb-3 grid grid-cols-2 gap-3 rounded-lg border border-surface-border bg-white p-4 sm:grid-cols-4">
+    <div className="mb-3 grid grid-cols-2 gap-3 rounded-lg border border-surface-border bg-white p-4 sm:grid-cols-3">
       <label className="block">
         <span className="mb-1 block text-xs font-medium text-slate-700">City</span>
         <input
@@ -30,18 +30,6 @@ export default function OrdersFilterPanel({ filters, onChange, onApply, onClear,
               {c.name}
             </option>
           ))}
-        </select>
-      </label>
-      <label className="block">
-        <span className="mb-1 block text-xs font-medium text-slate-700">Gateway</span>
-        <select
-          value={filters.gateway}
-          onChange={update("gateway")}
-          className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
-        >
-          <option value="">Any</option>
-          <option value="cod">COD</option>
-          <option value="cc">CC</option>
         </select>
       </label>
       <div className="grid grid-cols-2 gap-2">

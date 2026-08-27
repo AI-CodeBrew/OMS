@@ -16,7 +16,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.context import current_organization_id
-from core.permissions import RequireModule
+from core.permissions import IsOrgAdmin
+from core.rbac import write_audit_log
 from oms import services as oms_services
 
 from . import shopify_client
@@ -27,8 +28,7 @@ from .services import upsert_order_from_shopify
 
 
 class ShopifyConnectionView(APIView):
-    permission_classes = [RequireModule]
-    required_module = "oms"
+    permission_classes = [IsOrgAdmin]
 
     def get(self, request):
         connection = ShopifyConnection.objects.filter(
@@ -84,6 +84,17 @@ class ShopifyConnectionView(APIView):
                 "webhooks_active": bool(webhook_ids) and not warnings,
                 "webhook_ids": webhook_ids,
             },
+        )
+
+        write_audit_log(
+            organization_id=request.organization_id,
+            action="integrations.shopify.connect",
+            summary=f"Connected Shopify shop {shop_domain}",
+            actor_user_id=request.user_id,
+            actor_email=getattr(request, "auth_email", "") or "",
+            entity_type="shopify_connection",
+            entity_id=str(connection.id),
+            metadata={"shop_domain": shop_domain, "shop_name": connection.shop_name},
         )
 
         data = ShopifyConnectionSerializer(connection).data
@@ -152,8 +163,19 @@ class ShopifyConnectionView(APIView):
         # instant, rather than deleting the row outright.
         connection = ShopifyConnection.objects.filter(organization_id=request.organization_id).first()
         if connection:
+            shop_domain = connection.shop_domain
             connection.is_connected = False
             connection.save(update_fields=["is_connected"])
+            write_audit_log(
+                organization_id=request.organization_id,
+                action="integrations.shopify.disconnect",
+                summary=f"Disconnected Shopify shop {shop_domain}",
+                actor_user_id=request.user_id,
+                actor_email=getattr(request, "auth_email", "") or "",
+                entity_type="shopify_connection",
+                entity_id=str(connection.id),
+                metadata={"shop_domain": shop_domain},
+            )
         return Response(status=http_status.HTTP_204_NO_CONTENT)
 
 
@@ -162,8 +184,7 @@ class ShopifyTestConnectionView(APIView):
     saving anything - lets the UI validate credentials before committing to
     Connect/Update Credentials."""
 
-    permission_classes = [RequireModule]
-    required_module = "oms"
+    permission_classes = [IsOrgAdmin]
 
     def post(self, request):
         shop_domain = (request.data.get("shop_domain") or "").strip()
@@ -185,8 +206,7 @@ class ShopifyTestConnectionView(APIView):
 
 
 class SmartlaneConnectionView(APIView):
-    permission_classes = [RequireModule]
-    required_module = "oms"
+    permission_classes = [IsOrgAdmin]
 
     def get(self, request):
         connection = SmartlaneConnection.objects.filter(
@@ -215,6 +235,16 @@ class SmartlaneConnectionView(APIView):
                 "webhooks_active": True,
             },
         )
+        write_audit_log(
+            organization_id=request.organization_id,
+            action="integrations.smartlane.connect",
+            summary="Connected Smartlane",
+            actor_user_id=request.user_id,
+            actor_email=getattr(request, "auth_email", "") or "",
+            entity_type="smartlane_connection",
+            entity_id=str(connection.id),
+            metadata={},
+        )
         data = SmartlaneConnectionSerializer(connection, context={"request": request}).data
         data["connected"] = True
         return Response(data, status=http_status.HTTP_201_CREATED)
@@ -225,6 +255,16 @@ class SmartlaneConnectionView(APIView):
             connection.is_connected = False
             connection.webhooks_active = False
             connection.save(update_fields=["is_connected", "webhooks_active"])
+            write_audit_log(
+                organization_id=request.organization_id,
+                action="integrations.smartlane.disconnect",
+                summary="Disconnected Smartlane",
+                actor_user_id=request.user_id,
+                actor_email=getattr(request, "auth_email", "") or "",
+                entity_type="smartlane_connection",
+                entity_id=str(connection.id),
+                metadata={},
+            )
         return Response(status=http_status.HTTP_204_NO_CONTENT)
 
 
@@ -333,8 +373,7 @@ class ShopifyGapView(APIView):
     per-order database writes and has to be backgrounded.
     """
 
-    permission_classes = [RequireModule]
-    required_module = "oms"
+    permission_classes = [IsOrgAdmin]
 
     def get(self, request):
         connection = ShopifyConnection.objects.filter(
@@ -359,8 +398,7 @@ class ShopifySyncView(APIView):
     actual work and why it's structured as a plain thread rather than
     Celery (no broker available in this environment yet)."""
 
-    permission_classes = [RequireModule]
-    required_module = "oms"
+    permission_classes = [IsOrgAdmin]
 
     def get(self, request):
         job = ShopifySyncJob.objects.filter(organization_id=request.organization_id).first()

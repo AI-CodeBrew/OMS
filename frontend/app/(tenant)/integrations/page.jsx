@@ -267,31 +267,6 @@ export default function IntegrationsOverviewPage() {
           />
         ))}
       </div>
-
-      <div className="mt-6 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-surface-border bg-white p-5">
-        <div className="flex items-center gap-3">
-          <span className="flex h-10 w-10 items-center justify-center rounded-full bg-brand-50 text-brand-600">
-            <svg viewBox="0 0 20 20" fill="none" className="h-5 w-5">
-              <path
-                d="M10 2 4 4.5v4c0 4.2 2.6 7.4 6 8.5 3.4-1.1 6-4.3 6-8.5v-4L10 2Z"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </span>
-          <div>
-            <p className="text-sm font-semibold text-slate-900">Secure &amp; Reliable Connections</p>
-            <p className="text-xs text-slate-500">
-              Your data is encrypted and connections are secure. You can connect or disconnect
-              integrations at any time.
-            </p>
-          </div>
-        </div>
-        <a href="#" className="shrink-0 text-sm font-medium text-brand-600 hover:underline">
-          Learn more about integrations →
-        </a>
-      </div>
     </div>
   );
 }

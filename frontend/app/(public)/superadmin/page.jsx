@@ -24,7 +24,7 @@ export default function SuperAdminLoginPage() {
         setError("This portal is for super admins only.");
         return;
       }
-      router.replace("/admin");
+      router.replace("/admin/organizations");
     } catch (err) {
       setError(err.message || "Login failed");
     } finally {

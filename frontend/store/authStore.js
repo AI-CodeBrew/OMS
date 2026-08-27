@@ -63,6 +63,17 @@ export const useAuthStore = create((set, get) => ({
   isAuthenticated: () => Boolean(get().accessToken),
 
   isSuperAdmin: () => get().user?.role === "super_admin",
+
+  isOrgAdmin: () => get().user?.role === "org_admin" || get().user?.isOrgAdmin === true,
+
+  hasModule: (moduleKey) => {
+    const user = get().user;
+    if (!user) return false;
+    if (user.role === "super_admin" || user.role === "org_admin" || user.isOrgAdmin) {
+      return true;
+    }
+    return (user.modules || []).includes(moduleKey);
+  },
 }));
 
 export default useAuthStore;

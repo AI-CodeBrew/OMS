@@ -11,8 +11,6 @@ export default function OrdersSidebar({
   counts,
   activeStatus,
   onSelectStatus,
-  gateway,
-  onSelectGateway,
   courierId,
   onSelectCourier,
   couriers,
@@ -43,28 +41,6 @@ export default function OrdersSidebar({
             );
           })}
         </ul>
-      </div>
-
-      <div>
-        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
-          By Gateway
-        </h3>
-        <div className="flex gap-1">
-          {["", "cod", "cc"].map((g) => (
-            <button
-              key={g || "any"}
-              type="button"
-              onClick={() => onSelectGateway(g)}
-              className={`rounded-md px-2 py-1 text-xs font-medium uppercase ${
-                gateway === g
-                  ? "bg-brand-600 text-white"
-                  : "border border-surface-border text-slate-600 hover:bg-surface"
-              }`}
-            >
-              {g || "Any"}
-            </button>
-          ))}
-        </div>
       </div>
 
       <div>

@@ -5,12 +5,18 @@ import useTenantStore from "../store/tenantStore";
 function buildUser(session) {
   if (!session?.user) return null;
   const appMeta = session.user.app_metadata || {};
+  const role = appMeta.role || "org_user";
+  const modules = Array.isArray(appMeta.modules)
+    ? appMeta.modules.filter(Boolean).map(String)
+    : [];
   return {
     id: session.user.id,
     email: session.user.email,
-    role: appMeta.role || "org_user",
+    role,
     organization_id: appMeta.organization_id || null,
     organization_name: appMeta.organization_name || null,
+    modules,
+    isOrgAdmin: role === "org_admin",
   };
 }
 

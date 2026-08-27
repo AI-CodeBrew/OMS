@@ -10,10 +10,17 @@ from .permissions import IsSuperAdmin
 @permission_classes([IsSuperAdmin])
 def organizations(request):
     if request.method == "GET":
+        include_emails = str(request.query_params.get("include_emails", "")).lower() in {
+            "1",
+            "true",
+            "yes",
+        }
         return Response(
             {
                 "success": True,
-                "organizations": service.list_organizations(),
+                "organizations": service.list_organizations(
+                    include_emails=include_emails
+                ),
             }
         )
 

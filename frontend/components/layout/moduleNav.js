@@ -4,13 +4,8 @@
 
 import {
   DashboardIcon,
-  ReceiptIcon,
   GridIcon,
-  ClockIcon,
-  CashIcon,
-  CheckCircleIcon,
   PackageIcon,
-  TruckIcon,
   UndoIcon,
   GearIcon,
   SwapIcon,
@@ -20,30 +15,52 @@ import {
   CardIcon,
   DocumentIcon,
   WalletIcon,
-  ShopBagIcon,
-  LinkIcon,
+  CashIcon,
+  IntegrationsIcon,
 } from "./navIcons";
 
+// Top header tabs only — Integrations / Logs / Settings live in the sidebar.
 export const MODULES = [
   { key: "oms", label: "OMS", href: "/dashboard" },
   { key: "wms", label: "WMS", href: "/wms" },
-  { key: "finance", label: "Finance", href: "/finance" },
-  { key: "integrations", label: "Integrations", href: "/integrations" },
-  { key: "returns", label: "Returns", href: "/returns" },
-  { key: "reports", label: "Reports", href: "/reports" },
+  { key: "finance", label: "Financify", href: "/finance" },
 ];
 
-// Pinned at the bottom of the sidebar regardless of active module, rather
-// than living in the header nav - settings isn't really "a module" you
-// switch into, it's always-available account config.
-export const SETTINGS_ITEM = { key: "settings", label: "Settings", href: "/settings", icon: GearIcon };
+export const STAFF_MODULE_OPTIONS = [
+  { key: "oms", label: "OMS" },
+  { key: "wms", label: "WMS" },
+  { key: "finance", label: "Financify" },
+];
+
+// Pinned at the bottom of the sidebar regardless of active module.
+export const SETTINGS_ITEM = {
+  key: "settings",
+  label: "Settings",
+  href: "/settings",
+  icon: GearIcon,
+};
+
+export const INTEGRATIONS_ITEM = {
+  key: "integrations",
+  label: "Integrations",
+  href: "/integrations",
+  icon: IntegrationsIcon,
+};
+
+export const LOGS_ITEM = {
+  key: "logs",
+  label: "Logs",
+  href: "/logs",
+  icon: DocumentIcon,
+};
 
 const MODULE_PATH_PREFIXES = {
   oms: ["/orders", "/dashboard"],
-  wms: ["/wms"],
+  // Returns Desk lives under WMS — keep the WMS sidebar when on /returns.
+  wms: ["/wms", "/returns"],
   finance: ["/finance"],
   integrations: ["/integrations"],
-  returns: ["/returns"],
+  logs: ["/logs"],
   reports: ["/reports"],
   settings: ["/settings"],
 };
@@ -55,20 +72,63 @@ export function getActiveModule(pathname) {
   return match ? match[0] : null;
 }
 
+/** Header tabs visible for the current user (JWT modules + org-admin gates). */
+export function getVisibleModules(user) {
+  if (!user) return [];
+  const isAdmin = user.role === "org_admin" || user.isOrgAdmin || user.role === "super_admin";
+  const modules = Array.isArray(user.modules) ? user.modules : [];
+  const hasProduct = (key) => {
+    if (isAdmin) {
+      return modules.length ? modules.includes(key) : true;
+    }
+    return modules.includes(key);
+  };
+
+  return MODULES.filter((m) => {
+    if (m.key === "oms" || m.key === "wms" || m.key === "finance") return hasProduct(m.key);
+    return false;
+  });
+}
+
+/** First allowed module home for redirects when staff hit a forbidden route. */
+export function getDefaultModuleHref(user) {
+  const visible = getVisibleModules(user);
+  if (visible.length) return visible[0].href;
+  return "/settings";
+}
+
+export function canAccessPath(user, pathname) {
+  if (!user) return false;
+  if (pathname === "/settings" || pathname.startsWith("/settings/")) return true;
+
+  const isAdmin = user.role === "org_admin" || user.isOrgAdmin || user.role === "super_admin";
+  const modules = Array.isArray(user.modules) ? user.modules : [];
+  const hasProduct = (key) => {
+    if (isAdmin) return modules.length ? modules.includes(key) : true;
+    return modules.includes(key);
+  };
+
+  if (pathname === "/logs" || pathname.startsWith("/logs/")) return isAdmin;
+  if (pathname === "/integrations" || pathname.startsWith("/integrations/")) return isAdmin;
+  if (pathname === "/returns" || pathname.startsWith("/returns/")) {
+    return hasProduct("oms") || hasProduct("wms");
+  }
+  if (pathname === "/reports" || pathname.startsWith("/reports/")) {
+    return hasProduct("oms") || hasProduct("wms");
+  }
+
+  const active = getActiveModule(pathname);
+  if (!active) return true;
+  return getVisibleModules(user).some((m) => m.key === active);
+}
+
 // Sidebar items with no real page behind them yet are marked disabled -
 // same "visible but not wired up" convention used elsewhere in this app
-// (IVR Call, Download Invoices, ...) rather than linking to a dead end.
+// rather than linking to a dead end.
 export const SIDEBAR_ITEMS = {
   oms: [
     { label: "Dashboard", href: "/dashboard", icon: DashboardIcon },
-    { label: "Local Orders", href: "/orders", icon: ReceiptIcon },
     { label: "All Orders", href: "/orders", icon: GridIcon },
-    { label: "Pending Orders", href: "/orders?status=pending_cc,pending_cod", icon: ClockIcon },
-    { label: "Pending COD", href: "/orders?status=pending_cod", icon: CashIcon },
-    { label: "Awaiting Approval", href: "/orders?status=awaiting_approval", icon: CheckCircleIcon },
-    { label: "Awaiting Dispatch", href: "/orders?status=awaiting_dispatched", icon: PackageIcon },
-    { label: "Dispatched", href: "/orders?status=dispatched", icon: TruckIcon },
-    { label: "Returns", href: "/orders?status=returned", icon: UndoIcon },
   ],
   wms: [
     { label: "Inventory", href: "/wms", icon: PackageIcon },
@@ -91,17 +151,8 @@ export const SIDEBAR_ITEMS = {
     { divider: true },
     { label: "Reports", disabled: true, icon: BarChartIcon },
   ],
-  returns: [
-    { label: "Returned Orders", href: "/returns", icon: UndoIcon },
-    { label: "Inventory", href: "/wms", icon: PackageIcon },
-  ],
-  integrations: [
-    { label: "Connectivity", href: "/integrations", icon: LinkIcon },
-    { label: "Shopify", href: "/integrations/shopify", icon: ShopBagIcon },
-    { label: "Smartlane", href: "/integrations/smartlane", icon: TruckIcon },
-    { label: "Leopard Courier", disabled: true, icon: PackageIcon },
-    { label: "PostEx", disabled: true, icon: PackageIcon },
-  ],
+  integrations: [],
+  logs: [],
   reports: [],
   settings: [],
 };

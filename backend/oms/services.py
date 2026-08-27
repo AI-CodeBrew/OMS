@@ -110,6 +110,25 @@ def _transition(order, to_status, *, actor_user_id=None, note="", extra_fields=N
         note=note,
         actor_user_id=actor_user_id,
     )
+    try:
+        from core.rbac import write_audit_log
+
+        write_audit_log(
+            organization_id=order.organization_id,
+            action="order.status_change",
+            summary=f"Order {order.order_number}: {from_status} → {to_status}",
+            actor_user_id=actor_user_id,
+            entity_type="order",
+            entity_id=str(order.id),
+            metadata={
+                "order_number": order.order_number,
+                "from_status": from_status,
+                "to_status": to_status,
+                "note": note or "",
+            },
+        )
+    except Exception:
+        pass
     publish_event(
         "order.status_changed",
         {

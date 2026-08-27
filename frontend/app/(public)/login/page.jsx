@@ -50,9 +50,12 @@ export default function LoginPage() {
     <main className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-100 via-brand-50 to-slate-200 px-4">
       <div className="w-full max-w-md rounded-xl border border-surface-border bg-white p-8 shadow-sm">
         <div className="mb-8">
-          <p className="text-sm font-semibold uppercase tracking-wide text-brand-600">
+          <a
+            href="/"
+            className="text-sm font-semibold uppercase tracking-wide text-brand-600 hover:underline"
+          >
             OMS
-          </p>
+          </a>
           <h1 className="mt-1 text-2xl font-semibold text-slate-900">Sign in</h1>
           <p className="mt-1 text-sm text-slate-500">
             Multi-tenant order management

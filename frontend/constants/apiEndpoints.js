@@ -6,6 +6,9 @@ export const API_ENDPOINTS = {
     organization: (id) => `/api/core/admin/organizations/${id}/`,
     user: (id) => `/api/core/admin/users/${id}/`,
   },
+  team: "/api/core/team/",
+  teamMember: (userId) => `/api/core/team/${userId}/`,
+  auditLogs: "/api/core/audit-logs/",
   oms: {
     orders: "/api/oms/orders/",
     orderCounts: "/api/oms/orders/counts/",

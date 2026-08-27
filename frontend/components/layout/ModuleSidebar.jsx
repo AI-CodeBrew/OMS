@@ -3,13 +3,18 @@
 import { useEffect, useRef } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { SIDEBAR_ITEMS, SETTINGS_ITEM } from "./moduleNav";
+import { SIDEBAR_ITEMS, SETTINGS_ITEM, LOGS_ITEM, INTEGRATIONS_ITEM } from "./moduleNav";
+import useAuthStore from "../../store/authStore";
 
 function isItemActive(item, pathname, search) {
   if (!item.href) return false;
   const [itemPath, itemQuery] = item.href.split("?");
   if (itemPath !== pathname) return false;
-  if (!itemQuery) return !search.toString(); // "All Orders"/"Local Orders" only active with no filter
+  if (!itemQuery) {
+    // Path-only links (Inventory, Returns Desk, All Orders): active when
+    // on that path, regardless of unrelated query params.
+    return true;
+  }
   const itemParams = new URLSearchParams(itemQuery);
   return itemParams.get("status") === (search.get("status") || "");
 }
@@ -124,6 +129,9 @@ function MenuToggle({ expanded, onToggle }) {
 export default function ModuleSidebar({ activeModule, expanded, onToggle }) {
   const pathname = usePathname();
   const search = useSearchParams();
+  const user = useAuthStore((s) => s.user);
+  const isOrgAdmin =
+    user?.role === "org_admin" || user?.isOrgAdmin === true || user?.role === "super_admin";
   const items = SIDEBAR_ITEMS[activeModule] || [];
   const ItemComponent = expanded ? FullLink : RailIcon;
   const asideRef = useRef(null);
@@ -159,7 +167,22 @@ export default function ModuleSidebar({ activeModule, expanded, onToggle }) {
         )}
       </nav>
 
-      <div className={`mt-2 border-t border-brand-900 pt-2 ${expanded ? "" : "w-full"}`}>
+      <div className={`mt-2 space-y-1 border-t border-brand-900 pt-2 ${expanded ? "" : "w-full"}`}>
+        {isOrgAdmin ? (
+          <>
+            <ItemComponent
+              item={INTEGRATIONS_ITEM}
+              active={
+                pathname === INTEGRATIONS_ITEM.href ||
+                pathname.startsWith(`${INTEGRATIONS_ITEM.href}/`)
+              }
+            />
+            <ItemComponent
+              item={LOGS_ITEM}
+              active={pathname === LOGS_ITEM.href || pathname.startsWith(`${LOGS_ITEM.href}/`)}
+            />
+          </>
+        ) : null}
         <ItemComponent item={SETTINGS_ITEM} active={pathname === SETTINGS_ITEM.href} />
       </div>
     </aside>
