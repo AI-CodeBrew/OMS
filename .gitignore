@@ -6,6 +6,7 @@
 !.env.example
 !.env.example.*
 backend/.venv/
+backend/staticfiles/
 frontend/node_modules/
 frontend/.next/
 **/__pycache__/

@@ -1,3 +1,6 @@
+import ssl
+
+import certifi
 import jwt
 from django.conf import settings
 from jwt import PyJWKClient
@@ -13,10 +16,17 @@ def _get_jwk_client():
     # Fetched once and cached in-process (PyJWKClient caches by kid) - this
     # is still "local" verification in the sense that matters: Supabase is
     # never called on the request path, only once to learn its public key.
+    #
+    # Use certifi's CA bundle via ssl_context. Stock macOS Python builds often
+    # fail urllib SSL verify (CERTIFICATE_VERIFY_FAILED) when fetching JWKS,
+    # which makes every ES256 login token look invalid → 403 on protected routes.
     global _jwk_client
     if _jwk_client is None:
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
         _jwk_client = PyJWKClient(
-            f"{settings.SUPABASE_URL}/auth/v1/.well-known/jwks.json", cache_keys=True
+            f"{settings.SUPABASE_URL.rstrip('/')}/auth/v1/.well-known/jwks.json",
+            cache_keys=True,
+            ssl_context=ssl_context,
         )
     return _jwk_client
 
