@@ -21,13 +21,14 @@ export default function LoginPage() {
     setLoading(true);
     try {
       const data = await authService.login(email, password);
+      if (data.user?.role === "super_admin") {
+        await authService.logout();
+        setError("Use the super admin portal to sign in.");
+        return;
+      }
       // Prove JWT works: protected health call before navigating
       await healthService.getProtectedHealth();
-      if (data.user?.role === "super_admin") {
-        router.replace("/admin");
-      } else {
-        router.replace("/dashboard");
-      }
+      router.replace("/dashboard");
     } catch (err) {
       setError(err.message || "Login failed");
     } finally {

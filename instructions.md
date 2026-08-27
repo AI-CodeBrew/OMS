@@ -55,6 +55,7 @@ Frontend (frontend/.env.local):
   NEXT_PUBLIC_SUPABASE_URL
   NEXT_PUBLIC_SUPABASE_ANON_KEY
   NEXT_PUBLIC_FEATURE_FLAGS
+  ADMIN_IP_ALLOWLIST         # server-only; hide /superadmin + /admin if IP not allowed (set on Vercel too)
 
 ================================================================================
 ARCHITECTURE
@@ -65,7 +66,7 @@ project/
 └── backend/    # Django API (Render) + Supabase Auth/Postgres
 
 Tenancy: organization_id on business tables; JWT app_metadata carries role + org.
-Super admin: /admin dashboard; org users: /dashboard and module pages.
+Super admin: /superadmin login → /admin dashboard (IP-allowlisted); org users: /login → /dashboard.
 Async third-party work must not block request/response cycles.
 
 ================================================================================

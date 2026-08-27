@@ -10,7 +10,7 @@ function SuperAdminShell({ children }) {
 
   function logout() {
     authService.logout();
-    router.replace("/login");
+    router.replace("/superadmin");
   }
 
   return (

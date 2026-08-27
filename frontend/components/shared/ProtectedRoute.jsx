@@ -18,7 +18,7 @@ export default function ProtectedRoute({ children, requireSuperAdmin = false }) 
   useEffect(() => {
     if (!hydrated) return;
     if (!accessToken) {
-      router.replace("/login");
+      router.replace(requireSuperAdmin ? "/superadmin" : "/login");
       return;
     }
     if (requireSuperAdmin && user?.role !== "super_admin") {
@@ -29,7 +29,7 @@ export default function ProtectedRoute({ children, requireSuperAdmin = false }) 
   if (!hydrated || !accessToken) {
     return (
       <div className="flex min-h-screen items-center justify-center text-slate-600">
-        {hydrated ? "Redirecting to login…" : "Loading…"}
+        {hydrated ? "Redirecting…" : "Loading…"}
       </div>
     );
   }
