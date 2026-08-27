@@ -1,5 +1,46 @@
+from django.conf import settings
+from django.http import HttpResponseForbidden
+
 from .context import current_is_super_admin, current_organization_id, current_user_id
 from .jwt_utils import InvalidSupabaseToken, decode_supabase_jwt
+
+# Paths that require an allowlisted client IP (super-admin APIs).
+ADMIN_API_PREFIXES = ("/api/core/admin/",)
+
+
+def get_client_ip(request):
+    """Prefer leftmost X-Forwarded-For hop (Render/Cloudflare), else REMOTE_ADDR."""
+    forwarded = request.META.get("HTTP_X_FORWARDED_FOR")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    real_ip = request.META.get("HTTP_X_REAL_IP")
+    if real_ip:
+        return real_ip.strip()
+    return (request.META.get("REMOTE_ADDR") or "").strip()
+
+
+class AdminIPAllowlistMiddleware:
+    """Block non-allowlisted IPs from super-admin API routes.
+
+    Allowlist comes from ADMIN_IP_ALLOWLIST (comma-separated) in env.
+    Include 127.0.0.1 for local Django development.
+    """
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+        raw = getattr(settings, "ADMIN_IP_ALLOWLIST", "") or ""
+        if isinstance(raw, str):
+            self.allowlist = {ip.strip() for ip in raw.split(",") if ip.strip()}
+        else:
+            self.allowlist = set(raw)
+
+    def __call__(self, request):
+        path = request.path
+        if any(path.startswith(prefix) for prefix in ADMIN_API_PREFIXES):
+            client_ip = get_client_ip(request)
+            if client_ip not in self.allowlist:
+                return HttpResponseForbidden("Access denied")
+        return self.get_response(request)
 
 
 class TenantMiddleware:

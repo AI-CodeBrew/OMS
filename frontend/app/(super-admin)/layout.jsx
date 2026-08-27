@@ -22,8 +22,8 @@ function SuperAdminShell({ children }) {
               OMS Super Admin
             </span>
             <nav className="flex gap-4 text-sm text-slate-600">
-              <a href="/tenants" className="hover:text-brand-600">
-                Tenants
+              <a href="/admin" className="hover:text-brand-600">
+                Admin
               </a>
               <a href="/system-health" className="hover:text-brand-600">
                 System health

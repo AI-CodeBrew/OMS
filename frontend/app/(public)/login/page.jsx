@@ -24,7 +24,7 @@ export default function LoginPage() {
       // Prove JWT works: protected health call before navigating
       await healthService.getProtectedHealth();
       if (data.user?.role === "super_admin") {
-        router.replace("/tenants");
+        router.replace("/admin");
       } else {
         router.replace("/dashboard");
       }

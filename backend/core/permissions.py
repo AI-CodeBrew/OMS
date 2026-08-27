@@ -3,6 +3,13 @@ from rest_framework.permissions import BasePermission
 from .models import OrganizationModule
 
 
+class IsSuperAdmin(BasePermission):
+    message = "Super admin access required."
+
+    def has_permission(self, request, view):
+        return bool(getattr(request, "is_super_admin", False))
+
+
 class RequireModule(BasePermission):
     """Gate a view behind an OrganizationModule entitlement. Set
     `required_module = "oms"` (or "wms"/"finance") on the view/viewset;

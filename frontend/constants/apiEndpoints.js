@@ -1,6 +1,11 @@
 export const API_ENDPOINTS = {
   health: "/api/core/health/",
   healthProtected: "/api/core/health/protected/",
+  admin: {
+    organizations: "/api/core/admin/organizations/",
+    organization: (id) => `/api/core/admin/organizations/${id}/`,
+    user: (id) => `/api/core/admin/users/${id}/`,
+  },
   oms: {
     orders: "/api/oms/orders/",
     orderCounts: "/api/oms/orders/counts/",

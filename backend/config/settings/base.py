@@ -38,6 +38,8 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "corsheaders.middleware.CorsMiddleware",
+    # Block non-allowlisted IPs from /api/core/admin/* before auth work.
+    "core.middleware.AdminIPAllowlistMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -140,3 +142,9 @@ SHOPIFY_API_VERSION = env("SHOPIFY_API_VERSION", default="2024-10")
 # actually arrive - on localhost, webhook registration succeeds but
 # delivery never will until this is tunneled (ngrok etc.) or deployed.
 PUBLIC_BACKEND_URL = env("PUBLIC_BACKEND_URL", default="http://localhost:8000")
+
+# Comma-separated client IPs allowed to hit /api/core/admin/*
+ADMIN_IP_ALLOWLIST = env(
+    "ADMIN_IP_ALLOWLIST",
+    default="127.0.0.1,::1",
+)

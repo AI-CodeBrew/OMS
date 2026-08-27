@@ -2,27 +2,53 @@
 OMS — Multi-tenant Order Management System
 
 ================================================================================
+READ FIRST — AGENT / CONTRIBUTOR RULES (always apply)
+================================================================================
+
+1. Always read this file before making non-trivial changes, and re-check it
+   before any action that is security-sensitive or performance-sensitive.
+
+2. NEVER take a security-critical step without asking the user first. Examples:
+   - Changing auth, JWT, RLS, permissions, or CORS
+   - Creating/deleting users, resetting passwords, rotating secrets
+   - Exposing service-role keys, tokens, or env values
+   - Disabling auth checks, opening public endpoints, or widening tenant scope
+   - Production deploys, force-pushes, or irreversible data/schema changes
+   When in doubt: ASK, then wait for confirmation.
+
+3. NEVER make the system slower on page load. Keep pages fast and optimized:
+   - Load ONLY the data needed for the current page / visible view
+   - No fetching entire catalogs, all tenants, or unrelated modules "just in case"
+   - Prefer pagination, filters, and scoped queries over bulk loads
+   - Avoid N+1 queries, heavy joins on list pages, and blocking third-party calls
+     in the request cycle (use queues for Shopify/WhatsApp/robocall/sync work)
+   - Do not add large client bundles, unoptimized images, or unnecessary
+     global state that re-fetches on every navigation
+   If a change could hurt load speed or over-fetch data: ASK the user first.
+
+4. For any action that is security-critical OR may slow page loads / over-fetch:
+   stop, explain the risk briefly, and ask the user before proceeding.
+
+================================================================================
 ENVIRONMENT VARIABLES (names only — never commit values)
 ================================================================================
 
-Backend (backend/.env):
-  FLASK_ENV
-  FLASK_DEBUG
-  SECRET_KEY
+Backend (backend/.env.backend):
+  DJANGO_SECRET_KEY
+  DJANGO_SETTINGS_MODULE
+  DJANGO_ALLOWED_HOSTS
   SUPABASE_URL
   SUPABASE_ANON_KEY
   SUPABASE_SERVICE_ROLE_KEY
   SUPABASE_JWT_SECRET
-  REDIS_URL
-  CELERY_BROKER_URL
-  CELERY_RESULT_BACKEND
-  SHOPIFY_API_VERSION
-  WHATSAPP_API_URL
-  WHATSAPP_API_TOKEN
-  ROBOCALL_API_URL
-  ROBOCALL_API_TOKEN
+  DATABASE_URL
   CORS_ORIGINS
+  PUBLIC_BACKEND_URL
+  SHOPIFY_API_VERSION
   PORT
+  SUPER_ADMIN_EMAIL          # fill, then: python manage.py bootstrap_super_admin
+  SUPER_ADMIN_PASSWORD       # fill, then run bootstrap (never commit real values)
+  ADMIN_IP_ALLOWLIST         # comma-separated IPs allowed for /api/core/admin/*
 
 Frontend (frontend/.env.local):
   NEXT_PUBLIC_API_BASE_URL
@@ -36,30 +62,33 @@ ARCHITECTURE
 
 project/
 ├── frontend/   # Next.js multi-tenant dashboard
-└── backend/    # Flask API + Celery workers
+└── backend/    # Django API (Render) + Supabase Auth/Postgres
 
-See the project brief for module layout, tenancy, and async rules.
-Current scaffold wires: auth (login/me) + health (public + JWT-protected).
+Tenancy: organization_id on business tables; JWT app_metadata carries role + org.
+Super admin: /admin dashboard; org users: /dashboard and module pages.
+Async third-party work must not block request/response cycles.
 
 ================================================================================
 LOCAL DEV
 ================================================================================
 
 1. Copy env examples:
-   cp backend/.env.example backend/.env
+   cp backend/.env.example backend/.env.backend
    cp frontend/.env.example frontend/.env.local
 
-2. Apply migrations/001_initial_schema.sql in Supabase SQL editor.
-
-3. Backend:
+2. Backend:
    cd backend && python -m venv .venv && source .venv/bin/activate
    pip install -r requirements.txt
-   python wsgi.py
+   python run.py
 
-4. Frontend:
+3. Frontend:
    cd frontend && npm install && npm run dev
 
-5. Smoke path:
-   Login at /login → backend /api/v1/auth/login → JWT stored →
-   GET /api/v1/health/protected with Authorization: Bearer <token>
+4. Smoke path:
+   Login at /login → Supabase JWT → GET /api/core/health/protected
+   Super admin → /admin ; org user → /dashboard
+
+5. Bootstrap super admin (after filling SUPER_ADMIN_* in .env.backend):
+   cd backend && source .venv/bin/activate
+   python manage.py bootstrap_super_admin
 """
