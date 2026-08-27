@@ -21,3 +21,5 @@ build/
 *.log
 .coverage
 htmlcov/
+.vercel
+.env*
