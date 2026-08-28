@@ -8,9 +8,9 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 from core.events import publish_event
-from oms.models import Order, OrderItem
+from oms.models import Courier, Order, OrderItem
 
-from . import shopify_client
+from . import shopify_client, smartlane_client
 from .models import ShopifyConnection, ShopifySyncJob
 
 
@@ -36,6 +36,45 @@ def _truncate(value, max_length):
     the whole order."""
     value = value or ""
     return value[:max_length]
+
+
+# Shopify's shipment_status values that mean the parcel reached the
+# customer / came back. Everything else (in_transit, out_for_delivery,
+# label_printed, ...) still counts as on its way, which our pipeline
+# already represents as "dispatched".
+_SHOPIFY_DELIVERED = {"delivered"}
+_SHOPIFY_RETURNED = {"returned", "return_to_sender"}
+
+
+def _latest_fulfillment(shopify_order):
+    """The most recent non-cancelled fulfillment, or None.
+
+    Tracking number, carrier name and delivery status all live inside
+    order.fulfillments[] rather than on the order itself - a partially
+    fulfilled order can carry several, so the newest one is what
+    describes where the parcel currently is.
+    """
+    fulfillments = [
+        f
+        for f in (shopify_order.get("fulfillments") or [])
+        if (f.get("status") or "") != "cancelled"
+    ]
+    if not fulfillments:
+        return None
+    return sorted(fulfillments, key=lambda f: f.get("created_at") or "")[-1]
+
+
+def _shipping_total(shopify_order):
+    """Delivery charges. Prefers the money-set field, falling back to
+    summing shipping_lines for older API payloads that lack it."""
+    price_set = shopify_order.get("total_shipping_price_set") or {}
+    shop_money = price_set.get("shop_money") or {}
+    if shop_money.get("amount") is not None:
+        return _to_decimal(shop_money.get("amount"))
+    return sum(
+        (_to_decimal(line.get("price")) for line in shopify_order.get("shipping_lines") or []),
+        Decimal("0"),
+    )
 
 
 def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
@@ -73,8 +112,20 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
     payment_status = "paid" if financial_status == "paid" else "pending"
     fulfillment_status = "fulfilled" if shopify_fulfillment_status == "fulfilled" else "unfulfilled"
 
+    fulfillment = _latest_fulfillment(shopify_order) or {}
+    shipment_status = (fulfillment.get("shipment_status") or "").lower()
+    tracking_number = fulfillment.get("tracking_number") or ""
+    if not tracking_number:
+        numbers = fulfillment.get("tracking_numbers") or []
+        tracking_number = numbers[0] if numbers else ""
+    carrier_name = (fulfillment.get("tracking_company") or "").strip()
+
     if shopify_order.get("cancelled_at"):
         pipeline_status = "cancelled"
+    elif shipment_status in _SHOPIFY_RETURNED:
+        pipeline_status = "returned"
+    elif shipment_status in _SHOPIFY_DELIVERED:
+        pipeline_status = "delivered"
     elif shopify_fulfillment_status == "fulfilled":
         pipeline_status = "dispatched"
     else:
@@ -104,7 +155,16 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
         "fulfillment_status": fulfillment_status,
         "city": _truncate(shipping_address.get("city"), 100),
         "shop": _truncate(shop_label or "Shopify", 150),
-        "total_amount": _to_decimal(shopify_order.get("total_price")),
+        # total_amount is the SUBTOTAL (line items before shipping/tax/
+        # discounts) - Order.grand_total adds the rest back on top. Mapping
+        # Shopify's total_price here instead would double-count shipping
+        # and tax once those are populated below, inflating the COD amount
+        # couriers are told to collect.
+        "total_amount": _to_decimal(shopify_order.get("subtotal_price")),
+        "shipping_amount": _shipping_total(shopify_order),
+        "total_tax": _to_decimal(shopify_order.get("total_tax")),
+        "coupon_discount": _to_decimal(shopify_order.get("total_discounts")),
+        "tracking_number": _truncate(tracking_number, 100),
         "customer_email": _truncate(shopify_order.get("email"), 255),
         "address_line1": _truncate(shipping_address.get("address1"), 255),
         "address_line2": _truncate(shipping_address.get("address2"), 255),
@@ -114,6 +174,17 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
         "placed_at": placed_at,
     }
 
+    # The carrier Shopify recorded on the fulfillment ("TCS", "Leopards",
+    # ...). Matched by name so repeated syncs reuse one Courier row rather
+    # than creating a duplicate per order.
+    if carrier_name:
+        courier, _ = Courier.all_objects.get_or_create(
+            organization_id=organization_id,
+            name=_truncate(carrier_name, 150),
+            defaults={"is_active": True},
+        )
+        shopify_fields["courier_id"] = courier.id
+
     order, created = Order.all_objects.update_or_create(
         organization_id=organization_id,
         shopify_order_id=shopify_order_id,
@@ -121,13 +192,25 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
         create_defaults={**shopify_fields, "status": pipeline_status},
     )
 
-    # Cancelled/fulfilled in Shopify after we already imported it - the one
-    # case where Shopify genuinely knows better than our pipeline, so it's
-    # applied on update too, but only ever moving forward (never back onto
-    # an order the team has already carried past dispatch).
-    if not created and pipeline_status == "cancelled" and order.status not in TERMINAL_STATUSES:
-        order.status = "cancelled"
-        order.save(update_fields=["status", "updated_at"])
+    # Outcomes Shopify genuinely knows better than our pipeline does -
+    # applied on update too, but only ever moving an order forward, never
+    # back onto one the team has already carried past this point.
+    if not created and order.status not in TERMINAL_STATUSES:
+        if pipeline_status == "cancelled":
+            order.status = "cancelled"
+            order.save(update_fields=["status", "updated_at"])
+        elif pipeline_status == "returned":
+            # Applied from any non-terminal state, not just dispatched: on a
+            # historical re-pull an order may still be sitting early in the
+            # pipeline here while Shopify already knows the parcel shipped
+            # and came back. The physical outcome is the truth.
+            order.status = "returned"
+            order.returned_at = order.returned_at or timezone.now()
+            order.save(update_fields=["status", "returned_at", "updated_at"])
+        elif pipeline_status == "delivered":
+            order.status = "delivered"
+            order.delivered_at = order.delivered_at or timezone.now()
+            order.save(update_fields=["status", "delivered_at", "updated_at"])
 
     # Line items can change between webhook deliveries (edited orders) -
     # full replace is simpler and safer than diffing.
@@ -152,6 +235,105 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
         },
     )
     return order, created
+
+
+# How Smartlane's reported states map onto our pipeline. Anything not
+# listed (queued, ready, dispatch, in_transit, out_for_delivery, ...)
+# means the parcel is still moving, which "dispatched" already covers.
+_SMARTLANE_STATUS_MAP = {
+    "delivered": "delivered",
+    "complete": "delivered",
+    "completed": "delivered",
+    "return": "returned",
+    "returned": "returned",
+    "return_in_progress": "returned",
+    "cancel": "cancelled",
+    "cancelled": "cancelled",
+}
+
+# Orders worth asking Smartlane about: already handed over, not yet at a
+# final outcome.
+_TRACKABLE_STATUSES = ("ready_to_print", "ready_to_pick", "dispatched", "awaiting_dispatched")
+
+
+def poll_smartlane_statuses(organization_id, *, batch_size=100, limit=1000):
+    """Pulls delivery outcomes from Smartlane and advances matching orders.
+
+    Runs as a scheduled job (see the poll_smartlane management command)
+    rather than waiting on the status webhook, because the webhook needs a
+    publicly reachable HTTPS URL while this works from anywhere. Same
+    data, a polling interval later.
+
+    Only ever moves an order forward - a stale or out-of-order tracking
+    row must not drag something already delivered back into transit.
+    """
+    from oms import services as oms_services
+    from .models import SmartlaneConnection
+
+    try:
+        connection = SmartlaneConnection.all_objects.get(
+            organization_id=organization_id, is_connected=True
+        )
+    except SmartlaneConnection.DoesNotExist:
+        return {"checked": 0, "updated": 0, "detail": "Smartlane is not connected"}
+
+    orders = list(
+        Order.all_objects.filter(
+            organization_id=organization_id, status__in=_TRACKABLE_STATUSES
+        ).exclude(tracking_number="")[:limit]
+    )
+    if not orders:
+        return {"checked": 0, "updated": 0}
+
+    by_number = {o.order_number: o for o in orders}
+    updated = 0
+
+    for start in range(0, len(orders), batch_size):
+        chunk = orders[start : start + batch_size]
+        rows = smartlane_client.track_consignments(
+            connection.api_key, [o.order_number for o in chunk]
+        )
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            order = by_number.get(str(row.get("store_order_id") or "").strip())
+            if order is None:
+                continue
+
+            raw_status = (
+                row.get("status") or row.get("courier_status") or row.get("state") or ""
+            ).strip().lower().replace(" ", "_")
+            target = _SMARTLANE_STATUS_MAP.get(raw_status)
+            if not target or order.status == target:
+                continue
+
+            # Keep the consignment number Smartlane assigned, which for a
+            # real booking only becomes known after the fact.
+            consignment = (row.get("consignment_number") or "").strip()
+            if consignment and consignment != order.tracking_number:
+                order.tracking_number = _truncate(consignment, 100)
+                order.save(update_fields=["tracking_number", "updated_at"])
+
+            try:
+                if target == "delivered":
+                    oms_services.mark_delivered(order)
+                elif target == "returned":
+                    oms_services.scan_return(
+                        organization_id=organization_id,
+                        order_number=order.order_number,
+                        reason="Reported returned by Smartlane",
+                    )
+                elif target == "cancelled":
+                    oms_services.cancel_order(order, reason="Cancelled by Smartlane")
+                updated += 1
+            except oms_services.InvalidTransition:
+                # Already past this point locally - the tracking row is
+                # stale, not wrong. Skip rather than fail the whole poll.
+                continue
+
+    connection.last_event_at = timezone.now()
+    connection.save(update_fields=["last_event_at"])
+    return {"checked": len(orders), "updated": updated}
 
 
 def _month_windows(start, end):

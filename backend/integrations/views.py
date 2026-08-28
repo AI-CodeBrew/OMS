@@ -305,9 +305,22 @@ def smartlane_shipment_webhook(request, token):
     except ValueError:
         return JsonResponse({"detail": "Invalid JSON"}, status=400)
 
-    order_number = (payload.get("order_number") or "").strip()
-    tracking_number = (payload.get("tracking_number") or "").strip()
-    smartlane_status = (payload.get("status") or "").strip().lower()
+    # Field names follow Smartlane's documented Consignment Status Webhook
+    # payload: the order reference is store_order_id and the tracking
+    # number is consignment_number (which is "Not Assigned Yet" until the
+    # booking clears). The generic fallbacks keep older/manual test posts
+    # working.
+    order_number = (
+        payload.get("store_order_id") or payload.get("order_number") or ""
+    ).strip()
+    tracking_number = (
+        payload.get("consignment_number") or payload.get("tracking_number") or ""
+    ).strip()
+    if tracking_number.lower().startswith("not assigned"):
+        tracking_number = ""
+    smartlane_status = (
+        payload.get("courier_status") or payload.get("status") or ""
+    ).strip().lower().replace(" ", "_")
 
     if order_number:
         # This request carries no Supabase JWT, so TenantMiddleware never
@@ -318,16 +331,23 @@ def smartlane_shipment_webhook(request, token):
         try:
             order = oms_services.Order.objects.filter(order_number=order_number).first()
             if order:
+                if tracking_number and tracking_number != order.tracking_number:
+                    order.tracking_number = tracking_number[:100]
+                    order.save(update_fields=["tracking_number", "updated_at"])
+                # Same mapping the polling path uses, so an event arriving
+                # by webhook and the same event seen by a poll can never
+                # produce different outcomes.
+                target = services._SMARTLANE_STATUS_MAP.get(smartlane_status)
                 try:
-                    if smartlane_status == "delivered":
+                    if target == "delivered":
                         oms_services.mark_delivered(order)
-                    elif smartlane_status == "returned":
+                    elif target == "returned":
                         oms_services.scan_return(
                             organization_id=connection.organization_id,
                             order_number=order.order_number,
                             reason="Reported returned by Smartlane",
                         )
-                    elif smartlane_status == "cancelled":
+                    elif target == "cancelled":
                         oms_services.cancel_order(order, reason="Cancelled by Smartlane")
                     elif smartlane_status in _SMARTLANE_DISPATCH_STATUSES:
                         oms_services.dispatch_order(order, tracking_number=tracking_number)
