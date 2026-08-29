@@ -324,6 +324,11 @@ _SMARTLANE_STATUS_MAP = {
     "cancelled": "cancelled",
 }
 
+# Shared with the webhook (views.smartlane_shipment_webhook) so a status
+# seen by polling and the same status arriving by webhook always produce
+# the same outcome - moves the order on to Dispatched.
+_SMARTLANE_DISPATCH_STATUSES = {"picked", "dispatched", "in_transit", "out_for_delivery"}
+
 # Orders worth asking Smartlane about: booked through it and not yet at a
 # final outcome. booking_pending is included even though it has no
 # tracking_number yet - that's exactly the status the consignment number
@@ -406,25 +411,42 @@ def poll_smartlane_statuses(organization_id, *, batch_size=100, limit=1000):
                         pass
                 continue
 
+            # Field order matches the webhook's confirmed real payload
+            # (courier_status/state) - status is a generic fallback only.
             raw_status = (
-                row.get("status") or row.get("courier_status") or row.get("state") or ""
+                row.get("courier_status") or row.get("state") or row.get("status") or ""
             ).strip().lower().replace(" ", "_")
             target = _SMARTLANE_STATUS_MAP.get(raw_status)
-            if not target or order.status == target:
-                continue
 
             try:
-                if target == "delivered":
+                if target == "delivered" and order.status != "delivered":
                     oms_services.mark_delivered(order)
-                elif target == "returned":
+                    updated += 1
+                elif target == "returned" and order.status != "returned":
                     oms_services.scan_return(
                         organization_id=organization_id,
                         order_number=order.order_number,
                         reason="Reported returned by Smartlane",
                     )
-                elif target == "cancelled":
+                    updated += 1
+                elif target == "cancelled" and order.status != "cancelled":
                     oms_services.cancel_order(order, reason="Cancelled by Smartlane")
-                updated += 1
+                    updated += 1
+                elif not target and raw_status in _SMARTLANE_DISPATCH_STATUSES and order.status in (
+                    "ready_to_print",
+                    "ready_to_pick",
+                ):
+                    # Same gap as the webhook: the courier can genuinely
+                    # pick up a parcel before anyone here has downloaded
+                    # its loadsheet (what normally advances Ready to Print
+                    # -> Ready to Pick) - without this, an order can sit at
+                    # Ready to Print forever even though it's actually
+                    # moving, since nothing else ever calls dispatch_order
+                    # for it if the webhook isn't live.
+                    if order.status == "ready_to_print":
+                        oms_services.mark_ready_to_pick(order)
+                    oms_services.dispatch_order(order)
+                    updated += 1
             except oms_services.InvalidTransition:
                 # Already past this point locally - the tracking row is
                 # stale, not wrong. Skip rather than fail the whole poll.

@@ -341,7 +341,9 @@ def _verify_smartlane_signature(raw_body, secret, header_value):
 # timestamp fields (queue/ready/dispatch/out_for_delivery/attempt/
 # return_in_progress/complete/return/cancel) exist too but aren't
 # consumed yet - courier_status/state cover what this pipeline needs.
-_SMARTLANE_DISPATCH_STATUSES = {"picked", "dispatched", "in_transit", "out_for_delivery"}
+# Set lives in services (shared with the poller) so a status seen by
+# polling and the same status arriving by webhook can't disagree.
+_SMARTLANE_DISPATCH_STATUSES = services._SMARTLANE_DISPATCH_STATUSES
 
 
 @csrf_exempt
@@ -432,6 +434,18 @@ def smartlane_shipment_webhook(request, token):
                     elif target == "cancelled":
                         oms_services.cancel_order(order, reason="Cancelled by Smartlane")
                     elif smartlane_status in _SMARTLANE_DISPATCH_STATUSES:
+                        # Physical reality can outrun our own workflow gate:
+                        # the courier can genuinely pick up a parcel before
+                        # anyone here has downloaded its loadsheet (the
+                        # action that normally advances Ready to Print ->
+                        # Ready to Pick). Without this, dispatch_order's
+                        # ready_to_print -> dispatched jump is invalid per
+                        # ALLOWED_TRANSITIONS, gets caught below as
+                        # InvalidTransition, and the order is silently
+                        # dropped - stuck at Ready to Print forever even
+                        # though it's actually moving.
+                        if order.status == "ready_to_print":
+                            oms_services.mark_ready_to_pick(order)
                         oms_services.dispatch_order(order, tracking_number=tracking_number)
                 except oms_services.InvalidTransition:
                     # Order's already past/before this stage locally - the

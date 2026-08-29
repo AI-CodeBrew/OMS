@@ -214,6 +214,24 @@ def mark_delivered(order, *, actor_user_id=None):
 
 
 def cancel_order(order, *, reason="", actor_user_id=None):
+    # Smartlane-booked orders (Booking Pending / Ready to Print / Ready to
+    # Pick - the only statuses cancel is even reachable from once Smartlane
+    # is involved, per ALLOWED_TRANSITIONS) have a live consignment on
+    # Smartlane's side that a purely-local cancel would leave dangling -
+    # the courier would still show up expecting to collect it. Best-effort:
+    # a Smartlane-side failure (already picked up, API hiccup) must not
+    # block the local cancellation, which is the actually-authoritative one.
+    if order.courier_id and order.courier.name == "Smartlane":
+        try:
+            from integrations import smartlane_client
+            from integrations.models import SmartlaneConnection
+
+            connection = SmartlaneConnection.objects.get(
+                organization_id=order.organization_id, is_connected=True
+            )
+            smartlane_client.cancel_consignment(connection.api_key, order.order_number)
+        except Exception:
+            pass
     return _transition(order, "cancelled", actor_user_id=actor_user_id, note=reason)
 
 
@@ -240,6 +258,16 @@ def push_order_to_smartlane(order, *, actor_user_id=None, force=False):
     from integrations import smartlane_client
     from integrations.models import SmartlaneConnection
     from wms import services as wms_services
+
+    # Checked before anything else, including the real API call below - a
+    # double-click or retry on an order that's already past Awaiting
+    # Assigning must not create a second real Smartlane consignment for
+    # the same order. _transition() would also catch this, but only AFTER
+    # the outbound call already happened, which is too late.
+    if order.status != "awaiting_assigning":
+        raise SmartlaneBookingError(
+            f"Order {order.order_number} is {order.get_status_display()}, not Awaiting Assigning."
+        )
 
     # Raises InsufficientStock unless force - deliberately before any
     # outbound Smartlane call.

@@ -425,7 +425,14 @@ export default function OrdersPage() {
         count={pendingAction?.orderIds?.length || 0}
         couriers={
           pendingAction?.action === "assign_courier" && smartlaneConnected
-            ? [{ id: "smartlane", name: "Smartlane" }, ...couriers]
+            ? // Manual couriers are hidden while Smartlane is connected -
+              // every Ready to Print order must have gone through a real
+              // Smartlane booking (that's what makes the Booking Pending ->
+              // Ready to Print transition mean anything), so offering a
+              // manual courier here let orders quietly skip Smartlane
+              // entirely via the ordinary assign_courier -> approve ->
+              // dispatch path instead.
+              [{ id: "smartlane", name: "Smartlane" }]
             : couriers
         }
         submitting={applyingAction}
@@ -441,6 +448,7 @@ export default function OrdersPage() {
       <OrderDetailPanel
         orderId={detailOrderId}
         couriers={couriers}
+        smartlaneConnected={smartlaneConnected}
         onClose={() => setDetailOrderId(null)}
         onOrderChanged={load}
       />
