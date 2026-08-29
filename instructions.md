@@ -1,5 +1,5 @@
 """
-OMS — Multi-tenant Order Management System
+OMS — Multi-tenant Order Management System.
 
 ================================================================================
 READ FIRST — AGENT / CONTRIBUTOR RULES (always apply)
