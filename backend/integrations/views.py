@@ -324,35 +324,46 @@ class SmartlaneCityListView(APIView):
 
 
 def _verify_smartlane_signature(raw_body, secret, header_value):
+    """True if the signature is present AND correct. Absence is handled
+    by the caller, not here - Smartlane's own webhook builder (confirmed
+    from a real screenshot of it) has no field to configure a custom
+    signature header at all, so requiring one would reject every request
+    Smartlane is actually capable of sending."""
     if not secret or not header_value:
         return False
     computed = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
     return hmac.compare_digest(computed, header_value)
 
 
-# Best-guess event contract - no official Smartlane webhook spec was
-# available while building this integration. Adjust the payload field
-# names and status values here once real Smartlane webhook payloads are
-# available to test against; the shape below mirrors common courier
-# webhook conventions (order reference + tracking number + a status enum).
+# Confirmed against a real payload from Smartlane's webhook test tool:
+# store_order_id, consignment_number, courier_status, state are all real
+# fields (not guesses). courier_tracking_info[] and the per-stage
+# timestamp fields (queue/ready/dispatch/out_for_delivery/attempt/
+# return_in_progress/complete/return/cancel) exist too but aren't
+# consumed yet - courier_status/state cover what this pipeline needs.
 _SMARTLANE_DISPATCH_STATUSES = {"picked", "dispatched", "in_transit", "out_for_delivery"}
 
 
 @csrf_exempt
 @require_POST
 def smartlane_shipment_webhook(request, token):
-    """No Supabase JWT here - Smartlane authenticates via HMAC signature
-    instead, same idea as the Shopify webhook. `token` (from the URL,
-    see SmartlaneConnectionSerializer.get_webhook_url) identifies which
-    org's webhook_secret to verify against, since Smartlane has no
-    per-request account/domain header the way Shopify does."""
+    """`token` (from the URL, see SmartlaneConnectionSerializer.
+    get_webhook_url) is the primary authentication here: it's an
+    unguessable per-org UUID embedded in the callback URL itself, which
+    is what actually stands in for "this request came from our Smartlane
+    account" - the same shape Stripe/GitHub-style HMAC signatures serve,
+    just carried in the URL instead of a header because Smartlane's own
+    webhook builder has no field to attach a custom header/signature.
+    webhook_secret is honoured if Smartlane ever does send a signature
+    (kept for that case, and for manual/test posts that set one), but
+    isn't required - only rejected if it's present and WRONG."""
     try:
         connection = SmartlaneConnection.all_objects.get(webhook_token=token, is_connected=True)
     except SmartlaneConnection.DoesNotExist:
         return JsonResponse({"detail": "Unknown or disconnected account"}, status=404)
 
     signature = request.META.get("HTTP_X_SMARTLANE_SIGNATURE")
-    if not _verify_smartlane_signature(request.body, connection.webhook_secret, signature):
+    if signature and not _verify_smartlane_signature(request.body, connection.webhook_secret, signature):
         return JsonResponse({"detail": "Invalid signature"}, status=401)
 
     try:
@@ -360,11 +371,14 @@ def smartlane_shipment_webhook(request, token):
     except ValueError:
         return JsonResponse({"detail": "Invalid JSON"}, status=400)
 
-    # Field names follow Smartlane's documented Consignment Status Webhook
-    # payload: the order reference is store_order_id and the tracking
-    # number is consignment_number (which is "Not Assigned Yet" until the
-    # booking clears). The generic fallbacks keep older/manual test posts
-    # working.
+    # Field names confirmed against a real payload from Smartlane's own
+    # webhook test tool: the order reference is store_order_id and the
+    # tracking number is consignment_number (which is "Not Assigned Yet"
+    # until the booking clears). courier_status and state are both real,
+    # distinct fields in that payload - courier_status is tried first,
+    # state as a fallback in case a given event only populates one. The
+    # generic fallbacks (order_number/tracking_number/status) keep
+    # older/manual test posts working.
     order_number = (
         payload.get("store_order_id") or payload.get("order_number") or ""
     ).strip()
@@ -374,7 +388,7 @@ def smartlane_shipment_webhook(request, token):
     if tracking_number.lower().startswith("not assigned"):
         tracking_number = ""
     smartlane_status = (
-        payload.get("courier_status") or payload.get("status") or ""
+        payload.get("courier_status") or payload.get("state") or payload.get("status") or ""
     ).strip().lower().replace(" ", "_")
 
     if order_number:
