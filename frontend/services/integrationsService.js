@@ -119,14 +119,34 @@ class IntegrationsService {
     return data;
   }
 
-  async connectSmartlane({ api_key, webhook_secret }) {
+  async connectSmartlane({ api_key, webhook_secret, store_warehouse_code }) {
     const response = await fetch(`${apiConfig.baseUrl}${SMARTLANE_BASE}/`, {
       method: "POST",
       headers: authService.getAuthHeaders(),
-      body: JSON.stringify({ api_key, webhook_secret }),
+      body: JSON.stringify({ api_key, webhook_secret, store_warehouse_code }),
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.detail || "Failed to connect Smartlane");
+    return data;
+  }
+
+  async updateSmartlaneWarehouse(store_warehouse_code) {
+    const response = await fetch(`${apiConfig.baseUrl}${SMARTLANE_BASE}/`, {
+      method: "PATCH",
+      headers: authService.getAuthHeaders(),
+      body: JSON.stringify({ store_warehouse_code }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Failed to save warehouse code");
+    return data;
+  }
+
+  async getSmartlaneWarehouses() {
+    const response = await fetch(`${apiConfig.baseUrl}${SMARTLANE_BASE}/warehouses/`, {
+      headers: authService.getAuthHeaders(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Failed to load warehouses");
     return data;
   }
 

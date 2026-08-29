@@ -19,6 +19,79 @@ from .models import ShopifyConnection, ShopifySyncJob
 # on our side and Shopify's view is no longer authoritative.
 TERMINAL_STATUSES = {"delivered", "returned", "cancelled"}
 
+# OMS status -> the Shopify tag it should carry. Prefixed so this never
+# collides with a merchant's own tags, and so re-syncing can find and
+# replace exactly its own previous tag instead of guessing.
+_SHOPIFY_STATUS_TAG_PREFIX = "OMS:"
+_SHOPIFY_STATUS_TAGS = {
+    "ready_to_print": "OMS:Booked",
+    "ready_to_pick": "OMS:Booked",
+    "dispatched": "OMS:Dispatched",
+    "delivered": "OMS:Delivered",
+    "returned": "OMS:Returned",
+    "cancelled": "OMS:Cancelled",
+}
+# Statuses at which the tracking number is trustworthy enough to push as a
+# Shopify fulfillment - before this it's either empty or (with the current
+# create_booking stub) a placeholder, not a real courier tracking number.
+_SHOPIFY_FULFILLMENT_STATUSES = {"ready_to_print", "ready_to_pick", "dispatched", "delivered"}
+
+
+def sync_order_to_shopify(order):
+    """Best-effort push of what the OMS pipeline now knows back onto the
+    Shopify order it came from: fulfillment tracking number/courier, and a
+    status tag (Booked/Dispatched/Delivered/Returned/Cancelled) merged
+    alongside the order's own custom tag and whatever tags the merchant
+    already had on the order.
+
+    Called from oms.services._transition after every status change - never
+    raises, since a Shopify API hiccup here must not block or roll back an
+    OMS-side transition that already happened. Silently does nothing for
+    orders that didn't come from Shopify (no shopify_order_id) or when
+    Shopify isn't connected/synced for this org.
+
+    Deliberately does NOT touch Shopify's own order totals/shipping_lines -
+    rewriting a live order's financial fields is a different, riskier
+    operation than tagging and fulfilling it, so delivery-charge sync stays
+    OMS-side only for now.
+    """
+    if not order.shopify_order_id:
+        return
+    try:
+        connection = ShopifyConnection.all_objects.get(
+            organization_id=order.organization_id, is_connected=True, auto_sync_orders=True
+        )
+    except ShopifyConnection.DoesNotExist:
+        return
+
+    args = (connection.shop_domain, connection.access_token, settings.SHOPIFY_API_VERSION)
+
+    if order.tracking_number and order.status in _SHOPIFY_FULFILLMENT_STATUSES:
+        try:
+            shopify_client.create_fulfillment(
+                *args,
+                order.shopify_order_id,
+                tracking_number=order.tracking_number,
+                tracking_company=order.courier.name if order.courier_id else "",
+            )
+        except shopify_client.ShopifyAPIError:
+            pass  # already fulfilled, or Shopify-side issue - not fatal here
+
+    status_tag = _SHOPIFY_STATUS_TAGS.get(order.status)
+    if status_tag or order.tag:
+        try:
+            existing = [
+                t.strip()
+                for t in (order.customer_tags or "").split(",")
+                if t.strip() and not t.strip().startswith(_SHOPIFY_STATUS_TAG_PREFIX)
+            ]
+            merged = list(dict.fromkeys(existing + [t for t in (status_tag, order.tag) if t]))
+            shopify_client.update_order_tags(*args, order.shopify_order_id, ", ".join(merged))
+            order.customer_tags = ", ".join(merged)
+            Order.all_objects.filter(pk=order.pk).update(customer_tags=order.customer_tags)
+        except shopify_client.ShopifyAPIError:
+            pass
+
 
 def _to_decimal(value):
     try:
@@ -251,13 +324,22 @@ _SMARTLANE_STATUS_MAP = {
     "cancelled": "cancelled",
 }
 
-# Orders worth asking Smartlane about: already handed over, not yet at a
-# final outcome.
-_TRACKABLE_STATUSES = ("ready_to_print", "ready_to_pick", "dispatched", "awaiting_dispatched")
+# Orders worth asking Smartlane about: booked through it and not yet at a
+# final outcome. booking_pending is included even though it has no
+# tracking_number yet - that's exactly the status the consignment number
+# itself is used to clear (see the booking_pending branch below).
+_TRACKABLE_STATUSES = (
+    "booking_pending",
+    "ready_to_print",
+    "ready_to_pick",
+    "dispatched",
+    "awaiting_dispatched",
+)
 
 
 def poll_smartlane_statuses(organization_id, *, batch_size=100, limit=1000):
-    """Pulls delivery outcomes from Smartlane and advances matching orders.
+    """Pulls booking/delivery outcomes from Smartlane and advances matching
+    orders.
 
     Runs as a scheduled job (see the poll_smartlane management command)
     rather than waiting on the status webhook, because the webhook needs a
@@ -277,10 +359,15 @@ def poll_smartlane_statuses(organization_id, *, batch_size=100, limit=1000):
     except SmartlaneConnection.DoesNotExist:
         return {"checked": 0, "updated": 0, "detail": "Smartlane is not connected"}
 
+    # courier__name filters to orders actually booked through Smartlane -
+    # tracking_number can't be used for that here, since booking_pending
+    # orders don't have one yet by definition.
     orders = list(
         Order.all_objects.filter(
-            organization_id=organization_id, status__in=_TRACKABLE_STATUSES
-        ).exclude(tracking_number="")[:limit]
+            organization_id=organization_id,
+            status__in=_TRACKABLE_STATUSES,
+            courier__name="Smartlane",
+        )[:limit]
     )
     if not orders:
         return {"checked": 0, "updated": 0}
@@ -300,19 +387,31 @@ def poll_smartlane_statuses(organization_id, *, batch_size=100, limit=1000):
             if order is None:
                 continue
 
-            raw_status = (
-                row.get("status") or row.get("courier_status") or row.get("state") or ""
-            ).strip().lower().replace(" ", "_")
-            target = _SMARTLANE_STATUS_MAP.get(raw_status)
-            if not target or order.status == target:
-                continue
-
             # Keep the consignment number Smartlane assigned, which for a
             # real booking only becomes known after the fact.
             consignment = (row.get("consignment_number") or "").strip()
             if consignment and consignment != order.tracking_number:
                 order.tracking_number = _truncate(consignment, 100)
                 order.save(update_fields=["tracking_number", "updated_at"])
+
+            if order.status == "booking_pending":
+                # The consignment number arriving is what "booked" means
+                # here - move on to Ready to Print the moment it's known,
+                # independent of the delivered/returned mapping below.
+                if consignment:
+                    try:
+                        oms_services.advance_booking_confirmed(order)
+                        updated += 1
+                    except oms_services.InvalidTransition:
+                        pass
+                continue
+
+            raw_status = (
+                row.get("status") or row.get("courier_status") or row.get("state") or ""
+            ).strip().lower().replace(" ", "_")
+            target = _SMARTLANE_STATUS_MAP.get(raw_status)
+            if not target or order.status == target:
+                continue
 
             try:
                 if target == "delivered":

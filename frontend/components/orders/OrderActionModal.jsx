@@ -3,12 +3,14 @@
 import { useEffect, useState } from "react";
 import Modal from "../shared/Modal";
 import Button from "../shared/Button";
+import { SMARTLANE_LOAD_SHEET_COURIERS } from "./statusConfig";
 
 const FIELD_BY_ACTION = {
   assign_courier: { key: "courier_id", label: "Courier", type: "courier-select" },
   resolve_city_issue: { key: "city", label: "Corrected city", type: "text" },
   mark_dispatch_issue: { key: "note", label: "Issue note", type: "text" },
   cancel: { key: "reason", label: "Cancellation reason (optional)", type: "text", optional: true },
+  print_loadsheet: { key: "courier", label: "Courier", type: "smartlane-courier-select" },
 };
 
 const ACTION_TITLES = {
@@ -16,6 +18,7 @@ const ACTION_TITLES = {
   resolve_city_issue: "Resolve city issue",
   mark_dispatch_issue: "Mark dispatch issue",
   cancel: "Cancel order(s)",
+  print_loadsheet: "Print Load Sheet",
 };
 
 export default function OrderActionModal({ action, couriers, count, onSubmit, onClose, submitting }) {
@@ -47,6 +50,19 @@ export default function OrderActionModal({ action, couriers, count, onSubmit, on
             {(couriers || []).map((c) => (
               <option key={c.id} value={c.id}>
                 {c.name}
+              </option>
+            ))}
+          </select>
+        ) : field.type === "smartlane-courier-select" ? (
+          <select
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
+          >
+            <option value="">Select a courier…</option>
+            {SMARTLANE_LOAD_SHEET_COURIERS.map((c) => (
+              <option key={c.value} value={c.value} disabled={c.disabled}>
+                {c.label}
               </option>
             ))}
           </select>

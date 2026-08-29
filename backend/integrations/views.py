@@ -22,6 +22,7 @@ from oms import services as oms_services
 
 from . import shopify_client
 from . import services
+from . import smartlane_client
 from .models import ShopifyConnection, ShopifySyncJob, SmartlaneConnection
 from .serializers import ShopifyConnectionSerializer, ShopifySyncJobSerializer, SmartlaneConnectionSerializer
 from .services import upsert_order_from_shopify
@@ -221,6 +222,7 @@ class SmartlaneConnectionView(APIView):
     def post(self, request):
         api_key = (request.data.get("api_key") or "").strip()
         webhook_secret = (request.data.get("webhook_secret") or "").strip()
+        warehouse_code = (request.data.get("store_warehouse_code") or "").strip()
         if not webhook_secret:
             return Response(
                 {"detail": "webhook_secret is required"}, status=http_status.HTTP_400_BAD_REQUEST
@@ -231,6 +233,10 @@ class SmartlaneConnectionView(APIView):
             defaults={
                 "api_key": api_key,
                 "webhook_secret": webhook_secret,
+                # Only overwrite if a value was actually sent, so re-saving
+                # the api_key/webhook_secret from the connect form doesn't
+                # blank out a warehouse code set earlier via patch().
+                **({"store_warehouse_code": warehouse_code} if warehouse_code else {}),
                 "is_connected": True,
                 "webhooks_active": True,
             },
@@ -249,6 +255,19 @@ class SmartlaneConnectionView(APIView):
         data["connected"] = True
         return Response(data, status=http_status.HTTP_201_CREATED)
 
+    def patch(self, request):
+        connection = SmartlaneConnection.objects.filter(
+            organization_id=request.organization_id, is_connected=True
+        ).first()
+        if not connection:
+            return Response({"detail": "Smartlane is not connected"}, status=http_status.HTTP_404_NOT_FOUND)
+        if "store_warehouse_code" in request.data:
+            connection.store_warehouse_code = (request.data.get("store_warehouse_code") or "").strip()
+            connection.save(update_fields=["store_warehouse_code"])
+        data = SmartlaneConnectionSerializer(connection, context={"request": request}).data
+        data["connected"] = True
+        return Response(data)
+
     def delete(self, request):
         connection = SmartlaneConnection.objects.filter(organization_id=request.organization_id).first()
         if connection:
@@ -266,6 +285,42 @@ class SmartlaneConnectionView(APIView):
                 metadata={},
             )
         return Response(status=http_status.HTTP_204_NO_CONTENT)
+
+
+class SmartlaneWarehouseListView(APIView):
+    """Lets the Smartlane integration page offer a picker for
+    store_warehouse_code instead of the user copy-pasting it blind from
+    the Smartlane portal."""
+
+    permission_classes = [IsOrgAdmin]
+
+    def get(self, request):
+        connection = SmartlaneConnection.objects.filter(
+            organization_id=request.organization_id, is_connected=True
+        ).first()
+        if not connection:
+            return Response({"detail": "Smartlane is not connected"}, status=http_status.HTTP_404_NOT_FOUND)
+        try:
+            data = smartlane_client.fetch_warehouse_list(connection.api_key)
+        except smartlane_client.SmartlaneAPIError as exc:
+            return Response({"detail": str(exc)}, status=http_status.HTTP_502_BAD_GATEWAY)
+        return Response(data)
+
+
+class SmartlaneCityListView(APIView):
+    permission_classes = [IsOrgAdmin]
+
+    def get(self, request):
+        connection = SmartlaneConnection.objects.filter(
+            organization_id=request.organization_id, is_connected=True
+        ).first()
+        if not connection:
+            return Response({"detail": "Smartlane is not connected"}, status=http_status.HTTP_404_NOT_FOUND)
+        try:
+            data = smartlane_client.fetch_city_list(connection.api_key)
+        except smartlane_client.SmartlaneAPIError as exc:
+            return Response({"detail": str(exc)}, status=http_status.HTTP_502_BAD_GATEWAY)
+        return Response(data)
 
 
 def _verify_smartlane_signature(raw_body, secret, header_value):
@@ -334,6 +389,19 @@ def smartlane_shipment_webhook(request, token):
                 if tracking_number and tracking_number != order.tracking_number:
                     order.tracking_number = tracking_number[:100]
                     order.save(update_fields=["tracking_number", "updated_at"])
+
+                if order.status == "booking_pending" and tracking_number:
+                    # The consignment number arriving is what "booked"
+                    # means here - same rule as the polling path.
+                    try:
+                        oms_services.advance_booking_confirmed(order)
+                    except oms_services.InvalidTransition:
+                        pass
+                    connection.events_received_count += 1
+                    connection.last_event_at = timezone.now()
+                    connection.save(update_fields=["events_received_count", "last_event_at"])
+                    return JsonResponse({"success": True})
+
                 # Same mapping the polling path uses, so an event arriving
                 # by webhook and the same event seen by a poll can never
                 # produce different outcomes.

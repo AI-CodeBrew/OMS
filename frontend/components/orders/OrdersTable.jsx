@@ -37,6 +37,9 @@ export default function OrdersTable({
             <th className="px-3 py-2">Shop</th>
             <th className="px-3 py-2">City</th>
             <th className="px-3 py-2">Courier</th>
+            <th className="px-3 py-2">Tracking ID</th>
+            <th className="px-3 py-2 text-right">Delivery Charges</th>
+            <th className="px-3 py-2">Tag</th>
             <th className="px-3 py-2 text-right">Amount</th>
             <th className="px-3 py-2" />
             <th className="px-3 py-2" />
@@ -45,13 +48,13 @@ export default function OrdersTable({
         <tbody className="text-sm">
           {loading ? (
             <tr>
-              <td colSpan={13} className="px-4 py-6 text-center text-slate-500">
+              <td colSpan={16} className="px-4 py-6 text-center text-slate-500">
                 Loading…
               </td>
             </tr>
           ) : orders.length === 0 ? (
             <tr>
-              <td colSpan={13} className="px-4 py-6 text-center text-slate-500">
+              <td colSpan={16} className="px-4 py-6 text-center text-slate-500">
                 No orders in this view.
               </td>
             </tr>
@@ -75,6 +78,19 @@ export default function OrdersTable({
                 <td className="px-3 py-1.5 text-slate-700">{order.shop || "—"}</td>
                 <td className="px-3 py-1.5 text-slate-700">{order.city || "—"}</td>
                 <td className="px-3 py-1.5 text-slate-700">{order.courier_name || "—"}</td>
+                <td className="px-3 py-1.5 text-slate-500">{order.tracking_number || "—"}</td>
+                <td className="px-3 py-1.5 text-right text-slate-700">
+                  {order.shipping_amount != null ? order.shipping_amount : "—"}
+                </td>
+                <td className="px-3 py-1.5">
+                  {order.tag ? (
+                    <span className="rounded-full bg-brand-50 px-2 py-0.5 text-[11px] font-medium text-brand-700">
+                      {order.tag}
+                    </span>
+                  ) : (
+                    <span className="text-slate-300">—</span>
+                  )}
+                </td>
                 <td className="px-3 py-1.5 text-right font-medium tabular-nums text-slate-900">
                   {order.total_amount}
                 </td>

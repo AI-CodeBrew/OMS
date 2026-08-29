@@ -7,6 +7,7 @@ export const STATUS_TABS = [
   { value: "awaiting_assigning", label: "Awaiting Assigning" },
   { value: "awaiting_approval", label: "Awaiting Approval" },
   { value: "approved", label: "Approved" },
+  { value: "booking_pending", label: "Booking Pending" },
   { value: "ready_to_print", label: "Ready to Print" },
   { value: "ready_to_pick", label: "Ready to Pick" },
   { value: "dispatch_issue", label: "Dispatch Issue" },
@@ -38,7 +39,18 @@ export const ACTIONS_NEEDING_PARAMS = new Set([
   "resolve_city_issue",
   "mark_dispatch_issue",
   "cancel",
+  "print_loadsheet",
 ]);
+
+// Smartlane generates a load sheet for one courier at a time - these are
+// the picker options; "coming soon" entries mirror the CSV export
+// template's existing pattern for couriers not yet enabled.
+export const SMARTLANE_LOAD_SHEET_COURIERS = [
+  { value: "all", label: "All" },
+  { value: "leopards", label: "Leopard" },
+  { value: "buraq", label: "Buraq (Coming Soon)", disabled: true },
+  { value: "postex", label: "PostEx (Coming Soon)", disabled: true },
+];
 
 // Per-status, which bulk/row actions make sense - keeps OrderRowMenu and the
 // Actions dropdown from offering transitions the backend would reject.
@@ -72,10 +84,17 @@ export const ACTIONS_BY_STATUS = {
     { key: "cancel", action: "cancel", label: "Cancel" },
   ],
   // Reached from awaiting_assigning by pushing the order to Smartlane
-  // instead of assigning a manual courier - loadsheet/airway bill are
-  // handled client-side (see orders/page.jsx's startAction) by fetching a
-  // printable document and opening it in a new tab, not a plain bulk
-  // action, since they need to return a document rather than mutate state.
+  // instead of assigning a manual courier - a real consignment number
+  // hasn't come back from Smartlane yet (see oms.services.push_order_to_
+  // smartlane), so nothing printable exists until it advances to Ready to
+  // Print on its own via polling/webhook.
+  booking_pending: [{ key: "cancel", action: "cancel", label: "Cancel" }],
+  // loadsheet/airway bill are handled client-side (see orders/page.jsx's
+  // startAction/runAction) by fetching a printable document - Smartlane's
+  // own real documents, not a plain bulk action, since they need to
+  // return a document rather than mutate state. print_loadsheet needs a
+  // courier param (ACTIONS_NEEDING_PARAMS) because Smartlane's load sheet
+  // api is one courier per call; print_airway_bill needs none.
   ready_to_print: [
     { key: "print_loadsheet", action: "print_loadsheet", label: "Print Loadsheet" },
     { key: "print_airway_bill", action: "print_airway_bill", label: "Print Airway Bill" },

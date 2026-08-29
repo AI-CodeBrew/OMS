@@ -37,10 +37,14 @@ class Order(TenantScopedModel):
         ("awaiting_assigning", "Awaiting Assigning"),
         ("awaiting_approval", "Awaiting Approval"),
         ("approved", "Approved"),
-        # Reached directly from awaiting_assigning when a courier booking is
-        # pushed to Smartlane (see services.push_order_to_smartlane) -
-        # parallel to, not a replacement for, the manual approve/dispatch
-        # path above.
+        # Reached from awaiting_assigning when a courier booking is pushed
+        # to Smartlane (see services.push_order_to_smartlane) - parallel
+        # to, not a replacement for, the manual approve/dispatch path
+        # above. Smartlane's /create call doesn't return a consignment
+        # number synchronously (see smartlane_client.create_booking) - it
+        # only arrives later via /track polling or the webhook - so an
+        # order sits here, with no tracking_number yet, until one does.
+        ("booking_pending", "Booking Pending"),
         ("ready_to_print", "Ready to Print"),
         ("ready_to_pick", "Ready to Pick"),
         ("dispatch_issue", "Dispatch Issue"),
@@ -126,6 +130,13 @@ class Order(TenantScopedModel):
     postal_code = models.CharField(max_length=50, blank=True, default="")
     cnic = models.CharField(max_length=30, blank=True, default="")
     customer_tags = models.CharField(max_length=255, blank=True, default="")
+    # Free-form label on the order itself (distinct from customer_tags,
+    # which describes the customer). Set by hand or from a courier/finance
+    # sheet during CSV import.
+    tag = models.CharField(max_length=100, blank=True, default="")
+    # Courier or accounting invoice reference, imported from the courier's
+    # settlement sheet rather than generated here.
+    invoice_number = models.CharField(max_length=100, blank=True, default="")
     customer_type = models.CharField(max_length=50, blank=True, default="")
     expected_delivery_date = models.DateField(null=True, blank=True)
     # Free text, distinct from `courier` (this order's assigned courier) -

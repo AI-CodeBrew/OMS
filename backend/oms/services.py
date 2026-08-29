@@ -61,12 +61,17 @@ ALLOWED_TRANSITIONS = {
     "pending_cc": {"awaiting_assigning", "city_issue", "cancelled"},
     "pending_cod": {"awaiting_assigning", "city_issue", "cancelled"},
     "city_issue": {"awaiting_assigning", "cancelled"},
-    # ready_to_print is reached directly from here when a courier is pushed
-    # to Smartlane instead of assigned to a manual courier - a parallel
-    # branch alongside the awaiting_approval path, not a replacement.
-    "awaiting_assigning": {"awaiting_approval", "ready_to_print", "cancelled"},
+    # booking_pending is reached directly from here when a courier is
+    # pushed to Smartlane instead of assigned to a manual courier - a
+    # parallel branch alongside the awaiting_approval path, not a
+    # replacement.
+    "awaiting_assigning": {"awaiting_approval", "booking_pending", "cancelled"},
     "awaiting_approval": {"approved", "awaiting_assigning", "cancelled"},
     "approved": {"awaiting_dispatched", "cancelled"},
+    # Advances to ready_to_print once Smartlane's /track (or webhook)
+    # reports a real consignment number - see
+    # integrations.services.advance_pending_smartlane_bookings.
+    "booking_pending": {"ready_to_print", "cancelled"},
     "ready_to_print": {"ready_to_pick", "cancelled"},
     "ready_to_pick": {"dispatched", "cancelled"},
     "awaiting_dispatched": {"dispatched", "dispatch_issue", "cancelled"},
@@ -127,6 +132,12 @@ def _transition(order, to_status, *, actor_user_id=None, note="", extra_fields=N
                 "note": note or "",
             },
         )
+    except Exception:
+        pass
+    try:
+        from integrations.services import sync_order_to_shopify
+
+        sync_order_to_shopify(order)
     except Exception:
         pass
     publish_event(
@@ -207,12 +218,20 @@ def cancel_order(order, *, reason="", actor_user_id=None):
 
 
 def push_order_to_smartlane(order, *, actor_user_id=None, force=False):
-    """Creates a Smartlane booking for this order and moves it straight to
-    Ready to Print - the Smartlane-assigned equivalent of the manual
-    Approve/Dispatch path, triggered from the "Assign courier" modal when
-    the user picks Smartlane instead of a real Courier row.
+    """Submits this order to Smartlane and moves it to Booking Pending -
+    the Smartlane-assigned equivalent of the manual Approve/Dispatch path,
+    triggered from the "Assign courier" modal when the user picks
+    Smartlane instead of a real Courier row.
 
-    Stock is checked *before* the booking is created: if the warehouse is
+    Smartlane's /create call is fire-and-forget: it confirms the booking
+    was accepted but does not hand back a consignment number, so this
+    cannot go straight to Ready to Print the way it used to with the old
+    local-placeholder stub. It parks in Booking Pending until
+    integrations.services.advance_pending_smartlane_bookings (polling
+    /track) or the webhook reports a real consignment number and moves it
+    on to Ready to Print itself.
+
+    Stock is checked *before* the booking is submitted: if the warehouse is
     short and force=False, wms.services.InsufficientStock propagates to the
     caller so the UI can show the shortage and offer to proceed anyway.
     Checking first matters - booking with Smartlane and only then finding
@@ -236,7 +255,7 @@ def push_order_to_smartlane(order, *, actor_user_id=None, force=False):
         raise SmartlaneBookingError("Connect Smartlane from the Integrations page first.")
 
     try:
-        tracking_number = smartlane_client.create_booking(order, connection.api_key)
+        smartlane_client.create_booking(order, connection.api_key, connection.store_warehouse_code)
     except smartlane_client.SmartlaneAPIError as exc:
         raise SmartlaneBookingError(str(exc)) from exc
 
@@ -245,14 +264,22 @@ def push_order_to_smartlane(order, *, actor_user_id=None, force=False):
     )
     order = _transition(
         order,
-        "ready_to_print",
+        "booking_pending",
         actor_user_id=actor_user_id,
-        extra_fields={"courier_id": courier.id, "tracking_number": tracking_number},
+        extra_fields={"courier_id": courier.id},
     )
     # force=True here because the shortage decision was already made above -
     # re-checking would raise on exactly the case the user just approved.
     wms_services.consume_for_order(order, force=True, actor_user_id=actor_user_id)
     return order
+
+
+def advance_booking_confirmed(order, *, actor_user_id=None):
+    """Booking Pending -> Ready to Print, once Smartlane has reported a
+    real consignment number (via /track polling or the webhook) - see
+    integrations.services.poll_smartlane_statuses. Caller is expected to
+    have already set/saved order.tracking_number before calling this."""
+    return _transition(order, "ready_to_print", actor_user_id=actor_user_id)
 
 
 def mark_ready_to_pick(order, *, actor_user_id=None):

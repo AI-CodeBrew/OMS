@@ -17,9 +17,14 @@ import VerifyDispatchModal from "../../../components/orders/VerifyDispatchModal"
 import ScanReturnModal from "../../../components/orders/ScanReturnModal";
 import NewOrderModal from "../../../components/orders/NewOrderModal";
 import CsvExportButton from "../../../components/orders/CsvExportButton";
+import ImportOrdersModal from "../../../components/orders/ImportOrdersModal";
 import DateRangeFilter from "../../../components/orders/DateRangeFilter";
 import OrderDetailPanel from "../../../components/orders/OrderDetailPanel";
-import { ACTIONS_BY_STATUS, ACTIONS_NEEDING_PARAMS } from "../../../components/orders/statusConfig";
+import {
+  ACTIONS_BY_STATUS,
+  ACTIONS_NEEDING_PARAMS,
+  SMARTLANE_LOAD_SHEET_COURIERS,
+} from "../../../components/orders/statusConfig";
 
 const EMPTY_FILTERS = { city: "", courier_id: "", gateway: "", date_from: "", date_to: "" };
 
@@ -49,6 +54,7 @@ export default function OrdersPage() {
   const [newOrderOpen, setNewOrderOpen] = useState(false);
   const [dispatchOpen, setDispatchOpen] = useState(false);
   const [returnOpen, setReturnOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState(null); // { action, orderIds }
   // Set when a push-to-Smartlane was rejected for lack of stock - holds the
   // per-order shortage detail plus the ids to retry with force=true.
@@ -147,18 +153,16 @@ export default function OrdersPage() {
   }, [selectedOrders]);
 
   async function startAction(action, orderIds) {
-    // Print actions return a document instead of mutating state, so they
-    // don't go through the bulk-action endpoint at all - open one tab per
-    // selected order, then refresh (loadsheet transitions the order to
-    // Ready to Pick server-side as a side effect of being downloaded).
-    if (action === "print_loadsheet" || action === "print_airway_bill") {
+    // Airway bill needs no courier param (Smartlane returns whichever
+    // courier actually booked it) - fetch the real document and open it,
+    // bypassing the bulk-action endpoint entirely since this returns a
+    // document rather than mutating state. print_loadsheet DOES need a
+    // courier param (Smartlane's load sheet api is one courier per call),
+    // so it falls through to the param-collecting modal below instead.
+    if (action === "print_airway_bill") {
       setApplyingAction(true);
       try {
-        for (const id of orderIds) {
-          if (action === "print_loadsheet") await ordersService.printLoadsheet(id);
-          else await ordersService.printAirwayBill(id);
-        }
-        if (action === "print_loadsheet") await load();
+        await ordersService.printSmartlaneAirwayBill(orderIds);
       } catch (err) {
         setError(err.message || "Print failed");
       } finally {
@@ -175,6 +179,36 @@ export default function OrdersPage() {
   }
 
   async function runAction(action, orderIds, params) {
+    // Load sheet returns a document instead of mutating state, so it
+    // bypasses the bulk-action endpoint entirely - Smartlane generates it
+    // for one courier at a time. We don't actually know which real
+    // courier (Leopards, BarqRaftar, ...) Smartlane assigned to a given
+    // order - that lives only in Smartlane's own system - so "All" can
+    // only resolve automatically while exactly one courier is enabled
+    // here; once more are enabled, ask the user to pick one explicitly.
+    if (action === "print_loadsheet") {
+      let courier = params.courier;
+      if (courier === "all") {
+        const enabled = SMARTLANE_LOAD_SHEET_COURIERS.filter((c) => !c.disabled && c.value !== "all");
+        if (enabled.length !== 1) {
+          setError("More than one courier is enabled - pick a specific courier instead of All.");
+          return;
+        }
+        courier = enabled[0].value;
+      }
+      setApplyingAction(true);
+      try {
+        await ordersService.printSmartlaneLoadSheet(orderIds, courier);
+        setPendingAction(null);
+        await load();
+      } catch (err) {
+        setError(err.message || "Print failed");
+      } finally {
+        setApplyingAction(false);
+      }
+      return;
+    }
+
     setApplyingAction(true);
     try {
       // "Smartlane" is a synthetic entry in the courier picker (see
@@ -267,6 +301,9 @@ export default function OrdersPage() {
             New Order
           </Button>
           <CsvExportButton filterParams={queryParams} />
+          <Button variant="secondary" onClick={() => setImportOpen(true)}>
+            Import
+          </Button>
           <Button variant="secondary" onClick={() => setReturnOpen(true)}>
             Scan and Return
           </Button>
@@ -378,6 +415,11 @@ export default function OrdersPage() {
       <NewOrderModal open={newOrderOpen} onClose={() => setNewOrderOpen(false)} onCreated={load} />
       <VerifyDispatchModal open={dispatchOpen} onClose={() => setDispatchOpen(false)} onDispatched={load} />
       <ScanReturnModal open={returnOpen} onClose={() => setReturnOpen(false)} onReturned={load} />
+      <ImportOrdersModal
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        onImported={load}
+      />
       <OrderActionModal
         action={pendingAction?.action}
         count={pendingAction?.orderIds?.length || 0}

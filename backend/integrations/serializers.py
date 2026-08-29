@@ -31,6 +31,7 @@ class SmartlaneConnectionSerializer(serializers.ModelSerializer):
             "is_connected",
             "webhooks_active",
             "webhook_url",
+            "store_warehouse_code",
             "last_event_at",
             "events_received_count",
             "created_at",

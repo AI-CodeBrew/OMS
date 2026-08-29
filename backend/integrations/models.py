@@ -44,14 +44,16 @@ class ShopifyConnection(TenantScopedModel):
 
 
 class SmartlaneConnection(TenantScopedModel):
-    """One Smartlane courier account per organization. Unlike Shopify
-    (which we pull orders FROM), Smartlane is a push integration - it
-    calls our webhook to report shipment status changes (picked,
-    in-transit, delivered, returned) for orders booked through it, and
-    api_key is kept for the future outbound side (creating bookings/rate
-    lookups), not used by the webhook receiver itself."""
+    """One Smartlane courier account per organization. api_key books
+    consignments and fetches tracking/documents (outbound); separately,
+    Smartlane can also call our webhook to report shipment status changes -
+    that side is push, this side is pull, they don't depend on each other."""
 
     api_key = models.CharField(max_length=255, blank=True, default="")
+    # From Smartlane's Store > Warehouse section (or the warehouse/list
+    # api) - required on every booking call, consignments must belong to
+    # this warehouse.
+    store_warehouse_code = models.CharField(max_length=100, blank=True, default="")
     webhook_secret = models.CharField(max_length=255)
     # Identifies which org a webhook POST belongs to (embedded in the
     # callback URL registered with Smartlane) - Smartlane has no

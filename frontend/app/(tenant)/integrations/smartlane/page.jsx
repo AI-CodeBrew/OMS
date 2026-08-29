@@ -6,7 +6,7 @@ import integrationsService from "../../../../services/integrationsService";
 import Button from "../../../../components/shared/Button";
 import PasswordInput from "../../../../components/shared/PasswordInput";
 
-const EMPTY_FORM = { api_key: "", webhook_secret: "" };
+const EMPTY_FORM = { api_key: "", webhook_secret: "", store_warehouse_code: "" };
 
 function TruckIcon({ className }) {
   return (
@@ -28,6 +28,10 @@ export default function SmartlaneIntegrationPage() {
   const [notice, setNotice] = useState("");
   const [form, setForm] = useState(EMPTY_FORM);
   const [copied, setCopied] = useState(false);
+  const [warehouseCode, setWarehouseCode] = useState("");
+  const [savingWarehouse, setSavingWarehouse] = useState(false);
+  const [warehouses, setWarehouses] = useState(null);
+  const [loadingWarehouses, setLoadingWarehouses] = useState(false);
 
   async function loadStatus() {
     setLoading(true);
@@ -46,7 +50,42 @@ export default function SmartlaneIntegrationPage() {
     loadStatus();
   }, []);
 
+  useEffect(() => {
+    setWarehouseCode(status?.store_warehouse_code || "");
+  }, [status?.store_warehouse_code]);
+
   const connected = Boolean(status?.connected);
+
+  async function onSaveWarehouseCode(e) {
+    e.preventDefault();
+    setSavingWarehouse(true);
+    setError("");
+    setNotice("");
+    try {
+      const data = await integrationsService.updateSmartlaneWarehouse(warehouseCode.trim());
+      setStatus(data);
+      setNotice("Warehouse code saved.");
+    } catch (err) {
+      setError(err.message || "Failed to save warehouse code");
+    } finally {
+      setSavingWarehouse(false);
+    }
+  }
+
+  async function onFetchWarehouses() {
+    setLoadingWarehouses(true);
+    setError("");
+    try {
+      const data = await integrationsService.getSmartlaneWarehouses();
+      const list = Array.isArray(data) ? data : data.data || data.warehouses || data.result || [];
+      setWarehouses(list);
+      if (!list.length) setError("Smartlane returned no warehouses - create one on the Smartlane portal first.");
+    } catch (err) {
+      setError(err.message || "Failed to fetch warehouses");
+    } finally {
+      setLoadingWarehouses(false);
+    }
+  }
 
   async function onConnect(e) {
     e.preventDefault();
@@ -191,6 +230,54 @@ export default function SmartlaneIntegrationPage() {
                 </span>
               </div>
 
+              <div className="mt-4 border-t border-surface-border pt-4">
+                <span className="mb-1 block text-xs font-medium text-slate-700">
+                  Warehouse Code <span className="text-red-500">*</span>
+                </span>
+                <form onSubmit={onSaveWarehouseCode} className="flex items-center gap-1.5">
+                  <input
+                    value={warehouseCode}
+                    onChange={(e) => setWarehouseCode(e.target.value)}
+                    placeholder="Your-warehouse-code"
+                    className="w-full rounded-md border border-surface-border px-2 py-1.5 text-xs outline-none focus:border-brand-500"
+                  />
+                  <button
+                    type="submit"
+                    disabled={savingWarehouse}
+                    className="shrink-0 rounded-md border border-surface-border px-2 py-1.5 text-xs font-medium text-slate-600 hover:bg-surface disabled:opacity-50"
+                  >
+                    {savingWarehouse ? "Saving…" : "Save"}
+                  </button>
+                </form>
+                <button
+                  type="button"
+                  onClick={onFetchWarehouses}
+                  disabled={loadingWarehouses}
+                  className="mt-1.5 text-xs font-medium text-brand-600 hover:underline disabled:opacity-50"
+                >
+                  {loadingWarehouses ? "Fetching…" : "Fetch my warehouses from Smartlane"}
+                </button>
+                {warehouses?.length ? (
+                  <ul className="mt-2 space-y-1 rounded-md border border-surface-border bg-surface/60 p-2 text-xs">
+                    {warehouses.map((w) => (
+                      <li key={w.code || w.warehouse_code || w.id}>
+                        <button
+                          type="button"
+                          onClick={() => setWarehouseCode(w.code || w.warehouse_code || "")}
+                          className="text-brand-600 hover:underline"
+                        >
+                          {w.name || w.warehouse_name || "Warehouse"} — {w.code || w.warehouse_code}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+                <span className="mt-1 block text-xs text-slate-400">
+                  Required before booking any order through Smartlane - set it on the Smartlane
+                  portal under Store &gt; Warehouse first if the fetch above comes back empty.
+                </span>
+              </div>
+
               <button
                 type="button"
                 onClick={onDisconnect}
@@ -220,13 +307,31 @@ export default function SmartlaneIntegrationPage() {
           <form onSubmit={onConnect} className="mt-4 space-y-4">
             <label className="block">
               <span className="mb-1 block text-xs font-medium text-slate-700">
-                API Key <span className="text-slate-400">(for creating bookings — optional for now)</span>
+                API Key <span className="text-red-500">*</span>
               </span>
               <PasswordInput
                 placeholder="smln_..."
                 value={form.api_key}
                 onChange={(e) => setForm((f) => ({ ...f, api_key: e.target.value }))}
               />
+              <span className="mt-1 block text-xs text-slate-400">
+                Used to create bookings, fetch tracking, and print documents.
+              </span>
+            </label>
+
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-slate-700">
+                Warehouse Code <span className="text-slate-400">(can also be set after connecting)</span>
+              </span>
+              <input
+                placeholder="Your-warehouse-code"
+                value={form.store_warehouse_code}
+                onChange={(e) => setForm((f) => ({ ...f, store_warehouse_code: e.target.value }))}
+                className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
+              />
+              <span className="mt-1 block text-xs text-slate-400">
+                From Smartlane&apos;s Store &gt; Warehouse section - required before any booking.
+              </span>
             </label>
 
             <label className="block">

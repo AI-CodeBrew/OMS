@@ -115,8 +115,12 @@ class OrdersService {
     return data;
   }
 
-  async _openPrintDocument(url) {
-    const response = await fetch(url, { headers: authService.getAuthHeaders() });
+  async _postAndOpenDocument(url, body) {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: authService.getAuthHeaders(),
+      body: JSON.stringify(body),
+    });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
       throw new Error(data.detail || "Failed to generate document");
@@ -126,12 +130,20 @@ class OrdersService {
     window.open(blobUrl, "_blank");
   }
 
-  async printLoadsheet(orderId) {
-    await this._openPrintDocument(`${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderLoadsheet(orderId)}`);
+  // Real Smartlane-generated documents (proxied from Smartlane's own api) -
+  // always match whichever courier Smartlane actually booked.
+  async printSmartlaneAirwayBill(orderIds) {
+    await this._postAndOpenDocument(
+      `${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderSmartlaneAirwayBill}`,
+      { order_ids: orderIds }
+    );
   }
 
-  async printAirwayBill(orderId) {
-    await this._openPrintDocument(`${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderAirwayBill(orderId)}`);
+  async printSmartlaneLoadSheet(orderIds, courier) {
+    await this._postAndOpenDocument(
+      `${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderSmartlaneLoadSheet}`,
+      { order_ids: orderIds, courier }
+    );
   }
 
   async exportCsv(params = {}) {
@@ -143,6 +155,31 @@ class OrdersService {
       throw new Error("Export failed");
     }
     return response.blob();
+  }
+
+  // Uploads a courier/settlement sheet. Defaults to a preview: nothing is
+  // written unless apply is true, so the UI can show the diff first.
+  async importCsv(file, { apply = false, overwriteFinal = false } = {}) {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("apply", apply ? "true" : "false");
+    form.append("overwrite_final", overwriteFinal ? "true" : "false");
+
+    // Content-Type is dropped on purpose - the browser has to set it so the
+    // multipart boundary is included.
+    const headers = { ...authService.getAuthHeaders() };
+    delete headers["Content-Type"];
+
+    const response = await fetch(`${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderImport}`, {
+      method: "POST",
+      headers,
+      body: form,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.detail || "Import failed");
+    }
+    return data;
   }
 
   async get(id) {

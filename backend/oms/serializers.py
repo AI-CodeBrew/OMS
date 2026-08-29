@@ -86,6 +86,8 @@ class OrderSerializer(serializers.ModelSerializer):
             "postal_code",
             "cnic",
             "customer_tags",
+            "tag",
+            "invoice_number",
             "customer_type",
             "expected_delivery_date",
             "preferred_courier",

@@ -14,4 +14,6 @@ urlpatterns = [
         views.smartlane_shipment_webhook,
         name="smartlane-shipment-webhook",
     ),
+    path("smartlane/warehouses/", views.SmartlaneWarehouseListView.as_view(), name="smartlane-warehouses"),
+    path("smartlane/cities/", views.SmartlaneCityListView.as_view(), name="smartlane-cities"),
 ]

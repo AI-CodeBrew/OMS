@@ -39,6 +39,61 @@ def unregister_webhook(shop_domain, access_token, api_version, webhook_id):
         raise ShopifyAPIError(f"Failed to unregister webhook {webhook_id}: {resp.status_code} {resp.text}")
 
 
+def update_order_tags(shop_domain, access_token, api_version, shopify_order_id, tags):
+    """Overwrites the order's tag list on Shopify. tags is the full desired
+    set (comma-joined), not an addition - callers merge with whatever's
+    already there themselves, same as the Shopify admin UI does."""
+    url = f"{_base_url(shop_domain, api_version)}/orders/{shopify_order_id}.json"
+    headers = {"X-Shopify-Access-Token": access_token, "Content-Type": "application/json"}
+    payload = {"order": {"id": shopify_order_id, "tags": tags}}
+    resp = requests.put(url, json=payload, headers=headers, timeout=15)
+    if not resp.ok:
+        raise ShopifyAPIError(f"Failed to update tags on order {shopify_order_id}: {resp.status_code} {resp.text}")
+    return resp.json()["order"]
+
+
+def fetch_fulfillment_orders(shop_domain, access_token, api_version, shopify_order_id):
+    url = f"{_base_url(shop_domain, api_version)}/orders/{shopify_order_id}/fulfillment_orders.json"
+    resp = requests.get(url, headers={"X-Shopify-Access-Token": access_token}, timeout=15)
+    if not resp.ok:
+        raise ShopifyAPIError(
+            f"Failed to fetch fulfillment orders for {shopify_order_id}: {resp.status_code} {resp.text}"
+        )
+    return resp.json().get("fulfillment_orders", [])
+
+
+def create_fulfillment(
+    shop_domain, access_token, api_version, shopify_order_id, *, tracking_number, tracking_company="", notify_customer=False
+):
+    """Marks the order fulfilled on Shopify with our tracking number, using
+    the fulfillment-orders flow (the orders/{id}/fulfillments.json shortcut
+    is deprecated on current API versions). Only the still-open fulfillment
+    orders are fulfilled - a partially/already-fulfilled order shouldn't be
+    re-submitted for its already-closed line items."""
+    fulfillment_orders = fetch_fulfillment_orders(shop_domain, access_token, api_version, shopify_order_id)
+    open_orders = [fo for fo in fulfillment_orders if fo.get("status") in ("open", "in_progress")]
+    if not open_orders:
+        raise ShopifyAPIError(f"No open fulfillment orders for {shopify_order_id} - already fulfilled?")
+
+    url = f"{_base_url(shop_domain, api_version)}/fulfillments.json"
+    headers = {"X-Shopify-Access-Token": access_token, "Content-Type": "application/json"}
+    payload = {
+        "fulfillment": {
+            "line_items_by_fulfillment_order": [
+                {"fulfillment_order_id": fo["id"]} for fo in open_orders
+            ],
+            "tracking_info": {"number": tracking_number, "company": tracking_company},
+            "notify_customer": notify_customer,
+        }
+    }
+    resp = requests.post(url, json=payload, headers=headers, timeout=15)
+    if not resp.ok:
+        raise ShopifyAPIError(
+            f"Failed to create fulfillment for {shopify_order_id}: {resp.status_code} {resp.text}"
+        )
+    return resp.json()["fulfillment"]
+
+
 def fetch_order_count(shop_domain, access_token, api_version, *, created_at_min=None, created_at_max=None):
     url = f"{_base_url(shop_domain, api_version)}/orders/count.json"
     headers = {"X-Shopify-Access-Token": access_token}

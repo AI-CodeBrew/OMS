@@ -6,12 +6,13 @@ from django.http import HttpResponse, StreamingHttpResponse
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 
 from core.permissions import RequireModule
 from wms.services import InsufficientStock
 
-from . import services
+from . import importers, services
 from .models import Courier, Order, OrderItem, OrderNote, OrderTransaction
 from .serializers import (
     CourierSerializer,
@@ -203,6 +204,41 @@ class OrderViewSet(viewsets.ModelViewSet):
             counts[row["status"]] = row["count"]
         counts["all"] = sum(counts.values())
         return Response(counts)
+
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="import-csv",
+        parser_classes=[MultiPartParser, FormParser],
+    )
+    def import_csv(self, request):
+        """Applies a courier/settlement sheet onto existing orders.
+
+        Defaults to a dry run - the caller must pass dry_run=false to
+        actually write, so the UI can show what would change first.
+        """
+        upload = request.FILES.get("file")
+        if not upload:
+            return Response(
+                {"detail": "Attach a CSV file as 'file'"}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        def _flag(name):
+            return str(request.data.get(name, "")).lower() in ("1", "true", "yes")
+
+        try:
+            result = importers.run_import(
+                request.organization_id,
+                upload,
+                dry_run=not _flag("apply"),
+                overwrite_final=_flag("overwrite_final"),
+            )
+        except UnicodeDecodeError:
+            return Response(
+                {"detail": "Could not read the file - please upload a UTF-8 CSV."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(result)
 
     @action(detail=False, methods=["get"], url_path="returns-summary")
     def returns_summary(self, request):
@@ -419,6 +455,105 @@ class OrderViewSet(viewsets.ModelViewSet):
     def airway_bill(self, request, pk=None):
         order = self.get_object()
         return HttpResponse(self._print_document_html(order, "Airway Bill"), content_type="text/html")
+
+    def _smartlane_connection_or_error(self, organization_id):
+        from integrations.models import SmartlaneConnection
+
+        connection = SmartlaneConnection.objects.filter(
+            organization_id=organization_id, is_connected=True
+        ).first()
+        if not connection:
+            return None, Response(
+                {"detail": "Connect Smartlane from the Integrations page first."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return connection, None
+
+    @action(detail=False, methods=["post"], url_path="smartlane-airway-bill")
+    def smartlane_airway_bill(self, request):
+        """Real Smartlane-generated airway bill (HTML) for the given
+        orders - proxies Smartlane's own consignment/airway/bill api, so
+        the document always matches whichever courier Smartlane actually
+        booked (Leopards, BarqRaftar, ...), not a local guess."""
+        from integrations import smartlane_client
+
+        order_ids = request.data.get("order_ids") or []
+        if not order_ids:
+            return Response({"detail": "order_ids is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        connection, error = self._smartlane_connection_or_error(request.organization_id)
+        if error:
+            return error
+
+        order_numbers = list(
+            Order.objects.filter(organization_id=request.organization_id, id__in=order_ids).values_list(
+                "order_number", flat=True
+            )
+        )
+        if not order_numbers:
+            return Response({"detail": "No matching orders"}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            html = smartlane_client.fetch_airway_bill(connection.api_key, order_numbers)
+        except smartlane_client.SmartlaneAPIError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        return HttpResponse(html, content_type="text/html")
+
+    @action(detail=False, methods=["post"], url_path="smartlane-load-sheet")
+    def smartlane_load_sheet(self, request):
+        """Real Smartlane-generated load sheet (PDF) for a single courier -
+        Smartlane's api only generates one courier at a time, so 'All'
+        isn't offered here until orders are known to share one courier;
+        callers should let the user pick a specific courier (leopards is
+        the only one confirmed live on this account so far)."""
+        from integrations import smartlane_client
+
+        courier = (request.data.get("courier") or "").strip().lower()
+        order_ids = request.data.get("order_ids") or []
+        start_date = request.data.get("start_date")
+        end_date = request.data.get("end_date")
+        if not courier:
+            return Response({"detail": "courier is required"}, status=status.HTTP_400_BAD_REQUEST)
+        if courier not in smartlane_client.SUPPORTED_COURIERS:
+            return Response(
+                {"detail": f"'{courier}' isn't available yet - coming soon."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        connection, error = self._smartlane_connection_or_error(request.organization_id)
+        if error:
+            return error
+
+        order_numbers = None
+        if order_ids:
+            order_numbers = list(
+                Order.objects.filter(
+                    organization_id=request.organization_id, id__in=order_ids
+                ).values_list("order_number", flat=True)
+            )
+
+        try:
+            pdf_bytes = smartlane_client.fetch_load_sheet(
+                connection.api_key,
+                courier=courier,
+                store_order_ids=order_numbers,
+                start_date=start_date,
+                end_date=end_date,
+            )
+        except smartlane_client.SmartlaneAPIError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
+        # Downloading the load sheet is the "picked up for warehouse
+        # picking" signal, same as the old per-order loadsheet endpoint -
+        # best-effort per order so one already-past-this-point order
+        # doesn't fail the whole batch's document.
+        if order_ids:
+            for order in Order.objects.filter(organization_id=request.organization_id, id__in=order_ids):
+                try:
+                    services.mark_ready_to_pick(order, actor_user_id=request.user_id)
+                except services.InvalidTransition:
+                    pass
+        return HttpResponse(pdf_bytes, content_type="application/pdf")
 
     @action(detail=True, methods=["get", "post"])
     def notes(self, request, pk=None):
