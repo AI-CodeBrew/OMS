@@ -28,6 +28,17 @@ import {
 
 const EMPTY_FILTERS = { city: "", courier_id: "", gateway: "", date_from: "", date_to: "" };
 
+// The bulk-action endpoint reports per-order outcomes with HTTP 200, so
+// rejections have to be pulled out of the body and shown explicitly.
+function describeFailures(failed) {
+  const shown = failed
+    .slice(0, 3)
+    .map((r) => `${r.order_number || r.order_id}: ${r.error || "failed"}`)
+    .join("; ");
+  const rest = failed.length > 3 ? ` (+${failed.length - 3} more)` : "";
+  return `${failed.length} order${failed.length === 1 ? "" : "s"} could not be updated - ${shown}${rest}`;
+}
+
 export default function OrdersPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -240,8 +251,16 @@ export default function OrdersPage() {
         return;
       }
 
+      // Every other per-order rejection (wrong status, Smartlane refused the
+      // booking, ...) also comes back with HTTP 200. Without this the modal
+      // just closed and the list reloaded unchanged, so a refused action
+      // looked exactly like a successful one.
+      const failed = (data?.results || []).filter((r) => !r.success);
+
       setPendingAction(null);
+      // After load(), which clears the error banner on the way in.
       await load();
+      if (failed.length > 0) setError(describeFailures(failed));
     } catch (err) {
       setError(err.message || "Action failed");
     } finally {
@@ -253,13 +272,15 @@ export default function OrdersPage() {
     if (!stockShortfall) return;
     setApplyingAction(true);
     try {
-      await ordersService.bulkAction({
+      const data = await ordersService.bulkAction({
         action: stockShortfall.action,
         orderIds: stockShortfall.orderIds,
         params: { ...stockShortfall.params, force: true },
       });
+      const failed = (data?.results || []).filter((r) => !r.success);
       setStockShortfall(null);
       await load();
+      if (failed.length > 0) setError(describeFailures(failed));
     } catch (err) {
       setError(err.message || "Action failed");
     } finally {

@@ -84,7 +84,10 @@ class OrdersService {
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(data.detail || "Bulk action failed");
+      // A 500 renders as HTML, so `data` is empty and there's no `detail` to
+      // show - fall back to the status code rather than a bare "Bulk action
+      // failed" that tells the user nothing about what went wrong.
+      throw new Error(data.detail || `Bulk action failed (HTTP ${response.status})`);
     }
     return data;
   }

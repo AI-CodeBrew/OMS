@@ -84,7 +84,16 @@ def create_booking(order, api_key, warehouse_code):
 
     if not resp.ok:
         raise SmartlaneAPIError(f"Booking failed: {resp.status_code} {resp.text[:300]}")
-    return resp.json() if resp.content else {}
+    if not resp.content:
+        return {}
+    try:
+        return resp.json()
+    except ValueError:
+        # A 2xx that isn't JSON still means the booking was accepted - the
+        # body is only ever informational here (the consignment number
+        # arrives later via /track or the webhook), so don't fail the
+        # booking over an unparseable response.
+        return {}
 
 
 def track_consignments(api_key, store_order_ids):

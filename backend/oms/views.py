@@ -1,4 +1,5 @@
 import csv
+import logging
 
 from django.db.models import Count, F, Prefetch, Sum
 from django.db.models.functions import Coalesce, TruncDate
@@ -22,6 +23,8 @@ from .serializers import (
     OrderSummarySerializer,
     OrderTransactionSerializer,
 )
+
+logger = logging.getLogger(__name__)
 
 SEARCHABLE_FIELDS = {
     "order_number": "order_number__icontains",
@@ -374,8 +377,42 @@ class OrderViewSet(viewsets.ModelViewSet):
                         "shortages": exc.shortages,
                     }
                 )
-            except (services.InvalidTransition, services.SmartlaneBookingError, KeyError) as exc:
-                results.append({"order_id": order_id, "success": False, "error": str(exc)})
+            except (services.InvalidTransition, services.SmartlaneBookingError) as exc:
+                results.append(
+                    {
+                        "order_id": order_id,
+                        "order_number": order.order_number,
+                        "success": False,
+                        "error": str(exc),
+                    }
+                )
+            except KeyError as exc:
+                results.append(
+                    {
+                        "order_id": order_id,
+                        "order_number": order.order_number,
+                        "success": False,
+                        "error": f"Missing required parameter {exc}.",
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001 - see below
+                # Anything unforeseen (a courier row that no longer exists, a
+                # Smartlane response we couldn't parse, a DB error on one
+                # row) used to escape to DRF and 500 the whole request, so
+                # the UI could only say "Bulk action failed" with no reason.
+                # Report it per order like every other failure instead, and
+                # log the traceback so the cause is still recoverable.
+                logger.exception(
+                    "Bulk action %s failed for order %s", action_name, order.order_number
+                )
+                results.append(
+                    {
+                        "order_id": order_id,
+                        "order_number": order.order_number,
+                        "success": False,
+                        "error": f"{exc.__class__.__name__}: {exc}",
+                    }
+                )
 
         return Response({"results": results})
 
