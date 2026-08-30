@@ -434,7 +434,7 @@ def smartlane_shipment_webhook(request, token):
         # it has to be set explicitly here, scoped to just this block.
         context_token = current_organization_id.set(connection.organization_id)
         try:
-            order = oms_services.Order.objects.filter(order_number=order_number).first()
+            order = services.find_order_by_smartlane_reference(order_number)
             logger.info(
                 "smartlane webhook parsed: order=%s cn=%r status=%r -> %s",
                 order_number, tracking_number, smartlane_status,
@@ -459,49 +459,29 @@ def smartlane_shipment_webhook(request, token):
                     connection.save(update_fields=["events_received_count", "last_event_at"])
                     return JsonResponse({"success": True})
 
-                # Same mapping the polling path uses, so an event arriving
-                # by webhook and the same event seen by a poll can never
-                # produce different outcomes.
-                target = services._SMARTLANE_STATUS_MAP.get(smartlane_status)
-                if not target and smartlane_status not in _SMARTLANE_DISPATCH_STATUSES:
+                # Shared with the poller (services.apply_smartlane_status) so
+                # a status arriving by webhook and the same status seen by a
+                # poll can never produce different outcomes.
+                if not services._SMARTLANE_STATUS_MAP.get(smartlane_status) \
+                        and smartlane_status not in _SMARTLANE_DISPATCH_STATUSES:
                     logger.warning(
                         "smartlane webhook: status %r for order %s is not in the status map "
                         "or the dispatch set - no action taken",
                         smartlane_status, order_number,
                     )
                 try:
-                    if target == "delivered":
-                        oms_services.mark_delivered(order)
-                    elif target == "returned":
-                        oms_services.scan_return(
-                            organization_id=connection.organization_id,
-                            order_number=order.order_number,
-                            reason="Reported returned by Smartlane",
-                        )
-                    elif target == "cancelled":
-                        oms_services.cancel_order(order, reason="Cancelled by Smartlane")
-                    elif smartlane_status in _SMARTLANE_DISPATCH_STATUSES:
-                        # Physical reality can outrun our own workflow gate:
-                        # the courier can genuinely pick up a parcel before
-                        # anyone here has downloaded its loadsheet (the
-                        # action that normally advances Ready to Print ->
-                        # Ready to Pick). Without this, dispatch_order's
-                        # ready_to_print -> dispatched jump is invalid per
-                        # ALLOWED_TRANSITIONS, gets caught below as
-                        # InvalidTransition, and the order is silently
-                        # dropped - stuck at Ready to Print forever even
-                        # though it's actually moving.
-                        if order.status == "ready_to_print":
-                            oms_services.mark_ready_to_pick(order)
-                        oms_services.dispatch_order(order, tracking_number=tracking_number)
-                except oms_services.InvalidTransition:
-                    # Order's already past/before this stage locally - the
-                    # event is stale or arrived out of order - safe to skip
-                    # rather than error, Smartlane shouldn't retry forever.
-                    logger.info(
-                        "smartlane webhook: order %s already at %s, ignoring stale %r event",
-                        order_number, order.status, smartlane_status,
+                    services.apply_smartlane_status(
+                        order,
+                        smartlane_status,
+                        tracking_number=tracking_number,
+                        organization_id=connection.organization_id,
                     )
+                except oms_services.InvalidTransition as exc:
+                    # Order is already past this point locally - the event is
+                    # stale or arrived out of order. Skip rather than error;
+                    # Smartlane shouldn't retry forever.
+                    logger.info("smartlane webhook: order %s at %s, ignoring %r event (%s)",
+                                order_number, order.status, smartlane_status, exc)
         finally:
             current_organization_id.reset(context_token)
 

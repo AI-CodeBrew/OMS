@@ -346,6 +346,107 @@ _SMARTLANE_DISPATCH_STATUSES = {
     "in_transit",
 }
 
+def find_order_by_smartlane_reference(reference):
+    """Smartlane echoes back the store_order_id we sent, but a Shopify-style
+    order name ("#10133") does not reliably survive that round trip - the
+    '#' is frequently dropped. Match on both spellings rather than losing
+    the event, the same lesson oms.importers already learned.
+
+    Caller must have the tenant context set (or pass an org-scoped manager).
+    """
+    value = (reference or "").strip()
+    if not value:
+        return None
+    stripped = value.lstrip("#")
+    for candidate in dict.fromkeys([value, f"#{stripped}", stripped]):
+        order = Order.objects.filter(order_number=candidate).first()
+        if order:
+            return order
+    return None
+
+
+def _catch_up_to_dispatched(order, tracking_number=""):
+    """Walks an order forward to `dispatched`, through whatever intermediate
+    states it never went through locally.
+
+    This exists because Smartlane's outcome events are only applicable from
+    `dispatched`: mark_delivered is a dispatched->delivered transition, and
+    scan_return refuses anything that isn't dispatched/delivered. So if we
+    ever miss the intermediate "dispatch" event - a webhook delivery that
+    failed, or simply the poller not running that hour - the later
+    "complete"/"return" event could not be applied at all, and the order
+    jammed at Ready to Print permanently while the parcel was long gone.
+
+    Smartlane reporting a terminal outcome is proof the parcel physically
+    moved, so the local workflow gates (printing a loadsheet, picking) are
+    catching up to reality rather than authorising it. This is the same
+    reasoning the dispatch branch already used for ready_to_print; it just
+    has to apply to the outcome events too.
+    """
+    from oms import services as oms_services
+
+    if order.status == "booking_pending":
+        # Only legal with a consignment number in hand, which is what
+        # "booked" means - without one there is nothing to advance on.
+        if not tracking_number and not order.tracking_number:
+            return False
+        oms_services.advance_booking_confirmed(order)
+    if order.status == "ready_to_print":
+        oms_services.mark_ready_to_pick(order)
+    if order.status in ("ready_to_pick", "approved", "awaiting_dispatched"):
+        oms_services.dispatch_order(order, tracking_number=tracking_number)
+    return order.status == "dispatched"
+
+
+def apply_smartlane_status(order, smartlane_status, *, tracking_number="", organization_id):
+    """Applies one Smartlane status to one order. Shared by the webhook and
+    the poller so a status seen either way can never produce a different
+    outcome. Returns True if the order actually moved.
+
+    Raises oms.services.InvalidTransition for the caller to log/skip.
+    """
+    from oms import services as oms_services
+
+    target = _SMARTLANE_STATUS_MAP.get(smartlane_status)
+    before = order.status
+
+    if target == "delivered":
+        if order.status == "delivered":
+            return False
+        _catch_up_to_dispatched(order, tracking_number)
+        oms_services.mark_delivered(order)
+    elif target == "returned":
+        if order.status == "returned":
+            return False
+        _catch_up_to_dispatched(order, tracking_number)
+        # scan_return reports failure by return value, not by raising, so
+        # an unusable status would otherwise be a silent no-op here.
+        result = oms_services.scan_return(
+            organization_id=organization_id,
+            order_number=order.order_number,
+            reason="Reported returned by Smartlane",
+        )
+        if not result.get("success"):
+            logger.warning("smartlane: could not mark %s returned - %s",
+                           order.order_number, result.get("reason"))
+            return False
+    elif target == "cancelled":
+        if order.status == "cancelled":
+            return False
+        oms_services.cancel_order(order, reason="Cancelled by Smartlane")
+    elif smartlane_status in _SMARTLANE_DISPATCH_STATUSES:
+        if order.status == "dispatched":
+            return False
+        if not _catch_up_to_dispatched(order, tracking_number):
+            return False
+    else:
+        return False
+
+    logger.info("smartlane status %r applied to %s: %s -> %s",
+                smartlane_status, order.order_number, before, order.status)
+    return True
+
+
 # Orders worth asking Smartlane about: booked through it and not yet at a
 # final outcome. booking_pending is included even though it has no
 # tracking_number yet - that's exactly the status the consignment number
@@ -400,7 +501,14 @@ def poll_smartlane_statuses(organization_id, *, batch_size=100, limit=1000):
     logger.info("smartlane poll for org %s: checking %s order(s) %s",
                 organization_id, len(orders), [o.order_number for o in orders[:20]])
 
-    by_number = {o.order_number: o for o in orders}
+    # Keyed by both spellings of the order number - Smartlane does not
+    # reliably echo back the leading '#' (see
+    # find_order_by_smartlane_reference).
+    by_number = {}
+    for o in orders:
+        stripped = o.order_number.lstrip("#")
+        for key in dict.fromkeys([o.order_number, f"#{stripped}", stripped]):
+            by_number.setdefault(key, o)
     updated = 0
 
     for start in range(0, len(orders), batch_size):
@@ -441,36 +549,14 @@ def poll_smartlane_statuses(organization_id, *, batch_size=100, limit=1000):
             raw_status = (
                 row.get("courier_status") or row.get("state") or row.get("status") or ""
             ).strip().lower().replace(" ", "_")
-            target = _SMARTLANE_STATUS_MAP.get(raw_status)
 
             try:
-                if target == "delivered" and order.status != "delivered":
-                    oms_services.mark_delivered(order)
-                    updated += 1
-                elif target == "returned" and order.status != "returned":
-                    oms_services.scan_return(
-                        organization_id=organization_id,
-                        order_number=order.order_number,
-                        reason="Reported returned by Smartlane",
-                    )
-                    updated += 1
-                elif target == "cancelled" and order.status != "cancelled":
-                    oms_services.cancel_order(order, reason="Cancelled by Smartlane")
-                    updated += 1
-                elif not target and raw_status in _SMARTLANE_DISPATCH_STATUSES and order.status in (
-                    "ready_to_print",
-                    "ready_to_pick",
+                if apply_smartlane_status(
+                    order,
+                    raw_status,
+                    tracking_number=consignment,
+                    organization_id=organization_id,
                 ):
-                    # Same gap as the webhook: the courier can genuinely
-                    # pick up a parcel before anyone here has downloaded
-                    # its loadsheet (what normally advances Ready to Print
-                    # -> Ready to Pick) - without this, an order can sit at
-                    # Ready to Print forever even though it's actually
-                    # moving, since nothing else ever calls dispatch_order
-                    # for it if the webhook isn't live.
-                    if order.status == "ready_to_print":
-                        oms_services.mark_ready_to_pick(order)
-                    oms_services.dispatch_order(order)
                     updated += 1
             except oms_services.InvalidTransition:
                 # Already past this point locally - the tracking row is
