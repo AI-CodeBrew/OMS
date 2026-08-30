@@ -2,10 +2,13 @@ import logging
 import time
 
 import requests
+from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://gcp.smartlane.dev/api/consignment"
+# Overridable via the SMARTLANE_API_BASE_URL env var - see the setting's
+# comment for why this must not be hardcoded.
+BASE_URL = settings.SMARTLANE_API_BASE_URL
 
 # Per Smartlane's API doc v1.2, the load sheet is generated for one
 # courier at a time - these are the courier codes their API recognises.

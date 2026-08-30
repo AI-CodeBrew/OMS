@@ -138,6 +138,15 @@ CORS_ALLOWED_ORIGINS = [o.strip() for o in _cors_origins.split(",") if o.strip()
 
 # --- Integrations ---------------------------------------------------------
 SHOPIFY_API_VERSION = env("SHOPIFY_API_VERSION", default="2024-10")
+
+# Smartlane's consignment API root, per their API Documentation page. Kept
+# in settings rather than hardcoded because they have more than one live
+# deployment on this domain (v2 and gcp both answer, with separate token
+# stores) - pointing at the wrong one rejects a perfectly good API key with
+# a bare 401, which is exactly what happened here.
+SMARTLANE_API_BASE_URL = env(
+    "SMARTLANE_API_BASE_URL", default="https://v2.smartlane.dev/api/consignment"
+)
 # Must be a publicly reachable URL for Shopify's webhook deliveries to
 # actually arrive - on localhost, webhook registration succeeds but
 # delivery never will until this is tunneled (ngrok etc.) or deployed.

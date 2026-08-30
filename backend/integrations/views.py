@@ -234,7 +234,12 @@ class SmartlaneConnectionView(APIView):
         connection, _ = SmartlaneConnection.objects.update_or_create(
             organization_id=request.organization_id,
             defaults={
-                "api_key": api_key,
+                # Same fill-only rule as store_warehouse_code below: the form
+                # never echoes the stored key back (it's write-only on the
+                # serializer), so an empty box means "leave it alone", not
+                # "erase it". Without this, re-saving the form to change the
+                # warehouse code silently wiped the API key.
+                **({"api_key": api_key} if api_key else {}),
                 "webhook_secret": webhook_secret,
                 # Only overwrite if a value was actually sent, so re-saving
                 # the api_key/webhook_secret from the connect form doesn't
