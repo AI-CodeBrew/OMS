@@ -31,6 +31,8 @@ export default function SmartlaneIntegrationPage() {
   const [warehouseCode, setWarehouseCode] = useState("");
   const [savingWarehouse, setSavingWarehouse] = useState(false);
   const [warehouses, setWarehouses] = useState(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState(null);
   const [loadingWarehouses, setLoadingWarehouses] = useState(false);
 
   async function loadStatus() {
@@ -69,6 +71,23 @@ export default function SmartlaneIntegrationPage() {
       setError(err.message || "Failed to save warehouse code");
     } finally {
       setSavingWarehouse(false);
+    }
+  }
+
+  // Pulls consignment numbers and delivery outcomes from Smartlane right
+  // now, instead of waiting for a webhook that may never arrive.
+  async function onSyncNow() {
+    setSyncing(true);
+    setError("");
+    setSyncResult(null);
+    try {
+      const result = await integrationsService.syncSmartlane();
+      setSyncResult(result);
+      await loadStatus();
+    } catch (err) {
+      setError(err.message || "Failed to sync with Smartlane");
+    } finally {
+      setSyncing(false);
     }
   }
 
@@ -206,6 +225,27 @@ export default function SmartlaneIntegrationPage() {
                     {status.last_event_at ? new Date(status.last_event_at).toLocaleString() : "Never"}
                   </span>
                 </div>
+              </div>
+
+              <div className="mt-4 border-t border-surface-border pt-4">
+                <Button variant="secondary" onClick={onSyncNow} disabled={syncing}>
+                  {syncing ? "Syncing…" : "Sync statuses from Smartlane now"}
+                </Button>
+                <span className="mt-1 block text-xs text-slate-400">
+                  Asks Smartlane about every order still in progress and applies what comes
+                  back - consignment numbers for Booking Pending orders, and delivered /
+                  returned outcomes. Use this instead of waiting on the webhook.
+                </span>
+                {syncResult ? (
+                  <div className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+                    Checked {syncResult.checked} order{syncResult.checked === 1 ? "" : "s"},
+                    updated {syncResult.updated}.
+                    {syncResult.detail ? ` ${syncResult.detail}` : ""}
+                    {syncResult.checked === 0
+                      ? " (Nothing to check - no orders are booked with Smartlane and still in progress.)"
+                      : ""}
+                  </div>
+                ) : null}
               </div>
 
               <div className="mt-4">

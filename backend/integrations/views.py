@@ -310,6 +310,34 @@ class SmartlaneWarehouseListView(APIView):
         return Response(data)
 
 
+class SmartlaneSyncView(APIView):
+    """Runs the Smartlane status poll for this organization on demand.
+
+    The poll normally belongs on a schedule (manage.py poll_smartlane), but
+    nothing schedules it in this deployment and Render's free plan has no
+    shell to run it from - so without this there is no way at all to pull a
+    consignment number for an order sitting in Booking Pending, or to check
+    whether Smartlane has anything for us. Same code path as the scheduled
+    command, just triggered by a button.
+    """
+
+    permission_classes = [IsOrgAdmin]
+
+    def post(self, request):
+        connection = SmartlaneConnection.objects.filter(
+            organization_id=request.organization_id, is_connected=True
+        ).first()
+        if not connection:
+            return Response({"detail": "Smartlane is not connected"}, status=http_status.HTTP_404_NOT_FOUND)
+        try:
+            result = services.poll_smartlane_statuses(request.organization_id)
+        except smartlane_client.SmartlaneAPIError as exc:
+            logger.error("smartlane manual sync failed for org %s: %s", request.organization_id, exc)
+            return Response({"detail": str(exc)}, status=http_status.HTTP_502_BAD_GATEWAY)
+        logger.info("smartlane manual sync for org %s: %s", request.organization_id, result)
+        return Response(result)
+
+
 class SmartlaneCityListView(APIView):
     permission_classes = [IsOrgAdmin]
 

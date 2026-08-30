@@ -513,9 +513,17 @@ def poll_smartlane_statuses(organization_id, *, batch_size=100, limit=1000):
 
     for start in range(0, len(orders), batch_size):
         chunk = orders[start : start + batch_size]
-        rows = smartlane_client.track_consignments(
-            connection.api_key, [o.order_number for o in chunk]
-        )
+        # Ask for both spellings of each order number. We send
+        # store_order_id="#10133" at booking time, but Smartlane does not
+        # reliably keep the leading '#' - querying only our spelling would
+        # come back empty for a consignment that genuinely exists.
+        wanted = []
+        for o in chunk:
+            stripped = o.order_number.lstrip("#")
+            for variant in dict.fromkeys([o.order_number, stripped]):
+                if variant not in wanted:
+                    wanted.append(variant)
+        rows = smartlane_client.track_consignments(connection.api_key, wanted)
         for row in rows:
             if not isinstance(row, dict):
                 continue

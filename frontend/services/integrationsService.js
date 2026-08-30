@@ -141,6 +141,18 @@ class IntegrationsService {
     return data;
   }
 
+  // Runs the Smartlane status poll for this org on demand - the same pull
+  // the scheduled poller does, for when you'd rather not wait for a webhook.
+  async syncSmartlane() {
+    const response = await fetch(`${apiConfig.baseUrl}${SMARTLANE_BASE}/sync/`, {
+      method: "POST",
+      headers: authService.getAuthHeaders(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Failed to sync with Smartlane");
+    return data;
+  }
+
   async getSmartlaneWarehouses() {
     const response = await fetch(`${apiConfig.baseUrl}${SMARTLANE_BASE}/warehouses/`, {
       headers: authService.getAuthHeaders(),
