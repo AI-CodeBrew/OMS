@@ -1,3 +1,4 @@
+import logging
 import time
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
@@ -12,6 +13,8 @@ from oms.models import Courier, Order, OrderItem
 
 from . import shopify_client, smartlane_client
 from .models import ShopifyConnection, ShopifySyncJob
+
+logger = logging.getLogger(__name__)
 
 
 # Once an order reaches one of these, a later Shopify sync must not
@@ -327,7 +330,21 @@ _SMARTLANE_STATUS_MAP = {
 # Shared with the webhook (views.smartlane_shipment_webhook) so a status
 # seen by polling and the same status arriving by webhook always produce
 # the same outcome - moves the order on to Dispatched.
-_SMARTLANE_DISPATCH_STATUSES = {"picked", "dispatched", "in_transit", "out_for_delivery"}
+#
+# "dispatch" (not "dispatched") and "attempt" are taken from the per-stage
+# timestamp fields on Smartlane's own Consignment Status webhook payload -
+# queue / ready / dispatch / out_for_delivery / attempt /
+# return_in_progress / complete / return / cancel / dispute - which is the
+# vocabulary their pipeline actually uses. "picked"/"in_transit" are kept
+# because they cost nothing, but they do NOT appear in that payload.
+_SMARTLANE_DISPATCH_STATUSES = {
+    "dispatch",
+    "dispatched",
+    "out_for_delivery",
+    "attempt",
+    "picked",
+    "in_transit",
+}
 
 # Orders worth asking Smartlane about: booked through it and not yet at a
 # final outcome. booking_pending is included even though it has no
@@ -362,6 +379,7 @@ def poll_smartlane_statuses(organization_id, *, batch_size=100, limit=1000):
             organization_id=organization_id, is_connected=True
         )
     except SmartlaneConnection.DoesNotExist:
+        logger.warning("smartlane poll skipped for org %s: not connected", organization_id)
         return {"checked": 0, "updated": 0, "detail": "Smartlane is not connected"}
 
     # courier__name filters to orders actually booked through Smartlane -
@@ -375,7 +393,12 @@ def poll_smartlane_statuses(organization_id, *, batch_size=100, limit=1000):
         )[:limit]
     )
     if not orders:
+        logger.info("smartlane poll for org %s: no trackable orders (statuses=%s, courier=Smartlane)",
+                    organization_id, list(_TRACKABLE_STATUSES))
         return {"checked": 0, "updated": 0}
+
+    logger.info("smartlane poll for org %s: checking %s order(s) %s",
+                organization_id, len(orders), [o.order_number for o in orders[:20]])
 
     by_number = {o.order_number: o for o in orders}
     updated = 0
@@ -388,8 +411,10 @@ def poll_smartlane_statuses(organization_id, *, batch_size=100, limit=1000):
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            order = by_number.get(str(row.get("store_order_id") or "").strip())
+            row_number = str(row.get("store_order_id") or "").strip()
+            order = by_number.get(row_number)
             if order is None:
+                logger.debug("smartlane poll: row for %r matches no order we asked about", row_number)
                 continue
 
             # Keep the consignment number Smartlane assigned, which for a
@@ -454,6 +479,8 @@ def poll_smartlane_statuses(organization_id, *, batch_size=100, limit=1000):
 
     connection.last_event_at = timezone.now()
     connection.save(update_fields=["last_event_at"])
+    logger.info("smartlane poll for org %s finished: checked %s, updated %s",
+                organization_id, len(orders), updated)
     return {"checked": len(orders), "updated": updated}
 
 

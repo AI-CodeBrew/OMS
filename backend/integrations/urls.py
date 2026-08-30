@@ -14,6 +14,14 @@ urlpatterns = [
         views.smartlane_shipment_webhook,
         name="smartlane-shipment-webhook",
     ),
+    # Same view without the trailing slash. Django's APPEND_SLASH answers a
+    # slashless POST with a 301, and a redirected POST arrives as a GET with
+    # no body - so a URL pasted into Smartlane's webhook builder without the
+    # final "/" would silently deliver nothing. Cheaper to accept both.
+    path(
+        "smartlane/webhook/<uuid:token>",
+        views.smartlane_shipment_webhook,
+    ),
     path("smartlane/warehouses/", views.SmartlaneWarehouseListView.as_view(), name="smartlane-warehouses"),
     path("smartlane/cities/", views.SmartlaneCityListView.as_view(), name="smartlane-cities"),
 ]

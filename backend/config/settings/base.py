@@ -148,3 +148,46 @@ ADMIN_IP_ALLOWLIST = env(
     "ADMIN_IP_ALLOWLIST",
     default="127.0.0.1,::1",
 )
+
+
+# --- Logging --------------------------------------------------------------
+# Everything goes to stdout, which is what Render (and `docker logs`, and
+# runserver) captures. LOG_LEVEL=DEBUG turns on full request/response
+# bodies in the Smartlane client without changing anything else.
+LOG_LEVEL = env("LOG_LEVEL", default="INFO").upper()
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "standard": {
+            "format": "%(asctime)s %(levelname)-8s %(name)s | %(message)s",
+            "datefmt": "%Y-%m-%d %H:%M:%S",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "stream": "ext://sys.stdout",
+            "formatter": "standard",
+        },
+    },
+    "root": {"handlers": ["console"], "level": "WARNING"},
+    "loggers": {
+        # Unhandled exceptions in views. Django only writes these out when a
+        # handler is attached - without this block a 500 in production left
+        # no trace at all, which is exactly what happened with the bulk
+        # action failures.
+        "django.request": {
+            "handlers": ["console"],
+            "level": "ERROR",
+            "propagate": False,
+        },
+        # Our own code, named per app so the integrations can be turned up
+        # to DEBUG without drowning in noise from everything else.
+        "oms": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
+        "integrations": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
+        "wms": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
+        "core": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
+    },
+}

@@ -1,9 +1,13 @@
+import logging
+
 from django.db.models import Count, Q
 from django.utils import timezone
 
 from core.events import publish_event
 
 from .models import Courier, Order, OrderItem, OrderStatusEvent
+
+logger = logging.getLogger(__name__)
 
 
 def create_order(*, organization_id, order_number, customer_name, customer_phone, items):
@@ -94,6 +98,10 @@ class SmartlaneBookingError(Exception):
 def _transition(order, to_status, *, actor_user_id=None, note="", extra_fields=None):
     allowed = ALLOWED_TRANSITIONS.get(order.status, set())
     if to_status not in allowed:
+        logger.warning(
+            "order %s transition REJECTED %s -> %s (allowed from here: %s)",
+            order.order_number, order.status, to_status, sorted(allowed) or "nothing",
+        )
         raise InvalidTransition(
             f"Cannot move order {order.order_number} from {order.status!r} to {to_status!r}"
         )
@@ -140,6 +148,12 @@ def _transition(order, to_status, *, actor_user_id=None, note="", extra_fields=N
         sync_order_to_shopify(order)
     except Exception:
         pass
+    logger.info(
+        "order %s status %s -> %s%s%s",
+        order.order_number, from_status, to_status,
+        f" (actor {actor_user_id})" if actor_user_id else "",
+        f" fields={sorted(extra_fields)}" if extra_fields else "",
+    )
     publish_event(
         "order.status_changed",
         {
@@ -264,7 +278,12 @@ def push_order_to_smartlane(order, *, actor_user_id=None, force=False):
     # Assigning must not create a second real Smartlane consignment for
     # the same order. _transition() would also catch this, but only AFTER
     # the outbound call already happened, which is too late.
+    logger.info("smartlane push requested for order %s (status=%s, force=%s)",
+                order.order_number, order.status, force)
+
     if order.status != "awaiting_assigning":
+        logger.warning("smartlane push refused for %s: status is %s, not awaiting_assigning",
+                       order.order_number, order.status)
         raise SmartlaneBookingError(
             f"Order {order.order_number} is {order.get_status_display()}, not Awaiting Assigning."
         )
@@ -273,18 +292,26 @@ def push_order_to_smartlane(order, *, actor_user_id=None, force=False):
     # outbound Smartlane call.
     shortages = wms_services.check_order_stock(order)
     if shortages and not force:
+        logger.warning("smartlane push blocked for %s: short on %s",
+                       order.order_number, [s["sku"] for s in shortages])
         raise wms_services.InsufficientStock(shortages)
+    if shortages:
+        logger.warning("smartlane push proceeding for %s DESPITE shortages on %s (force=True)",
+                       order.order_number, [s["sku"] for s in shortages])
 
     try:
         connection = SmartlaneConnection.objects.get(
             organization_id=order.organization_id, is_connected=True
         )
     except SmartlaneConnection.DoesNotExist:
+        logger.error("smartlane push failed for %s: no connected SmartlaneConnection for org %s",
+                     order.order_number, order.organization_id)
         raise SmartlaneBookingError("Connect Smartlane from the Integrations page first.")
 
     try:
         smartlane_client.create_booking(order, connection.api_key, connection.store_warehouse_code)
     except smartlane_client.SmartlaneAPIError as exc:
+        logger.error("smartlane booking REJECTED for %s: %s", order.order_number, exc)
         raise SmartlaneBookingError(str(exc)) from exc
 
     courier, _ = Courier.objects.get_or_create(
@@ -299,6 +326,10 @@ def push_order_to_smartlane(order, *, actor_user_id=None, force=False):
     # force=True here because the shortage decision was already made above -
     # re-checking would raise on exactly the case the user just approved.
     wms_services.consume_for_order(order, force=True, actor_user_id=actor_user_id)
+    logger.info(
+        "smartlane push COMPLETE for %s - now Booking Pending, awaiting a consignment number "
+        "from the webhook or the poller", order.order_number,
+    )
     return order
 
 

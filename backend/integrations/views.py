@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import threading
 
 from django.conf import settings
@@ -26,6 +27,8 @@ from . import smartlane_client
 from .models import ShopifyConnection, ShopifySyncJob, SmartlaneConnection
 from .serializers import ShopifyConnectionSerializer, ShopifySyncJobSerializer, SmartlaneConnectionSerializer
 from .services import upsert_order_from_shopify
+
+logger = logging.getLogger(__name__)
 
 
 class ShopifyConnectionView(APIView):
@@ -359,19 +362,50 @@ def smartlane_shipment_webhook(request, token):
     webhook_secret is honoured if Smartlane ever does send a signature
     (kept for that case, and for manual/test posts that set one), but
     isn't required - only rejected if it's present and WRONG."""
+    logger.info("smartlane webhook received: token=%s bytes=%s from=%s",
+                token, len(request.body or b""), request.META.get("REMOTE_ADDR", "?"))
+    logger.debug("smartlane webhook raw body: %s", (request.body or b"")[:2000])
+
     try:
         connection = SmartlaneConnection.all_objects.get(webhook_token=token, is_connected=True)
     except SmartlaneConnection.DoesNotExist:
+        logger.warning("smartlane webhook REJECTED: no connected account for token %s", token)
         return JsonResponse({"detail": "Unknown or disconnected account"}, status=404)
 
     signature = request.META.get("HTTP_X_SMARTLANE_SIGNATURE")
     if signature and not _verify_smartlane_signature(request.body, connection.webhook_secret, signature):
+        logger.warning("smartlane webhook REJECTED for org %s: bad signature",
+                       connection.organization_id)
         return JsonResponse({"detail": "Invalid signature"}, status=401)
 
     try:
         payload = json.loads(request.body)
     except ValueError:
+        logger.warning("smartlane webhook REJECTED for org %s: body was not JSON",
+                       connection.organization_id)
         return JsonResponse({"detail": "Invalid JSON"}, status=400)
+
+    logger.info("smartlane webhook payload keys=%s", sorted(payload) if isinstance(payload, dict) else type(payload).__name__)
+
+    # Smartlane's portal has TWO webhooks - "Consignment Status" and
+    # "Shipper Advice" - and both are configured to POST to this one URL,
+    # so they have to be told apart by payload shape. Shipper Advice is the
+    # courier asking us to choose Reattempt or Return before `expiry`; it
+    # carries available_actions/reason and NO courier_status or state, so
+    # without this branch it fell through the status mapping below, matched
+    # nothing, and was silently discarded.
+    if isinstance(payload, dict) and payload.get("available_actions"):
+        logger.warning(
+            "smartlane SHIPPER ADVICE for order=%s cn=%s courier=%s reason=%r "
+            "actions=%s expiry=%s - recorded only, nothing answers this yet",
+            payload.get("store_order_id"), payload.get("consignment_number"),
+            payload.get("courier"), payload.get("reason"),
+            payload.get("available_actions"), payload.get("expiry"),
+        )
+        connection.events_received_count += 1
+        connection.last_event_at = timezone.now()
+        connection.save(update_fields=["events_received_count", "last_event_at"])
+        return JsonResponse({"success": True, "handled": "shipper_advice"})
 
     # Field names confirmed against a real payload from Smartlane's own
     # webhook test tool: the order reference is store_order_id and the
@@ -401,6 +435,11 @@ def smartlane_shipment_webhook(request, token):
         context_token = current_organization_id.set(connection.organization_id)
         try:
             order = oms_services.Order.objects.filter(order_number=order_number).first()
+            logger.info(
+                "smartlane webhook parsed: order=%s cn=%r status=%r -> %s",
+                order_number, tracking_number, smartlane_status,
+                f"matched order in status {order.status}" if order else "NO MATCHING ORDER",
+            )
             if order:
                 if tracking_number and tracking_number != order.tracking_number:
                     order.tracking_number = tracking_number[:100]
@@ -413,6 +452,8 @@ def smartlane_shipment_webhook(request, token):
                         oms_services.advance_booking_confirmed(order)
                     except oms_services.InvalidTransition:
                         pass
+                    logger.info("smartlane webhook: order %s booking confirmed, cn=%s",
+                                order_number, tracking_number)
                     connection.events_received_count += 1
                     connection.last_event_at = timezone.now()
                     connection.save(update_fields=["events_received_count", "last_event_at"])
@@ -422,6 +463,12 @@ def smartlane_shipment_webhook(request, token):
                 # by webhook and the same event seen by a poll can never
                 # produce different outcomes.
                 target = services._SMARTLANE_STATUS_MAP.get(smartlane_status)
+                if not target and smartlane_status not in _SMARTLANE_DISPATCH_STATUSES:
+                    logger.warning(
+                        "smartlane webhook: status %r for order %s is not in the status map "
+                        "or the dispatch set - no action taken",
+                        smartlane_status, order_number,
+                    )
                 try:
                     if target == "delivered":
                         oms_services.mark_delivered(order)
@@ -451,7 +498,10 @@ def smartlane_shipment_webhook(request, token):
                     # Order's already past/before this stage locally - the
                     # event is stale or arrived out of order - safe to skip
                     # rather than error, Smartlane shouldn't retry forever.
-                    pass
+                    logger.info(
+                        "smartlane webhook: order %s already at %s, ignoring stale %r event",
+                        order_number, order.status, smartlane_status,
+                    )
         finally:
             current_organization_id.reset(context_token)
 
