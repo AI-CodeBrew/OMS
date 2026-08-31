@@ -75,7 +75,12 @@ ALLOWED_TRANSITIONS = {
     # Advances to ready_to_print once Smartlane's /track (or webhook)
     # reports a real consignment number - see
     # integrations.services.advance_pending_smartlane_bookings.
-    "booking_pending": {"ready_to_print", "cancelled"},
+    # awaiting_assigning is the way back out of a push that silently failed -
+    # the order sits in booking_pending for a consignment the courier never
+    # actually created, and without this it is stuck there forever (nothing
+    # advances it, and cancelling is terminal). Only reachable through
+    # abandon_smartlane_booking, which verifies with Smartlane first.
+    "booking_pending": {"ready_to_print", "awaiting_assigning", "cancelled"},
     "ready_to_print": {"ready_to_pick", "cancelled"},
     "ready_to_pick": {"dispatched", "cancelled"},
     "awaiting_dispatched": {"dispatched", "dispatch_issue", "cancelled"},
@@ -331,6 +336,62 @@ def push_order_to_smartlane(order, *, actor_user_id=None, force=False):
         "from the webhook or the poller", order.order_number,
     )
     return order
+
+
+def abandon_smartlane_booking(order, *, actor_user_id=None):
+    """Returns an order stuck in Booking Pending to Awaiting Assigning so it
+    can be pushed again, and puts back the stock the failed push consumed.
+
+    Only for pushes that never produced a consignment. Smartlane is asked
+    first and this refuses if they DO know the order - reversing the stock
+    for a parcel a courier is genuinely carrying would be far worse than
+    leaving the order where it is.
+    """
+    from integrations import smartlane_client
+    from integrations.models import SmartlaneConnection
+    from wms import services as wms_services
+
+    if order.status != "booking_pending":
+        raise InvalidTransition(
+            f"Order {order.order_number} is {order.get_status_display()}, not Booking Pending."
+        )
+
+    connection = SmartlaneConnection.objects.filter(
+        organization_id=order.organization_id, is_connected=True
+    ).first()
+    if not connection:
+        raise SmartlaneBookingError("Connect Smartlane from the Integrations page first.")
+
+    try:
+        rows = smartlane_client.track_consignments(connection.api_key, [order.order_number])
+    except smartlane_client.SmartlaneAPIError as exc:
+        # Refuse rather than guess - if we can't confirm the booking is
+        # absent we must not put its stock back.
+        logger.error("smartlane abandon check failed for %s: %s", order.order_number, exc)
+        raise SmartlaneBookingError(
+            f"Could not confirm with Smartlane whether {order.order_number} is booked: {exc}"
+        ) from exc
+
+    if rows:
+        logger.warning("smartlane abandon refused for %s: Smartlane returned %s row(s)",
+                       order.order_number, len(rows))
+        raise SmartlaneBookingError(
+            f"Smartlane does have a consignment for {order.order_number} - "
+            "sync statuses instead of abandoning it."
+        )
+
+    released = wms_services.release_order_stock(
+        order, actor_user_id=actor_user_id, note="Smartlane booking was never created"
+    )
+    logger.info("smartlane abandon for %s: released %s stock line(s)",
+                order.order_number, len(released))
+    return _transition(
+        order,
+        "awaiting_assigning",
+        actor_user_id=actor_user_id,
+        note="Smartlane booking was never created - returned for re-push",
+        extra_fields={"courier_id": None, "tracking_number": ""},
+    )
 
 
 def advance_booking_confirmed(order, *, actor_user_id=None):

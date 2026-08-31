@@ -88,7 +88,15 @@ export const ACTIONS_BY_STATUS = {
   // hasn't come back from Smartlane yet (see oms.services.push_order_to_
   // smartlane), so nothing printable exists until it advances to Ready to
   // Print on its own via polling/webhook.
-  booking_pending: [{ key: "cancel", action: "cancel", label: "Cancel" }],
+  // "Not booked - retry" is the way out of a push that silently failed: it
+  // asks Smartlane whether the consignment exists, and only if it does not,
+  // puts the stock back and returns the order to Awaiting Assigning. Without
+  // it such an order is stuck here forever, since nothing advances it and
+  // cancelling is terminal.
+  booking_pending: [
+    { key: "abandon_booking", action: "abandon_booking", label: "Not booked - retry" },
+    { key: "cancel", action: "cancel", label: "Cancel" },
+  ],
   // loadsheet/airway bill are handled client-side (see orders/page.jsx's
   // startAction/runAction) by fetching a printable document - Smartlane's
   // own real documents, not a plain bulk action, since they need to

@@ -66,6 +66,9 @@ BULK_ACTIONS = {
     "push_to_smartlane": lambda order, params, actor: services.push_order_to_smartlane(
         order, actor_user_id=actor, force=bool(params.get("force"))
     ),
+    "abandon_booking": lambda order, params, actor: services.abandon_smartlane_booking(
+        order, actor_user_id=actor
+    ),
 }
 
 

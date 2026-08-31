@@ -181,6 +181,71 @@ def restock_from_return(order, *, actor_user_id=None, warehouse=None, note=""):
     return movements
 
 
+# Marker written into the note of a reversal movement so a second attempt
+# can recognise its own work and stay idempotent. `reason` deliberately
+# reuses manual_adjustment rather than adding a REASON_CHOICES value: this
+# deployment does not run migrations automatically, so a new choice would
+# need a migration nobody can apply.
+_BOOKING_REVERSAL_MARKER = "booking-reversal"
+
+
+@transaction.atomic
+def release_order_stock(order, *, actor_user_id=None, warehouse=None, note=""):
+    """Puts back stock that was consumed for a booking that never happened.
+
+    consume_for_order() deducts the moment an order is pushed to a courier,
+    on the assumption the parcel is now committed. When the push turns out
+    to have failed - the courier never actually created the consignment -
+    that deduction is against a shipment that does not exist and has to be
+    undone, or the warehouse is short on paper for stock still on the shelf.
+
+    Reverses exactly what the ledger says was taken (not what the order's
+    current line items say), so an order edited since the push can't cause
+    the wrong quantity to come back. Idempotent per order.
+    """
+    warehouse = warehouse or get_default_warehouse(order.organization_id)
+    if warehouse is None:
+        return []
+
+    already = StockMovement.objects.filter(
+        organization_id=order.organization_id,
+        order_number=order.order_number,
+        note__contains=_BOOKING_REVERSAL_MARKER,
+    ).exists()
+    if already:
+        return []
+
+    # Net of every dispatch consumption for this order, per stock item.
+    taken = {}
+    consumed = StockMovement.objects.filter(
+        organization_id=order.organization_id,
+        order_number=order.order_number,
+        reason="order_dispatch",
+    ).select_related("stock_item")
+    for movement in consumed:
+        taken[movement.stock_item] = taken.get(movement.stock_item, 0) + movement.delta
+
+    movements = []
+    for item, delta in taken.items():
+        if delta >= 0:
+            continue  # nothing was actually taken for this line
+        item.quantity -= delta  # delta is negative, so this adds it back
+        item.save(update_fields=["quantity", "updated_at"])
+        movements.append(
+            StockMovement.objects.create(
+                organization_id=order.organization_id,
+                stock_item=item,
+                delta=-delta,
+                balance_after=item.quantity,
+                reason="manual_adjustment",
+                order_number=order.order_number,
+                note=f"{_BOOKING_REVERSAL_MARKER}: {note or 'booking was never created'}"[:255],
+                actor_user_id=actor_user_id,
+            )
+        )
+    return movements
+
+
 @transaction.atomic
 def import_skus_from_orders(*, organization_id, warehouse):
     """Creates a StockItem for every distinct SKU seen in order history.

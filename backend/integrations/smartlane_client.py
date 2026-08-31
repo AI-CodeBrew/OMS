@@ -36,7 +36,7 @@ def _headers(api_key):
     }
 
 
-def _request(method, path, api_key, *, context="", expect="json", **kwargs):
+def _request(method, path, api_key, *, context="", expect="json", tolerate=(), **kwargs):
     """Single funnel for every Smartlane call - one place that logs, and one
     place that decides what counts as a failure.
 
@@ -79,9 +79,12 @@ def _request(method, path, api_key, *, context="", expect="json", **kwargs):
             "Check the key on the Smartlane integration page."
         )
 
-    if not resp.ok:
+    if not resp.ok and resp.status_code not in tolerate:
         logger.error("smartlane %s -> HTTP %s: %s", label, resp.status_code, (resp.text or "")[:500])
         raise SmartlaneAPIError(f"{context or path} failed: {resp.status_code} {resp.text[:300]}")
+    if not resp.ok:
+        logger.warning("smartlane %s -> HTTP %s (tolerated): %s",
+                       label, resp.status_code, (resp.text or "")[:300])
 
     if expect == "raw":
         return resp.content
@@ -173,6 +176,18 @@ def create_booking(order, api_key, warehouse_code):
     return data
 
 
+def _unknown_ids_from_422(payload, wanted):
+    """Pulls the rejected ids out of Smartlane's validation response, which
+    keys them positionally: {"errors": {"store_order_id.0": ["... does not
+    exists."]}}."""
+    unknown = set()
+    for key in (payload.get("errors") or {}):
+        _, _, index = str(key).partition(".")
+        if index.isdigit() and int(index) < len(wanted):
+            unknown.add(wanted[int(index)])
+    return unknown
+
+
 def track_consignments(api_key, store_order_ids):
     """Bulk status lookup for orders booked through Smartlane.
 
@@ -186,11 +201,33 @@ def track_consignments(api_key, store_order_ids):
     if not store_order_ids:
         return []
 
-    params = [("store_order_id[]", str(oid)) for oid in store_order_ids]
+    # Smartlane validates the whole request: if ANY id is unknown to them it
+    # rejects the entire call with 422 and returns nothing at all - so one
+    # order we never managed to book would blind us to every other order in
+    # the batch. Tolerate the 422, drop the ids it names, and ask again for
+    # the rest.
+    wanted = [str(oid) for oid in store_order_ids]
     payload = _request(
         "GET", "/track", api_key,
-        context=f"Tracking {len(store_order_ids)} order(s)", params=params,
+        context=f"Tracking {len(wanted)} order(s)",
+        params=[("store_order_id[]", o) for o in wanted],
+        tolerate=(422,),
     )
+
+    if isinstance(payload, dict) and payload.get("code") == 422:
+        unknown = _unknown_ids_from_422(payload, wanted)
+        if unknown:
+            logger.warning("smartlane track: %s order(s) unknown to Smartlane (never booked?): %s",
+                           len(unknown), sorted(unknown))
+        remaining = [o for o in wanted if o not in unknown]
+        if not remaining:
+            logger.warning("smartlane track: none of the requested orders exist at Smartlane")
+            return []
+        payload = _request(
+            "GET", "/track", api_key,
+            context=f"Tracking {len(remaining)} known order(s)",
+            params=[("store_order_id[]", o) for o in remaining],
+        )
 
     # Their responses wrap the rows under a data/consignments key
     # depending on endpoint; accept either, and a bare list too.

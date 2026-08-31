@@ -144,8 +144,12 @@ SHOPIFY_API_VERSION = env("SHOPIFY_API_VERSION", default="2024-10")
 # deployment on this domain (v2 and gcp both answer, with separate token
 # stores) - pointing at the wrong one rejects a perfectly good API key with
 # a bare 401, which is exactly what happened here.
+# The production root, confirmed working against a live token. Smartlane's
+# own documentation (both the PDF and the portal page) gives .dev hosts -
+# gcp.smartlane.dev and v2.smartlane.dev - which are their development
+# deployments and reject production tokens with a bare 401.
 SMARTLANE_API_BASE_URL = env(
-    "SMARTLANE_API_BASE_URL", default="https://v2.smartlane.dev/api/consignment"
+    "SMARTLANE_API_BASE_URL", default="https://smartapi.pk/api/production/consignment"
 )
 # Must be a publicly reachable URL for Shopify's webhook deliveries to
 # actually arrive - on localhost, webhook registration succeeds but
