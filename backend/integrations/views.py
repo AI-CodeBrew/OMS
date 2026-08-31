@@ -17,6 +17,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.context import current_organization_id
+from core.middleware import get_client_ip
 from core.permissions import IsOrgAdmin
 from core.rbac import write_audit_log
 from oms import services as oms_services
@@ -396,7 +397,7 @@ def smartlane_shipment_webhook(request, token):
     (kept for that case, and for manual/test posts that set one), but
     isn't required - only rejected if it's present and WRONG."""
     logger.info("smartlane webhook received: token=%s bytes=%s from=%s",
-                token, len(request.body or b""), request.META.get("REMOTE_ADDR", "?"))
+                token, len(request.body or b""), get_client_ip(request) or "?")
     logger.debug("smartlane webhook raw body: %s", (request.body or b"")[:2000])
 
     try:
@@ -419,6 +420,13 @@ def smartlane_shipment_webhook(request, token):
         return JsonResponse({"detail": "Invalid JSON"}, status=400)
 
     logger.info("smartlane webhook payload keys=%s", sorted(payload) if isinstance(payload, dict) else type(payload).__name__)
+
+    # Not in Smartlane's documented sample payload, but present on every real
+    # delivery - and the only place a rejected booking would explain itself.
+    if isinstance(payload, dict) and (payload.get("errors") or payload.get("code")):
+        logger.warning("smartlane webhook reports code=%r errors=%r for order=%r",
+                       payload.get("code"), payload.get("errors"),
+                       payload.get("store_order_id"))
 
     # Smartlane's portal has TWO webhooks - "Consignment Status" and
     # "Shipper Advice" - and both are configured to POST to this one URL,
