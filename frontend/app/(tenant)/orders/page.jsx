@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import dynamic from "next/dynamic";
 import ordersService from "../../../services/ordersService";
 import couriersService from "../../../services/couriersService";
 import integrationsService from "../../../services/integrationsService";
@@ -11,20 +12,39 @@ import OrderStatusTabs from "../../../components/orders/OrderStatusTabs";
 import OrdersToolbar from "../../../components/orders/OrdersToolbar";
 import OrdersFilterPanel from "../../../components/orders/OrdersFilterPanel";
 import OrdersTable from "../../../components/orders/OrdersTable";
-import OrderActionModal from "../../../components/orders/OrderActionModal";
-import StockShortageModal from "../../../components/orders/StockShortageModal";
-import VerifyDispatchModal from "../../../components/orders/VerifyDispatchModal";
-import ScanReturnModal from "../../../components/orders/ScanReturnModal";
-import NewOrderModal from "../../../components/orders/NewOrderModal";
 import CsvExportButton from "../../../components/orders/CsvExportButton";
-import ImportOrdersModal from "../../../components/orders/ImportOrdersModal";
 import DateRangeFilter from "../../../components/orders/DateRangeFilter";
-import OrderDetailPanel from "../../../components/orders/OrderDetailPanel";
 import {
   ACTIONS_BY_STATUS,
   ACTIONS_NEEDING_PARAMS,
   SMARTLANE_LOAD_SHEET_COURIERS,
 } from "../../../components/orders/statusConfig";
+
+// Modals/panels only ever render once opened (each returns null while
+// closed) - loading them on demand instead of bundling them into the
+// initial page load keeps the Orders page's first paint lean, since most
+// visits never touch most of these.
+const OrderActionModal = dynamic(() => import("../../../components/orders/OrderActionModal"), {
+  ssr: false,
+});
+const StockShortageModal = dynamic(() => import("../../../components/orders/StockShortageModal"), {
+  ssr: false,
+});
+const VerifyDispatchModal = dynamic(() => import("../../../components/orders/VerifyDispatchModal"), {
+  ssr: false,
+});
+const ScanReturnModal = dynamic(() => import("../../../components/orders/ScanReturnModal"), {
+  ssr: false,
+});
+const NewOrderModal = dynamic(() => import("../../../components/orders/NewOrderModal"), {
+  ssr: false,
+});
+const ImportOrdersModal = dynamic(() => import("../../../components/orders/ImportOrdersModal"), {
+  ssr: false,
+});
+const OrderDetailPanel = dynamic(() => import("../../../components/orders/OrderDetailPanel"), {
+  ssr: false,
+});
 
 const EMPTY_FILTERS = { city: "", courier_id: "", gateway: "", date_from: "", date_to: "" };
 

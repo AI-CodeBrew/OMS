@@ -217,6 +217,8 @@ function HeroGraphic() {
         src="/images/integrations-hero.png"
         alt="Shopify, Smartlane, Leopard Courier and PostEx connecting into your OMS"
         className="h-64 w-[470px] object-contain drop-shadow-sm"
+        loading="lazy"
+        decoding="async"
       />
     </div>
   );

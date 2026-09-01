@@ -81,7 +81,14 @@ ALLOWED_TRANSITIONS = {
     # advances it, and cancelling is terminal). Only reachable through
     # abandon_smartlane_booking, which verifies with Smartlane first.
     "booking_pending": {"ready_to_print", "awaiting_assigning", "cancelled"},
-    "ready_to_print": {"ready_to_pick", "cancelled"},
+    # An order stays here - visibly "Ready to Print" - through as many
+    # loadsheet/airway-bill downloads as needed. Nothing about printing a
+    # document is itself a dispatch signal, so downloading no longer
+    # silently advances the order; only a real dispatch (courier pickup
+    # reported by Smartlane, or the manual Dispatch action) moves it on.
+    # ready_to_pick is kept reachable for any order already sitting there
+    # from before this change, not as a new automatic step.
+    "ready_to_print": {"ready_to_pick", "dispatched", "cancelled"},
     "ready_to_pick": {"dispatched", "cancelled"},
     "awaiting_dispatched": {"dispatched", "dispatch_issue", "cancelled"},
     "dispatch_issue": {"awaiting_dispatched", "cancelled"},

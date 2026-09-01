@@ -9,12 +9,13 @@ from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from core.permissions import RequireModule
 from wms.services import InsufficientStock
 
 from . import importers, services
-from .models import Courier, Order, OrderItem, OrderNote, OrderTransaction
+from .models import Courier, Order, OrderItem, OrderNote, OrderTransaction, PrintBatch
 from .serializers import (
     CourierSerializer,
     OrderNoteSerializer,
@@ -22,6 +23,7 @@ from .serializers import (
     OrderStatusEventSerializer,
     OrderSummarySerializer,
     OrderTransactionSerializer,
+    PrintBatchSerializer,
 )
 
 logger = logging.getLogger(__name__)
@@ -90,8 +92,10 @@ class OrderViewSet(viewsets.ModelViewSet):
         # Order.objects already scopes to the caller's organization via
         # TenantScopedModel's manager; filtering explicitly here too keeps
         # the query readable without relying on that being remembered.
-        qs = Order.objects.filter(organization_id=self.request.organization_id).prefetch_related(
-            "items"
+        qs = (
+            Order.objects.filter(organization_id=self.request.organization_id)
+            .select_related("courier", "parent_order")
+            .prefetch_related("items")
         )
         return self._apply_filters(qs, self.request.query_params)
 
@@ -484,11 +488,10 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["get"])
     def loadsheet(self, request, pk=None):
+        # Downloading no longer transitions the order - it stays visibly
+        # "Ready to Print" through as many downloads as needed, only a
+        # real dispatch signal moves it on. See ALLOWED_TRANSITIONS.
         order = self.get_object()
-        try:
-            services.mark_ready_to_pick(order, actor_user_id=request.user_id)
-        except services.InvalidTransition:
-            pass  # already past/before Ready to Print - still show the sheet, just don't re-transition
         return HttpResponse(self._print_document_html(order, "Loadsheet"), content_type="text/html")
 
     @action(detail=True, methods=["get"], url_path="airway-bill")
@@ -508,6 +511,30 @@ class OrderViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return connection, None
+
+    def _save_print_batch(self, *, organization_id, kind, courier, order_numbers, content, content_type, actor_user_id):
+        """Keeps a permanent copy of exactly what was generated, so the
+        Batch page can offer it back later without re-hitting Smartlane -
+        which could return different data by then, or fail outright if a
+        consignment was since cancelled. Best-effort: a storage hiccup
+        here must not block the document the user is actively downloading
+        right now."""
+        from django.core.files.base import ContentFile
+
+        try:
+            batch = PrintBatch.all_objects.create(
+                organization_id=organization_id,
+                kind=kind,
+                courier=courier or "",
+                order_count=len(order_numbers),
+                order_numbers=list(order_numbers),
+                content_type=content_type,
+                created_by_user_id=actor_user_id,
+            )
+            ext = "pdf" if content_type == "application/pdf" else "html"
+            batch.file.save(f"{kind}.{ext}", ContentFile(content), save=True)
+        except Exception:
+            pass
 
     @action(detail=False, methods=["post"], url_path="smartlane-airway-bill")
     def smartlane_airway_bill(self, request):
@@ -537,6 +564,16 @@ class OrderViewSet(viewsets.ModelViewSet):
             html = smartlane_client.fetch_airway_bill(connection.api_key, order_numbers)
         except smartlane_client.SmartlaneAPIError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
+        self._save_print_batch(
+            organization_id=request.organization_id,
+            kind="airway_bill",
+            courier="",
+            order_numbers=order_numbers,
+            content=html.encode("utf-8"),
+            content_type="text/html",
+            actor_user_id=request.user_id,
+        )
         return HttpResponse(html, content_type="text/html")
 
     @action(detail=False, methods=["post"], url_path="smartlane-load-sheet")
@@ -583,16 +620,19 @@ class OrderViewSet(viewsets.ModelViewSet):
         except smartlane_client.SmartlaneAPIError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
 
-        # Downloading the load sheet is the "picked up for warehouse
-        # picking" signal, same as the old per-order loadsheet endpoint -
-        # best-effort per order so one already-past-this-point order
-        # doesn't fail the whole batch's document.
-        if order_ids:
-            for order in Order.objects.filter(organization_id=request.organization_id, id__in=order_ids):
-                try:
-                    services.mark_ready_to_pick(order, actor_user_id=request.user_id)
-                except services.InvalidTransition:
-                    pass
+        self._save_print_batch(
+            organization_id=request.organization_id,
+            kind="loadsheet",
+            courier=courier,
+            order_numbers=order_numbers or [],
+            content=pdf_bytes,
+            content_type="application/pdf",
+            actor_user_id=request.user_id,
+        )
+
+        # Downloading no longer transitions the order - it stays visibly
+        # "Ready to Print" through as many downloads as needed, only a
+        # real dispatch signal moves it on. See ALLOWED_TRANSITIONS.
         return HttpResponse(pdf_bytes, content_type="application/pdf")
 
     @action(detail=True, methods=["get", "post"])
@@ -885,3 +925,137 @@ class CourierViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(organization_id=self.request.organization_id)
+
+
+class PrintBatchViewSet(viewsets.ReadOnlyModelViewSet):
+    """Every loadsheet/airway-bill ever generated (see OrderViewSet.
+    smartlane_load_sheet/smartlane_airway_bill, which save one of these
+    each time) - browsable and re-downloadable without re-hitting
+    Smartlane. Read-only: batches are a record of what was generated, not
+    something users edit."""
+
+    serializer_class = PrintBatchSerializer
+    permission_classes = [RequireModule]
+    required_module = "oms"
+    pagination_class = OrderPagination
+
+    def get_queryset(self):
+        qs = PrintBatch.objects.filter(organization_id=self.request.organization_id)
+        kind = self.request.query_params.get("kind")
+        if kind:
+            qs = qs.filter(kind=kind)
+        date_from = self.request.query_params.get("date_from")
+        if date_from:
+            qs = qs.filter(created_at__date__gte=date_from)
+        date_to = self.request.query_params.get("date_to")
+        if date_to:
+            qs = qs.filter(created_at__date__lte=date_to)
+        q = (self.request.query_params.get("q") or "").strip()
+        if q:
+            qs = qs.filter(order_numbers__icontains=q)
+        return qs
+
+    @action(detail=True, methods=["get"])
+    def download(self, request, pk=None):
+        batch = self.get_object()
+        ext = "pdf" if batch.content_type == "application/pdf" else "html"
+        response = HttpResponse(batch.file.read(), content_type=batch.content_type)
+        response["Content-Disposition"] = (
+            f'attachment; filename="{batch.kind}-{batch.created_at:%Y-%m-%d}.{ext}"'
+        )
+        return response
+
+
+class ReportView(APIView):
+    """Order-count summary for a date range, one row per status, plus a
+    CSV export of the same - the sidebar "Report" page's data source."""
+
+    permission_classes = [RequireModule]
+    required_module = "oms"
+
+    def _scoped_queryset(self, request):
+        qs = Order.objects.filter(organization_id=request.organization_id)
+        date_from = request.query_params.get("date_from")
+        date_to = request.query_params.get("date_to")
+        date_field = Coalesce("placed_at", "created_at")
+        if date_from:
+            qs = qs.annotate(_date=date_field).filter(_date__date__gte=date_from)
+        if date_to:
+            qs = qs.annotate(_date=date_field).filter(_date__date__lte=date_to)
+        return qs
+
+    def _counts(self, qs):
+        by_status = dict(qs.values_list("status").annotate(n=Count("id")))
+        total = sum(by_status.values())
+        return {
+            "total_orders": total,
+            "new": by_status.get("new", 0),
+            "pending": by_status.get("pending_cc", 0) + by_status.get("pending_cod", 0),
+            "awaiting_assigning": by_status.get("awaiting_assigning", 0),
+            "ready_to_print": by_status.get("ready_to_print", 0) + by_status.get("ready_to_pick", 0),
+            "dispatched": by_status.get("dispatched", 0),
+            "delivered": by_status.get("delivered", 0),
+            "returned": by_status.get("returned", 0),
+            "cancelled": by_status.get("cancelled", 0),
+        }
+
+    def get(self, request):
+        # "export=csv" not "format=csv" - "format" is DRF's own reserved
+        # query param for content-type negotiation (?format=json etc.);
+        # using it here made DRF's DefaultContentNegotiation try to find a
+        # renderer for "csv", find none, and raise its own Http404 before
+        # this view's code ever ran at all.
+        if request.query_params.get("export") == "csv":
+            return self._csv(request)
+        return Response(self._counts(self._scoped_queryset(request)))
+
+    def _csv(self, request):
+        qs = self._scoped_queryset(request).annotate(
+            _date=Coalesce(TruncDate("placed_at"), TruncDate("created_at"))
+        )
+        by_day = (
+            qs.values("_date", "status")
+            .annotate(n=Count("id"))
+            .order_by("_date")
+        )
+        rows_by_date = {}
+        for row in by_day:
+            rows_by_date.setdefault(row["_date"], {})[row["status"]] = row["n"]
+
+        header = [
+            "Date", "Total Orders", "New", "Pending CC", "Pending COD",
+            "Awaiting Assigning", "Ready to Print", "Ready to Pick",
+            "Dispatched", "Delivered", "Returned", "Cancelled",
+        ]
+
+        def rows():
+            yield header
+            for date, counts in sorted(rows_by_date.items()):
+                total = sum(counts.values())
+                yield [
+                    date.isoformat() if date else "",
+                    total,
+                    counts.get("new", 0),
+                    counts.get("pending_cc", 0),
+                    counts.get("pending_cod", 0),
+                    counts.get("awaiting_assigning", 0),
+                    counts.get("ready_to_print", 0),
+                    counts.get("ready_to_pick", 0),
+                    counts.get("dispatched", 0),
+                    counts.get("delivered", 0),
+                    counts.get("returned", 0),
+                    counts.get("cancelled", 0),
+                ]
+
+        class Echo:
+            def write(self, value):
+                return value
+
+        writer = csv.writer(Echo())
+        response = StreamingHttpResponse(
+            (writer.writerow(row) for row in rows()), content_type="text/csv"
+        )
+        date_from = request.query_params.get("date_from") or "all"
+        date_to = request.query_params.get("date_to") or "all"
+        response["Content-Disposition"] = f'attachment; filename="report_{date_from}_to_{date_to}.csv"'
+        return response
