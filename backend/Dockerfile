@@ -12,6 +12,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+# Needs to run as root (true for the whole Docker build, unlike Render's
+# native Python buildpack) so its internal apt-get install for Chromium's
+# system libraries actually succeeds - that's the real reason the browser
+# was never present at runtime under the buildpack, not a path issue.
+RUN playwright install --with-deps chromium
 
 COPY . .
 

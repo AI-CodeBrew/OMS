@@ -7,6 +7,11 @@
 !.env.example.*
 backend/.venv/
 backend/staticfiles/
+# Local FileSystemStorage target for PrintBatch.file (load sheet/airway
+# bill PDFs) - generated data, not source; production needs real object
+# storage (see the PrintBatch model's docstring) since this won't survive
+# a deploy anyway.
+backend/print_batches/
 frontend/node_modules/
 frontend/.next/
 **/__pycache__/

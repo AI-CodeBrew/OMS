@@ -1,18 +1,23 @@
 # Render Blueprint — OMS Django API
-# Dashboard: Root Directory = backend
+#
+# Docker, not the native Python buildpack - switched specifically because
+# Playwright's Chromium needs `apt-get install` for its system libraries,
+# and the native buildpack's build step doesn't run as root, so that
+# install silently failed and the browser was never actually present at
+# runtime (not a path/cache issue - nothing was ever downloaded). Docker
+# builds as root by default, which is what makes this actually work.
+# The Dockerfile itself already runs collectstatic at build time, so no
+# separate buildCommand/startCommand are needed here.
 services:
   - type: web
     name: oms-backend
-    runtime: python
-    rootDir: backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
     plan: free
     region: oregon
-    buildCommand: pip install -r requirements.txt && playwright install --with-deps chromium
-    startCommand: python manage.py collectstatic --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:$PORT
     healthCheckPath: /api/core/health/
     envVars:
-      - key: PYTHON_VERSION
-        value: "3.12.8"
       - key: DJANGO_SETTINGS_MODULE
         value: config.settings.prod
       - key: DJANGO_SECRET_KEY
@@ -35,10 +40,3 @@ services:
         sync: false
       - key: SHOPIFY_API_VERSION
         value: "2024-10"
-      # Without this, `playwright install` (build step) and the app
-      # launching the browser (runtime) can resolve to different homedir
-      # cache paths on Render's infra, so the binary that got installed
-      # during build is "missing" at runtime - this pins both to the same
-      # path, inside the app itself rather than a user-level cache dir.
-      - key: PLAYWRIGHT_BROWSERS_PATH
-        value: "0"
