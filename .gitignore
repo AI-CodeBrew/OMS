@@ -12,7 +12,7 @@ backend/staticfiles/
 # storage (see the PrintBatch model's docstring) since this won't survive
 # a deploy anyway.
 backend/print_batches/
-frontend/node_modules/
+node_modules/
 frontend/.next/
 **/__pycache__/
 *.pyc

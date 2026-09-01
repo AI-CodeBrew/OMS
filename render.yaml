@@ -1,23 +1,36 @@
 # Render Blueprint — OMS Django API
+# Dashboard: Root Directory = backend
 #
-# Docker, not the native Python buildpack - switched specifically because
-# Playwright's Chromium needs `apt-get install` for its system libraries,
-# and the native buildpack's build step doesn't run as root, so that
-# install silently failed and the browser was never actually present at
-# runtime (not a path/cache issue - nothing was ever downloaded). Docker
-# builds as root by default, which is what makes this actually work.
-# The Dockerfile itself already runs collectstatic at build time, so no
-# separate buildCommand/startCommand are needed here.
+# NOTE: the live oms-backend service (srv-da7votou01pc73c5no4g) was created
+# from the dashboard, not from this file, so its settings win and edits here
+# only matter for a service created fresh from this Blueprint. Keep the two
+# in sync by hand - the "Executable doesn't exist" Playwright bug came from
+# exactly that drift: the buildCommand here grew a `playwright install`, the
+# dashboard's did not, so Chromium was never downloaded on the box that
+# actually serves traffic. It is not a root/apt-get problem: the plain
+# `playwright install chromium` below needs no root, and with
+# PLAYWRIGHT_BROWSERS_PATH=0 the browser lands inside the venv's
+# site-packages, which is part of the build artifact and so is still there
+# at runtime. (backend/Dockerfile is kept as a working Docker alternative,
+# but a service's runtime cannot be changed after creation.)
 services:
   - type: web
     name: oms-backend
-    runtime: docker
-    dockerfilePath: ./backend/Dockerfile
-    dockerContext: ./backend
+    runtime: python
+    rootDir: backend
     plan: free
     region: oregon
+    buildCommand: pip install -r requirements.txt && playwright install chromium
+    startCommand: python manage.py collectstatic --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:$PORT
     healthCheckPath: /api/core/health/
     envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.8"
+      # Installs/looks for Chromium inside site-packages instead of a
+      # homedir cache, so the build step and the running server agree on
+      # where it is. Must stay set on the service itself, not just here.
+      - key: PLAYWRIGHT_BROWSERS_PATH
+        value: "0"
       - key: DJANGO_SETTINGS_MODULE
         value: config.settings.prod
       - key: DJANGO_SECRET_KEY

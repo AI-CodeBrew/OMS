@@ -377,6 +377,17 @@ def _render_pdf(url, api_key, *, context=""):
         raise
     except Exception as exc:
         logger.error("smartlane pdf render failed for %s: %s", context or url, exc)
+        # The Python package installing without its browser binary is a
+        # deploy-config mistake, not something the user did wrong, so say
+        # what has to happen on the server instead of dumping Playwright's
+        # own multi-line "Executable doesn't exist at ..." blob into the UI.
+        if "Executable doesn't exist" in str(exc):
+            raise SmartlaneAPIError(
+                f"Could not render {context or url} as PDF: the server is missing its "
+                "Chromium browser. The deploy's build step must run "
+                "'playwright install chromium' (with PLAYWRIGHT_BROWSERS_PATH=0), "
+                "not just 'pip install -r requirements.txt'."
+            ) from exc
         raise SmartlaneAPIError(f"Could not render {context or url} as PDF: {exc}") from exc
 
     logger.info("smartlane pdf render %s -> %s bytes in %.2fs",
