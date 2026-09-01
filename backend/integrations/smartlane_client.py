@@ -1,5 +1,6 @@
 import logging
 import time
+from urllib.parse import urlencode
 
 import requests
 from django.conf import settings
@@ -289,10 +290,14 @@ def fetch_airway_bill(api_key, store_order_ids, *, no_of_prints=1):
 
 
 def fetch_load_sheet(api_key, *, courier, store_order_ids=None, start_date=None, end_date=None):
-    """Returns raw PDF bytes (not JSON) for the load sheet of parcels
-    ready for a given courier - Smartlane generates it for one courier at
-    a time. Either store_order_ids or a start/end date range is required;
-    if store_order_ids is given the date range is ignored by Smartlane."""
+    """Despite the api doc calling this a PDF endpoint, it actually
+    returns Smartlane's own web portal page ("SmartLane Download PDF CN
+    Slip") - confirmed against a real response - not raw PDF bytes. Kept
+    for callers that want the raw HTML/whatever Smartlane sends; for an
+    actual PDF file, use render_load_sheet_pdf below instead, which loads
+    this same page in a real browser and captures it. Either
+    store_order_ids or a start/end date range is required; if
+    store_order_ids is given the date range is ignored by Smartlane."""
     _require_key(api_key)
     if not courier:
         raise SmartlaneAPIError("courier is required for the load sheet.")
@@ -309,6 +314,95 @@ def fetch_load_sheet(api_key, *, courier, store_order_ids=None, start_date=None,
         "GET", "/load_sheet", api_key,
         context=f"Load sheet ({courier})", expect="raw", params=params,
     )
+
+
+def _load_sheet_url(*, courier, store_order_ids=None, start_date=None, end_date=None):
+    params = [("courier", courier)]
+    if store_order_ids:
+        params += [("store_order_ids[]", str(oid)) for oid in store_order_ids]
+    else:
+        params += [("start_date", start_date), ("end_date", end_date)]
+    return f"{BASE_URL}/load_sheet?{urlencode(params)}"
+
+
+def _airway_bill_url(store_order_ids, *, no_of_prints=1):
+    params = [("store_order_id[]", str(oid)) for oid in store_order_ids]
+    params.append(("no_of_prints", str(no_of_prints)))
+    return f"{BASE_URL}/airway/bill?{urlencode(params)}"
+
+
+def _render_pdf(url, api_key, *, context=""):
+    """Loads an authenticated Smartlane page in a real (headless) browser
+    and captures it as PDF.
+
+    Necessary because both the load-sheet and airway-bill endpoints
+    return Smartlane's own portal page, not raw PDF bytes - and that
+    page's QR code/barcode is drawn by its own JavaScript, so a plain
+    HTTP fetch can never reproduce it correctly no matter how the bytes
+    are packaged. Navigating for real (rather than injecting the HTML
+    into a blank page) is what lets its relative CSS/JS/font/image
+    references resolve against Smartlane's actual domain, and lets the
+    barcode-drawing script actually run before the page is captured -
+    the same thing a person doing it manually via the browser's own
+    Ctrl+P -> Save as PDF would get.
+    """
+    _require_key(api_key)
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:
+        raise SmartlaneAPIError(
+            "PDF rendering isn't installed on this backend yet - run "
+            "'pip install -r requirements.txt' then 'playwright install chromium'."
+        ) from exc
+
+    started = time.monotonic()
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            try:
+                page = browser.new_page(extra_http_headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Accept": "text/html",
+                })
+                resp = page.goto(url, wait_until="networkidle", timeout=30000)
+                if resp is None or not resp.ok:
+                    status = resp.status if resp else "no response"
+                    body = page.content()[:500]
+                    logger.error("smartlane pdf render %s -> HTTP %s: %s", context or url, status, body)
+                    raise SmartlaneAPIError(f"{context or url} failed to load (HTTP {status})")
+                pdf_bytes = page.pdf(format="A4", print_background=True)
+            finally:
+                browser.close()
+    except SmartlaneAPIError:
+        raise
+    except Exception as exc:
+        logger.error("smartlane pdf render failed for %s: %s", context or url, exc)
+        raise SmartlaneAPIError(f"Could not render {context or url} as PDF: {exc}") from exc
+
+    logger.info("smartlane pdf render %s -> %s bytes in %.2fs",
+                context or url, len(pdf_bytes), time.monotonic() - started)
+    return pdf_bytes
+
+
+def render_load_sheet_pdf(api_key, *, courier, store_order_ids=None, start_date=None, end_date=None):
+    """Real PDF bytes for the load sheet - see _render_pdf. Same
+    parameter rules as fetch_load_sheet."""
+    if not courier:
+        raise SmartlaneAPIError("courier is required for the load sheet.")
+    if not store_order_ids and not (start_date and end_date):
+        raise SmartlaneAPIError("Provide store_order_ids or both start_date and end_date.")
+    url = _load_sheet_url(
+        courier=courier, store_order_ids=store_order_ids, start_date=start_date, end_date=end_date
+    )
+    return _render_pdf(url, api_key, context=f"Load sheet ({courier})")
+
+
+def render_airway_bill_pdf(api_key, store_order_ids, *, no_of_prints=1):
+    """Real PDF bytes for the airway bill - see _render_pdf."""
+    if not store_order_ids:
+        raise SmartlaneAPIError("No orders to print an airway bill for.")
+    url = _airway_bill_url(store_order_ids, no_of_prints=no_of_prints)
+    return _render_pdf(url, api_key, context=f"Airway bill for {len(store_order_ids)} order(s)")
 
 
 def fetch_city_list(api_key):

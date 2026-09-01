@@ -538,10 +538,10 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["post"], url_path="smartlane-airway-bill")
     def smartlane_airway_bill(self, request):
-        """Real Smartlane-generated airway bill (HTML) for the given
-        orders - proxies Smartlane's own consignment/airway/bill api, so
-        the document always matches whichever courier Smartlane actually
-        booked (Leopards, BarqRaftar, ...), not a local guess."""
+        """Real airway bill PDF for the given orders, rendered from
+        Smartlane's own portal page (see smartlane_client.render_airway_
+        bill_pdf) - matches whichever courier Smartlane actually booked
+        (Leopards, BarqRaftar, ...), not a local guess."""
         from integrations import smartlane_client
 
         order_ids = request.data.get("order_ids") or []
@@ -561,7 +561,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             return Response({"detail": "No matching orders"}, status=status.HTTP_404_NOT_FOUND)
 
         try:
-            html = smartlane_client.fetch_airway_bill(connection.api_key, order_numbers)
+            pdf_bytes = smartlane_client.render_airway_bill_pdf(connection.api_key, order_numbers)
         except smartlane_client.SmartlaneAPIError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
 
@@ -570,11 +570,11 @@ class OrderViewSet(viewsets.ModelViewSet):
             kind="airway_bill",
             courier="",
             order_numbers=order_numbers,
-            content=html.encode("utf-8"),
-            content_type="text/html",
+            content=pdf_bytes,
+            content_type="application/pdf",
             actor_user_id=request.user_id,
         )
-        return HttpResponse(html, content_type="text/html")
+        return HttpResponse(pdf_bytes, content_type="application/pdf")
 
     @action(detail=False, methods=["post"], url_path="smartlane-load-sheet")
     def smartlane_load_sheet(self, request):
@@ -610,7 +610,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             )
 
         try:
-            pdf_bytes = smartlane_client.fetch_load_sheet(
+            pdf_bytes = smartlane_client.render_load_sheet_pdf(
                 connection.api_key,
                 courier=courier,
                 store_order_ids=order_numbers,

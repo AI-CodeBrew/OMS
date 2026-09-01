@@ -143,43 +143,16 @@ class OrdersService {
     window.URL.revokeObjectURL(blobUrl);
   }
 
-  // Real Smartlane-generated documents (proxied from Smartlane's own api) -
-  // always match whichever courier Smartlane actually booked.
+  // Real Smartlane-generated documents (proxied from Smartlane's own api,
+  // rendered to actual PDF server-side) - always match whichever courier
+  // Smartlane actually booked.
   async printSmartlaneAirwayBill(orderIds) {
-    // Smartlane returns HTML for this one, not a real PDF - open it so the
-    // browser's own print dialog ("Save as PDF") is available, rather than
-    // downloading raw .html.
-    //
-    // The tab is opened HERE, synchronously, before the fetch below -
-    // window.open() called after an await is no longer a direct result of
-    // the click as far as the browser's popup blocker is concerned, and
-    // gets silently killed with no error and no visible tab. Opening a
-    // blank tab immediately and only navigating it once the document is
-    // ready keeps it inside the click's own trusted-gesture window.
-    const tab = window.open("", "_blank");
-    try {
-      const blob = await this._postForDocument(
-        `${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderSmartlaneAirwayBill}`,
-        { order_ids: orderIds }
-      );
-      const blobUrl = window.URL.createObjectURL(blob);
-      if (tab) {
-        tab.location = blobUrl;
-      } else {
-        // Popup blocked outright (blocked before we even got here) -
-        // fall back to a normal download so the user still gets the
-        // document instead of nothing.
-        const link = document.createElement("a");
-        link.href = blobUrl;
-        link.download = "airway-bill.html";
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-      }
-    } catch (err) {
-      tab?.close();
-      throw err;
-    }
+    const dateStamp = new Date().toISOString().slice(0, 10);
+    await this._postAndDownloadDocument(
+      `${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderSmartlaneAirwayBill}`,
+      { order_ids: orderIds },
+      `airway-bill-${dateStamp}.pdf`
+    );
   }
 
   async printSmartlaneLoadSheet(orderIds, courier) {
