@@ -87,6 +87,20 @@ def _request(method, path, api_key, *, context="", expect="json", tolerate=(), *
                        label, resp.status_code, (resp.text or "")[:300])
 
     if expect == "raw":
+        # Same trap as the JSON case below, worse consequence: a 200 whose
+        # body is actually an HTML error page (no orders in "ready" state
+        # for that courier, a bad param, ...) would otherwise get handed
+        # straight to the browser labelled application/pdf - "Failed to
+        # load PDF document" is what that looks like from the outside,
+        # with no indication of what Smartlane actually said.
+        actual_type = resp.headers.get("Content-Type", "")
+        if "pdf" not in actual_type.lower():
+            logger.error("smartlane %s -> HTTP %s but Content-Type was %r, not pdf: %s",
+                         label, resp.status_code, actual_type, (resp.text or "")[:500])
+            raise SmartlaneAPIError(
+                f"Smartlane didn't return a PDF for {context or path} "
+                f"(got {actual_type or 'no content-type'}): {(resp.text or '')[:300]}"
+            )
         return resp.content
     if expect == "text":
         return resp.text
