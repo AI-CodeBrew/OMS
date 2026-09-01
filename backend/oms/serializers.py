@@ -1,6 +1,26 @@
 from rest_framework import serializers
 
-from .models import Courier, Order, OrderItem, OrderNote, OrderStatusEvent, OrderTransaction
+from .models import Courier, Order, OrderItem, OrderNote, OrderStatusEvent, OrderTransaction, PrintBatch
+
+
+class PrintBatchSerializer(serializers.ModelSerializer):
+    download_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PrintBatch
+        fields = [
+            "id",
+            "kind",
+            "courier",
+            "order_count",
+            "order_numbers",
+            "content_type",
+            "created_at",
+            "download_url",
+        ]
+
+    def get_download_url(self, batch):
+        return f"/api/oms/print-batches/{batch.id}/download/"
 
 
 class OrderItemSerializer(serializers.ModelSerializer):

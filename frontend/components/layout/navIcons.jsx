@@ -228,3 +228,22 @@ export const WalletIcon = ({ className }) => (
     <path d="M15 9h2v4h-2a2 2 0 0 1 0-4Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
   </Base>
 );
+
+// Stacked documents - used for "Batch" (saved loadsheet/airway-bill runs).
+export const LayersIcon = ({ className }) => (
+  <Base className={className}>
+    <path
+      d="m10 3 7 3.5-7 3.5-7-3.5L10 3Z"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinejoin="round"
+    />
+    <path
+      d="m3 10 7 3.5 7-3.5M3 13.5 10 17l7-3.5"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </Base>
+);

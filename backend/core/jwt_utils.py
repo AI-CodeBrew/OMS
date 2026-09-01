@@ -1,9 +1,12 @@
+import logging
 import ssl
 
 import certifi
 import jwt
 from django.conf import settings
 from jwt import PyJWKClient
+
+logger = logging.getLogger(__name__)
 
 _jwk_client = None
 
@@ -43,7 +46,17 @@ def decode_supabase_jwt(token):
     try:
         header = jwt.get_unverified_header(token)
     except jwt.PyJWTError as exc:
+        logger.warning("supabase jwt: could not read header: %s", exc)
         raise InvalidSupabaseToken(str(exc)) from exc
+
+    # PyJWT defaults to zero tolerance on iat/exp/nbf - any clock drift at
+    # all between this machine and Supabase's auth servers (a few seconds
+    # is normal and expected, not a sign of anything wrong) makes every
+    # single login fail with "token is not yet valid (iat)" or "expired".
+    # 30s leeway is standard practice for exactly this reason (Auth0,
+    # Firebase, etc. all do the same) - it doesn't meaningfully weaken
+    # verification, it just stops punishing normal, tiny clock drift.
+    leeway = 30
 
     try:
         if header.get("alg") == "HS256":
@@ -52,6 +65,7 @@ def decode_supabase_jwt(token):
                 settings.SUPABASE_JWT_SECRET,
                 algorithms=["HS256"],
                 audience="authenticated",
+                leeway=leeway,
             )
         signing_key = _get_jwk_client().get_signing_key_from_jwt(token)
         return jwt.decode(
@@ -59,6 +73,12 @@ def decode_supabase_jwt(token):
             signing_key.key,
             algorithms=[header["alg"]],
             audience="authenticated",
+            leeway=leeway,
         )
     except jwt.PyJWTError as exc:
+        # Was silently swallowed into a generic "invalid token" before -
+        # logged here so the real reason (bad signature, wrong audience,
+        # expired, key not found in JWKS, ...) is visible instead of every
+        # failure looking identical from the outside.
+        logger.warning("supabase jwt: rejected (alg=%s): %s", header.get("alg"), exc)
         raise InvalidSupabaseToken(str(exc)) from exc

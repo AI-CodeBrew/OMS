@@ -118,7 +118,7 @@ class OrdersService {
     return data;
   }
 
-  async _postAndOpenDocument(url, body) {
+  async _postForDocument(url, body) {
     const response = await fetch(url, {
       method: "POST",
       headers: authService.getAuthHeaders(),
@@ -128,24 +128,41 @@ class OrdersService {
       const data = await response.json().catch(() => ({}));
       throw new Error(data.detail || "Failed to generate document");
     }
-    const blob = await response.blob();
+    return response.blob();
+  }
+
+  async _postAndDownloadDocument(url, body, filename) {
+    const blob = await this._postForDocument(url, body);
     const blobUrl = window.URL.createObjectURL(blob);
-    window.open(blobUrl, "_blank");
+    const link = document.createElement("a");
+    link.href = blobUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(blobUrl);
   }
 
   // Real Smartlane-generated documents (proxied from Smartlane's own api) -
   // always match whichever courier Smartlane actually booked.
   async printSmartlaneAirwayBill(orderIds) {
-    await this._postAndOpenDocument(
+    // Smartlane returns HTML for this one, not a real PDF - open it so the
+    // browser's own print dialog ("Save as PDF") is available, rather than
+    // downloading raw .html.
+    const blob = await this._postForDocument(
       `${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderSmartlaneAirwayBill}`,
       { order_ids: orderIds }
     );
+    const blobUrl = window.URL.createObjectURL(blob);
+    window.open(blobUrl, "_blank");
   }
 
   async printSmartlaneLoadSheet(orderIds, courier) {
-    await this._postAndOpenDocument(
+    const dateStamp = new Date().toISOString().slice(0, 10);
+    await this._postAndDownloadDocument(
       `${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderSmartlaneLoadSheet}`,
-      { order_ids: orderIds, courier }
+      { order_ids: orderIds, courier },
+      `loadsheet-${courier}-${dateStamp}.pdf`
     );
   }
 

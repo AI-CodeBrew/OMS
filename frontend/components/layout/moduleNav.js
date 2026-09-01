@@ -17,6 +17,7 @@ import {
   WalletIcon,
   CashIcon,
   IntegrationsIcon,
+  LayersIcon,
 } from "./navIcons";
 
 // Top header tabs only — Integrations / Logs / Settings live in the sidebar.
@@ -54,6 +55,20 @@ export const LOGS_ITEM = {
   icon: DocumentIcon,
 };
 
+export const REPORT_ITEM = {
+  key: "reports",
+  label: "Report",
+  href: "/reports",
+  icon: BarChartIcon,
+};
+
+export const BATCH_ITEM = {
+  key: "batch",
+  label: "Batch",
+  href: "/batch",
+  icon: LayersIcon,
+};
+
 const MODULE_PATH_PREFIXES = {
   oms: ["/orders", "/dashboard"],
   // Returns Desk lives under WMS — keep the WMS sidebar when on /returns.
@@ -62,6 +77,7 @@ const MODULE_PATH_PREFIXES = {
   integrations: ["/integrations"],
   logs: ["/logs"],
   reports: ["/reports"],
+  batch: ["/batch"],
   settings: ["/settings"],
 };
 
@@ -116,6 +132,9 @@ export function canAccessPath(user, pathname) {
   if (pathname === "/reports" || pathname.startsWith("/reports/")) {
     return hasProduct("oms") || hasProduct("wms");
   }
+  if (pathname === "/batch" || pathname.startsWith("/batch/")) {
+    return hasProduct("oms") || hasProduct("wms");
+  }
 
   const active = getActiveModule(pathname);
   if (!active) return true;
@@ -154,5 +173,6 @@ export const SIDEBAR_ITEMS = {
   integrations: [],
   logs: [],
   reports: [],
+  batch: [],
   settings: [],
 };

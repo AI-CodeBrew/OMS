@@ -179,6 +179,18 @@ class Order(TenantScopedModel):
             ),
         ]
         ordering = ["-created_at"]
+        # Every page load filters/sorts by these - status (tabs, report),
+        # created_at (default ordering, every unfiltered list), phone
+        # (get_probability_map's per-page GROUP BY). None were indexed
+        # despite being the most common WHERE/ORDER BY on the biggest
+        # table in the app (9,000+ rows and growing) - a real, measurable
+        # contributor to the app feeling slow at this scale, not a guess.
+        indexes = [
+            models.Index(fields=["organization", "status"], name="oms_order_org_status_idx"),
+            models.Index(fields=["organization", "-created_at"], name="oms_order_org_created_idx"),
+            models.Index(fields=["organization", "-placed_at"], name="oms_order_org_placed_idx"),
+            models.Index(fields=["organization", "customer_phone"], name="oms_order_org_phone_idx"),
+        ]
 
     def __str__(self):
         return self.order_number
@@ -295,3 +307,46 @@ class OrderTransaction(TenantScopedModel):
 
     def __str__(self):
         return f"{self.amount} ({self.status}) on {self.order_id}"
+
+
+def _print_batch_upload_path(instance, filename):
+    # Grouped by org and day so a bucket/filesystem browse isn't one flat
+    # folder of thousands of files - date comes from created_at's default
+    # (auto_now_add hasn't run yet at upload time, so use utcnow directly).
+    from django.utils import timezone
+
+    stamp = timezone.now().strftime("%Y/%m/%d")
+    return f"print_batches/{instance.organization_id}/{stamp}/{instance.id}_{filename}"
+
+
+class PrintBatch(TenantScopedModel):
+    """One generated loadsheet/airway-bill document, kept so it can be
+    found and re-downloaded later exactly as it was originally generated -
+    not re-fetched from Smartlane, which could return different data if
+    anything about those orders changed since (or fail entirely if the
+    consignment was later cancelled)."""
+
+    KIND_CHOICES = [
+        ("loadsheet", "Load Sheet"),
+        ("airway_bill", "Airway Bill"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    kind = models.CharField(max_length=15, choices=KIND_CHOICES)
+    # Empty for airway_bill - Smartlane's airway/bill api isn't scoped to
+    # one courier the way load_sheet is.
+    courier = models.CharField(max_length=50, blank=True, default="")
+    order_count = models.PositiveIntegerField(default=0)
+    # Kept for search (order number lookup) and for display without a join
+    # back to orders that may since have changed status/been deleted.
+    order_numbers = models.JSONField(default=list, blank=True)
+    file = models.FileField(upload_to=_print_batch_upload_path)
+    content_type = models.CharField(max_length=100, default="application/pdf")
+    created_by_user_id = models.UUIDField(null=True, blank=True)
+
+    class Meta:
+        db_table = '"oms"."print_batches"'
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.get_kind_display()} ({self.order_count} orders) {self.created_at:%Y-%m-%d}"

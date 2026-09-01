@@ -3,7 +3,14 @@
 import { useEffect, useRef } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { SIDEBAR_ITEMS, SETTINGS_ITEM, LOGS_ITEM, INTEGRATIONS_ITEM } from "./moduleNav";
+import {
+  SIDEBAR_ITEMS,
+  SETTINGS_ITEM,
+  LOGS_ITEM,
+  INTEGRATIONS_ITEM,
+  REPORT_ITEM,
+  BATCH_ITEM,
+} from "./moduleNav";
 import useAuthStore from "../../store/authStore";
 
 function isItemActive(item, pathname, search) {
@@ -183,6 +190,8 @@ export default function ModuleSidebar({ activeModule, expanded, onToggle }) {
             />
           </>
         ) : null}
+        <ItemComponent item={REPORT_ITEM} active={pathname === REPORT_ITEM.href} />
+        <ItemComponent item={BATCH_ITEM} active={pathname === BATCH_ITEM.href} />
         <ItemComponent item={SETTINGS_ITEM} active={pathname === SETTINGS_ITEM.href} />
       </div>
     </aside>

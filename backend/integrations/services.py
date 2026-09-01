@@ -382,6 +382,11 @@ def _catch_up_to_dispatched(order, tracking_number=""):
     catching up to reality rather than authorising it. This is the same
     reasoning the dispatch branch already used for ready_to_print; it just
     has to apply to the outcome events too.
+
+    ready_to_print dispatches directly now - printing a loadsheet/airway
+    bill is no longer itself a transition (an order stays visibly "Ready
+    to Print" through as many downloads as needed), so there's no
+    intermediate ready_to_pick step to walk through here any more either.
     """
     from oms import services as oms_services
 
@@ -391,9 +396,7 @@ def _catch_up_to_dispatched(order, tracking_number=""):
         if not tracking_number and not order.tracking_number:
             return False
         oms_services.advance_booking_confirmed(order)
-    if order.status == "ready_to_print":
-        oms_services.mark_ready_to_pick(order)
-    if order.status in ("ready_to_pick", "approved", "awaiting_dispatched"):
+    if order.status in ("ready_to_print", "ready_to_pick", "approved", "awaiting_dispatched"):
         oms_services.dispatch_order(order, tracking_number=tracking_number)
     return order.status == "dispatched"
 
