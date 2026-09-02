@@ -168,7 +168,7 @@ export default function PackingPage() {
           onAfterSuccess={load}
         />
 
-        <div>
+        <div className="min-w-0">
           <div className="mb-3 flex flex-wrap items-center gap-2">
             <div className="flex gap-1.5">
               {TABS.map((tab) => (

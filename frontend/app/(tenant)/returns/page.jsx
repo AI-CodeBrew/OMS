@@ -308,7 +308,7 @@ export default function ReturnsPage() {
           onAfterSuccess={load}
         />
 
-        <div>
+        <div className="min-w-0">
           <div className="mb-3 flex flex-wrap items-center gap-2">
             <form
               onSubmit={(e) => {
