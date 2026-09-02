@@ -11,7 +11,7 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from core.permissions import RequireModule
+from core.permissions import RequireAnyModule, RequireModule
 from wms.services import InsufficientStock
 
 from . import importers, services
@@ -89,7 +89,19 @@ class OrderViewSet(viewsets.ModelViewSet):
     serializer_class = OrderSerializer
     permission_classes = [RequireModule]
     required_module = "oms"
+    # Returns Desk and Packing are WMS pages (see frontend's
+    # ModuleSidebar.canAccessPath, which already lets wms-only staff onto
+    # /returns) but they read order data through this same viewset - a
+    # wms-only staff member legitimately needs `list`/`returns-summary` to
+    # work for those two pages specifically. Everything else on this
+    # viewset (create, update, bulk actions, export, ...) stays oms-only.
+    required_any_module = ("oms", "wms")
     pagination_class = OrderPagination
+
+    def get_permissions(self):
+        if self.action in ("list", "returns_summary"):
+            return [RequireAnyModule()]
+        return super().get_permissions()
 
     def get_queryset(self):
         # Order.objects already scopes to the caller's organization via

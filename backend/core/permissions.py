@@ -61,3 +61,39 @@ class RequireModule(BasePermission):
         if getattr(request, "is_org_admin", False):
             return True
         return required_module in (getattr(request, "modules", None) or [])
+
+
+class RequireAnyModule(BasePermission):
+    """Like RequireModule, but passes if the caller has ANY ONE of several
+    modules - for the handful of actions that are legitimately shared
+    across two apps' staff (e.g. Returns Desk and Packing are WMS pages,
+    but the orders they work with live in the oms app; a wms-only staff
+    member still needs to read that order data for exactly those pages,
+    without opening up the rest of OrderViewSet - create, bulk actions,
+    export - which stay oms-only).
+
+    Set `required_any_module = ("oms", "wms")` on the view/viewset.
+    """
+
+    message = "Your organization does not have access to this module."
+
+    def has_permission(self, request, view):
+        required_modules = getattr(view, "required_any_module", None)
+        if not required_modules:
+            return True
+        if getattr(request, "is_super_admin", False):
+            return True
+        organization_id = getattr(request, "organization_id", None)
+        if not organization_id:
+            return False
+        is_org_admin = getattr(request, "is_org_admin", False)
+        user_modules = getattr(request, "modules", None) or []
+        for module in required_modules:
+            org_ok = OrganizationModule.objects.filter(
+                organization_id=organization_id, module=module, is_enabled=True
+            ).exists()
+            if not org_ok:
+                continue
+            if is_org_admin or module in user_modules:
+                return True
+        return False
