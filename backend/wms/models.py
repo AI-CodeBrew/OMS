@@ -46,18 +46,35 @@ class StockItem(TenantScopedModel):
     warehouse = models.ForeignKey(Warehouse, on_delete=models.CASCADE, related_name="stock_items")
     # Matches oms.OrderItem.barcode, which is where the Shopify line-item
     # SKU is stored (see integrations.services.upsert_order_from_shopify).
-    sku = models.CharField(max_length=100)
+    # Can be blank - not every Shopify variant has a SKU set, and those are
+    # still synced (see integrations.services.sync_inventory_from_shopify)
+    # rather than silently dropped, so the sku uniqueness constraint below
+    # only applies to non-Shopify-linked rows.
+    sku = models.CharField(max_length=100, blank=True, default="")
     product_name = models.CharField(max_length=255, blank=True, default="")
     quantity = models.IntegerField(default=0)
     # Surfaced as a "low stock" warning before it ever reaches zero.
     reorder_level = models.PositiveIntegerField(default=0)
+    # Shopify's InventoryItem id - the real join key for stock levels
+    # (unlike sku, which can be blank or, in principle, reused). Null for
+    # manually-created items and rows seeded by
+    # wms.services.import_skus_from_orders that haven't been matched to a
+    # Shopify variant yet.
+    shopify_inventory_item_id = models.BigIntegerField(null=True, blank=True)
 
     class Meta:
         db_table = '"wms"."stock_items"'
         constraints = [
             models.UniqueConstraint(
-                fields=["organization", "warehouse", "sku"], name="wms_stock_sku_per_warehouse"
-            )
+                fields=["organization", "warehouse", "sku"],
+                name="wms_stock_sku_per_warehouse",
+                condition=models.Q(shopify_inventory_item_id__isnull=True),
+            ),
+            models.UniqueConstraint(
+                fields=["organization", "warehouse", "shopify_inventory_item_id"],
+                name="wms_stock_shopify_item_per_warehouse",
+                condition=models.Q(shopify_inventory_item_id__isnull=False),
+            ),
         ]
         ordering = ["sku"]
 
@@ -84,6 +101,7 @@ class StockMovement(TenantScopedModel):
         ("return_restock", "Return Restock"),
         ("manual_adjustment", "Manual Adjustment"),
         ("initial", "Initial Stock"),
+        ("shopify_sync", "Shopify Inventory Sync"),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

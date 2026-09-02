@@ -58,6 +58,13 @@ class WmsService {
     });
   }
 
+  async syncStockFromShopify() {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.stockSyncShopify}`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  }
+
   async adjustStock(id, { delta, note = "" }) {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.stockAdjust(id)}`, {
       method: "POST",
@@ -71,10 +78,43 @@ class WmsService {
   }
 
   // --- Returns desk ---
-  async scanReturn({ orderNumber, note = "" }) {
+  // Read-only - confirms a parcel is receivable before asking the
+  // operator for its condition. Nothing is written until scanReturn.
+  async lookupReturn({ orderNumber }) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.returnLookup}`, {
+      method: "POST",
+      body: JSON.stringify({ order_number: orderNumber }),
+    });
+  }
+
+  async scanReturn({ orderNumber, condition, note = "" }) {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.returnScan}`, {
       method: "POST",
-      body: JSON.stringify({ order_number: orderNumber, note }),
+      body: JSON.stringify({ order_number: orderNumber, condition, note }),
+    });
+  }
+
+  // Returns {results: [{order_number, success, reason?, restocked?}, ...]} -
+  // one entry per requested order, successes and failures side by side.
+  async bulkReceiveReturns({ orderNumbers, condition, note = "" }) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.returnBulkReceive}`, {
+      method: "POST",
+      body: JSON.stringify({ order_numbers: orderNumbers, condition, note }),
+    });
+  }
+
+  // --- Packing station ---
+  async scanPacked({ orderNumber }) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.packingScan}`, {
+      method: "POST",
+      body: JSON.stringify({ order_number: orderNumber }),
+    });
+  }
+
+  async bulkPack({ orderNumbers }) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.packingBulkPack}`, {
+      method: "POST",
+      body: JSON.stringify({ order_numbers: orderNumbers }),
     });
   }
 }

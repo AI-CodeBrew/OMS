@@ -275,3 +275,70 @@ def iter_order_pages(
         if not match:
             break
         page_info = match.group(1)
+
+
+def fetch_locations(shop_domain, access_token, api_version):
+    """All of the store's fulfillment locations - inventory_levels below
+    is scoped per location, so this is needed to know what to ask for."""
+    url = f"{_base_url(shop_domain, api_version)}/locations.json"
+    headers = {"X-Shopify-Access-Token": access_token}
+    resp = _get_with_backoff(url, headers, {})
+    if not resp.ok:
+        raise ShopifyAPIError(f"Failed to fetch locations: {resp.status_code} {resp.text}")
+    return resp.json().get("locations", [])
+
+
+def iter_variant_skus(shop_domain, access_token, api_version, *, page_size=250, max_pages=400):
+    """Yields (sku, inventory_item_id, product_name) for every variant in
+    the whole product catalogue - sku may be "" for variants that don't
+    have one set, they're still yielded rather than skipped, since
+    inventory_item_id (not sku) is the real join key.
+
+    inventory_item_id is what actually links a variant to its stock
+    levels (inventory_levels below is keyed by that, not by SKU or
+    product id), so this is the step that makes the SKU-to-quantity
+    mapping possible at all.
+    """
+    url = f"{_base_url(shop_domain, api_version)}/products.json"
+    headers = {"X-Shopify-Access-Token": access_token}
+    params = {"fields": "title,variants", "limit": page_size}
+
+    page_info = None
+    for _ in range(max_pages):
+        query = {"limit": page_size, "page_info": page_info} if page_info else params
+        resp = _get_with_backoff(url, headers, query)
+        if not resp.ok:
+            raise ShopifyAPIError(f"Failed to fetch products: {resp.status_code} {resp.text}")
+
+        for product in resp.json().get("products", []):
+            title = (product.get("title") or "").strip()
+            for variant in product.get("variants", []):
+                sku = (variant.get("sku") or "").strip()
+                variant_title = (variant.get("title") or "").strip()
+                name = title if variant_title in ("", "Default Title") else f"{title} - {variant_title}"
+                yield sku, variant.get("inventory_item_id"), name
+
+        match = _NEXT_PAGE_INFO_RE.search(resp.headers.get("Link", ""))
+        if not match:
+            break
+        page_info = match.group(1)
+
+
+def fetch_inventory_levels(shop_domain, access_token, api_version, inventory_item_ids, *, location_ids=None):
+    """Available quantity per (inventory_item_id, location) - Shopify caps
+    inventory_item_ids at 100 per call, so callers with more than that
+    must batch (see integrations.services.sync_inventory_from_shopify)."""
+    if not inventory_item_ids:
+        return []
+    url = f"{_base_url(shop_domain, api_version)}/inventory_levels.json"
+    headers = {"X-Shopify-Access-Token": access_token}
+    params = {
+        "inventory_item_ids": ",".join(str(i) for i in inventory_item_ids),
+        "limit": 250,
+    }
+    if location_ids:
+        params["location_ids"] = ",".join(str(i) for i in location_ids)
+    resp = _get_with_backoff(url, headers, params)
+    if not resp.ok:
+        raise ShopifyAPIError(f"Failed to fetch inventory levels: {resp.status_code} {resp.text}")
+    return resp.json().get("inventory_levels", [])

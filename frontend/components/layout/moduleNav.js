@@ -151,11 +151,11 @@ export const SIDEBAR_ITEMS = {
   ],
   wms: [
     { label: "Inventory", href: "/wms", icon: PackageIcon },
+    { label: "Packing", href: "/wms/packing", icon: PackageIcon },
     { label: "Returns Desk", href: "/returns", icon: UndoIcon },
     { divider: true },
     { label: "Stock Transfers", disabled: true, icon: SwapIcon },
     { label: "Picking", disabled: true, icon: HandIcon },
-    { label: "Packing", disabled: true, icon: PackageIcon },
     { label: "Putaway", disabled: true, icon: ArrowDownBoxIcon },
     { label: "Reports", disabled: true, icon: BarChartIcon },
   ],

@@ -118,6 +118,28 @@ class Order(TenantScopedModel):
     # returns desk works from. Set by wms.services.restock_from_return.
     return_received_at = models.DateTimeField(null=True, blank=True)
     return_received_by = models.UUIDField(null=True, blank=True)
+    # Membership has no cached display name (Supabase Auth owns that, not
+    # Django), so the acting user's email is captured directly here at scan
+    # time - same reason core.models.OrganizationAuditLog stores actor_email
+    # rather than just actor_user_id.
+    return_received_by_email = models.CharField(max_length=255, blank=True, default="")
+    # Set alongside return_received_at, at the same scan - the warehouse
+    # inspects the parcel the moment it's received, there's no separate
+    # later inspection step. "good" restocks it (see
+    # wms.services.restock_from_return); "bad" marks it received (it's
+    # out of the awaiting-scan queue either way) but deliberately never
+    # touches StockItem/StockMovement, since damaged units aren't sellable
+    # stock.
+    RETURN_CONDITION_CHOICES = [("good", "Good"), ("bad", "Bad")]
+    return_condition = models.CharField(
+        max_length=10, choices=RETURN_CONDITION_CHOICES, blank=True, default=""
+    )
+
+    # Packing bench: stamped by wms.views.PackingView when a Ready to Pick
+    # parcel is scanned as packed (-> awaiting_dispatched). No separate
+    # packing record - these two fields are the whole of it.
+    packed_at = models.DateTimeField(null=True, blank=True)
+    packed_by_email = models.CharField(max_length=255, blank=True, default="")
 
     # --- Customer/shipping profile (denormalized on Order, same convention
     # as customer_name/customer_phone - a real cross-order Customer model is

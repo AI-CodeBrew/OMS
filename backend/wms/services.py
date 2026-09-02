@@ -132,52 +132,67 @@ def consume_for_order(order, *, force=False, actor_user_id=None, warehouse=None)
 
 
 @transaction.atomic
-def restock_from_return(order, *, actor_user_id=None, warehouse=None, note=""):
-    """Puts a returned order's units back into stock. Idempotent per
-    order: if this order was already restocked, returns [] instead of
-    double-counting, since a returns desk scanning the same parcel twice
-    is an expected mistake, not an exceptional one."""
-    warehouse = warehouse or get_default_warehouse(order.organization_id)
-    if warehouse is None:
-        return []
+def restock_from_return(order, *, condition, actor_user_id=None, actor_email="", warehouse=None, note=""):
+    """Records a returns-desk scan outcome. Idempotent per order via
+    order.return_received_at - it's stamped for both outcomes below, so a
+    second scan of the same parcel (good or bad) is caught here rather
+    than by checking for a StockMovement, which a damaged parcel never
+    creates.
 
-    already = StockMovement.objects.filter(
-        organization_id=order.organization_id,
-        order_number=order.order_number,
-        reason="return_restock",
-    ).exists()
-    if already:
-        return []
+    condition="good" puts the order's units back into stock, same as
+    before. condition="bad" only marks the parcel received and its
+    condition - it deliberately never touches StockItem/StockMovement,
+    since a damaged unit isn't sellable stock and adding it back would
+    misrepresent what's actually available to dispatch.
 
-    # Mark the parcel as physically received, which is what moves it out
-    # of the returns desk's "awaiting scan" queue.
+    Returns None if the order was already received (either outcome) -
+    the caller should treat that the same as any other scan failure.
+    Otherwise returns the list of StockMovement rows created (empty for
+    "bad", or for "good" with no WMS-tracked SKUs on the order).
+    """
+    if order.return_received_at:
+        return None
+
     order.return_received_at = timezone.now()
     order.return_received_by = actor_user_id
-    order.save(update_fields=["return_received_at", "return_received_by", "updated_at"])
+    order.return_received_by_email = actor_email or ""
+    order.return_condition = condition
+    update_fields = [
+        "return_received_at",
+        "return_received_by",
+        "return_received_by_email",
+        "return_condition",
+        "updated_at",
+    ]
 
-    required, _unmatched = _order_line_requirements(order)
     movements = []
-    for sku, need in required.items():
-        item, _ = StockItem.objects.get_or_create(
-            organization_id=order.organization_id,
-            warehouse=warehouse,
-            sku=sku,
-            defaults={"product_name": need["product_name"]},
-        )
-        item.quantity += need["quantity"]
-        item.save(update_fields=["quantity", "updated_at"])
-        movements.append(
-            StockMovement.objects.create(
-                organization_id=order.organization_id,
-                stock_item=item,
-                delta=need["quantity"],
-                balance_after=item.quantity,
-                reason="return_restock",
-                order_number=order.order_number,
-                note=note,
-                actor_user_id=actor_user_id,
-            )
-        )
+    if condition == "good":
+        warehouse = warehouse or get_default_warehouse(order.organization_id)
+        if warehouse is not None:
+            required, _unmatched = _order_line_requirements(order)
+            for sku, need in required.items():
+                item, _ = StockItem.objects.get_or_create(
+                    organization_id=order.organization_id,
+                    warehouse=warehouse,
+                    sku=sku,
+                    defaults={"product_name": need["product_name"]},
+                )
+                item.quantity += need["quantity"]
+                item.save(update_fields=["quantity", "updated_at"])
+                movements.append(
+                    StockMovement.objects.create(
+                        organization_id=order.organization_id,
+                        stock_item=item,
+                        delta=need["quantity"],
+                        balance_after=item.quantity,
+                        reason="return_restock",
+                        order_number=order.order_number,
+                        note=note,
+                        actor_user_id=actor_user_id,
+                    )
+                )
+
+    order.save(update_fields=update_fields)
     return movements
 
 

@@ -43,6 +43,7 @@ export default function WmsPage() {
   const [adjusting, setAdjusting] = useState(null);
   const [newItemOpen, setNewItemOpen] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [notice, setNotice] = useState("");
 
   const loadWarehouses = useCallback(async () => {
@@ -95,6 +96,24 @@ export default function WmsPage() {
     }
   }
 
+  async function onSyncShopify() {
+    setSyncing(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await wmsService.syncStockFromShopify();
+      setNotice(
+        `Synced ${result.total_skus} SKU${result.total_skus === 1 ? "" : "s"} from Shopify — ` +
+          `${result.created} new, ${result.updated} updated, ${result.unchanged} unchanged.`
+      );
+      await load();
+    } catch (err) {
+      setError(err.message || "Failed to sync from Shopify");
+    } finally {
+      setSyncing(false);
+    }
+  }
+
   useEffect(() => {
     loadWarehouses();
   }, [loadWarehouses]);
@@ -117,6 +136,9 @@ export default function WmsPage() {
         </div>
         {hasWarehouse ? (
           <div className="flex gap-2">
+            <Button variant="secondary" onClick={onSyncShopify} disabled={syncing}>
+              {syncing ? "Syncing…" : "Sync from Shopify"}
+            </Button>
             <Button variant="secondary" onClick={onImportSkus} disabled={importing}>
               {importing ? "Importing…" : "Import SKUs from Orders"}
             </Button>
@@ -239,7 +261,7 @@ export default function WmsPage() {
                         item.is_negative ? "bg-red-50/60" : ""
                       }`}
                     >
-                      <td className="px-3 py-2 font-medium text-slate-800">{item.sku}</td>
+                      <td className="px-3 py-2 font-medium text-slate-800">{item.sku || "—"}</td>
                       <td className="px-3 py-2 text-slate-600">{item.product_name || "—"}</td>
                       <td className="px-3 py-2 text-slate-600">{item.warehouse_name}</td>
                       <td

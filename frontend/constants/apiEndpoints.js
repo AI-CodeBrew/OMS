@@ -41,8 +41,13 @@ export const API_ENDPOINTS = {
     stockSummary: "/api/wms/stock/summary/",
     stockAdjust: (id) => `/api/wms/stock/${id}/adjust/`,
     stockImportSkus: "/api/wms/stock/import-skus/",
+    stockSyncShopify: "/api/wms/stock/sync-shopify/",
     movements: "/api/wms/movements/",
+    returnLookup: "/api/wms/returns/lookup/",
     returnScan: "/api/wms/returns/scan/",
+    returnBulkReceive: "/api/wms/returns/bulk-receive/",
+    packingScan: "/api/wms/packing/scan/",
+    packingBulkPack: "/api/wms/packing/bulk-pack/",
   },
   // Added as modules land: finance
 };

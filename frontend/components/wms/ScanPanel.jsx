@@ -1,0 +1,413 @@
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import Button from "../shared/Button";
+
+const MODES = [
+  { value: "scan", label: "Scan" },
+  { value: "manual", label: "Manual" },
+];
+
+// A barcode gun fires its whole payload in a few milliseconds per keystroke;
+// a person types an order of magnitude slower. Used only to label an entry
+// as scanned vs typed - it never blocks a submit.
+const SCANNER_KEY_INTERVAL_MS = 50;
+// Guns commonly double-fire the same code. Re-reading it this soon is
+// treated as the same parcel and ignored, rather than reported as an
+// "already received" failure the operator has to interpret.
+const DUPLICATE_WINDOW_MS = 2000;
+const MIN_CODE_LENGTH = 3;
+const MUTE_STORAGE_KEY = "oms.scanPanel.muted";
+
+/**
+ * Plays a short tone without any audio asset. Created lazily on the first
+ * scan (a user gesture, so autoplay policy is satisfied) and reused after
+ * that. Every call is best-effort: a browser with audio blocked or
+ * unavailable must still scan normally.
+ */
+function useBeeper(muted) {
+  const contextRef = useRef(null);
+
+  return useCallback(
+    (kind) => {
+      if (muted) return;
+      try {
+        const Ctor = window.AudioContext || window.webkitAudioContext;
+        if (!Ctor) return;
+        if (!contextRef.current) contextRef.current = new Ctor();
+        const ctx = contextRef.current;
+        if (ctx.state === "suspended") ctx.resume();
+
+        // Success: a quick rising two-tone chirp. Failure: one lower,
+        // longer buzz - deliberately unlike the success sound so they
+        // can't be confused across a noisy warehouse.
+        const notes =
+          kind === "success"
+            ? [
+                { freq: 880, start: 0, duration: 0.09 },
+                { freq: 1320, start: 0.1, duration: 0.12 },
+              ]
+            : [{ freq: 180, start: 0, duration: 0.42 }];
+
+        notes.forEach(({ freq, start, duration }) => {
+          const oscillator = ctx.createOscillator();
+          const gain = ctx.createGain();
+          oscillator.type = kind === "success" ? "sine" : "square";
+          oscillator.frequency.value = freq;
+          gain.gain.setValueAtTime(0.0001, ctx.currentTime + start);
+          gain.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime + start + 0.01);
+          gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + start + duration);
+          oscillator.connect(gain);
+          gain.connect(ctx.destination);
+          oscillator.start(ctx.currentTime + start);
+          oscillator.stop(ctx.currentTime + start + duration + 0.02);
+        });
+      } catch {
+        // Audio is a convenience - never let it break the scan itself.
+      }
+    },
+    [muted]
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" className="h-7 w-7">
+      <path d="M20 6L9 17l-5-5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function CrossIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" className="h-7 w-7">
+      <path d="M18 6L6 18M6 6l12 12" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function SoundIcon({ muted }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4">
+      <path d="M11 5L6 9H2v6h4l5 4V5z" strokeLinecap="round" strokeLinejoin="round" />
+      {muted ? (
+        <path d="M23 9l-6 6M17 9l6 6" strokeLinecap="round" strokeLinejoin="round" />
+      ) : (
+        <path d="M15.5 8.5a5 5 0 010 7M19 5a9 9 0 010 14" strokeLinecap="round" strokeLinejoin="round" />
+      )}
+    </svg>
+  );
+}
+
+/**
+ * Barcode station shared by the Returns Desk and the Packing bench.
+ *
+ * onScan(orderNumber) must resolve to the {success, order_number, reason}
+ * shape both wms scan endpoints already return; whatever it resolves to is
+ * handed straight to renderSuccess for the detail line.
+ */
+export default function ScanPanel({
+  title,
+  hint,
+  actionLabel = "Submit",
+  onScan,
+  renderSuccess,
+  onAfterSuccess,
+  decision,
+}) {
+  const [mode, setMode] = useState("scan");
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const [log, setLog] = useState([]);
+  const [muted, setMuted] = useState(false);
+  // Set only when `decision` is provided and a scan just found a
+  // receivable parcel - the panel pauses here, showing the tick plus the
+  // decision's own buttons, until one is picked. Undefined `decision`
+  // (e.g. the Packing station) means this never gets set and the panel
+  // behaves exactly as it always has.
+  const [pendingDecision, setPendingDecision] = useState(null);
+
+  const inputRef = useRef(null);
+  const keyTimesRef = useRef([]);
+  const lastSubmitRef = useRef({ code: "", at: 0 });
+  const beep = useBeeper(muted);
+
+  useEffect(() => {
+    try {
+      setMuted(window.localStorage.getItem(MUTE_STORAGE_KEY) === "1");
+    } catch {
+      // Private mode / blocked storage - default to sound on.
+    }
+  }, []);
+
+  function toggleMuted() {
+    setMuted((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(MUTE_STORAGE_KEY, next ? "1" : "0");
+      } catch {
+        // Preference just won't persist; the toggle still works this session.
+      }
+      return next;
+    });
+  }
+
+  // In scan mode the field stays hot so a gun can fire straight into the
+  // next parcel without anyone touching the keyboard. Not while a
+  // decision is pending - focus stays off the field so a stray scan
+  // can't be mistaken for an answer to the good/bad prompt.
+  useEffect(() => {
+    if (mode === "scan" && !busy && !pendingDecision) inputRef.current?.focus();
+  }, [mode, busy, result, pendingDecision]);
+
+  function wasScanned() {
+    const times = keyTimesRef.current;
+    if (times.length < MIN_CODE_LENGTH) return false;
+    const gaps = times.slice(1).map((t, i) => t - times[i]);
+    return gaps.every((gap) => gap < SCANNER_KEY_INTERVAL_MS);
+  }
+
+  async function submit(raw) {
+    // The current parcel's decision must be resolved before the next one
+    // can be scanned - otherwise a Good/Bad click could land on the wrong
+    // parcel.
+    if (pendingDecision) return;
+
+    const code = (raw || "").trim();
+    const scanned = wasScanned();
+
+    if (code.length < MIN_CODE_LENGTH) {
+      // A half-read barcode or a stray Enter - clear and wait rather than
+      // firing a request that can only fail.
+      setValue("");
+      keyTimesRef.current = [];
+      return;
+    }
+
+    const now = Date.now();
+    if (code === lastSubmitRef.current.code && now - lastSubmitRef.current.at < DUPLICATE_WINDOW_MS) {
+      setValue("");
+      keyTimesRef.current = [];
+      return;
+    }
+    lastSubmitRef.current = { code, at: now };
+
+    setBusy(true);
+    try {
+      const response = await onScan(code);
+      const orderNumber = response.order_number || code;
+
+      if (response.success && decision) {
+        // Pause here instead of finalizing - the tick shows now, but
+        // nothing is recorded (and the log line isn't written) until the
+        // operator picks an outcome below.
+        setResult({ ...response, order_number: orderNumber, scanned, at: new Date(), pending: true });
+        setPendingDecision({ orderNumber, scanned });
+        beep("success");
+        return;
+      }
+
+      const entry = { ...response, order_number: orderNumber, scanned, at: new Date() };
+      setResult(entry);
+      setLog((prev) => [entry, ...prev].slice(0, 12));
+      beep(entry.success ? "success" : "error");
+      if (entry.success) await onAfterSuccess?.();
+    } catch (err) {
+      const entry = {
+        success: false,
+        order_number: code,
+        reason: err.message || "Scan failed",
+        scanned,
+        at: new Date(),
+      };
+      setResult(entry);
+      setLog((prev) => [entry, ...prev].slice(0, 12));
+      beep("error");
+    } finally {
+      setBusy(false);
+      setValue("");
+      keyTimesRef.current = [];
+      inputRef.current?.focus();
+    }
+  }
+
+  async function resolveDecision(choice) {
+    if (!pendingDecision) return;
+    const { orderNumber, scanned } = pendingDecision;
+    setBusy(true);
+    try {
+      const response = await decision.onDecide(orderNumber, choice);
+      const entry = { ...response, order_number: response.order_number || orderNumber, scanned, at: new Date() };
+      setResult(entry);
+      setLog((prev) => [entry, ...prev].slice(0, 12));
+      beep(entry.success ? "success" : "error");
+      if (entry.success) await onAfterSuccess?.();
+    } catch (err) {
+      const entry = {
+        success: false,
+        order_number: orderNumber,
+        reason: err.message || "Failed",
+        scanned,
+        at: new Date(),
+      };
+      setResult(entry);
+      setLog((prev) => [entry, ...prev].slice(0, 12));
+      beep("error");
+    } finally {
+      setBusy(false);
+      setPendingDecision(null);
+      inputRef.current?.focus();
+    }
+  }
+
+  return (
+    <div className="h-fit rounded-lg border border-surface-border bg-white p-5">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <h2 className="text-sm font-semibold text-slate-900">{title}</h2>
+          {hint ? <p className="mt-1 text-xs text-slate-500">{hint}</p> : null}
+        </div>
+        <button
+          type="button"
+          onClick={toggleMuted}
+          title={muted ? "Sound off" : "Sound on"}
+          aria-label={muted ? "Turn scan sound on" : "Turn scan sound off"}
+          className={`shrink-0 rounded-md border p-1.5 transition ${
+            muted
+              ? "border-surface-border bg-white text-slate-400 hover:bg-surface"
+              : "border-brand-200 bg-brand-50 text-brand-700"
+          }`}
+        >
+          <SoundIcon muted={muted} />
+        </button>
+      </div>
+
+      <div className="mt-3 flex gap-1.5">
+        {MODES.map((m) => (
+          <button
+            key={m.value}
+            type="button"
+            onClick={() => {
+              setMode(m.value);
+              setValue("");
+              keyTimesRef.current = [];
+            }}
+            className={`rounded-md border px-3 py-1.5 text-xs font-medium transition ${
+              mode === m.value
+                ? "border-brand-800 bg-brand-800 text-white"
+                : "border-surface-border bg-white text-slate-600 hover:bg-surface"
+            }`}
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
+
+      <p className="mt-2 text-[11px] text-slate-400">
+        {mode === "scan"
+          ? "Field stays focused — fire the scanner at each parcel in turn."
+          : `Type the order number, then press ${actionLabel}.`}
+      </p>
+
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          submit(value);
+        }}
+        className="mt-3 flex gap-2"
+      >
+        <input
+          ref={inputRef}
+          autoFocus
+          value={value}
+          disabled={busy || Boolean(pendingDecision)}
+          onKeyDown={() => {
+            keyTimesRef.current = [...keyTimesRef.current, Date.now()].slice(-40);
+          }}
+          onChange={(e) => setValue(e.target.value)}
+          placeholder="Order number"
+          className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500 disabled:bg-slate-50"
+        />
+        {mode === "manual" ? (
+          <Button type="submit" disabled={busy || !value.trim()}>
+            {busy ? "…" : actionLabel}
+          </Button>
+        ) : null}
+      </form>
+
+      {result ? (
+        <div
+          className={`mt-4 flex items-start gap-3 rounded-md border px-3 py-3 ${
+            result.success
+              ? "border-green-200 bg-green-50 text-green-800"
+              : "border-red-200 bg-red-50 text-red-700"
+          }`}
+        >
+          <span className="shrink-0">{result.success ? <CheckIcon /> : <CrossIcon />}</span>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold">{result.order_number}</p>
+            {result.pending && pendingDecision ? (
+              <div className="mt-1.5">
+                <p className="text-xs">{decision.prompt}</p>
+                <div className="mt-2 flex gap-2">
+                  {decision.options.map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      disabled={busy}
+                      onClick={() => resolveDecision(opt.value)}
+                      className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white transition disabled:opacity-50 ${
+                        opt.tone === "danger"
+                          ? "bg-red-600 hover:bg-red-700"
+                          : "bg-green-600 hover:bg-green-700"
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <p className="text-xs">
+                {result.success
+                  ? renderSuccess?.(result) || "Done"
+                  : result.reason === "not_found"
+                    ? "No order with that number"
+                    : result.reason}
+              </p>
+            )}
+          </div>
+        </div>
+      ) : null}
+
+      {log.length > 0 ? (
+        <div className="mt-4 space-y-1.5">
+          <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+            Recent scans
+          </p>
+          {log.map((entry, i) => (
+            <div
+              key={i}
+              className={`flex items-baseline gap-1.5 rounded-md px-2.5 py-1.5 text-xs ${
+                entry.success ? "bg-green-50 text-green-800" : "bg-red-50 text-red-700"
+              }`}
+            >
+              <span className="font-medium">{entry.order_number}</span>
+              <span className="min-w-0 truncate">
+                {entry.success
+                  ? renderSuccess?.(entry) || "Done"
+                  : entry.reason === "not_found"
+                    ? "No order with that number"
+                    : entry.reason}
+              </span>
+              <span className="ml-auto shrink-0 text-[10px] uppercase tracking-wide opacity-60">
+                {entry.scanned ? "Scanned" : "Typed"}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}

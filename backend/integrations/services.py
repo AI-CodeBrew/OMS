@@ -322,7 +322,6 @@ _SMARTLANE_STATUS_MAP = {
     "completed": "delivered",
     "return": "returned",
     "returned": "returned",
-    "return_in_progress": "returned",
     "cancel": "cancelled",
     "cancelled": "cancelled",
 }
@@ -345,6 +344,75 @@ _SMARTLANE_DISPATCH_STATUSES = {
     "picked",
     "in_transit",
 }
+
+# Confirmed against a real booked order's /track response (not a guess):
+# every response carries these per-stage timestamp fields, each left as
+# this exact placeholder until that milestone genuinely happens, then
+# filled in with a real "YYYY-MM-DD HH:MM:SS". That makes them a far more
+# reliable signal than courier_status/state, which can be blank (courier
+# hadn't reported anything yet on that same real order) or use spellings
+# we've only partially confirmed (only "ready" seen for certain so far).
+_BLANK_STAGE_TIMESTAMP = "0000-00-00 00:00:00"
+
+
+def _stage_happened(row, key):
+    value = row.get(key)
+    return bool(value) and value != _BLANK_STAGE_TIMESTAMP
+
+
+def _resolve_smartlane_target(smartlane_status, row=None):
+    """What a Smartlane event means for our pipeline - "delivered",
+    "returned", "cancelled", "dispatch" (still moving, not yet a final
+    outcome), or None (nothing actionable).
+
+    Stage timestamps (row) are tried first when available, string status
+    (_SMARTLANE_STATUS_MAP/_SMARTLANE_DISPATCH_STATUSES) is the fallback
+    for when row is missing or its stage fields are all still blank.
+    return_in_progress deliberately does NOT count as "returned" here -
+    it means the return has started, not that it's finished; only a real
+    `return` timestamp is treated as the final outcome.
+    """
+    if row:
+        if _stage_happened(row, "complete"):
+            return "delivered"
+        if _stage_happened(row, "return"):
+            return "returned"
+        if _stage_happened(row, "cancel"):
+            return "cancelled"
+        if any(_stage_happened(row, k) for k in ("dispatch", "out_for_delivery", "attempt")):
+            return "dispatch"
+
+    target = _SMARTLANE_STATUS_MAP.get(smartlane_status)
+    if target:
+        return target
+    if smartlane_status in _SMARTLANE_DISPATCH_STATUSES:
+        return "dispatch"
+    return None
+
+
+def extract_smartlane_event(payload):
+    """Pulls (order_number, tracking_number, smartlane_status) out of a
+    Smartlane payload - shared by the poller and the webhook so they can
+    never disagree on how to read the same fields.
+
+    tracking_number is blanked out when it's still the "Not Assigned Yet"
+    placeholder Smartlane uses before a real consignment number exists -
+    treating that string as a real value (a bug the poller had on its own
+    copy of this logic) would save it as the literal tracking_number and
+    prematurely advance a Booking Pending order that hasn't actually been
+    booked yet.
+    """
+    order_number = str(payload.get("store_order_id") or payload.get("order_number") or "").strip()
+    tracking_number = str(
+        payload.get("consignment_number") or payload.get("tracking_number") or ""
+    ).strip()
+    if tracking_number.lower().startswith("not assigned"):
+        tracking_number = ""
+    smartlane_status = (
+        str(payload.get("courier_status") or payload.get("state") or payload.get("status") or "")
+    ).strip().lower().replace(" ", "_")
+    return order_number, tracking_number, smartlane_status
+
 
 def find_order_by_smartlane_reference(reference):
     """Smartlane echoes back the store_order_id we sent, but a Shopify-style
@@ -401,16 +469,20 @@ def _catch_up_to_dispatched(order, tracking_number=""):
     return order.status == "dispatched"
 
 
-def apply_smartlane_status(order, smartlane_status, *, tracking_number="", organization_id):
+def apply_smartlane_status(order, smartlane_status, *, tracking_number="", organization_id, row=None):
     """Applies one Smartlane status to one order. Shared by the webhook and
     the poller so a status seen either way can never produce a different
     outcome. Returns True if the order actually moved.
+
+    `row` is the full raw payload/track-row when the caller has it -
+    passing it lets _resolve_smartlane_target use the confirmed-reliable
+    stage timestamps instead of guessing from courier_status/state alone.
 
     Raises oms.services.InvalidTransition for the caller to log/skip.
     """
     from oms import services as oms_services
 
-    target = _SMARTLANE_STATUS_MAP.get(smartlane_status)
+    target = _resolve_smartlane_target(smartlane_status, row)
     before = order.status
 
     if target == "delivered":
@@ -437,7 +509,7 @@ def apply_smartlane_status(order, smartlane_status, *, tracking_number="", organ
         if order.status == "cancelled":
             return False
         oms_services.cancel_order(order, reason="Cancelled by Smartlane")
-    elif smartlane_status in _SMARTLANE_DISPATCH_STATUSES:
+    elif target == "dispatch":
         if order.status == "dispatched":
             return False
         if not _catch_up_to_dispatched(order, tracking_number):
@@ -445,8 +517,8 @@ def apply_smartlane_status(order, smartlane_status, *, tracking_number="", organ
     else:
         return False
 
-    logger.info("smartlane status %r applied to %s: %s -> %s",
-                smartlane_status, order.order_number, before, order.status)
+    logger.info("smartlane status %r (target=%s) applied to %s: %s -> %s",
+                smartlane_status, target, order.order_number, before, order.status)
     return True
 
 
@@ -526,15 +598,16 @@ def poll_smartlane_statuses(organization_id, *, batch_size=100, limit=1000):
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            row_number = str(row.get("store_order_id") or "").strip()
+            row_number, consignment, raw_status = extract_smartlane_event(row)
             order = by_number.get(row_number)
             if order is None:
                 logger.debug("smartlane poll: row for %r matches no order we asked about", row_number)
                 continue
 
             # Keep the consignment number Smartlane assigned, which for a
-            # real booking only becomes known after the fact.
-            consignment = (row.get("consignment_number") or "").strip()
+            # real booking only becomes known after the fact. consignment
+            # is already blank (not the "Not Assigned Yet" placeholder) at
+            # this point - extract_smartlane_event handles that.
             if consignment and consignment != order.tracking_number:
                 order.tracking_number = _truncate(consignment, 100)
                 order.save(update_fields=["tracking_number", "updated_at"])
@@ -551,18 +624,13 @@ def poll_smartlane_statuses(organization_id, *, batch_size=100, limit=1000):
                         pass
                 continue
 
-            # Field order matches the webhook's confirmed real payload
-            # (courier_status/state) - status is a generic fallback only.
-            raw_status = (
-                row.get("courier_status") or row.get("state") or row.get("status") or ""
-            ).strip().lower().replace(" ", "_")
-
             try:
                 if apply_smartlane_status(
                     order,
                     raw_status,
                     tracking_number=consignment,
                     organization_id=organization_id,
+                    row=row,
                 ):
                     updated += 1
             except oms_services.InvalidTransition:
@@ -952,3 +1020,248 @@ def run_shopify_sync(organization_id, job_id, *, connection_id, created_at_min=N
         # Background threads must close their own DB connections - Django
         # only recycles them automatically around the request/response cycle.
         connections.close_all()
+
+
+class InventorySyncError(Exception):
+    pass
+
+
+def _upsert_stock_item_from_shopify(organization_id, warehouse, *, shopify_inventory_item_id, sku, name, quantity):
+    """Creates or updates the one StockItem for a Shopify variant, keyed
+    by shopify_inventory_item_id rather than sku - sku can be blank (not
+    every variant has one) or, for a row created before this field
+    existed, simply not yet linked. A legacy sku-keyed row (from
+    import_skus_from_orders, a manual Add Stock Item, or a pre-this-
+    feature sync) is adopted on first match instead of creating a
+    duplicate. Shared by the manual full sync and both the product and
+    inventory-level webhooks. Returns (item, created, quantity_changed).
+    """
+    from wms.models import StockItem, StockMovement
+
+    item = StockItem.all_objects.filter(
+        organization_id=organization_id, warehouse=warehouse,
+        shopify_inventory_item_id=shopify_inventory_item_id,
+    ).first()
+    if item is None and sku:
+        item = StockItem.all_objects.filter(
+            organization_id=organization_id, warehouse=warehouse,
+            shopify_inventory_item_id__isnull=True, sku=sku,
+        ).first()
+
+    if item is None:
+        item = StockItem.all_objects.create(
+            organization_id=organization_id,
+            warehouse=warehouse,
+            shopify_inventory_item_id=shopify_inventory_item_id,
+            sku=sku,
+            product_name=name,
+            quantity=quantity,
+        )
+        StockMovement.all_objects.create(
+            organization_id=organization_id,
+            stock_item=item,
+            delta=quantity,
+            balance_after=quantity,
+            reason="shopify_sync",
+            note="First Shopify inventory sync",
+        )
+        return item, True, True
+
+    update_fields = []
+    if item.shopify_inventory_item_id != shopify_inventory_item_id:
+        item.shopify_inventory_item_id = shopify_inventory_item_id
+        update_fields.append("shopify_inventory_item_id")
+    if sku and item.sku != sku:
+        item.sku = sku
+        update_fields.append("sku")
+    # Product name is filled in if we never had one (e.g. seeded blank by
+    # import_skus_from_orders) but not overwritten once set, in case
+    # someone renamed it locally on purpose.
+    if not item.product_name and name:
+        item.product_name = name
+        update_fields.append("product_name")
+
+    delta = quantity - item.quantity
+    if delta != 0:
+        item.quantity = quantity
+        update_fields.append("quantity")
+
+    if update_fields:
+        item.save(update_fields=[*update_fields, "updated_at"])
+    if delta != 0:
+        StockMovement.all_objects.create(
+            organization_id=organization_id,
+            stock_item=item,
+            delta=delta,
+            balance_after=quantity,
+            reason="shopify_sync",
+            note="Shopify inventory sync",
+        )
+        return item, False, True
+    return item, False, False
+
+
+def sync_inventory_from_shopify(organization_id):
+    """Pulls real on-hand quantities from Shopify for every variant in the
+    catalogue (SKU or not) and writes them into wms.StockItem - the
+    actual numbers, not the zero-seeded placeholder
+    wms.services.import_skus_from_orders leaves behind (that function
+    only discovers which SKUs exist from order history; it was never
+    meant to be a source of real counts).
+
+    Summed across every one of the store's locations into the org's
+    single default warehouse - this app's stock model is one warehouse
+    per org (see wms.services.get_default_warehouse), so a multi-location
+    Shopify store's inventory is consolidated rather than mapped
+    location-by-location, which would need a real location<->warehouse
+    mapping this app doesn't have yet.
+    """
+    connection = ShopifyConnection.objects.filter(
+        organization_id=organization_id, is_connected=True
+    ).first()
+    if not connection:
+        raise InventorySyncError("Connect Shopify from the Integrations page first.")
+
+    from wms.services import get_default_warehouse
+
+    warehouse = get_default_warehouse(organization_id)
+    if not warehouse:
+        raise InventorySyncError("Set up a warehouse first (WMS page).")
+
+    args = (connection.shop_domain, connection.access_token, settings.SHOPIFY_API_VERSION)
+
+    # Every variant (sku may be "") -> its inventory_item_id (what stock
+    # levels are actually keyed by) and a display name for the row.
+    item_meta = {}
+    for sku, inventory_item_id, name in shopify_client.iter_variant_skus(*args):
+        if not inventory_item_id:
+            continue
+        item_meta[inventory_item_id] = {"sku": sku, "name": name}
+
+    if not item_meta:
+        return {"total_skus": 0, "created": 0, "updated": 0, "unchanged": 0}
+
+    # Shopify caps inventory_item_ids at 100 per /inventory_levels.json
+    # call, so a catalogue bigger than that has to be batched.
+    item_ids = list(item_meta.keys())
+    quantity_by_item_id = {}
+    for start in range(0, len(item_ids), 100):
+        batch = item_ids[start : start + 100]
+        for level in shopify_client.fetch_inventory_levels(*args, batch):
+            item_id = level.get("inventory_item_id")
+            available = level.get("available")
+            if item_id in item_meta and available is not None:
+                quantity_by_item_id[item_id] = quantity_by_item_id.get(item_id, 0) + available
+
+    created = updated = unchanged = 0
+    for item_id, qty in quantity_by_item_id.items():
+        meta = item_meta[item_id]
+        _, was_created, qty_changed = _upsert_stock_item_from_shopify(
+            organization_id, warehouse,
+            shopify_inventory_item_id=item_id, sku=meta["sku"], name=meta["name"], quantity=qty,
+        )
+        if was_created:
+            created += 1
+        elif qty_changed:
+            updated += 1
+        else:
+            unchanged += 1
+
+    return {
+        "total_skus": len(quantity_by_item_id),
+        "created": created,
+        "updated": updated,
+        "unchanged": unchanged,
+    }
+
+
+def sync_stock_item_from_shopify_inventory_item(organization_id, inventory_item_id):
+    """inventory_levels/update webhook handler - the payload only carries
+    the new count at the one location that changed, and this app doesn't
+    track a per-location breakdown (see sync_inventory_from_shopify), so
+    this re-fetches the item's total across every location rather than
+    trying to apply a partial delta. No-ops quietly if Shopify isn't
+    connected or no warehouse exists yet - same as a webhook arriving for
+    an org that hasn't finished setup.
+    """
+    connection = ShopifyConnection.objects.filter(
+        organization_id=organization_id, is_connected=True
+    ).first()
+    if not connection:
+        return None
+
+    from wms.models import StockItem
+    from wms.services import get_default_warehouse
+
+    warehouse = get_default_warehouse(organization_id)
+    if not warehouse:
+        return None
+
+    args = (connection.shop_domain, connection.access_token, settings.SHOPIFY_API_VERSION)
+    levels = shopify_client.fetch_inventory_levels(*args, [inventory_item_id])
+    quantity = sum(level.get("available") or 0 for level in levels if level.get("available") is not None)
+
+    existing = StockItem.all_objects.filter(
+        organization_id=organization_id, warehouse=warehouse,
+        shopify_inventory_item_id=inventory_item_id,
+    ).first()
+    item, _, _ = _upsert_stock_item_from_shopify(
+        organization_id, warehouse,
+        shopify_inventory_item_id=inventory_item_id,
+        sku=existing.sku if existing else "",
+        name=existing.product_name if existing else "",
+        quantity=quantity,
+    )
+    return item
+
+
+def sync_stock_items_from_shopify_product_payload(organization_id, payload):
+    """products/create + products/update webhook handler - keeps WMS
+    stock items (name, sku, on-hand quantity) in step with the catalogue
+    in real time, the same way orders/create + orders/updated already do
+    for orders (see upsert_order_from_shopify). Unlike
+    sync_inventory_from_shopify this only touches the variants in this
+    one payload, not the whole store, so a new product shows up in WMS
+    within moments of being created instead of waiting for the next
+    manual Sync from Shopify click.
+    """
+    connection = ShopifyConnection.objects.filter(
+        organization_id=organization_id, is_connected=True
+    ).first()
+    if not connection:
+        return
+
+    from wms.services import get_default_warehouse
+
+    warehouse = get_default_warehouse(organization_id)
+    if not warehouse:
+        return
+
+    title = (payload.get("title") or "").strip()
+    item_meta = {}
+    for variant in payload.get("variants") or []:
+        inventory_item_id = variant.get("inventory_item_id")
+        if not inventory_item_id:
+            continue
+        sku = (variant.get("sku") or "").strip()
+        variant_title = (variant.get("title") or "").strip()
+        name = title if variant_title in ("", "Default Title") else f"{title} - {variant_title}"
+        item_meta[inventory_item_id] = {"sku": sku, "name": name}
+
+    if not item_meta:
+        return
+
+    args = (connection.shop_domain, connection.access_token, settings.SHOPIFY_API_VERSION)
+    quantity_by_item_id = {}
+    for level in shopify_client.fetch_inventory_levels(*args, list(item_meta.keys())):
+        item_id = level.get("inventory_item_id")
+        available = level.get("available")
+        if item_id in item_meta and available is not None:
+            quantity_by_item_id[item_id] = quantity_by_item_id.get(item_id, 0) + available
+
+    for item_id, meta in item_meta.items():
+        _upsert_stock_item_from_shopify(
+            organization_id, warehouse,
+            shopify_inventory_item_id=item_id, sku=meta["sku"], name=meta["name"],
+            quantity=quantity_by_item_id.get(item_id, 0),
+        )

@@ -8,6 +8,8 @@ urlpatterns = [
     path("shopify/sync/", views.ShopifySyncView.as_view(), name="shopify-sync"),
     path("shopify/gaps/", views.ShopifyGapView.as_view(), name="shopify-gaps"),
     path("webhooks/shopify/orders/", views.shopify_order_webhook, name="shopify-order-webhook"),
+    path("webhooks/shopify/products/", views.shopify_product_webhook, name="shopify-product-webhook"),
+    path("webhooks/shopify/inventory/", views.shopify_inventory_webhook, name="shopify-inventory-webhook"),
     path("smartlane/", views.SmartlaneConnectionView.as_view(), name="smartlane-connection"),
     path(
         "smartlane/webhook/<uuid:token>/",

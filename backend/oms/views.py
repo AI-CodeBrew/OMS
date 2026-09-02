@@ -48,6 +48,9 @@ BULK_ACTIONS = {
         order, courier_id=params["courier_id"], actor_user_id=actor
     ),
     "approve": lambda order, params, actor: services.approve_order(order, actor_user_id=actor),
+    "mark_ready_to_pick": lambda order, params, actor: services.mark_ready_to_pick(
+        order, actor_user_id=actor
+    ),
     "queue_for_dispatch": lambda order, params, actor: services.queue_for_dispatch(
         order, actor_user_id=actor
     ),
@@ -129,6 +132,10 @@ class OrderViewSet(viewsets.ModelViewSet):
             qs = qs.filter(return_received_at__isnull=False)
         elif received == "no":
             qs = qs.filter(return_received_at__isnull=True)
+
+        return_condition = params.get("return_condition")
+        if return_condition in ("good", "bad"):
+            qs = qs.filter(return_condition=return_condition)
 
         date_from = params.get("date_from")
         date_to = params.get("date_to")
@@ -252,25 +259,30 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get"], url_path="returns-summary")
     def returns_summary(self, request):
-        """Counts for the returns desk. `received` is driven by
-        return_received_at rather than by the presence of stock movements,
-        so an order whose SKUs aren't tracked in WMS still counts as
-        physically received once someone scans it."""
-        # Drop `received` before filtering - these counts must describe both
-        # sides of that split, not just whichever side is being viewed.
+        """Counts for the returns desk, split three ways: not yet scanned,
+        scanned and good (restocked), scanned and bad (damaged, never
+        touches inventory - see wms.services.restock_from_return).
+        `received` only counts the good outcome, matching what the desk's
+        "Received" card means to a warehouse operator."""
+        # Drop `received`/`return_condition` before filtering - these
+        # counts must describe every bucket, not just whichever one is
+        # currently being viewed.
         params = request.query_params.copy()
         params.pop("received", None)
+        params.pop("return_condition", None)
         qs = self._apply_filters(
             Order.objects.filter(organization_id=request.organization_id, status="returned"),
             params,
         )
         total = qs.count()
-        received = qs.filter(return_received_at__isnull=False).count()
+        received = qs.filter(return_received_at__isnull=False, return_condition="good").count()
+        damaged = qs.filter(return_received_at__isnull=False, return_condition="bad").count()
         return Response(
             {
                 "total_returns": total,
                 "received": received,
-                "awaiting_scan": total - received,
+                "damaged": damaged,
+                "awaiting_scan": total - received - damaged,
             }
         )
 

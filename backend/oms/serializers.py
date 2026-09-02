@@ -152,6 +152,10 @@ class OrderSerializer(serializers.ModelSerializer):
             "delivered_at",
             "returned_at",
             "return_received_at",
+            "return_received_by_email",
+            "return_condition",
+            "packed_at",
+            "packed_by_email",
             "created_at",
             "updated_at",
         ]
@@ -169,6 +173,10 @@ class OrderSerializer(serializers.ModelSerializer):
             "delivered_at",
             "returned_at",
             "return_received_at",
+            "return_received_by_email",
+            "return_condition",
+            "packed_at",
+            "packed_by_email",
             "created_at",
             "updated_at",
         ]

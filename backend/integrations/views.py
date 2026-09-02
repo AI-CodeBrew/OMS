@@ -31,6 +31,37 @@ from .services import upsert_order_from_shopify
 
 logger = logging.getLogger(__name__)
 
+# topic -> the url name of the view that handles it. Registered together
+# whenever webhooks are turned on (see _register_shopify_webhooks below),
+# so one toggle covers orders, product catalogue and stock-level changes
+# rather than needing a separate switch per topic.
+_SHOPIFY_WEBHOOK_TOPICS = (
+    ("orders/create", "shopify-order-webhook"),
+    ("orders/updated", "shopify-order-webhook"),
+    ("products/create", "shopify-product-webhook"),
+    ("products/update", "shopify-product-webhook"),
+    ("inventory_levels/update", "shopify-inventory-webhook"),
+)
+
+
+def _register_shopify_webhooks(shop_domain, access_token):
+    """Registers every topic in _SHOPIFY_WEBHOOK_TOPICS and returns
+    (webhook_ids, warnings) - shared by connect (POST) and re-enabling
+    webhooks after they were turned off (PATCH), which previously
+    duplicated this loop with only the orders topics."""
+    ids = []
+    warnings = []
+    for topic, url_name in _SHOPIFY_WEBHOOK_TOPICS:
+        address = f"{settings.PUBLIC_BACKEND_URL.rstrip('/')}{reverse(url_name)}"
+        try:
+            webhook = shopify_client.register_webhook(
+                shop_domain, access_token, settings.SHOPIFY_API_VERSION, topic, address
+            )
+            ids.append(webhook["id"])
+        except shopify_client.ShopifyAPIError as exc:
+            warnings.append(str(exc))
+    return ids, warnings
+
 
 class ShopifyConnectionView(APIView):
     permission_classes = [IsOrgAdmin]
@@ -66,16 +97,7 @@ class ShopifyConnectionView(APIView):
             return Response({"detail": str(exc)}, status=http_status.HTTP_400_BAD_REQUEST)
 
         webhook_url = f"{settings.PUBLIC_BACKEND_URL.rstrip('/')}{reverse('shopify-order-webhook')}"
-        webhook_ids = []
-        warnings = []
-        for topic in ("orders/create", "orders/updated"):
-            try:
-                webhook = shopify_client.register_webhook(
-                    shop_domain, access_token, settings.SHOPIFY_API_VERSION, topic, webhook_url
-                )
-                webhook_ids.append(webhook["id"])
-            except shopify_client.ShopifyAPIError as exc:
-                warnings.append(str(exc))
+        webhook_ids, warnings = _register_shopify_webhooks(shop_domain, access_token)
 
         connection, _ = ShopifyConnection.objects.update_or_create(
             organization_id=request.organization_id,
@@ -124,21 +146,9 @@ class ShopifyConnectionView(APIView):
         if "webhooks_active" in request.data:
             want_active = bool(request.data["webhooks_active"])
             if want_active and not connection.webhooks_active:
-                webhook_url = f"{settings.PUBLIC_BACKEND_URL.rstrip('/')}{reverse('shopify-order-webhook')}"
-                ids = []
-                warnings = []
-                for topic in ("orders/create", "orders/updated"):
-                    try:
-                        webhook = shopify_client.register_webhook(
-                            connection.shop_domain,
-                            connection.access_token,
-                            settings.SHOPIFY_API_VERSION,
-                            topic,
-                            webhook_url,
-                        )
-                        ids.append(webhook["id"])
-                    except shopify_client.ShopifyAPIError as exc:
-                        warnings.append(str(exc))
+                ids, warnings = _register_shopify_webhooks(
+                    connection.shop_domain, connection.access_token
+                )
                 connection.webhook_ids = ids
                 connection.webhooks_active = bool(ids) and not warnings
                 connection.save(update_fields=["webhook_ids", "webhooks_active"])
@@ -372,17 +382,6 @@ def _verify_smartlane_signature(raw_body, secret, header_value):
     return hmac.compare_digest(computed, header_value)
 
 
-# Confirmed against a real payload from Smartlane's webhook test tool:
-# store_order_id, consignment_number, courier_status, state are all real
-# fields (not guesses). courier_tracking_info[] and the per-stage
-# timestamp fields (queue/ready/dispatch/out_for_delivery/attempt/
-# return_in_progress/complete/return/cancel) exist too but aren't
-# consumed yet - courier_status/state cover what this pipeline needs.
-# Set lives in services (shared with the poller) so a status seen by
-# polling and the same status arriving by webhook can't disagree.
-_SMARTLANE_DISPATCH_STATUSES = services._SMARTLANE_DISPATCH_STATUSES
-
-
 @csrf_exempt
 @require_POST
 def smartlane_shipment_webhook(request, token):
@@ -448,25 +447,13 @@ def smartlane_shipment_webhook(request, token):
         connection.save(update_fields=["events_received_count", "last_event_at"])
         return JsonResponse({"success": True, "handled": "shipper_advice"})
 
-    # Field names confirmed against a real payload from Smartlane's own
-    # webhook test tool: the order reference is store_order_id and the
-    # tracking number is consignment_number (which is "Not Assigned Yet"
-    # until the booking clears). courier_status and state are both real,
-    # distinct fields in that payload - courier_status is tried first,
-    # state as a fallback in case a given event only populates one. The
-    # generic fallbacks (order_number/tracking_number/status) keep
-    # older/manual test posts working.
-    order_number = (
-        payload.get("store_order_id") or payload.get("order_number") or ""
-    ).strip()
-    tracking_number = (
-        payload.get("consignment_number") or payload.get("tracking_number") or ""
-    ).strip()
-    if tracking_number.lower().startswith("not assigned"):
-        tracking_number = ""
-    smartlane_status = (
-        payload.get("courier_status") or payload.get("state") or payload.get("status") or ""
-    ).strip().lower().replace(" ", "_")
+    # Shared with the poller (services.extract_smartlane_event) so a
+    # webhook payload and a /track row are read identically - field names
+    # confirmed against a real payload from Smartlane's own webhook test
+    # tool: order_number is store_order_id, tracking_number is
+    # consignment_number ("Not Assigned Yet" until the booking clears,
+    # filtered out there), courier_status/state are both real fields.
+    order_number, tracking_number, smartlane_status = services.extract_smartlane_event(payload)
 
     if order_number:
         # This request carries no Supabase JWT, so TenantMiddleware never
@@ -502,12 +489,16 @@ def smartlane_shipment_webhook(request, token):
 
                 # Shared with the poller (services.apply_smartlane_status) so
                 # a status arriving by webhook and the same status seen by a
-                # poll can never produce different outcomes.
-                if not services._SMARTLANE_STATUS_MAP.get(smartlane_status) \
-                        and smartlane_status not in _SMARTLANE_DISPATCH_STATUSES:
+                # poll can never produce different outcomes. row=payload lets
+                # it resolve from the confirmed-reliable stage timestamps
+                # first, courier_status/state only as a fallback - so this
+                # pre-check has to use the same resolver, not just the raw
+                # string maps, or it would warn "no action taken" on events
+                # the stage timestamps actually do act on.
+                if not services._resolve_smartlane_target(smartlane_status, payload):
                     logger.warning(
-                        "smartlane webhook: status %r for order %s is not in the status map "
-                        "or the dispatch set - no action taken",
+                        "smartlane webhook: status %r for order %s resolved to no target - "
+                        "no action taken",
                         smartlane_status, order_number,
                     )
                 try:
@@ -516,6 +507,7 @@ def smartlane_shipment_webhook(request, token):
                         smartlane_status,
                         tracking_number=tracking_number,
                         organization_id=connection.organization_id,
+                        row=payload,
                     )
                 except oms_services.InvalidTransition as exc:
                     # Order is already past this point locally - the event is
@@ -743,24 +735,36 @@ def _verify_shopify_hmac(raw_body, secret, header_value):
     return hmac.compare_digest(computed, header_value)
 
 
-@csrf_exempt
-@require_POST
-def shopify_order_webhook(request):
-    """No Supabase JWT here - Shopify authenticates via HMAC signature
-    instead. The shop domain header tells us which org's webhook_secret
-    to verify against."""
+def _verify_shopify_webhook(request):
+    """Shared HMAC + connection lookup for every Shopify webhook endpoint.
+    No Supabase JWT on any of these - Shopify authenticates via HMAC
+    signature instead, and the shop domain header tells us which org's
+    webhook_secret to verify against. Returns (connection, None) on
+    success or (None, error_response) on failure, so callers can do
+    `connection, error = _verify_shopify_webhook(request); if error:
+    return error`."""
     shop_domain = request.META.get("HTTP_X_SHOPIFY_SHOP_DOMAIN")
     hmac_header = request.META.get("HTTP_X_SHOPIFY_HMAC_SHA256")
     if not shop_domain:
-        return JsonResponse({"detail": "Missing shop domain header"}, status=400)
+        return None, JsonResponse({"detail": "Missing shop domain header"}, status=400)
 
     try:
         connection = ShopifyConnection.all_objects.get(shop_domain=shop_domain, is_connected=True)
     except ShopifyConnection.DoesNotExist:
-        return JsonResponse({"detail": "Unknown or disconnected shop"}, status=404)
+        return None, JsonResponse({"detail": "Unknown or disconnected shop"}, status=404)
 
     if not _verify_shopify_hmac(request.body, connection.webhook_secret, hmac_header):
-        return JsonResponse({"detail": "Invalid signature"}, status=401)
+        return None, JsonResponse({"detail": "Invalid signature"}, status=401)
+
+    return connection, None
+
+
+@csrf_exempt
+@require_POST
+def shopify_order_webhook(request):
+    connection, error = _verify_shopify_webhook(request)
+    if error:
+        return error
 
     try:
         payload = json.loads(request.body)
@@ -776,4 +780,49 @@ def shopify_order_webhook(request):
         connection.last_synced_at = timezone.now()
         connection.save(update_fields=["last_synced_at"])
 
+    return JsonResponse({"success": True})
+
+
+@csrf_exempt
+@require_POST
+def shopify_product_webhook(request):
+    """products/create + products/update - keeps WMS stock items in step
+    with the catalogue in real time (name, sku, on-hand quantity) instead
+    of waiting for the next manual Sync from Shopify click. Registered
+    alongside the order webhooks (see _SHOPIFY_WEBHOOK_TOPICS), so no
+    separate toggle - it's live whenever "Real-time Webhooks" is on."""
+    connection, error = _verify_shopify_webhook(request)
+    if error:
+        return error
+
+    try:
+        payload = json.loads(request.body)
+    except ValueError:
+        return JsonResponse({"detail": "Invalid JSON"}, status=400)
+
+    services.sync_stock_items_from_shopify_product_payload(connection.organization_id, payload)
+    return JsonResponse({"success": True})
+
+
+@csrf_exempt
+@require_POST
+def shopify_inventory_webhook(request):
+    """inventory_levels/update - fires whenever stock moves at any
+    location (a sale, a manual recount, a transfer). The payload only
+    carries the new count at the one location that changed, so the
+    handler re-fetches the item's total across every location rather
+    than applying a partial delta (see
+    services.sync_stock_item_from_shopify_inventory_item)."""
+    connection, error = _verify_shopify_webhook(request)
+    if error:
+        return error
+
+    try:
+        payload = json.loads(request.body)
+    except ValueError:
+        return JsonResponse({"detail": "Invalid JSON"}, status=400)
+
+    inventory_item_id = payload.get("inventory_item_id")
+    if inventory_item_id:
+        services.sync_stock_item_from_shopify_inventory_item(connection.organization_id, inventory_item_id)
     return JsonResponse({"success": True})

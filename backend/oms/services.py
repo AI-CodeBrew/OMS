@@ -83,13 +83,13 @@ ALLOWED_TRANSITIONS = {
     "booking_pending": {"ready_to_print", "awaiting_assigning", "cancelled"},
     # An order stays here - visibly "Ready to Print" - through as many
     # loadsheet/airway-bill downloads as needed. Nothing about printing a
-    # document is itself a dispatch signal, so downloading no longer
-    # silently advances the order; only a real dispatch (courier pickup
-    # reported by Smartlane, or the manual Dispatch action) moves it on.
-    # ready_to_pick is kept reachable for any order already sitting there
-    # from before this change, not as a new automatic step.
+    # document is itself a dispatch signal any more, so downloading alone
+    # no longer advances it; moving to Ready to Pick is now an explicit
+    # manual action (see services.mark_ready_to_pick), same as a real
+    # dispatch (courier pickup reported by Smartlane, or the manual
+    # Dispatch action) moving it straight to Dispatched instead.
     "ready_to_print": {"ready_to_pick", "dispatched", "cancelled"},
-    "ready_to_pick": {"dispatched", "cancelled"},
+    "ready_to_pick": {"awaiting_dispatched", "dispatched", "cancelled"},
     "awaiting_dispatched": {"dispatched", "dispatch_issue", "cancelled"},
     "dispatch_issue": {"awaiting_dispatched", "cancelled"},
     "dispatched": {"delivered", "returned"},

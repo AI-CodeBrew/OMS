@@ -103,18 +103,22 @@ export const ACTIONS_BY_STATUS = {
   // return a document rather than mutate state. print_loadsheet needs a
   // courier param (ACTIONS_NEEDING_PARAMS) because Smartlane's load sheet
   // api is one courier per call; print_airway_bill needs none.
-  // Manual Dispatch is the fallback for when Smartlane's webhook/poller
-  // hasn't reported a real pickup yet - the order otherwise stays here
-  // (visibly "Ready to Print") through as many loadsheet/airway-bill
-  // downloads as needed, since printing a document is no longer itself a
-  // transition (see oms.services.ALLOWED_TRANSITIONS).
+  // Manual Dispatch/Ready to Pick are both fallbacks for when Smartlane's
+  // webhook/poller hasn't reported real progress yet - the order
+  // otherwise stays here (visibly "Ready to Print") through as many
+  // loadsheet/airway-bill downloads as needed, since printing a document
+  // is no longer itself a transition (see oms.services.ALLOWED_TRANSITIONS).
   ready_to_print: [
     { key: "print_loadsheet", action: "print_loadsheet", label: "Print Loadsheet" },
     { key: "print_airway_bill", action: "print_airway_bill", label: "Print Airway Bill" },
+    { key: "mark_ready_to_pick", action: "mark_ready_to_pick", label: "Ready to Pick" },
     { key: "dispatch", action: "dispatch", label: "Dispatch" },
     { key: "cancel", action: "cancel", label: "Cancel" },
   ],
-  ready_to_pick: [{ action: "dispatch", label: "Dispatch" }, { action: "cancel", label: "Cancel" }],
+  ready_to_pick: [
+    { key: "queue_for_dispatch", action: "queue_for_dispatch", label: "Awaiting Dispatching" },
+    { key: "cancel", action: "cancel", label: "Cancel" },
+  ],
   dispatch_issue: [{ action: "retry_dispatch", label: "Retry dispatch" }, { action: "cancel", label: "Cancel" }],
   dispatched: [{ action: "mark_delivered", label: "Mark delivered" }],
   delivered: [],
