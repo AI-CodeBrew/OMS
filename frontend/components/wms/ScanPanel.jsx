@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import Button from "../shared/Button";
 
 const MODES = [
@@ -12,12 +12,47 @@ const MODES = [
 // a person types an order of magnitude slower. Used only to label an entry
 // as scanned vs typed - it never blocks a submit.
 const SCANNER_KEY_INTERVAL_MS = 50;
-// Guns commonly double-fire the same code. Re-reading it this soon is
-// treated as the same parcel and ignored, rather than reported as an
-// "already received" failure the operator has to interpret.
+// Guns commonly double-fire the same code, and a phone camera re-decodes
+// the same barcode on every frame it's held in view - both look like the
+// same code arriving over and over. Re-reading it this soon is treated as
+// the same parcel and ignored, rather than reported as an "already
+// received" failure the operator has to interpret.
 const DUPLICATE_WINDOW_MS = 2000;
 const MIN_CODE_LENGTH = 3;
 const MUTE_STORAGE_KEY = "oms.scanPanel.muted";
+
+// Loaded from a CDN rather than an npm dependency - staff scan from
+// whatever phone they have (Android Chrome, iPhone Safari, ...), and this
+// library's pure-JS barcode decoder runs identically on all of them,
+// unlike the browser's native BarcodeDetector API which Safari doesn't
+// implement at all. Cached at module scope so navigating between Returns
+// and Packing (each with their own ScanPanel) only fetches it once.
+const HTML5_QRCODE_SRC = "https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js";
+let html5QrcodeLoadPromise = null;
+
+function loadHtml5Qrcode() {
+  if (typeof window === "undefined") return Promise.reject(new Error("No window"));
+  if (window.Html5Qrcode) return Promise.resolve();
+  if (html5QrcodeLoadPromise) return html5QrcodeLoadPromise;
+
+  html5QrcodeLoadPromise = new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[src="${HTML5_QRCODE_SRC}"]`);
+    const script = existing || document.createElement("script");
+    script.addEventListener("load", () => resolve(), { once: true });
+    script.addEventListener("error", () => reject(new Error("Could not load the camera library")), {
+      once: true,
+    });
+    if (!existing) {
+      script.src = HTML5_QRCODE_SRC;
+      script.async = true;
+      document.head.appendChild(script);
+    }
+  }).catch((err) => {
+    html5QrcodeLoadPromise = null; // let a retry try fetching again
+    throw err;
+  });
+  return html5QrcodeLoadPromise;
+}
 
 /**
  * Plays a short tone without any audio asset. Created lazily on the first
@@ -127,10 +162,26 @@ export default function ScanPanel({
   // (e.g. the Packing station) means this never gets set and the panel
   // behaves exactly as it always has.
   const [pendingDecision, setPendingDecision] = useState(null);
+  // "idle" before scan mode is entered, "loading" while the camera
+  // library loads and permission is requested, "active" once frames are
+  // being decoded, "error" on a denied/unavailable camera.
+  const [cameraStatus, setCameraStatus] = useState("idle");
+  const [cameraError, setCameraError] = useState("");
+  // Bumped by the Try Again button - included in the camera effect's
+  // dependencies purely to force it to re-run after a denied/failed
+  // permission prompt, since re-selecting the already-active Scan tab
+  // wouldn't otherwise change any dependency.
+  const [cameraRetryCount, setCameraRetryCount] = useState(0);
 
   const inputRef = useRef(null);
   const keyTimesRef = useRef([]);
   const lastSubmitRef = useRef({ code: "", at: 0 });
+  const scannerRef = useRef(null);
+  const submitRef = useRef(null); // always points at the latest submit() - see camera effect below
+  // Colons stripped - safe for both getElementById and any internal
+  // querySelector the camera library might use, React's default useId()
+  // format includes them.
+  const cameraElementId = `scan-camera-${useId().replace(/:/g, "")}`;
   const beep = useBeeper(muted);
 
   useEffect(() => {
@@ -153,13 +204,69 @@ export default function ScanPanel({
     });
   }
 
-  // In scan mode the field stays hot so a gun can fire straight into the
-  // next parcel without anyone touching the keyboard. Not while a
-  // decision is pending - focus stays off the field so a stray scan
-  // can't be mistaken for an answer to the good/bad prompt.
+  // In manual mode the field stays focused so Enter submits without
+  // reaching for the mouse.
   useEffect(() => {
-    if (mode === "scan" && !busy && !pendingDecision) inputRef.current?.focus();
+    if (mode === "manual" && !busy && !pendingDecision) inputRef.current?.focus();
   }, [mode, busy, result, pendingDecision]);
+
+  // Scan mode opens the phone/webcam camera and decodes barcodes
+  // continuously - every successful decode is handed to submit() exactly
+  // like a hardware scanner's keystrokes were before, so the rest of the
+  // flow (duplicate guard, beep, decision prompt, log) is unchanged.
+  // Stops the moment the operator leaves scan mode or the panel unmounts,
+  // so the camera light doesn't stay on in the background.
+  useEffect(() => {
+    if (mode !== "scan") return;
+
+    let cancelled = false;
+    setCameraStatus("loading");
+    setCameraError("");
+
+    loadHtml5Qrcode()
+      .then(() => {
+        if (cancelled) return;
+        const { Html5Qrcode, Html5QrcodeSupportedFormats } = window;
+        const formats = Object.values(Html5QrcodeSupportedFormats || {}).filter(
+          (v) => typeof v === "number"
+        );
+        const scanner = new Html5Qrcode(cameraElementId, {
+          formatsToSupport: formats.length ? formats : undefined,
+          verbose: false,
+        });
+        scannerRef.current = scanner;
+        return scanner.start(
+          { facingMode: "environment" },
+          { fps: 10, qrbox: { width: 260, height: 160 } },
+          (decodedText) => submitRef.current?.(decodedText, { forceScanned: true }),
+          () => {} // fires on every frame with no code in view - not an error
+        );
+      })
+      .then(() => {
+        if (!cancelled) setCameraStatus("active");
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setCameraStatus("error");
+        setCameraError(
+          err?.message?.includes("Permission")
+            ? "Camera permission was denied - allow camera access and try again."
+            : err?.message || "Could not open the camera."
+        );
+      });
+
+    return () => {
+      cancelled = true;
+      const scanner = scannerRef.current;
+      scannerRef.current = null;
+      if (scanner) {
+        scanner
+          .stop()
+          .then(() => scanner.clear())
+          .catch(() => {});
+      }
+    };
+  }, [mode, cameraElementId, cameraRetryCount]);
 
   function wasScanned() {
     const times = keyTimesRef.current;
@@ -168,14 +275,19 @@ export default function ScanPanel({
     return gaps.every((gap) => gap < SCANNER_KEY_INTERVAL_MS);
   }
 
-  async function submit(raw) {
+  async function submit(raw, { forceScanned } = {}) {
     // The current parcel's decision must be resolved before the next one
     // can be scanned - otherwise a Good/Bad click could land on the wrong
-    // parcel.
-    if (pendingDecision) return;
+    // parcel. The busy guard matters here specifically for the camera,
+    // which keeps decoding frames continuously - without it, holding a
+    // barcode in view a moment too long would fire a second submit while
+    // the first is still in flight.
+    if (pendingDecision || busy) return;
 
     const code = (raw || "").trim();
-    const scanned = wasScanned();
+    // Camera detections have no keystrokes to time - they're always a
+    // real scan, never "typed".
+    const scanned = forceScanned !== undefined ? forceScanned : wasScanned();
 
     if (code.length < MIN_CODE_LENGTH) {
       // A half-read barcode or a stray Enter - clear and wait rather than
@@ -231,6 +343,7 @@ export default function ScanPanel({
       inputRef.current?.focus();
     }
   }
+  submitRef.current = submit;
 
   async function resolveDecision(choice) {
     if (!pendingDecision) return;
@@ -304,37 +417,73 @@ export default function ScanPanel({
         ))}
       </div>
 
-      <p className="mt-2 text-[11px] text-slate-400">
-        {mode === "scan"
-          ? "Field stays focused — fire the scanner at each parcel in turn."
-          : `Type the order number, then press ${actionLabel}.`}
-      </p>
-
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          submit(value);
-        }}
-        className="mt-3 flex gap-2"
-      >
-        <input
-          ref={inputRef}
-          autoFocus
-          value={value}
-          disabled={busy || Boolean(pendingDecision)}
-          onKeyDown={() => {
-            keyTimesRef.current = [...keyTimesRef.current, Date.now()].slice(-40);
-          }}
-          onChange={(e) => setValue(e.target.value)}
-          placeholder="Order number"
-          className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500 disabled:bg-slate-50"
-        />
-        {mode === "manual" ? (
-          <Button type="submit" disabled={busy || !value.trim()}>
-            {busy ? "…" : actionLabel}
-          </Button>
-        ) : null}
-      </form>
+      {mode === "scan" ? (
+        <div className="mt-3">
+          <style>{`
+            #${cameraElementId} video {
+              width: 100% !important;
+              height: 100% !important;
+              object-fit: cover !important;
+            }
+          `}</style>
+          <div
+            id={cameraElementId}
+            className="relative w-full overflow-hidden rounded-md bg-slate-900"
+            style={{ height: 220 }}
+          />
+          <p
+            className={`mt-2 text-[11px] ${
+              cameraStatus === "error" ? "text-red-600" : "text-slate-400"
+            }`}
+          >
+            {cameraStatus === "loading"
+              ? "Opening camera…"
+              : cameraStatus === "error"
+                ? cameraError
+                : busy || pendingDecision
+                  ? "Processing — hold on before scanning the next parcel."
+                  : "Point the camera at the barcode."}
+            {cameraStatus === "error" ? (
+              <button
+                type="button"
+                onClick={() => setCameraRetryCount((n) => n + 1)}
+                className="ml-2 font-medium text-brand-700 underline"
+              >
+                Try again
+              </button>
+            ) : null}
+          </p>
+        </div>
+      ) : (
+        <>
+          <p className="mt-2 text-[11px] text-slate-400">
+            Type the order number, then press {actionLabel}.
+          </p>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              submit(value);
+            }}
+            className="mt-3 flex gap-2"
+          >
+            <input
+              ref={inputRef}
+              autoFocus
+              value={value}
+              disabled={busy || Boolean(pendingDecision)}
+              onKeyDown={() => {
+                keyTimesRef.current = [...keyTimesRef.current, Date.now()].slice(-40);
+              }}
+              onChange={(e) => setValue(e.target.value)}
+              placeholder="Order number"
+              className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500 disabled:bg-slate-50"
+            />
+            <Button type="submit" disabled={busy || !value.trim()}>
+              {busy ? "…" : actionLabel}
+            </Button>
+          </form>
+        </>
+      )}
 
       {result ? (
         <div
