@@ -162,7 +162,8 @@ export default function PackingPage() {
           title="Scan packed parcel"
           hint="Only orders sitting in Ready to Pick can be packed. A repeat scan of the same parcel is ignored."
           actionLabel="Mark Packed"
-          onScan={(orderNumber) => wmsService.scanPacked({ orderNumber })}
+          fieldLabel="Tracking number"
+          onScan={(trackingNumber) => wmsService.scanPacked({ trackingNumber })}
           renderSuccess={() => "Packed — moved to Awaiting Dispatched"}
           onAfterSuccess={load}
         />

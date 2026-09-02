@@ -149,54 +149,86 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
 
 def _orders_by_number(organization_id, order_numbers):
     """One query for a whole batch, keyed by order number - a bulk action
-    over a page of selected rows shouldn't be a query per row."""
+    over a page of selected rows shouldn't be a query per row. Used by the
+    table's own bulk-select actions, which already know exactly which
+    orders they mean - unlike a scan, there's no barcode to resolve."""
     orders = Order.objects.filter(
         organization_id=organization_id, order_number__in=order_numbers
     )
     return {order.order_number: order for order in orders}
 
 
-def _lookup_return(order, order_number):
+def _find_order(organization_id, request_data):
+    """Resolves the order a scan/manual-entry or a table action refers to.
+
+    The physical label on a parcel carries the courier's tracking number
+    (that's literally what its barcode encodes), so the scan panel sends
+    tracking_number. The orders table already displays order_number and
+    knows exactly which row a button belongs to, so its buttons send that
+    instead - no barcode involved, nothing to resolve by scanning.
+
+    Returns (order_or_None, raw_identifier) - raw_identifier is whatever
+    string was searched by, used only to label a not_found result (there's
+    no order to pull a real order_number from in that case).
+    """
+    tracking_number = (request_data.get("tracking_number") or "").strip()
+    if tracking_number:
+        order = Order.objects.filter(
+            organization_id=organization_id, tracking_number=tracking_number
+        ).first()
+        return order, tracking_number
+
+    order_number = (request_data.get("order_number") or "").strip()
+    order = Order.objects.filter(
+        organization_id=organization_id, order_number=order_number
+    ).first()
+    return order, order_number
+
+
+def _lookup_return(order, raw_identifier):
     """Read-only validation - the scan panel's first phase. Finds out
     whether a parcel is receivable at all, without recording anything, so
     the operator can be prompted for its condition (good/bad) before
     anything is written."""
     if order is None:
-        return {"success": False, "reason": "not_found", "order_number": order_number}
+        return {"success": False, "reason": "not_found", "order_number": raw_identifier}
     if order.status != "returned":
         return {
             "success": False,
             "reason": f"Order is {order.get_status_display()}, not Returned",
-            "order_number": order_number,
+            "order_number": order.order_number,
         }
     if order.return_received_at:
-        return {"success": False, "reason": "Already received", "order_number": order_number}
-    return {"success": True, "order_number": order_number}
+        return {"success": False, "reason": "Already received", "order_number": order.order_number}
+    return {"success": True, "order_number": order.order_number, "tracking_number": order.tracking_number}
 
 
-def _receive_return(order, order_number, *, condition, actor_user_id, actor_email="", note=""):
+def _receive_return(order, raw_identifier, *, condition, actor_user_id, actor_email="", note=""):
     """One order's worth of the returns-desk workflow, in the
     {success, order_number, reason} shape the scan panel renders. Shared
-    by the single scan and the bulk action so both answer identically."""
+    by the single scan and the bulk action so both answer identically.
+    Once an order is found, responses always key off its real
+    order_number for display, regardless of whether it was looked up by
+    tracking number or order number."""
     if order is None:
-        return {"success": False, "reason": "not_found", "order_number": order_number}
+        return {"success": False, "reason": "not_found", "order_number": raw_identifier}
     if order.status != "returned":
         return {
             "success": False,
             "reason": f"Order is {order.get_status_display()}, not Returned",
-            "order_number": order_number,
+            "order_number": order.order_number,
         }
 
     movements = services.restock_from_return(
         order, condition=condition, actor_user_id=actor_user_id, actor_email=actor_email, note=note
     )
     if movements is None:
-        return {"success": False, "reason": "Already received", "order_number": order_number}
+        return {"success": False, "reason": "Already received", "order_number": order.order_number}
     if condition == "bad":
-        return {"success": True, "order_number": order_number, "condition": "bad", "restocked": []}
+        return {"success": True, "order_number": order.order_number, "condition": "bad", "restocked": []}
     return {
         "success": True,
-        "order_number": order_number,
+        "order_number": order.order_number,
         "condition": "good",
         "restocked": [
             {"sku": m.stock_item.sku, "quantity": m.delta, "balance": m.balance_after}
@@ -206,11 +238,11 @@ def _receive_return(order, order_number, *, condition, actor_user_id, actor_emai
 
 
 class ReturnRestockView(viewsets.ViewSet):
-    """Returns-desk workflow: scan (or type) a returned order's number to
-    put its units back into stock. Separate from the order's `returned`
-    status - the courier reports the return when it leaves the customer,
-    the goods physically arrive at the warehouse later, and only that
-    second event should move inventory."""
+    """Returns-desk workflow: scan (or type) a returned parcel's tracking
+    number to put its units back into stock. Separate from the order's
+    `returned` status - the courier reports the return when it leaves the
+    customer, the goods physically arrive at the warehouse later, and
+    only that second event should move inventory."""
 
     permission_classes = [RequireModule]
     required_module = "wms"
@@ -220,37 +252,30 @@ class ReturnRestockView(viewsets.ViewSet):
         """Read-only - the scan panel's first phase. Confirms a parcel is
         receivable (green tick) before the operator is asked whether it
         arrived in good or bad condition; nothing is written here."""
-        order_number = (request.data.get("order_number") or "").strip()
-        if not order_number:
+        if not (request.data.get("tracking_number") or request.data.get("order_number")):
             return Response(
-                {"detail": "order_number is required"}, status=status.HTTP_400_BAD_REQUEST
+                {"detail": "tracking_number is required"}, status=status.HTTP_400_BAD_REQUEST
             )
-
-        order = Order.objects.filter(
-            organization_id=request.organization_id, order_number=order_number
-        ).first()
-        return Response(_lookup_return(order, order_number))
+        order, raw_identifier = _find_order(request.organization_id, request.data)
+        return Response(_lookup_return(order, raw_identifier))
 
     @action(detail=False, methods=["post"], url_path="scan")
     def scan(self, request):
-        order_number = (request.data.get("order_number") or "").strip()
         condition = (request.data.get("condition") or "").strip()
-        if not order_number:
+        if not (request.data.get("tracking_number") or request.data.get("order_number")):
             return Response(
-                {"detail": "order_number is required"}, status=status.HTTP_400_BAD_REQUEST
+                {"detail": "tracking_number is required"}, status=status.HTTP_400_BAD_REQUEST
             )
         if condition not in ("good", "bad"):
             return Response(
                 {"detail": "condition must be 'good' or 'bad'"}, status=status.HTTP_400_BAD_REQUEST
             )
 
-        order = Order.objects.filter(
-            organization_id=request.organization_id, order_number=order_number
-        ).first()
+        order, raw_identifier = _find_order(request.organization_id, request.data)
         return Response(
             _receive_return(
                 order,
-                order_number,
+                raw_identifier,
                 condition=condition,
                 actor_user_id=request.user_id,
                 actor_email=getattr(request, "auth_email", "") or "",
@@ -262,9 +287,11 @@ class ReturnRestockView(viewsets.ViewSet):
     def bulk_receive(self, request):
         """Receives a whole selection at once, all under the same
         condition - a mixed-condition batch is scanned individually
-        instead. Each order is reported individually rather than failing
-        the batch - a selection that includes one already-received
-        parcel should still receive the rest."""
+        instead. Selected from the orders table, so this is always by
+        order_number, never a barcode. Each order is reported
+        individually rather than failing the batch - a selection that
+        includes one already-received parcel should still receive the
+        rest."""
         order_numbers = [
             str(n).strip() for n in (request.data.get("order_numbers") or []) if str(n).strip()
         ]
@@ -295,24 +322,24 @@ class ReturnRestockView(viewsets.ViewSet):
         return Response({"results": results})
 
 
-def _pack_order(order, order_number, *, actor_user_id, actor_email=""):
+def _pack_order(order, raw_identifier, *, actor_user_id, actor_email=""):
     """Strict by design: only an order actually sitting in Ready to Pick
     can be packed. Anything else comes back as a failure the scan panel
     shows as a red cross, rather than quietly skipping a pipeline stage."""
     if order is None:
-        return {"success": False, "reason": "not_found", "order_number": order_number}
+        return {"success": False, "reason": "not_found", "order_number": raw_identifier}
     if order.status != "ready_to_pick":
         return {
             "success": False,
             "reason": f"Order is {order.get_status_display()}, not Ready to Pick",
-            "order_number": order_number,
+            "order_number": order.order_number,
         }
 
     oms_services.queue_for_dispatch(order, actor_user_id=actor_user_id)
     order.packed_at = timezone.now()
     order.packed_by_email = actor_email or ""
     order.save(update_fields=["packed_at", "packed_by_email", "updated_at"])
-    return {"success": True, "order_number": order_number, "status": order.status}
+    return {"success": True, "order_number": order.order_number, "status": order.status}
 
 
 class PackingView(viewsets.ViewSet):
@@ -331,19 +358,16 @@ class PackingView(viewsets.ViewSet):
 
     @action(detail=False, methods=["post"], url_path="scan")
     def scan(self, request):
-        order_number = (request.data.get("order_number") or "").strip()
-        if not order_number:
+        if not (request.data.get("tracking_number") or request.data.get("order_number")):
             return Response(
-                {"detail": "order_number is required"}, status=status.HTTP_400_BAD_REQUEST
+                {"detail": "tracking_number is required"}, status=status.HTTP_400_BAD_REQUEST
             )
 
-        order = Order.objects.filter(
-            organization_id=request.organization_id, order_number=order_number
-        ).first()
+        order, raw_identifier = _find_order(request.organization_id, request.data)
         return Response(
             _pack_order(
                 order,
-                order_number,
+                raw_identifier,
                 actor_user_id=request.user_id,
                 actor_email=getattr(request, "auth_email", "") or "",
             )

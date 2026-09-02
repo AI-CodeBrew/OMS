@@ -80,17 +80,25 @@ class WmsService {
   // --- Returns desk ---
   // Read-only - confirms a parcel is receivable before asking the
   // operator for its condition. Nothing is written until scanReturn.
-  async lookupReturn({ orderNumber }) {
+  // trackingNumber is what the scan panel sends (the physical label's own
+  // barcode); orderNumber is what the table's row/bulk buttons send
+  // instead, since they already know exactly which order they mean.
+  async lookupReturn({ trackingNumber, orderNumber }) {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.returnLookup}`, {
       method: "POST",
-      body: JSON.stringify({ order_number: orderNumber }),
+      body: JSON.stringify({ tracking_number: trackingNumber, order_number: orderNumber }),
     });
   }
 
-  async scanReturn({ orderNumber, condition, note = "" }) {
+  async scanReturn({ trackingNumber, orderNumber, condition, note = "" }) {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.returnScan}`, {
       method: "POST",
-      body: JSON.stringify({ order_number: orderNumber, condition, note }),
+      body: JSON.stringify({
+        tracking_number: trackingNumber,
+        order_number: orderNumber,
+        condition,
+        note,
+      }),
     });
   }
 
@@ -104,10 +112,12 @@ class WmsService {
   }
 
   // --- Packing station ---
-  async scanPacked({ orderNumber }) {
+  // trackingNumber (scan panel) or orderNumber (table row/bulk button) -
+  // see lookupReturn above for why there are two.
+  async scanPacked({ trackingNumber, orderNumber }) {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.packingScan}`, {
       method: "POST",
-      body: JSON.stringify({ order_number: orderNumber }),
+      body: JSON.stringify({ tracking_number: trackingNumber, order_number: orderNumber }),
     });
   }
 

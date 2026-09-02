@@ -3,11 +3,6 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import Button from "../shared/Button";
 
-const MODES = [
-  { value: "scan", label: "Scan" },
-  { value: "manual", label: "Manual" },
-];
-
 // A barcode gun fires its whole payload in a few milliseconds per keystroke;
 // a person types an order of magnitude slower. Used only to label an entry
 // as scanned vs typed - it never blocks a submit.
@@ -134,23 +129,50 @@ function SoundIcon({ muted }) {
   );
 }
 
+function CameraIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-5 w-5">
+      <path
+        d="M4 8a2 2 0 012-2h1.5l1-1.5h7l1 1.5H18a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V8z"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <circle cx="12" cy="13" r="3.5" />
+    </svg>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="h-6 w-6">
+      <path d="M18 6L6 18M6 6l12 12" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 /**
  * Barcode station shared by the Returns Desk and the Packing bench.
  *
- * onScan(orderNumber) must resolve to the {success, order_number, reason}
- * shape both wms scan endpoints already return; whatever it resolves to is
- * handed straight to renderSuccess for the detail line.
+ * onScan(code) must resolve to the {success, order_number, reason} shape
+ * the wms scan endpoints return; whatever it resolves to is handed
+ * straight to renderSuccess for the detail line. `code` is a tracking
+ * number (what's actually printed as a barcode on a parcel's courier
+ * label) - see fieldLabel below.
  */
 export default function ScanPanel({
   title,
   hint,
   actionLabel = "Submit",
+  fieldLabel = "Order number",
   onScan,
   renderSuccess,
   onAfterSuccess,
   decision,
 }) {
-  const [mode, setMode] = useState("scan");
+  // The camera only ever opens from an explicit tap on the Scan button
+  // below - never on mount/default, so landing on the page doesn't throw
+  // an unexpected camera-permission prompt at anyone.
+  const [scannerOpen, setScannerOpen] = useState(false);
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
@@ -162,15 +184,15 @@ export default function ScanPanel({
   // (e.g. the Packing station) means this never gets set and the panel
   // behaves exactly as it always has.
   const [pendingDecision, setPendingDecision] = useState(null);
-  // "idle" before scan mode is entered, "loading" while the camera
+  // "idle" before the scanner is opened, "loading" while the camera
   // library loads and permission is requested, "active" once frames are
   // being decoded, "error" on a denied/unavailable camera.
   const [cameraStatus, setCameraStatus] = useState("idle");
   const [cameraError, setCameraError] = useState("");
   // Bumped by the Try Again button - included in the camera effect's
   // dependencies purely to force it to re-run after a denied/failed
-  // permission prompt, since re-selecting the already-active Scan tab
-  // wouldn't otherwise change any dependency.
+  // permission prompt, since scannerOpen is already true and wouldn't
+  // otherwise change.
   const [cameraRetryCount, setCameraRetryCount] = useState(0);
 
   const inputRef = useRef(null);
@@ -204,20 +226,14 @@ export default function ScanPanel({
     });
   }
 
-  // In manual mode the field stays focused so Enter submits without
-  // reaching for the mouse.
+  // Opens the phone/webcam camera the moment the operator taps Scan, and
+  // decodes barcodes continuously - every successful decode is handed to
+  // submit() exactly like a hardware scanner's keystrokes were before, so
+  // the rest of the flow (duplicate guard, beep, decision prompt, log) is
+  // unchanged. Stops the moment the overlay is closed or the panel
+  // unmounts, so the camera light doesn't stay on in the background.
   useEffect(() => {
-    if (mode === "manual" && !busy && !pendingDecision) inputRef.current?.focus();
-  }, [mode, busy, result, pendingDecision]);
-
-  // Scan mode opens the phone/webcam camera and decodes barcodes
-  // continuously - every successful decode is handed to submit() exactly
-  // like a hardware scanner's keystrokes were before, so the rest of the
-  // flow (duplicate guard, beep, decision prompt, log) is unchanged.
-  // Stops the moment the operator leaves scan mode or the panel unmounts,
-  // so the camera light doesn't stay on in the background.
-  useEffect(() => {
-    if (mode !== "scan") return;
+    if (!scannerOpen) return;
 
     let cancelled = false;
     setCameraStatus("loading");
@@ -266,7 +282,7 @@ export default function ScanPanel({
           .catch(() => {});
       }
     };
-  }, [mode, cameraElementId, cameraRetryCount]);
+  }, [scannerOpen, cameraElementId, cameraRetryCount]);
 
   function wasScanned() {
     const times = keyTimesRef.current;
@@ -374,6 +390,47 @@ export default function ScanPanel({
     }
   }
 
+  const notFoundText = `No matching order for that ${fieldLabel.toLowerCase()}`;
+
+  const resultCard = result ? (
+    <div
+      className={`flex items-start gap-3 rounded-md border px-3 py-3 ${
+        result.success
+          ? "border-green-200 bg-green-50 text-green-800"
+          : "border-red-200 bg-red-50 text-red-700"
+      }`}
+    >
+      <span className="shrink-0">{result.success ? <CheckIcon /> : <CrossIcon />}</span>
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-semibold">{result.order_number}</p>
+        {result.pending && pendingDecision ? (
+          <div className="mt-1.5">
+            <p className="text-xs">{decision.prompt}</p>
+            <div className="mt-2 flex gap-2">
+              {decision.options.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  disabled={busy}
+                  onClick={() => resolveDecision(opt.value)}
+                  className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white transition disabled:opacity-50 ${
+                    opt.tone === "danger" ? "bg-red-600 hover:bg-red-700" : "bg-green-600 hover:bg-green-700"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <p className="text-xs">
+            {result.success ? renderSuccess?.(result) || "Done" : result.reason === "not_found" ? notFoundText : result.reason}
+          </p>
+        )}
+      </div>
+    </div>
+  ) : null;
+
   return (
     <div className="h-fit rounded-lg border border-surface-border bg-white p-5">
       <div className="flex items-start justify-between gap-2">
@@ -396,29 +453,45 @@ export default function ScanPanel({
         </button>
       </div>
 
-      <div className="mt-3 flex gap-1.5">
-        {MODES.map((m) => (
-          <button
-            key={m.value}
-            type="button"
-            onClick={() => {
-              setMode(m.value);
-              setValue("");
-              keyTimesRef.current = [];
-            }}
-            className={`rounded-md border px-3 py-1.5 text-xs font-medium transition ${
-              mode === m.value
-                ? "border-brand-800 bg-brand-800 text-white"
-                : "border-surface-border bg-white text-slate-600 hover:bg-surface"
-            }`}
-          >
-            {m.label}
-          </button>
-        ))}
-      </div>
+      <button
+        type="button"
+        onClick={() => setScannerOpen(true)}
+        className="mt-3 flex w-full items-center justify-center gap-2 rounded-md bg-brand-800 px-4 py-3 text-sm font-semibold text-white transition hover:bg-brand-900"
+      >
+        <CameraIcon />
+        Scan
+      </button>
 
-      {mode === "scan" ? (
-        <div className="mt-3">
+      <p className="mt-2 text-[11px] text-slate-400">
+        Or type the {fieldLabel.toLowerCase()} below, then press {actionLabel}.
+      </p>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          submit(value);
+        }}
+        className="mt-2 flex gap-2"
+      >
+        <input
+          ref={inputRef}
+          value={value}
+          disabled={busy || Boolean(pendingDecision)}
+          onKeyDown={() => {
+            keyTimesRef.current = [...keyTimesRef.current, Date.now()].slice(-40);
+          }}
+          onChange={(e) => setValue(e.target.value)}
+          placeholder={fieldLabel}
+          className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500 disabled:bg-slate-50"
+        />
+        <Button type="submit" disabled={busy || !value.trim()}>
+          {busy ? "…" : actionLabel}
+        </Button>
+      </form>
+
+      {!scannerOpen && resultCard ? <div className="mt-4">{resultCard}</div> : null}
+
+      {scannerOpen ? (
+        <div className="fixed inset-0 z-50 flex flex-col bg-black">
           <style>{`
             #${cameraElementId} video {
               width: 100% !important;
@@ -426,106 +499,41 @@ export default function ScanPanel({
               object-fit: cover !important;
             }
           `}</style>
-          <div
-            id={cameraElementId}
-            className="relative w-full overflow-hidden rounded-md bg-slate-900"
-            style={{ height: 220 }}
-          />
-          <p
-            className={`mt-2 text-[11px] ${
-              cameraStatus === "error" ? "text-red-600" : "text-slate-400"
-            }`}
-          >
-            {cameraStatus === "loading"
-              ? "Opening camera…"
-              : cameraStatus === "error"
-                ? cameraError
-                : busy || pendingDecision
-                  ? "Processing — hold on before scanning the next parcel."
-                  : "Point the camera at the barcode."}
-            {cameraStatus === "error" ? (
-              <button
-                type="button"
-                onClick={() => setCameraRetryCount((n) => n + 1)}
-                className="ml-2 font-medium text-brand-700 underline"
-              >
-                Try again
-              </button>
-            ) : null}
-          </p>
-        </div>
-      ) : (
-        <>
-          <p className="mt-2 text-[11px] text-slate-400">
-            Type the order number, then press {actionLabel}.
-          </p>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              submit(value);
-            }}
-            className="mt-3 flex gap-2"
-          >
-            <input
-              ref={inputRef}
-              autoFocus
-              value={value}
-              disabled={busy || Boolean(pendingDecision)}
-              onKeyDown={() => {
-                keyTimesRef.current = [...keyTimesRef.current, Date.now()].slice(-40);
-              }}
-              onChange={(e) => setValue(e.target.value)}
-              placeholder="Order number"
-              className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500 disabled:bg-slate-50"
-            />
-            <Button type="submit" disabled={busy || !value.trim()}>
-              {busy ? "…" : actionLabel}
-            </Button>
-          </form>
-        </>
-      )}
 
-      {result ? (
-        <div
-          className={`mt-4 flex items-start gap-3 rounded-md border px-3 py-3 ${
-            result.success
-              ? "border-green-200 bg-green-50 text-green-800"
-              : "border-red-200 bg-red-50 text-red-700"
-          }`}
-        >
-          <span className="shrink-0">{result.success ? <CheckIcon /> : <CrossIcon />}</span>
-          <div className="min-w-0 flex-1">
-            <p className="text-sm font-semibold">{result.order_number}</p>
-            {result.pending && pendingDecision ? (
-              <div className="mt-1.5">
-                <p className="text-xs">{decision.prompt}</p>
-                <div className="mt-2 flex gap-2">
-                  {decision.options.map((opt) => (
-                    <button
-                      key={opt.value}
-                      type="button"
-                      disabled={busy}
-                      onClick={() => resolveDecision(opt.value)}
-                      className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white transition disabled:opacity-50 ${
-                        opt.tone === "danger"
-                          ? "bg-red-600 hover:bg-red-700"
-                          : "bg-green-600 hover:bg-green-700"
-                      }`}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <p className="text-xs">
-                {result.success
-                  ? renderSuccess?.(result) || "Done"
-                  : result.reason === "not_found"
-                    ? "No order with that number"
-                    : result.reason}
-              </p>
-            )}
+          <div className="flex items-center justify-between px-4 py-3">
+            <p className="text-sm font-medium text-white">{title}</p>
+            <button
+              type="button"
+              onClick={() => setScannerOpen(false)}
+              aria-label="Close scanner"
+              className="rounded-full bg-white/10 p-2 text-white hover:bg-white/20"
+            >
+              <CloseIcon />
+            </button>
+          </div>
+
+          <div id={cameraElementId} className="relative w-full flex-1 overflow-hidden bg-slate-900" />
+
+          <div className="space-y-3 bg-black px-4 py-4">
+            <p className={`text-center text-sm ${cameraStatus === "error" ? "text-red-400" : "text-slate-300"}`}>
+              {cameraStatus === "loading"
+                ? "Opening camera…"
+                : cameraStatus === "error"
+                  ? cameraError
+                  : busy || pendingDecision
+                    ? "Processing — hold on before scanning the next parcel."
+                    : `Point the camera at the ${fieldLabel.toLowerCase()} barcode.`}
+              {cameraStatus === "error" ? (
+                <button
+                  type="button"
+                  onClick={() => setCameraRetryCount((n) => n + 1)}
+                  className="ml-2 font-medium text-brand-300 underline"
+                >
+                  Try again
+                </button>
+              ) : null}
+            </p>
+            {resultCard}
           </div>
         </div>
       ) : null}

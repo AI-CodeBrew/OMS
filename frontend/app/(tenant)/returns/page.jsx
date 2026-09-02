@@ -293,10 +293,15 @@ export default function ReturnsPage() {
           title="Scan returned parcel"
           hint="Scanning only confirms the parcel - nothing is recorded until you pick its condition."
           actionLabel="Check"
-          onScan={(orderNumber) => wmsService.lookupReturn({ orderNumber })}
+          fieldLabel="Tracking number"
+          onScan={(trackingNumber) => wmsService.lookupReturn({ trackingNumber })}
           decision={{
             prompt: "Parcel condition?",
             options: CONDITION_OPTIONS,
+            // The lookup phase already resolved the tracking number to a
+            // real order - ScanPanel hands back that order's order_number
+            // here, not the raw tracking number, so this confirms against
+            // the exact order that was found.
             onDecide: (orderNumber, condition) => wmsService.scanReturn({ orderNumber, condition }),
           }}
           renderSuccess={describeOutcome}
