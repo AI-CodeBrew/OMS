@@ -360,10 +360,41 @@ def _render_pdf(url, api_key, *, context=""):
         with sync_playwright() as p:
             browser = p.chromium.launch()
             try:
-                page = browser.new_page(extra_http_headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Accept": "text/html",
-                })
+                page = browser.new_page()
+
+                # The auth headers go on the page request ONLY, via routing,
+                # rather than new_page(extra_http_headers=...) - that applies
+                # them to every request the page makes, images included, and
+                # an image host handed an unexpected Authorization header (S3
+                # and most CDNs) rejects it outright, which is how the load
+                # sheet's logo silently went missing from the PDF while the
+                # rest of the page rendered. Sending "Accept: text/html" for
+                # an image was the same kind of wrong. Leaving sub-resource
+                # headers untouched lets the browser send what it normally
+                # would, exactly like a person loading the page.
+                def _auth_document_only(route, request):
+                    if request.resource_type == "document":
+                        route.continue_(headers={
+                            **request.headers,
+                            "authorization": f"Bearer {api_key}",
+                            "accept": "text/html",
+                        })
+                    else:
+                        route.continue_()
+
+                page.route("**/*", _auth_document_only)
+
+                # Whatever the page couldn't load is what's missing from the
+                # PDF, so name it in the logs instead of leaving a blank spot
+                # to guess at.
+                page.on("requestfailed", lambda r: logger.warning(
+                    "smartlane pdf %s: %s request failed (%s) %s",
+                    context or url, r.resource_type,
+                    r.failure or "unknown error", r.url[:200]))
+                page.on("response", lambda r: r.status >= 400 and logger.warning(
+                    "smartlane pdf %s: %s -> HTTP %s %s",
+                    context or url, r.request.resource_type, r.status, r.url[:200]))
+
                 resp = page.goto(url, wait_until="networkidle", timeout=30000)
                 if resp is None or not resp.ok:
                     status = resp.status if resp else "no response"
