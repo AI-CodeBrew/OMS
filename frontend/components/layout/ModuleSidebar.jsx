@@ -27,10 +27,16 @@ function isItemActive(item, pathname, search) {
 }
 
 function RailTooltip({ label, disabled }) {
+  // Touch devices have no hover state to reveal this, so below md it's
+  // dropped from the DOM entirely rather than just left invisible -
+  // opacity-0 still leaves an absolutely-positioned, whitespace-nowrap
+  // box contributing to the page's real scrollable width, which is what
+  // was dragging Returns/Packing (and every other page) sideways on
+  // mobile even after their own tables were fixed.
   return (
     <span
       role="tooltip"
-      className="pointer-events-none absolute left-full top-1/2 z-30 ml-2 -translate-y-1/2 translate-x-1 whitespace-nowrap rounded-md bg-brand-900 px-2.5 py-1.5 text-xs font-medium text-white opacity-0 shadow-lg transition-all duration-150 group-hover:translate-x-0 group-hover:opacity-100"
+      className="pointer-events-none absolute left-full top-1/2 z-30 ml-2 hidden -translate-y-1/2 translate-x-1 whitespace-nowrap rounded-md bg-brand-900 px-2.5 py-1.5 text-xs font-medium text-white opacity-0 shadow-lg transition-all duration-150 group-hover:translate-x-0 group-hover:opacity-100 md:block"
     >
       {label}
       {disabled ? <span className="ml-1 text-brand-300">· soon</span> : null}
