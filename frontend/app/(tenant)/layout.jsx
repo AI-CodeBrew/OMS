@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import ProtectedRoute from "../../components/shared/ProtectedRoute";
+import LoadingOverlay from "../../components/shared/LoadingOverlay";
 import TenantHeader from "../../components/layout/TenantHeader";
 import ModuleSidebar from "../../components/layout/ModuleSidebar";
 import {
@@ -28,6 +29,7 @@ function TenantShell({ children }) {
 
   return (
     <div className="min-h-screen bg-brand-800">
+      <LoadingOverlay />
       <TenantHeader activeModule={activeModule} />
       <div className="flex">
         <ModuleSidebar

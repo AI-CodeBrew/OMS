@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 import Button from "../shared/Button";
 import Modal from "../shared/Modal";
 import ordersService from "../../services/ordersService";
+import useLoadingStore from "../../store/loadingStore";
 
 const COLUMNS = [
   "Web OrderID",
@@ -77,6 +78,8 @@ export default function ImportOrdersModal({ open, onClose, onImported }) {
   const [error, setError] = useState("");
   const [overwriteFinal, setOverwriteFinal] = useState(false);
   const [applied, setApplied] = useState(null);
+  const beginLoading = useLoadingStore((s) => s.begin);
+  const endLoading = useLoadingStore((s) => s.end);
 
   function reset() {
     setFile(null);
@@ -128,6 +131,7 @@ export default function ImportOrdersModal({ open, onClose, onImported }) {
   async function onApply() {
     setBusy(true);
     setError("");
+    beginLoading("Importing orders");
     try {
       const result = await ordersService.importCsv(file, { apply: true, overwriteFinal });
       setApplied(result);
@@ -137,6 +141,7 @@ export default function ImportOrdersModal({ open, onClose, onImported }) {
       setError(err.message);
     } finally {
       setBusy(false);
+      endLoading();
     }
   }
 

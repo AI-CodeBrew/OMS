@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import wmsService from "../../../services/wmsService";
+import useLoadingStore from "../../../store/loadingStore";
 import Button from "../../../components/shared/Button";
 import Pagination from "../../../components/shared/Pagination";
 import StockAdjustModal from "../../../components/wms/StockAdjustModal";
@@ -29,6 +30,8 @@ function SummaryCard({ label, value, tone = "default" }) {
 }
 
 export default function WmsPage() {
+  const beginLoading = useLoadingStore((s) => s.begin);
+  const endLoading = useLoadingStore((s) => s.end);
   const [warehouses, setWarehouses] = useState([]);
   const [stock, setStock] = useState([]);
   const [count, setCount] = useState(0);
@@ -100,6 +103,7 @@ export default function WmsPage() {
     setSyncing(true);
     setError("");
     setNotice("");
+    beginLoading("Syncing inventory from Shopify");
     try {
       const result = await wmsService.syncStockFromShopify();
       setNotice(
@@ -111,6 +115,7 @@ export default function WmsPage() {
       setError(err.message || "Failed to sync from Shopify");
     } finally {
       setSyncing(false);
+      endLoading();
     }
   }
 

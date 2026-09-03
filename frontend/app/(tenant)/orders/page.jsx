@@ -6,6 +6,7 @@ import dynamic from "next/dynamic";
 import ordersService from "../../../services/ordersService";
 import couriersService from "../../../services/couriersService";
 import integrationsService from "../../../services/integrationsService";
+import useLoadingStore from "../../../store/loadingStore";
 import Button from "../../../components/shared/Button";
 import Pagination from "../../../components/shared/Pagination";
 import OrderStatusTabs from "../../../components/orders/OrderStatusTabs";
@@ -62,6 +63,8 @@ function describeFailures(failed) {
 export default function OrdersPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const beginLoading = useLoadingStore((s) => s.begin);
+  const endLoading = useLoadingStore((s) => s.end);
 
   const [activeStatus, setActiveStatusState] = useState(() => searchParams.get("status") || "all");
   const [search, setSearch] = useState("");
@@ -125,6 +128,7 @@ export default function OrdersPage() {
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
+    beginLoading("Loading orders");
     try {
       const [orderData, countData] = await Promise.all([
         ordersService.list({ ...queryParams, page, page_size: pageSize }),
@@ -138,8 +142,9 @@ export default function OrdersPage() {
       setError(err.message || "Failed to load orders");
     } finally {
       setLoading(false);
+      endLoading();
     }
-  }, [queryParams, page, pageSize]);
+  }, [queryParams, page, pageSize, beginLoading, endLoading]);
 
   useEffect(() => {
     load();
@@ -192,12 +197,15 @@ export default function OrdersPage() {
     // so it falls through to the param-collecting modal below instead.
     if (action === "print_airway_bill") {
       setApplyingAction(true);
+      const bulk = orderIds.length > 1;
+      if (bulk) beginLoading(`Printing ${orderIds.length} airway bills`);
       try {
         await ordersService.printSmartlaneAirwayBill(orderIds);
       } catch (err) {
         setError(err.message || "Print failed");
       } finally {
         setApplyingAction(false);
+        if (bulk) endLoading();
       }
       return;
     }
@@ -210,6 +218,11 @@ export default function OrdersPage() {
   }
 
   async function runAction(action, orderIds, params) {
+    // The centered overlay is reserved for genuinely bulk actions - a
+    // single order already gets adequate feedback from the modal's own
+    // button spinner.
+    const bulk = orderIds.length > 1;
+
     // Load sheet returns a document instead of mutating state, so it
     // bypasses the bulk-action endpoint entirely - Smartlane generates it
     // for one courier at a time. We don't actually know which real
@@ -228,6 +241,7 @@ export default function OrdersPage() {
         courier = enabled[0].value;
       }
       setApplyingAction(true);
+      if (bulk) beginLoading(`Printing ${orderIds.length} load sheets`);
       try {
         await ordersService.printSmartlaneLoadSheet(orderIds, courier);
         setPendingAction(null);
@@ -236,11 +250,13 @@ export default function OrdersPage() {
         setError(err.message || "Print failed");
       } finally {
         setApplyingAction(false);
+        if (bulk) endLoading();
       }
       return;
     }
 
     setApplyingAction(true);
+    if (bulk) beginLoading(`Applying to ${orderIds.length} orders`);
     try {
       // "Smartlane" is a synthetic entry in the courier picker (see
       // OrderActionModal), not a real Courier row - selecting it pushes a
@@ -285,12 +301,15 @@ export default function OrdersPage() {
       setError(err.message || "Action failed");
     } finally {
       setApplyingAction(false);
+      if (bulk) endLoading();
     }
   }
 
   async function onProceedDespiteShortage() {
     if (!stockShortfall) return;
+    const bulk = stockShortfall.orderIds.length > 1;
     setApplyingAction(true);
+    if (bulk) beginLoading(`Applying to ${stockShortfall.orderIds.length} orders`);
     try {
       const data = await ordersService.bulkAction({
         action: stockShortfall.action,
@@ -305,6 +324,7 @@ export default function OrdersPage() {
       setError(err.message || "Action failed");
     } finally {
       setApplyingAction(false);
+      if (bulk) endLoading();
     }
   }
 

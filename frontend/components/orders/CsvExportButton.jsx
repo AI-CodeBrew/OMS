@@ -4,6 +4,7 @@ import { useState } from "react";
 import Dropdown from "../shared/Dropdown";
 import { Spinner } from "../shared/Button";
 import ordersService from "../../services/ordersService";
+import useLoadingStore from "../../store/loadingStore";
 
 const TEMPLATES = [
   { key: "all", label: "All", filename: "orders.csv" },
@@ -14,9 +15,12 @@ const TEMPLATES = [
 
 export default function CsvExportButton({ filterParams }) {
   const [exporting, setExporting] = useState(false);
+  const beginLoading = useLoadingStore((s) => s.begin);
+  const endLoading = useLoadingStore((s) => s.end);
 
   async function onExport(template, filename) {
     setExporting(true);
+    beginLoading("Preparing export");
     try {
       const blob = await ordersService.exportCsv({ ...filterParams, template });
       const url = window.URL.createObjectURL(blob);
@@ -31,6 +35,7 @@ export default function CsvExportButton({ filterParams }) {
       // Non-critical - user can retry the export directly.
     } finally {
       setExporting(false);
+      endLoading();
     }
   }
 

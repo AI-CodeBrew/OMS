@@ -5,6 +5,7 @@ import Link from "next/link";
 import integrationsService from "../../../../services/integrationsService";
 import Button from "../../../../components/shared/Button";
 import PasswordInput from "../../../../components/shared/PasswordInput";
+import useLoadingStore from "../../../../store/loadingStore";
 
 const EMPTY_FORM = { api_key: "", webhook_secret: "", store_warehouse_code: "" };
 
@@ -20,6 +21,8 @@ function TruckIcon({ className }) {
 }
 
 export default function SmartlaneIntegrationPage() {
+  const beginLoading = useLoadingStore((s) => s.begin);
+  const endLoading = useLoadingStore((s) => s.end);
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [connecting, setConnecting] = useState(false);
@@ -80,6 +83,7 @@ export default function SmartlaneIntegrationPage() {
     setSyncing(true);
     setError("");
     setSyncResult(null);
+    beginLoading("Syncing with Smartlane");
     try {
       const result = await integrationsService.syncSmartlane();
       setSyncResult(result);
@@ -88,6 +92,7 @@ export default function SmartlaneIntegrationPage() {
       setError(err.message || "Failed to sync with Smartlane");
     } finally {
       setSyncing(false);
+      endLoading();
     }
   }
 
