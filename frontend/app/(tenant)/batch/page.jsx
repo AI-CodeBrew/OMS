@@ -82,12 +82,15 @@ export default function BatchPage() {
       </div>
 
       <div className="mt-4 flex flex-wrap items-center gap-2">
-        <form onSubmit={onSearchSubmit} className="flex items-center gap-1.5">
+        <form
+          onSubmit={onSearchSubmit}
+          className="flex w-full flex-wrap items-center gap-1.5 sm:w-auto sm:flex-nowrap"
+        >
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search order number…"
-            className="w-56 rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
+            className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500 sm:w-56"
           />
           <button
             type="submit"

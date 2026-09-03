@@ -197,13 +197,13 @@ export default function WmsPage() {
                 setAppliedSearch(search);
                 setPage(1);
               }}
-              className="flex items-center gap-2"
+              className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap"
             >
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Search SKU or product"
-                className="w-64 rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
+                className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500 sm:w-64"
               />
               <Button type="submit" variant="secondary">
                 Search

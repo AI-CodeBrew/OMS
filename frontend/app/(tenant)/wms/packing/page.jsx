@@ -196,13 +196,13 @@ export default function PackingPage() {
                 setAppliedSearch(search);
                 setPage(1);
               }}
-              className="flex items-center gap-2"
+              className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap"
             >
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Search orders"
-                className="w-52 rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
+                className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500 sm:w-52"
               />
               <select
                 value={searchField}

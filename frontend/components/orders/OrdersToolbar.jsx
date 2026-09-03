@@ -22,13 +22,22 @@ export default function OrdersToolbar({
 
   return (
     <div className="flex flex-wrap items-center gap-2 py-3">
-      <form onSubmit={onSubmitSearch} className="flex items-center gap-2">
+      {/* w-64 on the input alone used to force this whole form wider than
+          a phone screen, since the form itself had no flex-wrap of its
+          own - the outer container wrapping the form as one unit didn't
+          help once the form's own content was already too wide to fit
+          on one line. Full width below sm, back to the fixed desktop
+          width above it. */}
+      <form
+        onSubmit={onSubmitSearch}
+        className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap"
+      >
         <input
           value={search}
           onChange={(e) => onSearchChange(e.target.value)}
           placeholder="Search — separate multiple with commas"
           title="Separate multiple values with commas, e.g. 87364,7386473,8343"
-          className="w-64 rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
+          className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500 sm:w-64"
         />
         <Dropdown
           trigger={
