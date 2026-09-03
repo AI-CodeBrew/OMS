@@ -240,7 +240,7 @@ export default function ScanPanel({
     setCameraError("");
 
     loadHtml5Qrcode()
-      .then(() => {
+      .then(async () => {
         if (cancelled) return;
         const { Html5Qrcode, Html5QrcodeSupportedFormats } = window;
         const formats = Object.values(Html5QrcodeSupportedFormats || {}).filter(
@@ -251,8 +251,32 @@ export default function ScanPanel({
           verbose: false,
         });
         scannerRef.current = scanner;
+
+        // {facingMode: "environment"} is only a hint, and real devices
+        // (confirmed - it opened the front/selfie camera on a test
+        // device) can silently ignore it rather than reject it, so
+        // there's no error to react to, just the wrong camera. Naming an
+        // actual camera id is authoritative instead. getCameras() itself
+        // requests camera access (briefly opening and immediately
+        // releasing a stream) to unlock real device labels before
+        // enumerating, which is also what shows the permission prompt -
+        // start() below then opens the specific device chosen here.
+        let cameraTarget = { facingMode: "environment" };
+        try {
+          const cameras = await Html5Qrcode.getCameras();
+          if (cameras && cameras.length > 0) {
+            const rear = cameras.find((c) => /back|rear|environment/i.test(c.label));
+            cameraTarget = (rear || cameras[cameras.length - 1]).id;
+          }
+        } catch {
+          // Permission denied, or enumeration isn't supported here - the
+          // facingMode hint above still gives start() something to try,
+          // and start() itself will surface a real denial to the caller.
+        }
+        if (cancelled) return;
+
         return scanner.start(
-          { facingMode: "environment" },
+          cameraTarget,
           {
             fps: 10,
             // A fixed {width, height} here is a fixed PIXEL size, not a
