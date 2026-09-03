@@ -61,20 +61,29 @@ export default function SmartlaneIntegrationPage() {
 
   const connected = Boolean(status?.connected);
 
-  async function onSaveWarehouseCode(e) {
-    e.preventDefault();
+  // Shared by the manual-entry form and clicking a warehouse in the
+  // fetched list - takes code directly rather than reading it back off
+  // warehouseCode state, since a list click sets both in the same
+  // instant and state updates aren't guaranteed to have landed yet.
+  async function saveWarehouseCode(code) {
+    setWarehouseCode(code);
     setSavingWarehouse(true);
     setError("");
     setNotice("");
     try {
-      const data = await integrationsService.updateSmartlaneWarehouse(warehouseCode.trim());
+      const data = await integrationsService.updateSmartlaneWarehouse(code);
       setStatus(data);
-      setNotice("Warehouse code saved.");
+      setNotice("Warehouse updated.");
     } catch (err) {
       setError(err.message || "Failed to save warehouse code");
     } finally {
       setSavingWarehouse(false);
     }
+  }
+
+  function onSaveWarehouseCode(e) {
+    e.preventDefault();
+    saveWarehouseCode(warehouseCode.trim());
   }
 
   // Pulls consignment numbers and delivery outcomes from Smartlane right
@@ -276,51 +285,102 @@ export default function SmartlaneIntegrationPage() {
               </div>
 
               <div className="mt-4 border-t border-surface-border pt-4">
-                <span className="mb-1 block text-xs font-medium text-slate-700">
-                  Warehouse Code <span className="text-red-500">*</span>
-                </span>
-                <form onSubmit={onSaveWarehouseCode} className="flex items-center gap-1.5">
-                  <input
-                    value={warehouseCode}
-                    onChange={(e) => setWarehouseCode(e.target.value)}
-                    placeholder="Your-warehouse-code"
-                    className="w-full rounded-md border border-surface-border px-2 py-1.5 text-xs outline-none focus:border-brand-500"
-                  />
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-slate-700">
+                    Warehouse <span className="text-red-500">*</span>
+                  </span>
                   <button
-                    type="submit"
-                    disabled={savingWarehouse}
-                    className="shrink-0 rounded-md border border-surface-border px-2 py-1.5 text-xs font-medium text-slate-600 hover:bg-surface disabled:opacity-50"
+                    type="button"
+                    onClick={onFetchWarehouses}
+                    disabled={loadingWarehouses}
+                    className="shrink-0 text-xs font-medium text-brand-600 hover:underline disabled:opacity-50"
                   >
-                    {savingWarehouse ? "Saving…" : "Save"}
+                    {loadingWarehouses ? "Fetching…" : warehouses ? "Refresh list" : "Fetch from Smartlane"}
                   </button>
-                </form>
-                <button
-                  type="button"
-                  onClick={onFetchWarehouses}
-                  disabled={loadingWarehouses}
-                  className="mt-1.5 text-xs font-medium text-brand-600 hover:underline disabled:opacity-50"
-                >
-                  {loadingWarehouses ? "Fetching…" : "Fetch my warehouses from Smartlane"}
-                </button>
-                {warehouses?.length ? (
-                  <ul className="mt-2 space-y-1 rounded-md border border-surface-border bg-surface/60 p-2 text-xs">
-                    {warehouses.map((w) => (
-                      <li key={w.code || w.warehouse_code || w.id}>
-                        <button
-                          type="button"
-                          onClick={() => setWarehouseCode(w.code || w.warehouse_code || "")}
-                          className="text-brand-600 hover:underline"
-                        >
-                          {w.name || w.warehouse_name || "Warehouse"} — {w.code || w.warehouse_code}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-                <span className="mt-1 block text-xs text-slate-400">
-                  Required before booking any order through Smartlane - set it on the Smartlane
-                  portal under Store &gt; Warehouse first if the fetch above comes back empty.
+                </div>
+                <span className="mt-0.5 block text-xs text-slate-400">
+                  Every booking goes through whichever one is Active below.
                 </span>
+
+                {warehouses?.length ? (
+                  <ul className="mt-2 space-y-1.5">
+                    {warehouses.map((w) => {
+                      const code = w.code || w.warehouse_code || "";
+                      const isActive = code && code === status.store_warehouse_code;
+                      const isOffline = w.status && w.status !== "active";
+                      return (
+                        <li key={code || w.id}>
+                          <button
+                            type="button"
+                            onClick={() => saveWarehouseCode(code)}
+                            disabled={savingWarehouse || isActive}
+                            title={code}
+                            className={`flex w-full items-center justify-between gap-2 rounded-md border px-2.5 py-2 text-left text-xs transition disabled:cursor-default ${
+                              isActive
+                                ? "border-brand-600 bg-brand-50"
+                                : "border-surface-border bg-white hover:bg-surface"
+                            }`}
+                          >
+                            <span className="min-w-0">
+                              <span className="block truncate font-medium text-slate-800">
+                                {w.name || w.warehouse_name || "Warehouse"}
+                              </span>
+                              <span className="block truncate text-slate-500">
+                                {code}
+                                {w.city ? ` · ${w.city}` : ""}
+                              </span>
+                            </span>
+                            <span className="shrink-0">
+                              {isActive ? (
+                                <span className="rounded-full bg-brand-600 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">
+                                  Active
+                                </span>
+                              ) : isOffline ? (
+                                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                                  {w.status}
+                                </span>
+                              ) : (
+                                <span className="text-[10px] font-medium uppercase tracking-wide text-brand-600">
+                                  Set active
+                                </span>
+                              )}
+                            </span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : warehouses && warehouses.length === 0 ? (
+                  <p className="mt-2 text-xs text-slate-400">
+                    No warehouses found - create one on the Smartlane portal (Store &gt; Warehouse)
+                    first.
+                  </p>
+                ) : status.store_warehouse_code ? (
+                  <p className="mt-2 rounded-md border border-surface-border bg-surface/60 px-2.5 py-2 text-xs text-slate-600">
+                    Active: <span className="font-medium">{status.store_warehouse_code}</span>
+                  </p>
+                ) : null}
+
+                <details className="mt-2">
+                  <summary className="cursor-pointer text-xs text-slate-400 hover:text-slate-600">
+                    Enter a code manually instead
+                  </summary>
+                  <form onSubmit={onSaveWarehouseCode} className="mt-1.5 flex items-center gap-1.5">
+                    <input
+                      value={warehouseCode}
+                      onChange={(e) => setWarehouseCode(e.target.value)}
+                      placeholder="Your-warehouse-code"
+                      className="w-full rounded-md border border-surface-border px-2 py-1.5 text-xs outline-none focus:border-brand-500"
+                    />
+                    <button
+                      type="submit"
+                      disabled={savingWarehouse}
+                      className="shrink-0 rounded-md border border-surface-border px-2 py-1.5 text-xs font-medium text-slate-600 hover:bg-surface disabled:opacity-50"
+                    >
+                      {savingWarehouse ? "Saving…" : "Save"}
+                    </button>
+                  </form>
+                </details>
               </div>
 
               <button
