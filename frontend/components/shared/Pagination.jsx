@@ -16,7 +16,22 @@ function buildPageList(current, total) {
   return withGaps;
 }
 
-export default function Pagination({ page, pageSize, count, onPageChange, onPageSizeChange }) {
+// maxPageSize must match the backend's own PageNumberPagination.max_page_size
+// for whichever endpoint this table reads from (OrderPagination=1000,
+// WmsPagination=500, ...) - "All" requests min(count, maxPageSize) rather
+// than the true row count, so a big unfiltered list doesn't try to pull
+// and render thousands of rows in one go. Getting this wrong doesn't
+// break anything - the API just clamps a too-high request - but the
+// "Showing X to Y of Z" label would then quietly overstate what's really
+// on screen, so keep it in sync with the real backend cap.
+export default function Pagination({
+  page,
+  pageSize,
+  count,
+  onPageChange,
+  onPageSizeChange,
+  maxPageSize = 1000,
+}) {
   const [customMode, setCustomMode] = useState(false);
   const [customValue, setCustomValue] = useState("");
 
@@ -28,10 +43,16 @@ export default function Pagination({ page, pageSize, count, onPageChange, onPage
     if (p >= 1 && p <= totalPages) onPageChange(p);
   }
 
+  const allSize = Math.max(1, Math.min(count, maxPageSize));
+
   function onSelectChange(e) {
     if (e.target.value === "custom") {
       setCustomValue(String(pageSize));
       setCustomMode(true);
+      return;
+    }
+    if (e.target.value === "all") {
+      onPageSizeChange(allSize);
       return;
     }
     onPageSizeChange(Number(e.target.value));
@@ -82,7 +103,13 @@ export default function Pagination({ page, pageSize, count, onPageChange, onPage
           </div>
         ) : (
           <select
-            value={PAGE_SIZE_OPTIONS.includes(pageSize) ? pageSize : "custom"}
+            value={
+              PAGE_SIZE_OPTIONS.includes(pageSize)
+                ? pageSize
+                : pageSize === allSize && count > 100
+                  ? "all"
+                  : "custom"
+            }
             onChange={onSelectChange}
             className="rounded-md border border-surface-border px-2 py-1 text-sm outline-none focus:border-brand-500"
           >
@@ -91,9 +118,10 @@ export default function Pagination({ page, pageSize, count, onPageChange, onPage
                 {n} per page
               </option>
             ))}
-            {!PAGE_SIZE_OPTIONS.includes(pageSize) ? (
+            {!PAGE_SIZE_OPTIONS.includes(pageSize) && !(pageSize === allSize && count > 100) ? (
               <option value={pageSize}>{pageSize} per page</option>
             ) : null}
+            <option value="all">All ({allSize < count ? `first ${allSize}` : count})</option>
             <option value="custom">Custom…</option>
           </select>
         )}

@@ -136,11 +136,11 @@ export default function WmsPage() {
         </div>
         {hasWarehouse ? (
           <div className="flex gap-2">
-            <Button variant="secondary" onClick={onSyncShopify} disabled={syncing}>
-              {syncing ? "Syncing…" : "Sync from Shopify"}
+            <Button variant="secondary" onClick={onSyncShopify} loading={syncing}>
+              Sync from Shopify
             </Button>
-            <Button variant="secondary" onClick={onImportSkus} disabled={importing}>
-              {importing ? "Importing…" : "Import SKUs from Orders"}
+            <Button variant="secondary" onClick={onImportSkus} loading={importing}>
+              Import SKUs from Orders
             </Button>
             <Button onClick={() => setNewItemOpen(true)}>Add Stock Item</Button>
           </div>
@@ -309,6 +309,7 @@ export default function WmsPage() {
             page={page}
             pageSize={pageSize}
             count={count}
+            maxPageSize={500}
             onPageChange={setPage}
             onPageSizeChange={(size) => {
               setPageSize(size);
