@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 import ordersService from "../../../services/ordersService";
+import useLoadingStore from "../../../store/loadingStore";
 
 // recharts is a large library - loading it on demand instead of eagerly
 // means the KPI cards and header below render immediately on the very
@@ -64,6 +65,8 @@ function KpiCard({ label, value, color }) {
 }
 
 export default function DashboardPage() {
+  const beginLoading = useLoadingStore((s) => s.begin);
+  const endLoading = useLoadingStore((s) => s.end);
   const [activeRange, setActiveRange] = useState("30");
   const [customRange, setCustomRange] = useState(null);
   const [data, setData] = useState(null);
@@ -80,6 +83,7 @@ export default function DashboardPage() {
     let cancelled = false;
     setLoading(true);
     setError("");
+    beginLoading("Loading dashboard");
     ordersService
       .dashboard(params)
       .then((d) => {
@@ -90,11 +94,12 @@ export default function DashboardPage() {
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
+        endLoading();
       });
     return () => {
       cancelled = true;
     };
-  }, [params]);
+  }, [params, beginLoading, endLoading]);
 
   const statusBreakdown = data?.status_breakdown || {};
   const kpis = KPI_GROUPS.map((g) => ({
