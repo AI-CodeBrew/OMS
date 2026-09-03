@@ -27,6 +27,7 @@ export const SEARCH_FIELDS = [
   { value: "order_number", label: "Order Name" },
   { value: "customer_name", label: "Customer Name" },
   { value: "customer_phone", label: "Contact" },
+  { value: "product_name", label: "Product Name" },
 ];
 
 // Actions that need a param OrderActionModal must collect first - the

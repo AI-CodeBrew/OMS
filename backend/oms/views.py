@@ -1,7 +1,7 @@
 import csv
 import logging
 
-from django.db.models import Count, F, Prefetch, Sum
+from django.db.models import Count, F, Prefetch, Q, Sum
 from django.db.models.functions import Coalesce, TruncDate
 from django.http import HttpResponse, StreamingHttpResponse
 from rest_framework import status, viewsets
@@ -32,6 +32,11 @@ SEARCHABLE_FIELDS = {
     "order_number": "order_number__icontains",
     "customer_name": "customer_name__icontains",
     "customer_phone": "customer_phone__icontains",
+    # Lives on OrderItem, not Order - _apply_filters below joins through
+    # the reverse FK and dedupes with .distinct() specifically for this
+    # field, since an order with two matching line items would otherwise
+    # come back twice.
+    "product_name": "items__product_name__icontains",
 }
 
 BULK_ACTIONS = {
@@ -122,8 +127,19 @@ class OrderViewSet(viewsets.ModelViewSet):
         search = params.get("search")
         search_field = params.get("search_field", "order_number")
         if search:
-            lookup = SEARCHABLE_FIELDS.get(search_field, SEARCHABLE_FIELDS["order_number"])
-            qs = qs.filter(**{lookup: search})
+            # Comma-separated terms are OR'd together - lets a bulk lookup
+            # like "87364,7386473,8343" find every one of those orders in
+            # a single search, same comma convention `status` above
+            # already uses for its own multi-value filter.
+            terms = [t.strip() for t in search.split(",") if t.strip()]
+            if terms:
+                lookup = SEARCHABLE_FIELDS.get(search_field, SEARCHABLE_FIELDS["order_number"])
+                condition = Q()
+                for term in terms:
+                    condition |= Q(**{lookup: term})
+                qs = qs.filter(condition)
+                if search_field == "product_name":
+                    qs = qs.distinct()
 
         city = params.get("city")
         if city:

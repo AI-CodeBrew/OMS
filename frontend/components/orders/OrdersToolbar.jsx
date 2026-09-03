@@ -26,8 +26,9 @@ export default function OrdersToolbar({
         <input
           value={search}
           onChange={(e) => onSearchChange(e.target.value)}
-          placeholder="Search"
-          className="w-56 rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
+          placeholder="Search — separate multiple with commas"
+          title="Separate multiple values with commas, e.g. 87364,7386473,8343"
+          className="w-64 rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
         />
         <Dropdown
           trigger={
