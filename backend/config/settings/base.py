@@ -98,6 +98,13 @@ DATABASES = {
         # progress instead of failing loudly. A short timeout turns that
         # into a real, catchable OperationalError instead.
         "OPTIONS": {"connect_timeout": 10},
+        # Default (0) opens and closes a fresh connection to Supabase's
+        # pooler on every single request - reusing one for up to 60s
+        # instead cuts that connect/auth round trip off most requests.
+        # Safe to leave generous here: gunicorn runs a single worker with
+        # no --threads flag (see render.yaml / Dockerfile), so this is at
+        # most one persistent connection, not one per worker.
+        "CONN_MAX_AGE": 60,
     }
 }
 
