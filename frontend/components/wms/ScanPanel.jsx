@@ -253,7 +253,21 @@ export default function ScanPanel({
         scannerRef.current = scanner;
         return scanner.start(
           { facingMode: "environment" },
-          { fps: 10, qrbox: { width: 260, height: 160 } },
+          {
+            fps: 10,
+            // A fixed {width, height} here is a fixed PIXEL size, not a
+            // fraction of the video - on a real phone camera feed
+            // (often 720p+) a flat 260x160 box reads as a tiny square
+            // lost in a huge dark frame, which is exactly what looked
+            // wrong. Sizing it off the actual viewfinder dimensions
+            // (html5-qrcode calls this back with them) makes the box
+            // fill most of the screen on any device instead.
+            qrbox: (viewfinderWidth, viewfinderHeight) => {
+              const width = Math.floor(viewfinderWidth * 0.85);
+              const height = Math.floor(Math.min(viewfinderHeight * 0.45, width * 0.6));
+              return { width, height };
+            },
+          },
           (decodedText) => submitRef.current?.(decodedText, { forceScanned: true }),
           () => {} // fires on every frame with no code in view - not an error
         );
