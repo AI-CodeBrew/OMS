@@ -210,6 +210,40 @@ def assign_courier(order, *, courier_id, actor_user_id=None):
     )
 
 
+# Real courier networks staff book with directly, outside Smartlane's own
+# auto-routing - Smartlane's booking API has no field to request one of
+# these by name (it decides the carrier itself), so these are plain
+# manual Courier rows: picking one is the existing manual assign_courier
+# flow, not a Smartlane API call.
+DEFAULT_COURIER_NAMES = [
+    "Trax", "TCS", "Leopards", "MNP", "Lama", "DEX", "Fastex", "Qwqer", "Tez",
+]
+
+
+def ensure_default_couriers(organization_id):
+    """Seeds any of DEFAULT_COURIER_NAMES the org doesn't already have.
+    Idempotent and cheap - called from CourierViewSet.list() so every org
+    (existing or newly provisioned) ends up with them without a one-off
+    migration or management command to run."""
+    existing = set(
+        Courier.objects.filter(
+            organization_id=organization_id, name__in=DEFAULT_COURIER_NAMES
+        ).values_list("name", flat=True)
+    )
+    missing = [name for name in DEFAULT_COURIER_NAMES if name not in existing]
+    if missing:
+        # ignore_conflicts guards two concurrent requests both seeing the
+        # same gap and racing to fill it - the unique (organization, name)
+        # constraint would otherwise turn that into a 500.
+        Courier.objects.bulk_create(
+            [
+                Courier(organization_id=organization_id, name=name, is_active=True)
+                for name in missing
+            ],
+            ignore_conflicts=True,
+        )
+
+
 def approve_order(order, *, actor_user_id=None):
     return _transition(order, "approved", actor_user_id=actor_user_id)
 

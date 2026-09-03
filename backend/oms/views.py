@@ -963,6 +963,10 @@ class CourierViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         return Courier.objects.filter(organization_id=self.request.organization_id)
 
+    def list(self, request, *args, **kwargs):
+        services.ensure_default_couriers(request.organization_id)
+        return super().list(request, *args, **kwargs)
+
     def perform_create(self, serializer):
         serializer.save(organization_id=self.request.organization_id)
 

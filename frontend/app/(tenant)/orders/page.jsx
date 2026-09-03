@@ -466,14 +466,14 @@ export default function OrdersPage() {
         count={pendingAction?.orderIds?.length || 0}
         couriers={
           pendingAction?.action === "assign_courier" && smartlaneConnected
-            ? // Manual couriers are hidden while Smartlane is connected -
-              // every Ready to Print order must have gone through a real
-              // Smartlane booking (that's what makes the Booking Pending ->
-              // Ready to Print transition mean anything), so offering a
-              // manual courier here let orders quietly skip Smartlane
-              // entirely via the ordinary assign_courier -> approve ->
-              // dispatch path instead.
-              [{ id: "smartlane", name: "Smartlane" }]
+            ? // Smartlane stays first/default so it's still the obvious
+              // choice, but real courier rows (Trax, TCS, Leopards, ...)
+              // are offered alongside it - Smartlane's own API has no way
+              // to request a specific network (it auto-routes), so
+              // picking one of these is a deliberate manual bypass for
+              // orders staff want to book directly instead of through
+              // Smartlane, not an accidental way to skip it.
+              [{ id: "smartlane", name: "Smartlane" }, ...couriers]
             : couriers
         }
         submitting={applyingAction}

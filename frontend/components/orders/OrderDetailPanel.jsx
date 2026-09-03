@@ -268,9 +268,10 @@ export default function OrderDetailPanel({ orderId, couriers, smartlaneConnected
         count={1}
         couriers={
           pendingAction === "assign_courier" && smartlaneConnected
-            ? // Manual couriers are hidden while Smartlane is connected -
-              // see the same restriction/reasoning on the orders page.
-              [{ id: "smartlane", name: "Smartlane" }]
+            ? // Smartlane stays first/default; real courier rows are
+              // offered alongside it for a deliberate manual bypass - see
+              // the same merge/reasoning on the orders page.
+              [{ id: "smartlane", name: "Smartlane" }, ...couriers]
             : couriers
         }
         submitting={working}
