@@ -35,27 +35,23 @@ export default function LoadingOverlay() {
     <div
       role="status"
       aria-live="polite"
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/50 backdrop-blur-[1px]"
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-white/50 backdrop-blur-[2px]"
     >
       <style>{`
-        @keyframes loading-overlay-scroll {
-          from { background-position: 0 0; }
-          to { background-position: 28px 0; }
+        @keyframes loading-overlay-slide {
+          0% { left: -35%; width: 35%; }
+          60% { left: 55%; width: 45%; }
+          100% { left: 100%; width: 35%; }
         }
         .loading-overlay-bar {
-          background-image: repeating-linear-gradient(
-            135deg,
-            currentColor 0 10px,
-            transparent 10px 20px
-          );
-          animation: loading-overlay-scroll 0.9s linear infinite;
+          animation: loading-overlay-slide 1.3s cubic-bezier(0.4, 0, 0.2, 1) infinite;
         }
       `}</style>
-      <div className="flex flex-col items-center gap-4 rounded-xl bg-white px-10 py-8 shadow-2xl">
-        <div className="h-2.5 w-48 overflow-hidden rounded-full bg-brand-100">
-          <div className="loading-overlay-bar h-full w-full text-brand-800" />
+      <div className="flex flex-col items-center gap-3 rounded-lg bg-white px-8 py-6 shadow-lg ring-1 ring-black/5">
+        <div className="relative h-1 w-36 overflow-hidden rounded-full bg-slate-100">
+          <div className="loading-overlay-bar absolute inset-y-0 rounded-full bg-brand-700" />
         </div>
-        <p className="text-sm font-medium uppercase tracking-wide text-brand-800">{label}…</p>
+        <p className="text-xs font-medium text-slate-500">{label}…</p>
       </div>
     </div>
   );
