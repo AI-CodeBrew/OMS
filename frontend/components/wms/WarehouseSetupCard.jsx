@@ -65,8 +65,8 @@ export default function WarehouseSetupCard({ onCreated }) {
             keeps both systems aligned.
           </span>
         </label>
-        <Button type="submit" disabled={saving} className="w-full justify-center">
-          {saving ? "Creating…" : "Create Warehouse"}
+        <Button type="submit" loading={saving} className="w-full justify-center">
+          Create Warehouse
         </Button>
       </form>
     </div>

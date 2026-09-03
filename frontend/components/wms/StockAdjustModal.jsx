@@ -118,8 +118,8 @@ export default function StockAdjustModal({ item, onClose, onAdjusted }) {
           <Button variant="secondary" onClick={onClose} disabled={saving}>
             Cancel
           </Button>
-          <Button type="submit" disabled={!valid || saving}>
-            {saving ? "Saving…" : "Apply"}
+          <Button type="submit" disabled={!valid} loading={saving}>
+            Apply
           </Button>
         </div>
       </form>

@@ -154,13 +154,10 @@ export default function ImportOrdersModal({ open, onClose, onImported }) {
           {!applied ? (
             <Button
               onClick={onApply}
-              disabled={busy || !preview || preview.to_update === 0}
+              disabled={!preview || preview.to_update === 0}
+              loading={busy}
             >
-              {busy
-                ? "Working…"
-                : preview
-                  ? `Update ${preview.to_update} order${preview.to_update === 1 ? "" : "s"}`
-                  : "Update orders"}
+              {preview ? `Update ${preview.to_update} order${preview.to_update === 1 ? "" : "s"}` : "Update orders"}
             </Button>
           ) : null}
         </>

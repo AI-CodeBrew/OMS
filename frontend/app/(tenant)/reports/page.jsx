@@ -103,8 +103,8 @@ export default function ReportsPage() {
               setDateTo("");
             }}
           />
-          <Button onClick={onDownloadCsv} disabled={downloading}>
-            {downloading ? "Preparing…" : "Download CSV"}
+          <Button onClick={onDownloadCsv} loading={downloading}>
+            Download CSV
           </Button>
         </div>
       </div>

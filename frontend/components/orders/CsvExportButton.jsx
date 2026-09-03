@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Dropdown from "../shared/Dropdown";
+import { Spinner } from "../shared/Button";
 import ordersService from "../../services/ordersService";
 
 const TEMPLATES = [
@@ -38,8 +39,9 @@ export default function CsvExportButton({ filterParams }) {
       align="right"
       disabled={exporting}
       trigger={
-        <span className="inline-flex items-center gap-1 rounded-md border border-surface-border bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-surface">
-          {exporting ? "Exporting…" : "Export CSV"} <span className="text-xs">▾</span>
+        <span className="inline-flex items-center gap-2 rounded-md border border-surface-border bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-surface">
+          {exporting ? <Spinner className="text-slate-500" /> : null}
+          Export CSV <span className="text-xs">▾</span>
         </span>
       }
       items={TEMPLATES.map((t) => ({

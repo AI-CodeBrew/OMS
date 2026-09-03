@@ -117,8 +117,8 @@ export default function NewStockItemModal({ open, warehouses, onClose, onCreated
           <Button variant="secondary" onClick={onClose} disabled={saving}>
             Cancel
           </Button>
-          <Button type="submit" disabled={saving || !warehouseId}>
-            {saving ? "Saving…" : "Add Item"}
+          <Button type="submit" disabled={!warehouseId} loading={saving}>
+            Add Item
           </Button>
         </div>
       </form>

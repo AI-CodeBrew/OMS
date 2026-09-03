@@ -58,8 +58,8 @@ export default function OrderDetailHeader({ order, draft, editing, onChange, onT
             <Button variant="secondary" onClick={onToggleEdit} disabled={saving}>
               Cancel
             </Button>
-            <Button onClick={onSave} disabled={saving}>
-              {saving ? "Saving…" : "Save"}
+            <Button onClick={onSave} loading={saving}>
+              Save
             </Button>
           </div>
         ) : (

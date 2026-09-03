@@ -75,8 +75,8 @@ export default function SplitOrdersTab({ orderId, items, onSplit }) {
               className="w-24 rounded-md border border-surface-border px-2 py-1.5 text-sm outline-none focus:border-brand-500"
             />
           </label>
-          <Button type="submit" disabled={submitting}>
-            {submitting ? "Splitting…" : "Create split order"}
+          <Button type="submit" loading={submitting}>
+            Create split order
           </Button>
         </form>
       ) : null}

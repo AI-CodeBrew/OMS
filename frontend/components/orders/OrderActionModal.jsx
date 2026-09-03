@@ -79,10 +79,11 @@ export default function OrderActionModal({ action, couriers, count, onSubmit, on
           Cancel
         </Button>
         <Button
-          disabled={!canSubmit || submitting}
+          disabled={!canSubmit}
+          loading={submitting}
           onClick={() => onSubmit({ [field.key]: value })}
         >
-          {submitting ? "Applying…" : "Apply"}
+          Apply
         </Button>
       </div>
     </Modal>

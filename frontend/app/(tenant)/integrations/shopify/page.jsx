@@ -421,8 +421,8 @@ export default function IntegrationsPage() {
                   </div>
                 </div>
                 <div className="mt-4 flex gap-2">
-                  <Button onClick={() => onSync({ full: false })} disabled={syncing} className="flex-1 justify-center">
-                    {syncing ? "Syncing…" : status.last_synced_at ? "Sync New Orders" : "Full Sync (All Orders)"}
+                  <Button onClick={() => onSync({ full: false })} loading={syncing} className="flex-1 justify-center">
+                    {status.last_synced_at ? "Sync New Orders" : "Full Sync (All Orders)"}
                   </Button>
                   <button
                     type="button"
@@ -696,12 +696,13 @@ export default function IntegrationsPage() {
                 type="button"
                 variant="secondary"
                 onClick={onTestConnection}
-                disabled={testing || !form.shop_domain || !form.access_token}
+                disabled={!form.shop_domain || !form.access_token}
+                loading={testing}
               >
-                {testing ? "Testing…" : "Test Connection"}
+                Test Connection
               </Button>
-              <Button type="submit" disabled={connecting} className="flex-1 justify-center">
-                {connecting ? "Saving…" : connected ? "Update Credentials" : "Connect Shopify"}
+              <Button type="submit" loading={connecting} className="flex-1 justify-center">
+                {connected ? "Update Credentials" : "Connect Shopify"}
               </Button>
             </div>
           </form>

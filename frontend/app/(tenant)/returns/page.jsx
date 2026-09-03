@@ -524,8 +524,8 @@ export default function ReturnsPage() {
               <Button variant="secondary" onClick={() => setConfirmCondition(null)} disabled={bulkBusy}>
                 Cancel
               </Button>
-              <Button onClick={runBulkReceive} disabled={bulkBusy}>
-                {bulkBusy ? "Working…" : confirmCondition === "bad" ? "Mark Damaged" : "Mark Good"}
+              <Button onClick={runBulkReceive} loading={bulkBusy}>
+                {confirmCondition === "bad" ? "Mark Damaged" : "Mark Good"}
               </Button>
             </div>
           </div>

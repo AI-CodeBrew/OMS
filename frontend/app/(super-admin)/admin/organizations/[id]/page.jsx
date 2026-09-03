@@ -232,8 +232,8 @@ export default function OrganizationDetailPage() {
               />
             </label>
           </div>
-          <Button type="submit" disabled={savingMember}>
-            {savingMember ? "Saving…" : "Save credentials"}
+          <Button type="submit" loading={savingMember}>
+            Save credentials
           </Button>
         </form>
       ) : null}

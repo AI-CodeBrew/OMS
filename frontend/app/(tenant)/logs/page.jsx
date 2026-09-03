@@ -98,8 +98,8 @@ export default function LogsPage() {
             className="rounded-md border border-surface-border px-3 py-2 text-sm"
           />
         </label>
-        <Button type="submit" disabled={loading}>
-          {loading ? "Loading…" : "Apply"}
+        <Button type="submit" loading={loading}>
+          Apply
         </Button>
       </form>
 

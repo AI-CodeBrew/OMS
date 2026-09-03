@@ -145,8 +145,8 @@ export default function OrganizationsPage() {
           <p className="text-xs text-slate-500">
             Creates a Supabase login for this org. They sign in at /login.
           </p>
-          <Button type="submit" disabled={creating}>
-            {creating ? "Creating…" : "Create organization"}
+          <Button type="submit" loading={creating}>
+            Create organization
           </Button>
         </form>
       ) : null}

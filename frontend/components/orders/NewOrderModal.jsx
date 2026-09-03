@@ -108,8 +108,8 @@ export default function NewOrderModal({ open, onClose, onCreated }) {
           <Button type="button" variant="secondary" onClick={onClose}>
             Cancel
           </Button>
-          <Button type="submit" disabled={creating}>
-            {creating ? "Creating…" : "Create order"}
+          <Button type="submit" loading={creating}>
+            Create order
           </Button>
         </div>
       </form>

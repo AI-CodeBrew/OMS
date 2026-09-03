@@ -78,11 +78,12 @@ export default function OrderItemsEditor({ order, draft, editing, onChange, onAc
           <Button
             key={a.key || a.action}
             variant={a.action === "cancel" ? "danger" : a.action === "dispatch" || a.action === "confirm" ? "primary" : "secondary"}
-            disabled={a.disabled || working}
+            disabled={a.disabled}
+            loading={working}
             title={a.disabled ? "Not set up yet" : undefined}
             onClick={() => onAction(a.action)}
           >
-            {working ? "Working…" : a.label}
+            {a.label}
           </Button>
         ))}
       </div>

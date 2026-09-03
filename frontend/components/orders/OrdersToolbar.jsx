@@ -76,8 +76,8 @@ export default function OrdersToolbar({
         }))}
       />
 
-      <Button variant="secondary" onClick={onRefresh} disabled={refreshing}>
-        {refreshing ? "Refreshing…" : "Refresh"}
+      <Button variant="secondary" onClick={onRefresh} loading={refreshing}>
+        Refresh
       </Button>
     </div>
   );

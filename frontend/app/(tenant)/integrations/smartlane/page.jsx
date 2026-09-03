@@ -228,8 +228,8 @@ export default function SmartlaneIntegrationPage() {
               </div>
 
               <div className="mt-4 border-t border-surface-border pt-4">
-                <Button variant="secondary" onClick={onSyncNow} disabled={syncing}>
-                  {syncing ? "Syncing…" : "Sync statuses from Smartlane now"}
+                <Button variant="secondary" onClick={onSyncNow} loading={syncing}>
+                  Sync statuses from Smartlane now
                 </Button>
                 <span className="mt-1 block text-xs text-slate-400">
                   Asks Smartlane about every order still in progress and applies what comes
@@ -390,8 +390,8 @@ export default function SmartlaneIntegrationPage() {
             </label>
 
             <div className="border-t border-surface-border pt-4">
-              <Button type="submit" disabled={connecting} className="w-full justify-center">
-                {connecting ? "Saving…" : connected ? "Update Credentials" : "Connect Smartlane"}
+              <Button type="submit" loading={connecting} className="w-full justify-center">
+                {connected ? "Update Credentials" : "Connect Smartlane"}
               </Button>
             </div>
           </form>

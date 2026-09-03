@@ -483,8 +483,8 @@ export default function ScanPanel({
           placeholder={fieldLabel}
           className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500 disabled:bg-slate-50"
         />
-        <Button type="submit" disabled={busy || !value.trim()}>
-          {busy ? "…" : actionLabel}
+        <Button type="submit" disabled={!value.trim()} loading={busy}>
+          {actionLabel}
         </Button>
       </form>
 

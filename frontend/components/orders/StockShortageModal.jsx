@@ -75,8 +75,8 @@ export default function StockShortageModal({ shortfalls, onProceed, onClose, sub
         <Button variant="secondary" onClick={onClose} disabled={submitting}>
           Cancel
         </Button>
-        <Button onClick={onProceed} disabled={submitting}>
-          {submitting ? "Processing…" : "Process anyway"}
+        <Button onClick={onProceed} loading={submitting}>
+          Process anyway
         </Button>
       </div>
     </Modal>

@@ -90,8 +90,8 @@ function AccountTab({ user }) {
             onChange={(e) => setEmail(e.target.value)}
             className="flex-1 rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
           />
-          <Button type="submit" disabled={emailLoading}>
-            {emailLoading ? "Saving…" : "Update email"}
+          <Button type="submit" loading={emailLoading}>
+            Update email
           </Button>
         </form>
       </div>
@@ -121,8 +121,8 @@ function AccountTab({ user }) {
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}
           />
-          <Button type="submit" disabled={passwordLoading}>
-            {passwordLoading ? "Saving…" : "Update password"}
+          <Button type="submit" loading={passwordLoading}>
+            Update password
           </Button>
         </form>
       </div>
@@ -351,8 +351,8 @@ function RoleAccessTab() {
             onChange={(modules) => setInvite((f) => ({ ...f, modules }))}
           />
         </div>
-        <Button type="submit" disabled={inviting}>
-          {inviting ? "Adding…" : "Add"}
+        <Button type="submit" loading={inviting}>
+          Add
         </Button>
       </form>
 
@@ -420,10 +420,10 @@ function RoleAccessTab() {
                     <div className="flex flex-wrap gap-2">
                       <Button
                         type="button"
-                        disabled={saving}
+                        loading={saving}
                         onClick={() => onSaveMember(m.user_id)}
                       >
-                        {saving ? "Saving…" : "Save"}
+                        Save
                       </Button>
                       <Button
                         type="button"

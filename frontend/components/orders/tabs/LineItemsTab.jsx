@@ -99,8 +99,8 @@ export default function LineItemsTab({ order, onOrderChanged }) {
                   <Button variant="secondary" onClick={() => setEditingItemId(null)} disabled={saving}>
                     Cancel
                   </Button>
-                  <Button onClick={save} disabled={saving}>
-                    {saving ? "Saving…" : "Save"}
+                  <Button onClick={save} loading={saving}>
+                    Save
                   </Button>
                 </div>
               </div>

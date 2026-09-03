@@ -239,8 +239,8 @@ export default function PackingPage() {
               <span className="text-sm font-medium text-brand-900">
                 {selectedRows.length} selected
               </span>
-              <Button onClick={runBulkPack} disabled={bulkBusy}>
-                {bulkBusy ? "Packing…" : "Mark Packed"}
+              <Button onClick={runBulkPack} loading={bulkBusy}>
+                Mark Packed
               </Button>
               <button
                 type="button"

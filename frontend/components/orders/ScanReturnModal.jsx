@@ -53,7 +53,7 @@ export default function ScanReturnModal({ open, onClose, onReturned }) {
           placeholder="Order number"
           className="flex-1 rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
         />
-        <Button type="submit" disabled={submitting}>
+        <Button type="submit" loading={submitting}>
           Confirm
         </Button>
       </form>
