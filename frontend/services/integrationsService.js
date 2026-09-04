@@ -4,7 +4,40 @@ import authService from "./authService";
 const SHOPIFY_BASE = "/api/integrations/shopify";
 const SMARTLANE_BASE = "/api/integrations/smartlane";
 
+// The Shopify app's connector service (fynk-tech-ai/backend-fastapi) - a
+// separate deployment from the Django API above, sharing the same Supabase
+// login, used only for the install handoff (reserve a store, then promote
+// the staged install once the merchant is back from Shopify).
+const FASTAPI_BASE_URL = process.env.NEXT_PUBLIC_FASTAPI_BASE_URL || "http://localhost:8001";
+
 class IntegrationsService {
+  // Reserves `shop_domain` for this organization, then returns the Shopify
+  // install URL to redirect the browser to.
+  async startShopifyConnect(shop_domain) {
+    const response = await fetch(`${FASTAPI_BASE_URL}${SHOPIFY_BASE}/start`, {
+      method: "POST",
+      headers: authService.getAuthHeaders(),
+      body: JSON.stringify({ shop_domain }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Failed to start Shopify install");
+    return data;
+  }
+
+  // Promotes a staged install (already carrying this org's token, captured
+  // by fynk-tech-ai's OAuth callback) into a real connection. Safe to call
+  // even if there's nothing pending - the caller only invokes this right
+  // after returning from a successful Shopify install.
+  async finalizeShopifyConnect() {
+    const response = await fetch(`${FASTAPI_BASE_URL}${SHOPIFY_BASE}/pending`, {
+      method: "POST",
+      headers: authService.getAuthHeaders(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Failed to finish connecting Shopify");
+    return data;
+  }
+
   async getShopifyStatus() {
     const response = await fetch(`${apiConfig.baseUrl}${SHOPIFY_BASE}/`, {
       headers: authService.getAuthHeaders(),

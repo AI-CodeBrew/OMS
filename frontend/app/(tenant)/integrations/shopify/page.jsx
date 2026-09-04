@@ -2,9 +2,17 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import integrationsService from "../../../../services/integrationsService";
 import Button from "../../../../components/shared/Button";
 import PasswordInput from "../../../../components/shared/PasswordInput";
+
+const SHOPIFY_ERROR_MESSAGES = {
+  invalid_request: "The Shopify install request could not be verified. Please try again.",
+  token_exchange_failed: "Shopify did not confirm the install. Please try again.",
+  save_failed: "Shopify install succeeded but couldn't be staged. Please try again.",
+  oms_not_configured: "The Shopify connector isn't configured yet - contact support.",
+};
 
 const EMPTY_FORM = { shop_domain: "", access_token: "", webhook_secret: "" };
 const ACTIVE_JOB_STATUSES = new Set(["pending", "running"]);
@@ -101,11 +109,15 @@ function FeatureToggle({ title, description, checked, disabled, title2, onChange
 }
 
 export default function IntegrationsPage() {
+  const router = useRouter();
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [connecting, setConnecting] = useState(false);
+  const [shopDomainInput, setShopDomainInput] = useState("");
+  const [startingConnect, setStartingConnect] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncJob, setSyncJob] = useState(null);
   const [testing, setTesting] = useState(false);
@@ -188,7 +200,57 @@ export default function IntegrationsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Landed back here from fynk-tech-ai's OAuth callback - finish connecting
+  // (or surface why the install didn't complete), then drop the query
+  // params so a refresh doesn't repeat it. Reads window.location directly
+  // (rather than useSearchParams) so this doesn't need a Suspense boundary.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const connectedFlag = params.get("connected");
+    const shopifyError = params.get("shopify_error");
+    if (!connectedFlag && !shopifyError) return;
+
+    if (shopifyError) {
+      setError(SHOPIFY_ERROR_MESSAGES[shopifyError] || "Shopify install failed. Please try again.");
+      router.replace("/integrations/shopify");
+      return;
+    }
+
+    (async () => {
+      setError("");
+      setNotice("");
+      try {
+        await integrationsService.finalizeShopifyConnect();
+        setNotice("Shopify store connected.");
+        await loadStatus();
+      } catch (err) {
+        setError(err.message || "Failed to finish connecting Shopify");
+      } finally {
+        router.replace("/integrations/shopify");
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (status?.shop_domain) setShopDomainInput(status.shop_domain);
+  }, [status?.shop_domain]);
+
   const connected = Boolean(status?.connected);
+
+  async function onStartShopifyConnect(e) {
+    e.preventDefault();
+    setError("");
+    setNotice("");
+    setStartingConnect(true);
+    try {
+      const data = await integrationsService.startShopifyConnect(shopDomainInput.trim());
+      window.location.href = data.install_url;
+    } catch (err) {
+      setError(err.message || "Failed to start Shopify install");
+      setStartingConnect(false);
+    }
+  }
 
   async function onConnect(e) {
     e.preventDefault();
@@ -631,21 +693,14 @@ export default function IntegrationsPage() {
           <div className="flex items-center gap-2">
             <ShieldIcon className="h-5 w-5 text-brand-600" />
             <h2 className="text-base font-semibold text-slate-900">
-              {connected ? "Update Shopify Credentials" : "Connect Shopify Store"}
+              {connected ? "Reconnect Shopify Store" : "Connect Shopify Store"}
             </h2>
           </div>
           <p className="mt-1 text-sm text-slate-500">
-            Enter your Shopify Admin API credentials to connect your store with this system.
+            Install the FynkTech AI app on your store - no custom app to create, no token to copy.
           </p>
 
-          <p className="mt-4 text-xs text-slate-500">
-            From your Shopify Admin: Settings → Apps and sales channels → Develop apps → create a
-            custom app with a <code>read_orders</code> Admin API scope. Install it to get the
-            access token; the webhook secret is the app&apos;s API secret key shown on its
-            credentials page.
-          </p>
-
-          <form onSubmit={onConnect} className="mt-4 space-y-4">
+          <form onSubmit={onStartShopifyConnect} className="mt-4 space-y-4">
             <label className="block">
               <span className="mb-1 block text-xs font-medium text-slate-700">
                 Shopify Store URL <span className="text-red-500">*</span>
@@ -653,8 +708,8 @@ export default function IntegrationsPage() {
               <input
                 required
                 placeholder="your-store.myshopify.com"
-                value={form.shop_domain}
-                onChange={(e) => setForm((f) => ({ ...f, shop_domain: e.target.value }))}
+                value={shopDomainInput}
+                onChange={(e) => setShopDomainInput(e.target.value)}
                 className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
               />
               <span className="mt-1 block text-xs text-slate-400">
@@ -662,50 +717,88 @@ export default function IntegrationsPage() {
               </span>
             </label>
 
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium text-slate-700">
-                Admin API Access Token <span className="text-red-500">*</span>
-              </span>
-              <PasswordInput
-                required
-                placeholder="shpat_..."
-                value={form.access_token}
-                onChange={(e) => setForm((f) => ({ ...f, access_token: e.target.value }))}
-              />
-              <span className="mt-1 block text-xs text-slate-400">
-                Generated inside Shopify Admin → Develop apps → Admin API Access Token.
-              </span>
-            </label>
-
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium text-slate-700">
-                API Secret Key <span className="text-slate-400">(for Webhooks)</span>
-              </span>
-              <PasswordInput
-                required
-                value={form.webhook_secret}
-                onChange={(e) => setForm((f) => ({ ...f, webhook_secret: e.target.value }))}
-              />
-              <span className="mt-1 block text-xs text-slate-400">
-                Used to cryptographically sign real-time webhook payloads from Shopify.
-              </span>
-            </label>
-
-            <div className="flex gap-2 border-t border-surface-border pt-4">
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={onTestConnection}
-                disabled={!form.shop_domain || !form.access_token}
-                loading={testing}
-              >
-                Test Connection
-              </Button>
-              <Button type="submit" loading={connecting} className="flex-1 justify-center">
-                {connected ? "Update Credentials" : "Connect Shopify"}
-              </Button>
-            </div>
+            <Button type="submit" loading={startingConnect} className="w-full justify-center">
+              {connected ? "Reconnect Shopify" : "Connect Shopify"}
+            </Button>
           </form>
+
+          <button
+            type="button"
+            onClick={() => setAdvancedOpen((o) => !o)}
+            className="mt-4 w-full text-center text-xs text-slate-500 hover:text-brand-600"
+          >
+            {advancedOpen ? "Hide advanced option" : "Advanced: connect with a custom app token instead"}
+          </button>
+
+          {advancedOpen ? (
+            <div className="mt-4 border-t border-surface-border pt-4">
+              <p className="text-xs text-slate-500">
+                From your Shopify Admin: Settings → Apps and sales channels → Develop apps → create a
+                custom app with a <code>read_orders</code> Admin API scope. Install it to get the
+                access token; the webhook secret is the app&apos;s API secret key shown on its
+                credentials page.
+              </p>
+
+              <form onSubmit={onConnect} className="mt-4 space-y-4">
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-slate-700">
+                    Shopify Store URL <span className="text-red-500">*</span>
+                  </span>
+                  <input
+                    required
+                    placeholder="your-store.myshopify.com"
+                    value={form.shop_domain}
+                    onChange={(e) => setForm((f) => ({ ...f, shop_domain: e.target.value }))}
+                    className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
+                  />
+                </label>
+
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-slate-700">
+                    Admin API Access Token <span className="text-red-500">*</span>
+                  </span>
+                  <PasswordInput
+                    required
+                    placeholder="shpat_..."
+                    value={form.access_token}
+                    onChange={(e) => setForm((f) => ({ ...f, access_token: e.target.value }))}
+                  />
+                  <span className="mt-1 block text-xs text-slate-400">
+                    Generated inside Shopify Admin → Develop apps → Admin API Access Token.
+                  </span>
+                </label>
+
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-slate-700">
+                    API Secret Key <span className="text-slate-400">(for Webhooks)</span>
+                  </span>
+                  <PasswordInput
+                    required
+                    value={form.webhook_secret}
+                    onChange={(e) => setForm((f) => ({ ...f, webhook_secret: e.target.value }))}
+                  />
+                  <span className="mt-1 block text-xs text-slate-400">
+                    Used to cryptographically sign real-time webhook payloads from Shopify.
+                  </span>
+                </label>
+
+                <div className="flex gap-2 border-t border-surface-border pt-4">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={onTestConnection}
+                    disabled={!form.shop_domain || !form.access_token}
+                    loading={testing}
+                  >
+                    Test Connection
+                  </Button>
+                  <Button type="submit" loading={connecting} className="flex-1 justify-center">
+                    {connected ? "Update Credentials" : "Connect Shopify"}
+                  </Button>
+                </div>
+              </form>
+            </div>
+          ) : null}
         </div>
       </div>
     </div>
