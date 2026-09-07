@@ -178,6 +178,19 @@ def _request(
     }
 
     def fail(message):
+        # Logged at error level regardless of LOG_LEVEL, so this shows up
+        # on Render by default - not just in the browser's Test Connection
+        # panel, which only exists for calls made interactively from the
+        # super-admin page. A booking or webhook call has no UI to show
+        # this in, so the server log is the only place it will ever be
+        # seen. json.dumps rather than %s-formatting the dict so the
+        # string_to_sign's embedded newlines don't fragment across log
+        # lines and make the entry hard to copy out whole.
+        logger.error(
+            "smartlane-business %s FAILED - signing detail: %s",
+            label,
+            json.dumps(debug, indent=2, default=str),
+        )
         error = SmartlaneAPIError(message)
         if capture_debug:
             error.debug = debug
