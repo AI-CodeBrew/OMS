@@ -36,6 +36,32 @@ def business_config(request):
     return Response({"success": True, "config": config})
 
 
+@api_view(["GET", "POST"])
+@permission_classes([IsSuperAdmin])
+def courier_offerings(request):
+    if request.method == "GET":
+        return Response({"success": True, "couriers": service.list_offerings()})
+
+    try:
+        courier = service.create_offering(request.data or {})
+    except SmartlaneBusinessError as exc:
+        return _error(exc)
+    return Response({"success": True, "courier": courier}, status=201)
+
+
+@api_view(["PATCH", "DELETE"])
+@permission_classes([IsSuperAdmin])
+def courier_offering_detail(request, offering_id):
+    try:
+        if request.method == "DELETE":
+            service.delete_offering(offering_id)
+            return Response({"success": True})
+        courier = service.update_offering(offering_id, request.data or {})
+    except SmartlaneBusinessError as exc:
+        return _error(exc)
+    return Response({"success": True, "courier": courier})
+
+
 @api_view(["POST"])
 @permission_classes([IsSuperAdmin])
 def business_config_test(request):

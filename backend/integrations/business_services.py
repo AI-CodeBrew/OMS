@@ -7,9 +7,12 @@ raise-a-typed-error-with-a-status-code convention).
 
 import logging
 
+from django.core.exceptions import ValidationError
+from django.core.validators import validate_slug
+from django.db import IntegrityError
 from django.utils import timezone
 
-from .models import SmartlaneBusinessConfig
+from .models import SmartlaneBusinessConfig, SmartlaneCourierOffering
 from .smartlane_client import SmartlaneAPIError
 from . import smartlane_business_client as business_client
 
@@ -116,3 +119,110 @@ def test_connection():
         "debug": debug,
         "config": _serialize_config(config),
     }
+
+
+# --- Courier catalog -------------------------------------------------------
+# Ours, not Smartlane's: their Business API exposes no courier list. See
+# SmartlaneCourierOffering's docstring for how an entry maps onto a real
+# Smartlane warehouse.
+
+_SERVICE_TYPES = {value for value, _ in SmartlaneCourierOffering.SERVICE_TYPE_CHOICES}
+
+
+def _serialize_offering(offering):
+    return {
+        "id": offering.id,
+        "key": offering.key,
+        "label": offering.label,
+        "carrier_name": offering.carrier_name,
+        "service_type": offering.service_type,
+        "warehouse_name_template": offering.warehouse_name_template,
+        "auto_booking": offering.auto_booking,
+        "notes": offering.notes,
+        "is_active": offering.is_active,
+        "sort_order": offering.sort_order,
+    }
+
+
+def list_offerings():
+    return [_serialize_offering(o) for o in SmartlaneCourierOffering.objects.all()]
+
+
+def _apply_offering_fields(offering, body):
+    """Shared by create and update. `key` is handled only by create - see the
+    model's note on why it is write-once."""
+    if "label" in body:
+        label = (body.get("label") or "").strip()
+        if not label:
+            raise SmartlaneBusinessError("Label is required.")
+        offering.label = label
+
+    if "carrier_name" in body:
+        offering.carrier_name = (body.get("carrier_name") or "").strip()
+
+    if "service_type" in body:
+        service_type = (body.get("service_type") or "").strip()
+        if service_type not in _SERVICE_TYPES:
+            raise SmartlaneBusinessError(
+                f"Service type must be one of: {', '.join(sorted(_SERVICE_TYPES))}."
+            )
+        offering.service_type = service_type
+
+    if "warehouse_name_template" in body:
+        offering.warehouse_name_template = (body.get("warehouse_name_template") or "").strip()
+    if "notes" in body:
+        offering.notes = (body.get("notes") or "").strip()[:500]
+    if "auto_booking" in body:
+        offering.auto_booking = bool(body.get("auto_booking"))
+    if "is_active" in body:
+        offering.is_active = bool(body.get("is_active"))
+    if "sort_order" in body:
+        try:
+            offering.sort_order = max(0, int(body.get("sort_order") or 0))
+        except (TypeError, ValueError):
+            raise SmartlaneBusinessError("Sort order must be a whole number.")
+
+
+def create_offering(body):
+    key = (body.get("key") or "").strip().lower()
+    if not key:
+        raise SmartlaneBusinessError("Key is required.")
+    try:
+        validate_slug(key)
+    except ValidationError:
+        raise SmartlaneBusinessError(
+            "Key must be a slug - letters, numbers, hyphens and underscores only."
+        )
+
+    offering = SmartlaneCourierOffering(key=key)
+    if not (body.get("label") or "").strip():
+        raise SmartlaneBusinessError("Label is required.")
+    _apply_offering_fields(offering, body)
+
+    try:
+        offering.save()
+    except IntegrityError:
+        raise SmartlaneBusinessError(f"A courier with the key '{key}' already exists.", 409)
+    return _serialize_offering(offering)
+
+
+def _get_offering(offering_id):
+    offering = SmartlaneCourierOffering.objects.filter(pk=offering_id).first()
+    if offering is None:
+        raise SmartlaneBusinessError("Courier not found.", 404)
+    return offering
+
+
+def update_offering(offering_id, body):
+    offering = _get_offering(offering_id)
+    _apply_offering_fields(offering, body)
+    offering.save()
+    return _serialize_offering(offering)
+
+
+def delete_offering(offering_id):
+    """Hard delete. Deactivating is the safer everyday action and is what the
+    UI leads with - once orgs can request offerings (next phase) this will
+    need a guard against deleting one that is already in use."""
+    offering = _get_offering(offering_id)
+    offering.delete()

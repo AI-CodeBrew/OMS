@@ -44,6 +44,30 @@ class SmartlaneAdminService {
       body: JSON.stringify({}),
     });
   }
+
+  listCouriers() {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneCouriers}`);
+  }
+
+  createCourier(courier) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneCouriers}`, {
+      method: "POST",
+      body: JSON.stringify(courier),
+    });
+  }
+
+  updateCourier(id, patch) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneCourier(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    });
+  }
+
+  deleteCourier(id) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneCourier(id)}`, {
+      method: "DELETE",
+    });
+  }
 }
 
 export const smartlaneAdminService = new SmartlaneAdminService();

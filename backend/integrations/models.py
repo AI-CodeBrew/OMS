@@ -58,6 +58,72 @@ class SmartlaneBusinessConfig(models.Model):
         return bool(self.business_code and self.jwt_token)
 
 
+class SmartlaneCourierOffering(models.Model):
+    """A courier the platform offers to organizations, e.g. "Smartlane - Trax".
+
+    This catalog is ours, not Smartlane's: their Business API has no
+    courier-list endpoint, so there is nothing to fetch. What it does have
+    is warehouses, and the working theory (see the plan's open questions -
+    unconfirmed with Smartlane) is that a warehouse is what binds a store's
+    booking to a carrier. So each row here is really a warehouse template:
+    approving an org for this offering means creating a warehouse for their
+    store from these settings, and booking against that warehouse code is
+    what selects the courier.
+
+    Platform-level for the same reason as SmartlaneBusinessConfig - a super
+    admin has no organization_id, so TenantManager would hide it from them.
+    """
+
+    SERVICE_TYPE_CHOICES = [
+        ("overnight", "Overnight"),
+        ("overland", "Overland"),
+    ]
+
+    id = models.BigAutoField(primary_key=True)
+    # Write-once: org onboarding records reference offerings by key rather
+    # than by FK, so renaming one after the fact would orphan them. The
+    # update path ignores this field for that reason.
+    key = models.SlugField(max_length=50, unique=True)
+    # What tenants pick from, e.g. "Smartlane - Trax".
+    label = models.CharField(max_length=100)
+    # The carrier alone, e.g. "Trax" - what goes into the Smartlane-side
+    # warehouse name. Kept separate from label because the two have
+    # different audiences: rendering "{org} - {label}" would produce
+    # "Fynk Tech - Smartlane - Trax", where the real warehouses on the
+    # Smartlane portal are named like "Fynk Tech-Trax".
+    carrier_name = models.CharField(max_length=100, blank=True, default="")
+    service_type = models.CharField(
+        max_length=20, choices=SERVICE_TYPE_CHOICES, default="overland"
+    )
+    # Rendered per org when the warehouse is created. Placeholders:
+    # {org} and {carrier}.
+    warehouse_name_template = models.CharField(
+        max_length=150, blank=True, default="{org} - {carrier}"
+    )
+    auto_booking = models.BooleanField(default=True)
+    notes = models.CharField(max_length=500, blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    sort_order = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = '"integrations"."smartlane_courier_offerings"'
+        ordering = ["sort_order", "label"]
+
+    def __str__(self):
+        return self.label
+
+    def warehouse_name_for(self, organization_name):
+        template = self.warehouse_name_template or "{org} - {carrier}"
+        carrier = self.carrier_name or self.label
+        return (
+            template.replace("{org}", organization_name)
+            .replace("{carrier}", carrier)
+            .replace("{label}", self.label)
+        )
+
+
 class ShopifyConnection(TenantScopedModel):
     """One Shopify store per organization. access_token/webhook_secret are
     stored plaintext for now, matching the legacy public.shopify_integrations

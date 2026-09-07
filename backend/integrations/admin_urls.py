@@ -8,4 +8,10 @@ from . import admin_views
 urlpatterns = [
     path("config/", admin_views.business_config, name="admin-smartlane-config"),
     path("config/test/", admin_views.business_config_test, name="admin-smartlane-config-test"),
+    path("couriers/", admin_views.courier_offerings, name="admin-smartlane-couriers"),
+    path(
+        "couriers/<int:offering_id>/",
+        admin_views.courier_offering_detail,
+        name="admin-smartlane-courier-detail",
+    ),
 ]

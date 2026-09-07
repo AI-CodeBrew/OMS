@@ -13,6 +13,18 @@ const EMPTY_FORM = {
   registered_ip: "",
 };
 
+const EMPTY_COURIER = {
+  key: "",
+  label: "",
+  carrier_name: "",
+  service_type: "overland",
+  warehouse_name_template: "{org} - {carrier}",
+  auto_booking: true,
+  is_active: true,
+  sort_order: 0,
+  notes: "",
+};
+
 function Field({ label, hint, children }) {
   return (
     <label className="block text-sm">
@@ -36,17 +48,27 @@ export default function SmartlaneBusinessPage() {
   const [success, setSuccess] = useState("");
   const [testResult, setTestResult] = useState(null);
 
+  const [couriers, setCouriers] = useState([]);
+  const [courierForm, setCourierForm] = useState(EMPTY_COURIER);
+  const [editingCourierId, setEditingCourierId] = useState(null);
+  const [showCourierForm, setShowCourierForm] = useState(false);
+  const [savingCourier, setSavingCourier] = useState(false);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const data = await smartlaneAdminService.getConfig();
-      setConfig(data.config);
+      const [configData, courierData] = await Promise.all([
+        smartlaneAdminService.getConfig(),
+        smartlaneAdminService.listCouriers(),
+      ]);
+      setConfig(configData.config);
+      setCouriers(courierData.couriers || []);
       setForm((f) => ({
         ...f,
-        business_code: data.config?.business_code || "",
-        client_id: data.config?.client_id || "",
-        registered_ip: data.config?.registered_ip || "",
+        business_code: configData.config?.business_code || "",
+        client_id: configData.config?.client_id || "",
+        registered_ip: configData.config?.registered_ip || "",
       }));
     } catch (err) {
       setError(err.message || "Failed to load Smartlane business config");
@@ -75,6 +97,74 @@ export default function SmartlaneBusinessPage() {
       setError(err.message || "Failed to save");
     } finally {
       setSaving(false);
+    }
+  }
+
+  function startCreateCourier() {
+    setCourierForm(EMPTY_COURIER);
+    setEditingCourierId(null);
+    setShowCourierForm(true);
+    setError("");
+  }
+
+  function startEditCourier(courier) {
+    setCourierForm({ ...EMPTY_COURIER, ...courier });
+    setEditingCourierId(courier.id);
+    setShowCourierForm(true);
+    setError("");
+  }
+
+  async function onSaveCourier(e) {
+    e.preventDefault();
+    setSavingCourier(true);
+    setError("");
+    setSuccess("");
+    try {
+      if (editingCourierId) {
+        // key is write-once server-side; sending it back would be ignored
+        // anyway, so keep the request honest about what it changes.
+        const { key, ...patch } = courierForm;
+        await smartlaneAdminService.updateCourier(editingCourierId, patch);
+      } else {
+        await smartlaneAdminService.createCourier(courierForm);
+      }
+      setShowCourierForm(false);
+      setEditingCourierId(null);
+      setCourierForm(EMPTY_COURIER);
+      setSuccess("Courier saved.");
+      await load();
+    } catch (err) {
+      setError(err.message || "Failed to save courier");
+    } finally {
+      setSavingCourier(false);
+    }
+  }
+
+  async function onToggleCourier(courier) {
+    setError("");
+    try {
+      await smartlaneAdminService.updateCourier(courier.id, { is_active: !courier.is_active });
+      await load();
+    } catch (err) {
+      setError(err.message || "Failed to update courier");
+    }
+  }
+
+  async function onDeleteCourier(courier) {
+    if (
+      !window.confirm(
+        `Delete "${courier.label}" permanently? Deactivating it instead keeps the record ` +
+          `and just hides it from organizations.`,
+      )
+    ) {
+      return;
+    }
+    setError("");
+    try {
+      await smartlaneAdminService.deleteCourier(courier.id);
+      await load();
+    } catch (err) {
+      setError(err.message || "Failed to delete courier");
     }
   }
 
@@ -288,6 +378,218 @@ export default function SmartlaneBusinessPage() {
               </Button>
             </div>
           </form>
+
+          <div className="rounded-xl border border-surface-border bg-white shadow-sm">
+            <div className="flex items-center justify-between gap-3 border-b border-surface-border px-5 py-3">
+              <div>
+                <h2 className="text-sm font-semibold text-slate-800">Couriers offered</h2>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  What organizations choose from. Smartlane has no courier API — approving one
+                  of these creates a warehouse on their store, and booking against that
+                  warehouse is what picks the carrier.
+                </p>
+              </div>
+              <Button variant="secondary" onClick={startCreateCourier}>
+                Add courier
+              </Button>
+            </div>
+
+            {couriers.length === 0 ? (
+              <div className="px-5 py-12 text-center">
+                <p className="text-sm font-medium text-slate-700">No couriers yet</p>
+                <p className="mt-1 text-sm text-slate-500">
+                  Add one per carrier you want to resell — Trax, Leopards, TCS and so on.
+                </p>
+              </div>
+            ) : (
+              <ul className="divide-y divide-surface-border">
+                {couriers.map((c) => (
+                  <li
+                    key={c.id}
+                    className="flex flex-wrap items-center justify-between gap-3 px-5 py-4"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-medium text-slate-800">{c.label}</span>
+                        <span
+                          className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                            c.is_active
+                              ? "bg-emerald-50 text-emerald-700"
+                              : "bg-slate-100 text-slate-600"
+                          }`}
+                        >
+                          {c.is_active ? "Active" : "Hidden"}
+                        </span>
+                      </div>
+                      <p className="mt-0.5 text-xs text-slate-500">
+                        <span className="font-mono">{c.key}</span> · {c.service_type}
+                        {c.auto_booking ? " · auto-booking" : ""} · warehouse “
+                        {(c.warehouse_name_template || "{org} - {carrier}")
+                          .replace("{org}", "Org")
+                          .replace("{carrier}", c.carrier_name || c.label)
+                          .replace("{label}", c.label)}
+                        ”
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => startEditCourier(c)}
+                        className="text-sm font-medium text-brand-600 hover:underline"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onToggleCourier(c)}
+                        className="text-sm font-medium text-slate-500 hover:underline"
+                      >
+                        {c.is_active ? "Deactivate" : "Activate"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onDeleteCourier(c)}
+                        className="text-sm font-medium text-red-600 hover:underline"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          {showCourierForm ? (
+            <form
+              onSubmit={onSaveCourier}
+              className="space-y-4 rounded-xl border border-brand-100 bg-brand-50/50 p-6 shadow-sm"
+            >
+              <h2 className="text-sm font-semibold text-slate-800">
+                {editingCourierId ? "Edit courier" : "New courier"}
+              </h2>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field
+                  label="Key"
+                  hint={
+                    editingCourierId
+                      ? "Cannot be changed — organizations reference it."
+                      : "Slug, e.g. trax. Permanent once saved."
+                  }
+                >
+                  <input
+                    required
+                    value={courierForm.key}
+                    disabled={Boolean(editingCourierId)}
+                    onChange={(e) => setCourierForm({ ...courierForm, key: e.target.value })}
+                    placeholder="trax"
+                    className={`${inputClass} disabled:bg-slate-100 disabled:text-slate-500`}
+                  />
+                </Field>
+                <Field label="Label" hint="What organizations see.">
+                  <input
+                    required
+                    value={courierForm.label}
+                    onChange={(e) => setCourierForm({ ...courierForm, label: e.target.value })}
+                    placeholder="Smartlane - Trax"
+                    className={inputClass}
+                  />
+                </Field>
+                <Field label="Carrier name" hint="Used in the Smartlane warehouse name.">
+                  <input
+                    value={courierForm.carrier_name}
+                    onChange={(e) =>
+                      setCourierForm({ ...courierForm, carrier_name: e.target.value })
+                    }
+                    placeholder="Trax"
+                    className={inputClass}
+                  />
+                </Field>
+                <Field label="Service type">
+                  <select
+                    value={courierForm.service_type}
+                    onChange={(e) =>
+                      setCourierForm({ ...courierForm, service_type: e.target.value })
+                    }
+                    className={inputClass}
+                  >
+                    <option value="overland">Overland</option>
+                    <option value="overnight">Overnight</option>
+                  </select>
+                </Field>
+                <Field
+                  label="Warehouse name template"
+                  hint="Placeholders: {org}, {carrier}."
+                >
+                  <input
+                    value={courierForm.warehouse_name_template}
+                    onChange={(e) =>
+                      setCourierForm({ ...courierForm, warehouse_name_template: e.target.value })
+                    }
+                    className={inputClass}
+                  />
+                </Field>
+                <Field label="Sort order" hint="Lower shows first.">
+                  <input
+                    type="number"
+                    min="0"
+                    value={courierForm.sort_order}
+                    onChange={(e) =>
+                      setCourierForm({ ...courierForm, sort_order: e.target.value })
+                    }
+                    className={inputClass}
+                  />
+                </Field>
+              </div>
+
+              <Field label="Notes" hint="Internal only.">
+                <input
+                  value={courierForm.notes}
+                  onChange={(e) => setCourierForm({ ...courierForm, notes: e.target.value })}
+                  className={inputClass}
+                />
+              </Field>
+
+              <div className="flex flex-wrap items-center gap-4">
+                <label className="flex items-center gap-2 text-sm text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={courierForm.auto_booking}
+                    onChange={(e) =>
+                      setCourierForm({ ...courierForm, auto_booking: e.target.checked })
+                    }
+                  />
+                  Auto booking
+                </label>
+                <label className="flex items-center gap-2 text-sm text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={courierForm.is_active}
+                    onChange={(e) =>
+                      setCourierForm({ ...courierForm, is_active: e.target.checked })
+                    }
+                  />
+                  Visible to organizations
+                </label>
+              </div>
+
+              <div className="flex justify-end gap-2">
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    setShowCourierForm(false);
+                    setEditingCourierId(null);
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button type="submit" loading={savingCourier}>
+                  {editingCourierId ? "Save changes" : "Add courier"}
+                </Button>
+              </div>
+            </form>
+          ) : null}
         </>
       )}
     </div>

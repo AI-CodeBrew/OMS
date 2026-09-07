@@ -10,6 +10,8 @@ export const API_ENDPOINTS = {
     // integrations app.
     smartlaneConfig: "/api/core/admin/smartlane/config/",
     smartlaneConfigTest: "/api/core/admin/smartlane/config/test/",
+    smartlaneCouriers: "/api/core/admin/smartlane/couriers/",
+    smartlaneCourier: (id) => `/api/core/admin/smartlane/couriers/${id}/`,
   },
   team: "/api/core/team/",
   teamMember: (userId) => `/api/core/team/${userId}/`,
