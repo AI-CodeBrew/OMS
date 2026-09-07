@@ -11,6 +11,11 @@ const NAV = [
     label: "Organizations",
     match: (path) => path.startsWith("/admin/organizations") || path === "/admin",
   },
+  {
+    href: "/admin/smartlane",
+    label: "Smartlane",
+    match: (path) => path.startsWith("/admin/smartlane"),
+  },
 ];
 
 function SuperAdminShell({ children }) {

@@ -1,4 +1,4 @@
-from django.urls import path
+from django.urls import include, path
 
 from . import admin_views, team_views, views
 
@@ -19,4 +19,7 @@ urlpatterns = [
         admin_views.update_member,
         name="admin-update-member",
     ),
+    # Lives in the integrations app but is mounted here on purpose: the
+    # /api/core/admin/ prefix is what AdminIPAllowlistMiddleware matches.
+    path("admin/smartlane/", include("integrations.admin_urls")),
 ]

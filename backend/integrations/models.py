@@ -5,6 +5,59 @@ from django.db import models
 from core.models import TenantScopedModel
 
 
+class SmartlaneBusinessConfig(models.Model):
+    """The OMS's own credentials as an onboarded Smartlane *business*.
+
+    Platform-level on purpose - a plain Model, not TenantScopedModel. This
+    belongs to the deployment, not to any org, and TenantManager would hide
+    it from exactly the person who administers it (a super admin carries no
+    organization_id). Effectively a singleton; load() is the only accessor.
+
+    client_id/client_secret/jwt_token are stored plaintext, matching
+    ShopifyConnection and SmartlaneConnection above - the same
+    field-level-encryption caveat applies to all three.
+
+    jwt_token is not fetched programmatically: a human logs into Smartlane's
+    business portal with the client id, secret and the calling machine's IP,
+    and pastes the token it hands back. It expires, so it is editable and
+    the UI has to make re-pasting easy.
+    """
+
+    SINGLETON_PK = 1
+
+    id = models.PositiveSmallIntegerField(primary_key=True, default=SINGLETON_PK, editable=False)
+    business_code = models.CharField(max_length=100, blank=True, default="")
+    client_id = models.CharField(max_length=255, blank=True, default="")
+    client_secret = models.CharField(max_length=255, blank=True, default="")
+    jwt_token = models.TextField(blank=True, default="")
+    # Informational only - Smartlane binds the token to an IP registered in
+    # their portal, and a mismatch surfaces as a 401/redirect with nothing
+    # naming the real cause. Recording it here lets the UI say so.
+    registered_ip = models.CharField(max_length=64, blank=True, default="")
+    is_active = models.BooleanField(default=False)
+    last_verified_at = models.DateTimeField(null=True, blank=True)
+    last_verify_error = models.CharField(max_length=500, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = '"integrations"."smartlane_business_config"'
+
+    def __str__(self):
+        return f"Smartlane business {self.business_code or '(unconfigured)'}"
+
+    @classmethod
+    def load(cls):
+        """The row, creating a blank one on first access so callers never
+        have to handle None."""
+        config, _ = cls.objects.get_or_create(pk=cls.SINGLETON_PK)
+        return config
+
+    @property
+    def is_configured(self):
+        return bool(self.business_code and self.jwt_token)
+
+
 class ShopifyConnection(TenantScopedModel):
     """One Shopify store per organization. access_token/webhook_secret are
     stored plaintext for now, matching the legacy public.shopify_integrations

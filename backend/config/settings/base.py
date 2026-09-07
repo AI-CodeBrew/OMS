@@ -158,6 +158,17 @@ SHOPIFY_API_VERSION = env("SHOPIFY_API_VERSION", default="2024-10")
 SMARTLANE_API_BASE_URL = env(
     "SMARTLANE_API_BASE_URL", default="https://smartapi.pk/api/production/consignment"
 )
+
+# Smartlane's *Business* API - a completely separate product from the
+# consignment API above. There, each org brings its own bearer key; here
+# the OMS itself is the onboarded business and each org is a "store"
+# underneath it, with HMAC-signed requests. The two run side by side (see
+# integrations/smartlane_business_client.py). This default is Smartlane's
+# TEST environment, which is the only one they have given us - they issue
+# production credentials only after verifying the integration works here.
+SMARTLANE_BUSINESS_API_BASE_URL = env(
+    "SMARTLANE_BUSINESS_API_BASE_URL", default="https://gcp.smartlane.dev/business"
+)
 # Must be a publicly reachable URL for Shopify's webhook deliveries to
 # actually arrive - on localhost, webhook registration succeeds but
 # delivery never will until this is tunneled (ngrok etc.) or deployed.
