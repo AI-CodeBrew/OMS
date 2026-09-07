@@ -4,14 +4,27 @@ import django.db.models.deletion
 import uuid
 from django.db import migrations, models
 
-from core.rls import organization_scoped_policy_sql
+from core.rls import organization_scoped_policy_sql, platform_admin_only_policy_sql
 
-# Only smartlane_store_links carries an organization_id - the config and
-# courier catalog are platform-level and deliberately have no tenant column
-# to scope by. Defense-in-depth for direct Postgres/PostgREST access only;
+# smartlane_store_links carries an organization_id, so it gets the standard
+# per-org policy. smartlane_business_config and smartlane_courier_offerings
+# are platform-level (no tenant column to scope by) but still get RLS - one
+# holds real credentials, and every table in this project gets a policy
+# even when, like core.organizations itself, it isn't literally scoped to
+# an org. Defense-in-depth for direct Postgres/PostgREST access only;
 # Django's own isolation is TenantScopedModel's manager (see core/rls.py).
-ENABLE_RLS = organization_scoped_policy_sql("integrations", "smartlane_store_links")
+ENABLE_RLS = (
+    platform_admin_only_policy_sql("integrations", "smartlane_business_config")
+    + platform_admin_only_policy_sql("integrations", "smartlane_courier_offerings")
+    + organization_scoped_policy_sql("integrations", "smartlane_store_links")
+)
 DISABLE_RLS = """
+    drop policy if exists smartlane_business_config_super_admin_only on "integrations"."smartlane_business_config";
+    alter table "integrations"."smartlane_business_config" disable row level security;
+
+    drop policy if exists smartlane_courier_offerings_super_admin_only on "integrations"."smartlane_courier_offerings";
+    alter table "integrations"."smartlane_courier_offerings" disable row level security;
+
     drop policy if exists smartlane_store_links_tenant_isolation on "integrations"."smartlane_store_links";
     alter table "integrations"."smartlane_store_links" disable row level security;
 """
