@@ -202,6 +202,27 @@ class IntegrationsService {
     });
     if (!response.ok) throw new Error("Failed to disconnect");
   }
+
+  // --- OMS Courier (Smartlane business onboarding) ---
+  async getOmsCourierOnboarding() {
+    const response = await fetch(`${apiConfig.baseUrl}/api/integrations/oms-courier/`, {
+      headers: authService.getAuthHeaders(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Failed to load courier onboarding");
+    return data;
+  }
+
+  async submitOmsCourierOnboarding(payload) {
+    const response = await fetch(`${apiConfig.baseUrl}/api/integrations/oms-courier/`, {
+      method: "POST",
+      headers: authService.getAuthHeaders(),
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Failed to submit request");
+    return data;
+  }
 }
 
 export const integrationsService = new IntegrationsService();

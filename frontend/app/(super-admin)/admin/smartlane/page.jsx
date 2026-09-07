@@ -10,7 +10,6 @@ const EMPTY_FORM = {
   client_id: "",
   client_secret: "",
   jwt_token: "",
-  registered_ip: "",
 };
 
 const EMPTY_COURIER = {
@@ -23,6 +22,15 @@ const EMPTY_COURIER = {
   is_active: true,
   sort_order: 0,
   notes: "",
+};
+
+const LINK_STATUS_TONE = {
+  pending_approval: "bg-amber-50 text-amber-700",
+  in_review: "bg-blue-50 text-blue-700",
+  active: "bg-emerald-50 text-emerald-700",
+  rejected: "bg-red-50 text-red-700",
+  in_active: "bg-slate-100 text-slate-600",
+  draft: "bg-slate-100 text-slate-600",
 };
 
 function Field({ label, hint, children }) {
@@ -48,6 +56,9 @@ export default function SmartlaneBusinessPage() {
   const [success, setSuccess] = useState("");
   const [testResult, setTestResult] = useState(null);
 
+  const [links, setLinks] = useState([]);
+  const [busyLinkId, setBusyLinkId] = useState(null);
+  const [syncing, setSyncing] = useState(false);
   const [couriers, setCouriers] = useState([]);
   const [courierForm, setCourierForm] = useState(EMPTY_COURIER);
   const [editingCourierId, setEditingCourierId] = useState(null);
@@ -58,17 +69,18 @@ export default function SmartlaneBusinessPage() {
     setLoading(true);
     setError("");
     try {
-      const [configData, courierData] = await Promise.all([
+      const [configData, courierData, linkData] = await Promise.all([
         smartlaneAdminService.getConfig(),
         smartlaneAdminService.listCouriers(),
+        smartlaneAdminService.listStoreLinks(),
       ]);
       setConfig(configData.config);
       setCouriers(courierData.couriers || []);
+      setLinks(linkData.links || []);
       setForm((f) => ({
         ...f,
         business_code: configData.config?.business_code || "",
         client_id: configData.config?.client_id || "",
-        registered_ip: configData.config?.registered_ip || "",
       }));
     } catch (err) {
       setError(err.message || "Failed to load Smartlane business config");
@@ -97,6 +109,69 @@ export default function SmartlaneBusinessPage() {
       setError(err.message || "Failed to save");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function onApproveLink(link) {
+    if (
+      !window.confirm(
+        `Approve ${link.organization_name}? This sends their KYC to Smartlane, who then ` +
+          `run their own review.`,
+      )
+    ) {
+      return;
+    }
+    setBusyLinkId(link.id);
+    setError("");
+    setSuccess("");
+    try {
+      await smartlaneAdminService.approveStoreLink(link.id);
+      setSuccess(`Sent ${link.organization_name} to Smartlane for review.`);
+      await load();
+    } catch (err) {
+      setError(err.message || "Failed to approve");
+    } finally {
+      setBusyLinkId(null);
+    }
+  }
+
+  async function onRejectLink(link) {
+    const note = window.prompt(
+      `Why is ${link.organization_name} being rejected? They see this.`,
+    );
+    if (note === null) return;
+    if (!note.trim()) {
+      setError("A reason is required — the organization sees it.");
+      return;
+    }
+    setBusyLinkId(link.id);
+    setError("");
+    setSuccess("");
+    try {
+      await smartlaneAdminService.rejectStoreLink(link.id, note.trim());
+      setSuccess(`Rejected ${link.organization_name}.`);
+      await load();
+    } catch (err) {
+      setError(err.message || "Failed to reject");
+    } finally {
+      setBusyLinkId(null);
+    }
+  }
+
+  async function onSyncStores() {
+    setSyncing(true);
+    setError("");
+    setSuccess("");
+    try {
+      const result = await smartlaneAdminService.syncStoreLinks();
+      setSuccess(
+        `Checked ${result.stores_seen} store(s) at Smartlane, updated ${result.links_updated}.`,
+      );
+      await load();
+    } catch (err) {
+      setError(err.message || "Failed to sync");
+    } finally {
+      setSyncing(false);
     }
   }
 
@@ -241,10 +316,6 @@ export default function SmartlaneBusinessPage() {
                     : "Never"}
                 </dd>
               </div>
-              <div>
-                <dt className="text-xs uppercase tracking-wide text-slate-400">Registered IP</dt>
-                <dd className="mt-1 text-sm text-slate-800">{config?.registered_ip || "—"}</dd>
-              </div>
             </dl>
             {config?.last_verify_error ? (
               <div className="border-t border-surface-border px-5 py-3">
@@ -316,9 +387,9 @@ export default function SmartlaneBusinessPage() {
             <div>
               <h2 className="text-sm font-semibold text-slate-800">Credentials</h2>
               <p className="mt-1 text-xs text-slate-500">
-                From Smartlane&apos;s business portal. Sign in there with the client id, secret
-                and this machine&apos;s public IP to get the JWT token — the token is bound to
-                that IP, so calls from anywhere else are rejected.
+                From Smartlane&apos;s business portal — sign in there with the client id and
+                secret to get the JWT token. The token expires, so paste a fresh one when
+                calls start failing.
               </p>
             </div>
 
@@ -327,14 +398,6 @@ export default function SmartlaneBusinessPage() {
                 <input
                   value={form.business_code}
                   onChange={(e) => setForm({ ...form, business_code: e.target.value })}
-                  className={inputClass}
-                />
-              </Field>
-              <Field label="Registered IP" hint="The IP registered in the portal, for reference.">
-                <input
-                  value={form.registered_ip}
-                  onChange={(e) => setForm({ ...form, registered_ip: e.target.value })}
-                  placeholder="e.g. 203.0.113.10"
                   className={inputClass}
                 />
               </Field>
@@ -378,6 +441,104 @@ export default function SmartlaneBusinessPage() {
               </Button>
             </div>
           </form>
+
+          <div className="rounded-xl border border-surface-border bg-white shadow-sm">
+            <div className="flex items-center justify-between gap-3 border-b border-surface-border px-5 py-3">
+              <div>
+                <h2 className="text-sm font-semibold text-slate-800">Onboarding requests</h2>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  Approving sends the organization&apos;s KYC to Smartlane, who then run their
+                  own review before the store goes live.
+                </p>
+              </div>
+              <Button variant="secondary" onClick={onSyncStores} loading={syncing}>
+                Sync from Smartlane
+              </Button>
+            </div>
+
+            {links.length === 0 ? (
+              <div className="px-5 py-12 text-center">
+                <p className="text-sm font-medium text-slate-700">No requests yet</p>
+                <p className="mt-1 text-sm text-slate-500">
+                  Organizations request access from their Integrations page.
+                </p>
+              </div>
+            ) : (
+              <ul className="divide-y divide-surface-border">
+                {links.map((link) => (
+                  <li key={link.id} className="px-5 py-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-sm font-medium text-slate-800">
+                            {link.organization_name}
+                          </span>
+                          <span
+                            className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                              LINK_STATUS_TONE[link.status] || "bg-slate-100 text-slate-600"
+                            }`}
+                          >
+                            {link.status_display}
+                          </span>
+                          {link.smartlane_store_id ? (
+                            <span className="text-xs text-slate-500">
+                              store <span className="font-mono">{link.smartlane_store_id}</span>
+                            </span>
+                          ) : null}
+                        </div>
+                        <p className="mt-1 text-xs text-slate-500">
+                          {link.kyc?.name || "—"} · {link.kyc?.industry || "no industry"} ·{" "}
+                          {link.kyc?.email || "no email"} · {link.kyc?.phone || "no phone"}
+                        </p>
+                        <p className="mt-0.5 text-xs text-slate-500">
+                          Couriers: {(link.requested_offerings || []).join(", ") || "none"}
+                        </p>
+                        {link.review_note ? (
+                          <p className="mt-1 text-xs text-red-600">
+                            Rejected: {link.review_note}
+                          </p>
+                        ) : null}
+                      </div>
+
+                      {link.status === "pending_approval" ? (
+                        <div className="flex shrink-0 items-center gap-2">
+                          <Button
+                            variant="secondary"
+                            onClick={() => onRejectLink(link)}
+                            disabled={busyLinkId === link.id}
+                          >
+                            Reject
+                          </Button>
+                          <Button
+                            onClick={() => onApproveLink(link)}
+                            loading={busyLinkId === link.id}
+                          >
+                            Approve
+                          </Button>
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <details className="mt-2">
+                      <summary className="cursor-pointer text-xs text-slate-400 hover:text-slate-600">
+                        Full KYC
+                      </summary>
+                      <dl className="mt-2 grid gap-2 sm:grid-cols-2">
+                        {Object.entries(link.kyc || {}).map(([k, v]) => (
+                          <div key={k}>
+                            <dt className="text-xs uppercase tracking-wide text-slate-400">
+                              {k.replace(/_/g, " ")}
+                            </dt>
+                            <dd className="text-xs text-slate-700">{v === null || v === "" ? "—" : String(v)}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    </details>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
 
           <div className="rounded-xl border border-surface-border bg-white shadow-sm">
             <div className="flex items-center justify-between gap-3 border-b border-surface-border px-5 py-3">

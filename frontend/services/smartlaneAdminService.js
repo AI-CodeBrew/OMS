@@ -68,6 +68,32 @@ class SmartlaneAdminService {
       method: "DELETE",
     });
   }
+
+  listStoreLinks(status) {
+    const qs = status ? `?status=${encodeURIComponent(status)}` : "";
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneStores}${qs}`);
+  }
+
+  approveStoreLink(id) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneStoreApprove(id)}`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  }
+
+  rejectStoreLink(id, note) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneStoreReject(id)}`, {
+      method: "POST",
+      body: JSON.stringify({ note }),
+    });
+  }
+
+  syncStoreLinks() {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneStoresSync}`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  }
 }
 
 export const smartlaneAdminService = new SmartlaneAdminService();

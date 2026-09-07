@@ -14,4 +14,16 @@ urlpatterns = [
         admin_views.courier_offering_detail,
         name="admin-smartlane-courier-detail",
     ),
+    path("stores/", admin_views.store_links, name="admin-smartlane-stores"),
+    path("stores/sync/", admin_views.store_links_sync, name="admin-smartlane-stores-sync"),
+    path(
+        "stores/<uuid:link_id>/approve/",
+        admin_views.store_link_approve,
+        name="admin-smartlane-store-approve",
+    ),
+    path(
+        "stores/<uuid:link_id>/reject/",
+        admin_views.store_link_reject,
+        name="admin-smartlane-store-reject",
+    ),
 ]

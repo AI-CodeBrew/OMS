@@ -265,3 +265,39 @@ def test_connection(config, options=DEFAULT_SIGNATURE_OPTIONS):
         capture_debug=True,
     )
     return payload, debug
+
+
+def submit_store_kyc(config, kyc, options=DEFAULT_SIGNATURE_OPTIONS):
+    """POST /{businessCode}/store/new/kyc - sends a store for Smartlane's review.
+
+    `kyc` must already be in Smartlane's wire shape and field order; see
+    business_services.build_kyc_payload, which is the single place that
+    mapping lives. The doc lists human labels ("Avg order value") rather
+    than JSON keys, so the exact names are an educated guess and may need
+    correcting once Smartlane confirms them.
+    """
+    payload, debug = _request(
+        config,
+        "POST",
+        f"/{config.business_code}/store/new/kyc",
+        body=kyc,
+        context="Store KYC",
+        options=options,
+        capture_debug=True,
+    )
+    return payload, debug
+
+
+def list_stores(config, search=None, options=DEFAULT_SIGNATURE_OPTIONS):
+    """GET /store - every store under the business, split active/in_active/in_review.
+
+    Note the path: the doc gives this one as /business/store, with no
+    business code, while every other endpoint is /business/{code}/...
+    That inconsistency is theirs, and is reproduced faithfully here rather
+    than "corrected" - worth confirming with them.
+    """
+    params = {"search": search} if search else None
+    payload, _ = _request(
+        config, "GET", "/store", params=params, context="Store list", options=options
+    )
+    return payload

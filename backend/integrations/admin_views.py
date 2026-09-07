@@ -62,6 +62,49 @@ def courier_offering_detail(request, offering_id):
     return Response({"success": True, "courier": courier})
 
 
+@api_view(["GET"])
+@permission_classes([IsSuperAdmin])
+def store_links(request):
+    status_filter = request.query_params.get("status") or None
+    return Response({"success": True, "links": service.list_store_links(status_filter)})
+
+
+@api_view(["POST"])
+@permission_classes([IsSuperAdmin])
+def store_link_approve(request, link_id):
+    try:
+        link = service.approve_store_link(
+            link_id, actor_email=getattr(request, "auth_email", "") or ""
+        )
+    except SmartlaneBusinessError as exc:
+        return _error(exc)
+    return Response({"success": True, "link": link})
+
+
+@api_view(["POST"])
+@permission_classes([IsSuperAdmin])
+def store_link_reject(request, link_id):
+    try:
+        link = service.reject_store_link(
+            link_id,
+            note=(request.data or {}).get("note", ""),
+            actor_email=getattr(request, "auth_email", "") or "",
+        )
+    except SmartlaneBusinessError as exc:
+        return _error(exc)
+    return Response({"success": True, "link": link})
+
+
+@api_view(["POST"])
+@permission_classes([IsSuperAdmin])
+def store_links_sync(request):
+    try:
+        result = service.sync_store_links()
+    except SmartlaneBusinessError as exc:
+        return _error(exc)
+    return Response({"success": True, **result})
+
+
 @api_view(["POST"])
 @permission_classes([IsSuperAdmin])
 def business_config_test(request):

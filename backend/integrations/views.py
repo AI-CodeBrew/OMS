@@ -22,6 +22,7 @@ from core.permissions import IsOrgAdmin
 from core.rbac import write_audit_log
 from oms import services as oms_services
 
+from . import business_services
 from . import shopify_client
 from . import services
 from . import smartlane_client
@@ -826,3 +827,29 @@ def shopify_inventory_webhook(request):
     if inventory_item_id:
         services.sync_stock_item_from_shopify_inventory_item(connection.organization_id, inventory_item_id)
     return JsonResponse({"success": True})
+
+
+class OmsCourierOnboardingView(APIView):
+    """Tenant-facing side of Smartlane business onboarding.
+
+    Follows the tenant convention (plain DRF bodies, `detail` on error),
+    not the {"success": ...} envelope the super-admin endpoints use - the
+    two areas have different frontend request helpers and mixing them
+    breaks error surfacing.
+    """
+
+    permission_classes = [IsOrgAdmin]
+
+    def get(self, request):
+        return Response(business_services.get_org_onboarding(request.organization_id))
+
+    def post(self, request):
+        try:
+            link = business_services.submit_org_onboarding(
+                request.organization_id,
+                request.data or {},
+                actor_user_id=request.user_id,
+            )
+        except business_services.SmartlaneBusinessError as exc:
+            return Response({"detail": exc.message}, status=exc.status_code)
+        return Response(link)

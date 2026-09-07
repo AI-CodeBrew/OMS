@@ -125,6 +125,20 @@ const INTEGRATIONS = [
     ],
   },
   {
+    key: "oms_courier",
+    name: "OMS Courier",
+    tagline: "Ship through the platform's own Smartlane account - no Smartlane signup needed.",
+    logo: SmartlaneLogo,
+    href: "/integrations/oms-courier",
+    live: true,
+    features: [
+      { label: "Pick Your Couriers", done: true },
+      { label: "Platform-managed Onboarding", done: true },
+      { label: "Create Bookings", done: false },
+      { label: "Real-time Tracking", done: false },
+    ],
+  },
+  {
     key: "leopard",
     name: "Leopard Courier",
     tagline: "Connect to Leopard Courier for seamless domestic shipping.",

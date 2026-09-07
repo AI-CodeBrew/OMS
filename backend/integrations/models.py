@@ -30,10 +30,6 @@ class SmartlaneBusinessConfig(models.Model):
     client_id = models.CharField(max_length=255, blank=True, default="")
     client_secret = models.CharField(max_length=255, blank=True, default="")
     jwt_token = models.TextField(blank=True, default="")
-    # Informational only - Smartlane binds the token to an IP registered in
-    # their portal, and a mismatch surfaces as a 401/redirect with nothing
-    # naming the real cause. Recording it here lets the UI say so.
-    registered_ip = models.CharField(max_length=64, blank=True, default="")
     is_active = models.BooleanField(default=False)
     last_verified_at = models.DateTimeField(null=True, blank=True)
     last_verify_error = models.CharField(max_length=500, blank=True, default="")
@@ -122,6 +118,91 @@ class SmartlaneCourierOffering(models.Model):
             .replace("{carrier}", carrier)
             .replace("{label}", self.label)
         )
+
+
+class SmartlaneStoreLink(TenantScopedModel):
+    """One organization's onboarding onto the platform's Smartlane business
+    account, and the store it becomes.
+
+    Two review gates in sequence, which is why there are more statuses than
+    feels necessary. First the super admin approves the request internally
+    (pending_approval -> in_review or rejected); only then is the KYC sent
+    to Smartlane, who run their own review before the store goes live
+    (in_review -> active). Nothing here books anything until active.
+
+    Tenant-scoped so an org sees only its own request. The catalog it
+    references (SmartlaneCourierOffering) is platform-level, hence keys in
+    a JSON list rather than a many-to-many.
+    """
+
+    STATUS_CHOICES = [
+        ("draft", "Draft"),
+        ("pending_approval", "Pending approval"),
+        ("rejected", "Rejected"),
+        ("in_review", "In review with Smartlane"),
+        ("active", "Active"),
+        ("in_active", "Inactive"),
+    ]
+    # The three Smartlane itself reports back from GET /store.
+    SMARTLANE_STATUSES = {"active", "in_active", "in_review"}
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="draft")
+
+    # --- KYC, in the order Smartlane's doc lists it ---
+    kyc_name = models.CharField(max_length=255, blank=True, default="")
+    kyc_logo_url = models.URLField(max_length=500, blank=True, default="")
+    # Their doc: "shopify, wordpress, api - in case of business : Api".
+    kyc_platform = models.CharField(max_length=50, blank=True, default="api")
+    kyc_industry = models.CharField(max_length=150, blank=True, default="")
+    kyc_ntn = models.CharField(max_length=50, blank=True, default="")
+    kyc_years_in_business = models.PositiveSmallIntegerField(null=True, blank=True)
+    kyc_business_address = models.CharField(max_length=500, blank=True, default="")
+    kyc_avg_order_value = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True
+    )
+    kyc_avg_monthly_sales = models.DecimalField(
+        max_digits=14, decimal_places=2, null=True, blank=True
+    )
+    kyc_annual_retail_sales = models.DecimalField(
+        max_digits=14, decimal_places=2, null=True, blank=True
+    )
+    kyc_poc_name = models.CharField(max_length=150, blank=True, default="")
+    kyc_email = models.CharField(max_length=255, blank=True, default="")
+    kyc_phone = models.CharField(max_length=50, blank=True, default="")
+
+    # SmartlaneCourierOffering.key values - keys not FKs, so the catalog can
+    # be reordered or pruned without rewriting requests. See that model's
+    # note on why key is write-once.
+    requested_offerings = models.JSONField(default=list, blank=True)
+
+    smartlane_store_id = models.CharField(max_length=100, blank=True, default="")
+
+    requested_by_user_id = models.UUIDField(null=True, blank=True)
+    requested_at = models.DateTimeField(null=True, blank=True)
+    reviewed_by_email = models.CharField(max_length=255, blank=True, default="")
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    # Rejection reason, shown to the org - the whole point of rejecting is
+    # telling them what to fix.
+    review_note = models.CharField(max_length=500, blank=True, default="")
+    last_synced_at = models.DateTimeField(null=True, blank=True)
+    # Whatever Smartlane's KYC call answered, kept verbatim for debugging.
+    last_submit_response = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        db_table = '"integrations"."smartlane_store_links"'
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization"], name="integrations_one_smartlane_store_per_org"
+            )
+        ]
+
+    def __str__(self):
+        return f"Smartlane store link ({self.status})"
+
+    @property
+    def is_live(self):
+        return self.status == "active" and bool(self.smartlane_store_id)
 
 
 class ShopifyConnection(TenantScopedModel):

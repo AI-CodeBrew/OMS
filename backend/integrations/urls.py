@@ -27,4 +27,9 @@ urlpatterns = [
     path("smartlane/sync/", views.SmartlaneSyncView.as_view(), name="smartlane-sync"),
     path("smartlane/warehouses/", views.SmartlaneWarehouseListView.as_view(), name="smartlane-warehouses"),
     path("smartlane/cities/", views.SmartlaneCityListView.as_view(), name="smartlane-cities"),
+    path(
+        "oms-courier/",
+        views.OmsCourierOnboardingView.as_view(),
+        name="oms-courier-onboarding",
+    ),
 ]
