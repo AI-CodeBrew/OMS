@@ -15,7 +15,12 @@ from django.utils import timezone
 
 from core.rbac import write_audit_log
 
-from .models import SmartlaneBusinessConfig, SmartlaneCourierOffering, SmartlaneStoreLink
+from .models import (
+    SmartlaneBusinessConfig,
+    SmartlaneCourierOffering,
+    SmartlaneStoreLink,
+    SmartlaneStoreWarehouse,
+)
 from .smartlane_client import SmartlaneAPIError
 from . import smartlane_business_client as business_client
 
@@ -563,6 +568,178 @@ def sync_store_links():
             updated += 1
 
     return {"stores_seen": len(rows), "links_updated": updated}
+
+
+# --- Store warehouses -------------------------------------------------
+# One per (store, requested offering) - the row that actually binds a
+# booking to a carrier (see SmartlaneStoreWarehouse's docstring). Nothing
+# here is wired into order booking yet; this is provisioning only, driven
+# from the super admin page.
+
+
+def _serialize_warehouse(wh):
+    return {
+        "id": wh.id,
+        "offering_key": wh.offering.key,
+        "offering_label": wh.offering.label,
+        "smartlane_warehouse_code": wh.smartlane_warehouse_code,
+        "name": wh.name,
+        "status": wh.status,
+        "last_synced_at": wh.last_synced_at,
+        "last_provision_error": wh.last_provision_error,
+    }
+
+
+def list_warehouses_for_link(link):
+    return [
+        _serialize_warehouse(w)
+        for w in SmartlaneStoreWarehouse.all_objects.filter(store_link=link).select_related(
+            "offering"
+        )
+    ]
+
+
+def build_warehouse_payload(link, offering, *, city, zip_code):
+    """The doc's Add/Edit Warehouse body, in its field order. `code` is
+    deliberately omitted - leaving it out is what makes Smartlane assign
+    one, which is what gets stored back as smartlane_warehouse_code."""
+    return {
+        "name": offering.warehouse_name_for(link.organization.name),
+        "shipper_name": link.kyc_poc_name,
+        "shipper_email": link.kyc_email,
+        "shipper_phone": link.kyc_phone,
+        "address": link.kyc_business_address,
+        "city": city,
+        "area": "",
+        "zip_code": zip_code,
+        "service_type": offering.service_type,
+        "auto_booking": offering.auto_booking,
+    }
+
+
+def _extract_warehouse_code(payload):
+    if not isinstance(payload, dict):
+        return ""
+    for container in (payload, payload.get("data") or {}, payload.get("warehouse") or {}):
+        if not isinstance(container, dict):
+            continue
+        for key in ("code", "warehouse_code", "store_warehouse_code"):
+            value = container.get(key)
+            if value not in (None, ""):
+                return str(value)
+    return ""
+
+
+def provision_warehouse(link, offering_key, *, city, zip_code, actor_email=""):
+    """Creates (or retries) one warehouse for one requested offering.
+
+    Only legal once Smartlane has actually created the store - a
+    warehouse belongs to a store_id, which doesn't exist before then.
+    City/zip aren't collected on the tenant KYC form (Smartlane's doc
+    doesn't list them there, only on this separate endpoint), so the admin
+    supplies them here; whatever is given is saved back onto the link so a
+    second courier's provisioning, or a retry, doesn't ask again.
+    """
+    if not link.is_live:
+        raise SmartlaneBusinessError("The store must be active before provisioning warehouses.")
+    if offering_key not in (link.requested_offerings or []):
+        raise SmartlaneBusinessError(f"{offering_key} was not requested by this org.")
+    city = (city or link.kyc_city or "").strip()
+    zip_code = (zip_code or link.kyc_zip_code or "").strip()
+    if not city:
+        raise SmartlaneBusinessError("City is required to provision a warehouse.")
+
+    offering = SmartlaneCourierOffering.objects.filter(key=offering_key).first()
+    if offering is None:
+        raise SmartlaneBusinessError(f"Unknown courier: {offering_key}.", 404)
+
+    config = SmartlaneBusinessConfig.load()
+    if not config.is_configured:
+        raise SmartlaneBusinessError("Configure the Smartlane business account first.")
+
+    warehouse, _created = SmartlaneStoreWarehouse.all_objects.get_or_create(
+        store_link=link, offering=offering, defaults={"organization_id": link.organization_id}
+    )
+
+    changed = False
+    if city and link.kyc_city != city:
+        link.kyc_city = city
+        changed = True
+    if zip_code and link.kyc_zip_code != zip_code:
+        link.kyc_zip_code = zip_code
+        changed = True
+    if changed:
+        link.save(update_fields=["kyc_city", "kyc_zip_code", "updated_at"])
+
+    payload = build_warehouse_payload(link, offering, city=city, zip_code=zip_code)
+    try:
+        response, _debug = business_client.add_or_edit_warehouse(
+            config, link.smartlane_store_id, payload
+        )
+    except SmartlaneAPIError as exc:
+        warehouse.status = "failed"
+        warehouse.last_provision_error = str(exc)[:500]
+        warehouse.save(update_fields=["status", "last_provision_error", "updated_at"])
+        raise SmartlaneBusinessError(f"Smartlane rejected the warehouse: {exc}", 502)
+
+    code = _extract_warehouse_code(response)
+    warehouse.name = payload["name"]
+    warehouse.status = "active" if code else "failed"
+    warehouse.smartlane_warehouse_code = code or warehouse.smartlane_warehouse_code
+    warehouse.last_provision_error = "" if code else "Smartlane didn't return a warehouse code."
+    warehouse.last_synced_at = timezone.now()
+    warehouse.save()
+
+    _audit(
+        link,
+        "integrations.smartlane.warehouse_provisioned",
+        f"Provisioned {offering.label} warehouse for {link.organization.name}",
+        actor_email,
+    )
+    return _serialize_warehouse(warehouse)
+
+
+def provision_all_warehouses(link, *, city=None, zip_code=None, actor_email=""):
+    """Provisions every requested offering that doesn't already have an
+    active warehouse. Manual, from the admin page - nothing calls this on
+    its own yet."""
+    existing = {
+        w.offering.key: w
+        for w in SmartlaneStoreWarehouse.all_objects.filter(store_link=link).select_related(
+            "offering"
+        )
+    }
+    results, errors = [], []
+    for key in link.requested_offerings or []:
+        if existing.get(key) and existing[key].status == "active":
+            continue
+        try:
+            results.append(
+                provision_warehouse(link, key, city=city, zip_code=zip_code, actor_email=actor_email)
+            )
+        except SmartlaneBusinessError as exc:
+            errors.append({"offering_key": key, "error": exc.message})
+    return {"provisioned": results, "errors": errors}
+
+
+def get_warehouses_for_store_link(link_id):
+    link = _get_link(link_id)
+    return {"link": _serialize_link(link, include_org=True), "warehouses": list_warehouses_for_link(link)}
+
+
+def provision_warehouses_for_store_link(link_id, body, *, actor_email=""):
+    link = _get_link(link_id)
+    result = provision_all_warehouses(
+        link,
+        city=(body.get("city") or "").strip() or None,
+        zip_code=(body.get("zip_code") or "").strip() or None,
+        actor_email=actor_email,
+    )
+    return {
+        **result,
+        "link": _serialize_link(link, include_org=True),
+        "warehouses": list_warehouses_for_link(link),
+    }
 
 
 def _audit(link, action, summary, actor_email):

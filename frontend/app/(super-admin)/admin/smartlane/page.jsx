@@ -59,6 +59,13 @@ export default function SmartlaneBusinessPage() {
   const [links, setLinks] = useState([]);
   const [busyLinkId, setBusyLinkId] = useState(null);
   const [syncing, setSyncing] = useState(false);
+  // Warehouses aren't part of the store link list response - fetched
+  // lazily per link (keyed by link.id) the first time its panel is
+  // opened, rather than for every link up front.
+  const [warehouses, setWarehouses] = useState({});
+  const [loadingWhId, setLoadingWhId] = useState(null);
+  const [whForm, setWhForm] = useState({});
+  const [provisioningId, setProvisioningId] = useState(null);
   const [couriers, setCouriers] = useState([]);
   const [courierForm, setCourierForm] = useState(EMPTY_COURIER);
   const [editingCourierId, setEditingCourierId] = useState(null);
@@ -172,6 +179,49 @@ export default function SmartlaneBusinessPage() {
       setError(err.message || "Failed to sync");
     } finally {
       setSyncing(false);
+    }
+  }
+
+  async function onOpenWarehouses(link, isOpen) {
+    if (!isOpen || warehouses[link.id]) return;
+    setLoadingWhId(link.id);
+    try {
+      const data = await smartlaneAdminService.getStoreWarehouses(link.id);
+      setWarehouses((w) => ({ ...w, [link.id]: data.warehouses || [] }));
+      setWhForm((f) => ({
+        ...f,
+        [link.id]: f[link.id] || { city: data.link?.kyc_city || "", zip_code: data.link?.kyc_zip_code || "" },
+      }));
+    } catch (err) {
+      setError(err.message || "Failed to load warehouses");
+    } finally {
+      setLoadingWhId(null);
+    }
+  }
+
+  async function onProvisionWarehouses(link) {
+    const values = whForm[link.id] || {};
+    if (!(values.city || "").trim()) {
+      setError("City is required to provision a warehouse.");
+      return;
+    }
+    setProvisioningId(link.id);
+    setError("");
+    setSuccess("");
+    try {
+      const data = await smartlaneAdminService.provisionStoreWarehouses(link.id, values);
+      setWarehouses((w) => ({ ...w, [link.id]: data.warehouses || [] }));
+      if (data.errors?.length) {
+        setError(data.errors.map((e) => `${e.offering_key}: ${e.error}`).join(" · "));
+      } else {
+        setSuccess(
+          `Provisioned ${data.provisioned?.length || 0} warehouse(s) for ${link.organization_name}.`,
+        );
+      }
+    } catch (err) {
+      setError(err.message || "Failed to provision warehouses");
+    } finally {
+      setProvisioningId(null);
     }
   }
 
@@ -534,6 +584,107 @@ export default function SmartlaneBusinessPage() {
                         ))}
                       </dl>
                     </details>
+
+                    {link.status === "active" ? (
+                      <details
+                        className="mt-2"
+                        onToggle={(e) => onOpenWarehouses(link, e.target.open)}
+                      >
+                        <summary className="cursor-pointer text-xs text-slate-400 hover:text-slate-600">
+                          Warehouses
+                        </summary>
+                        <div className="mt-2 rounded-lg border border-surface-border bg-slate-50/60 p-3">
+                          {loadingWhId === link.id ? (
+                            <p className="text-xs text-slate-500">Loading…</p>
+                          ) : (
+                            <>
+                              {(warehouses[link.id] || []).length === 0 ? (
+                                <p className="text-xs text-slate-500">
+                                  None provisioned yet.
+                                </p>
+                              ) : (
+                                <ul className="space-y-1.5">
+                                  {(warehouses[link.id] || []).map((w) => (
+                                    <li
+                                      key={w.id}
+                                      className="flex flex-wrap items-center justify-between gap-2 text-xs"
+                                    >
+                                      <span className="text-slate-700">
+                                        {w.offering_label}
+                                        {w.smartlane_warehouse_code ? (
+                                          <span className="ml-1.5 font-mono text-slate-500">
+                                            {w.smartlane_warehouse_code}
+                                          </span>
+                                        ) : null}
+                                      </span>
+                                      <span
+                                        className={`rounded-full px-2 py-0.5 font-medium ${
+                                          w.status === "active"
+                                            ? "bg-emerald-50 text-emerald-700"
+                                            : w.status === "failed"
+                                              ? "bg-red-50 text-red-700"
+                                              : "bg-slate-100 text-slate-600"
+                                        }`}
+                                      >
+                                        {w.status}
+                                      </span>
+                                      {w.status === "failed" && w.last_provision_error ? (
+                                        <span className="w-full text-red-600">
+                                          {w.last_provision_error}
+                                        </span>
+                                      ) : null}
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
+
+                              <div className="mt-3 flex flex-wrap items-end gap-2">
+                                <label className="text-xs">
+                                  <span className="mb-1 block text-slate-500">City</span>
+                                  <input
+                                    value={whForm[link.id]?.city || ""}
+                                    onChange={(e) =>
+                                      setWhForm((f) => ({
+                                        ...f,
+                                        [link.id]: { ...f[link.id], city: e.target.value },
+                                      }))
+                                    }
+                                    placeholder="Lahore"
+                                    className="w-32 rounded-md border border-surface-border px-2 py-1.5 text-xs outline-none focus:border-brand-500"
+                                  />
+                                </label>
+                                <label className="text-xs">
+                                  <span className="mb-1 block text-slate-500">Zip code</span>
+                                  <input
+                                    value={whForm[link.id]?.zip_code || ""}
+                                    onChange={(e) =>
+                                      setWhForm((f) => ({
+                                        ...f,
+                                        [link.id]: { ...f[link.id], zip_code: e.target.value },
+                                      }))
+                                    }
+                                    placeholder="54000"
+                                    className="w-24 rounded-md border border-surface-border px-2 py-1.5 text-xs outline-none focus:border-brand-500"
+                                  />
+                                </label>
+                                <Button
+                                  variant="secondary"
+                                  onClick={() => onProvisionWarehouses(link)}
+                                  loading={provisioningId === link.id}
+                                >
+                                  Provision warehouses
+                                </Button>
+                              </div>
+                              <p className="mt-1.5 text-[11px] text-slate-400">
+                                Not part of the KYC form yet - Smartlane&apos;s warehouse
+                                endpoint needs city/zip separately. One warehouse is created
+                                per requested courier that doesn&apos;t already have one.
+                              </p>
+                            </>
+                          )}
+                        </div>
+                      </details>
+                    ) : null}
                   </li>
                 ))}
               </ul>

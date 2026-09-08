@@ -26,4 +26,14 @@ urlpatterns = [
         admin_views.store_link_reject,
         name="admin-smartlane-store-reject",
     ),
+    path(
+        "stores/<uuid:link_id>/warehouses/",
+        admin_views.store_link_warehouses,
+        name="admin-smartlane-store-warehouses",
+    ),
+    path(
+        "stores/<uuid:link_id>/warehouses/provision/",
+        admin_views.store_link_warehouses_provision,
+        name="admin-smartlane-store-warehouses-provision",
+    ),
 ]

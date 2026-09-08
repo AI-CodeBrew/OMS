@@ -105,6 +105,32 @@ def store_links_sync(request):
     return Response({"success": True, **result})
 
 
+@api_view(["GET"])
+@permission_classes([IsSuperAdmin])
+def store_link_warehouses(request, link_id):
+    try:
+        result = service.get_warehouses_for_store_link(link_id)
+    except SmartlaneBusinessError as exc:
+        return _error(exc)
+    return Response({"success": True, **result})
+
+
+@api_view(["POST"])
+@permission_classes([IsSuperAdmin])
+def store_link_warehouses_provision(request, link_id):
+    """Provisions a warehouse for every requested courier that doesn't
+    already have an active one. Answers 200 even when some (or all) fail -
+    like business_config_test, the per-offering errors are the useful part
+    of the response, not something to swallow behind an HTTP error."""
+    try:
+        result = service.provision_warehouses_for_store_link(
+            link_id, request.data or {}, actor_email=getattr(request, "auth_email", "") or ""
+        )
+    except SmartlaneBusinessError as exc:
+        return _error(exc)
+    return Response({"success": True, **result})
+
+
 @api_view(["POST"])
 @permission_classes([IsSuperAdmin])
 def business_config_test(request):

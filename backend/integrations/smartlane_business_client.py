@@ -314,3 +314,157 @@ def list_stores(config, search=None, options=DEFAULT_SIGNATURE_OPTIONS):
         config, "GET", "/store", params=params, context="Store list", options=options
     )
     return payload
+
+
+# --- Store warehouses --------------------------------------------------
+# Per the doc, this is where a store's booking is bound to a carrier - see
+# SmartlaneCourierOffering's docstring. Endpoints are store_id-scoped, on
+# top of the business code every other call already carries.
+
+
+def list_warehouses(config, store_id, search=None, options=DEFAULT_SIGNATURE_OPTIONS):
+    """GET /{businessCode}/store/{store_id}/warehouse"""
+    params = {"search": search} if search else None
+    payload, _ = _request(
+        config,
+        "GET",
+        f"/{config.business_code}/store/{store_id}/warehouse",
+        params=params,
+        context="Warehouse list",
+        options=options,
+    )
+    return payload
+
+
+def add_or_edit_warehouse(config, store_id, warehouse, options=DEFAULT_SIGNATURE_OPTIONS):
+    """POST /{businessCode}/store/{store_id}/warehouse
+
+    `warehouse` must already be in the doc's field order/shape; see
+    business_services.build_warehouse_payload. To revoke rather than
+    create, the doc says to POST again with status set to revoke - callers
+    do that by including a `code` (their code) and `status: "revoke"` in
+    the payload rather than this function branching on it.
+    """
+    payload, debug = _request(
+        config,
+        "POST",
+        f"/{config.business_code}/store/{store_id}/warehouse",
+        body=warehouse,
+        context="Add/edit warehouse",
+        options=options,
+        capture_debug=True,
+    )
+    return payload, debug
+
+
+# --- Consignments --------------------------------------------------------
+# Per the doc: "Following are the API list already integrated with pixel
+# one. Their request and response will remain same. Only the Endpoint
+# will be changed." - i.e. these bodies are the same shape as the
+# existing per-org client's (smartlane_client.py), just signed and
+# addressed differently. business_services.py reuses that module's body
+# builders rather than redefining them here, so the mapping only exists
+# in one place.
+
+
+def create_consignment(config, store_id, body, options=DEFAULT_SIGNATURE_OPTIONS):
+    """POST /{businessCode}/store/{store_id}/consignment/create"""
+    payload, debug = _request(
+        config,
+        "POST",
+        f"/{config.business_code}/store/{store_id}/consignment/create",
+        body=body,
+        context="Create consignment",
+        options=options,
+        capture_debug=True,
+    )
+    return payload, debug
+
+
+def track_consignment(config, store_id, store_order_ids, options=DEFAULT_SIGNATURE_OPTIONS):
+    """GET /{businessCode}/store/{store_id}/consignment/track"""
+    params = [("store_order_id[]", str(oid)) for oid in store_order_ids]
+    payload, _ = _request(
+        config,
+        "GET",
+        f"/{config.business_code}/store/{store_id}/consignment/track",
+        params=params,
+        context="Track consignment",
+        options=options,
+    )
+    return payload
+
+
+def cancel_consignment(config, store_id, store_order_id, options=DEFAULT_SIGNATURE_OPTIONS):
+    """POST /{businessCode}/store/{store_id}/consignment/cancel"""
+    payload, debug = _request(
+        config,
+        "POST",
+        f"/{config.business_code}/store/{store_id}/consignment/cancel",
+        body={"store_order_id": str(store_order_id)},
+        context="Cancel consignment",
+        options=options,
+        capture_debug=True,
+    )
+    return payload, debug
+
+
+def fetch_airway_bill(config, store_id, store_order_ids, *, no_of_prints=1, options=DEFAULT_SIGNATURE_OPTIONS):
+    """GET /{businessCode}/store/{store_id}/consignment/airwaybill
+
+    Same "not actually a JSON body" nature as the per-org client's
+    fetch_airway_bill - returns whatever Smartlane sends (HTML/portal
+    page), not parsed here.
+    """
+    if not store_order_ids:
+        raise SmartlaneAPIError("No orders to print an airway bill for.")
+    params = [("store_order_id[]", str(oid)) for oid in store_order_ids]
+    params.append(("no_of_prints", str(no_of_prints)))
+    payload, _ = _request(
+        config,
+        "GET",
+        f"/{config.business_code}/store/{store_id}/consignment/airwaybill",
+        params=params,
+        context="Airway bill",
+        options=options,
+    )
+    return payload
+
+
+def fetch_load_sheet(
+    config, store_id, *, courier=None, store_order_ids=None, start_date=None, end_date=None,
+    options=DEFAULT_SIGNATURE_OPTIONS,
+):
+    """GET /{businessCode}/store/{store_id}/consignment/loadsheet"""
+    if not store_order_ids and not (start_date and end_date):
+        raise SmartlaneAPIError("Provide store_order_ids or both start_date and end_date.")
+    params = []
+    if courier:
+        params.append(("courier", courier))
+    if store_order_ids:
+        params += [("store_order_ids[]", str(oid)) for oid in store_order_ids]
+    else:
+        params += [("start_date", start_date), ("end_date", end_date)]
+    payload, _ = _request(
+        config,
+        "GET",
+        f"/{config.business_code}/store/{store_id}/consignment/loadsheet",
+        params=params,
+        context="Load sheet",
+        options=options,
+    )
+    return payload
+
+
+def shipper_advise(config, store_id, body, options=DEFAULT_SIGNATURE_OPTIONS):
+    """POST /{businessCode}/store/{store_id}/consignment/shipper/advise"""
+    payload, debug = _request(
+        config,
+        "POST",
+        f"/{config.business_code}/store/{store_id}/consignment/shipper/advise",
+        body=body,
+        context="Shipper advise",
+        options=options,
+        capture_debug=True,
+    )
+    return payload, debug
