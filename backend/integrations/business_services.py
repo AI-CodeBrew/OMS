@@ -94,7 +94,7 @@ def test_connection():
         raise SmartlaneBusinessError("Set the business code first.")
     if not config.jwt_token:
         raise SmartlaneBusinessError(
-            "Set the JWT token first - get it from Smartlane's business portal."
+            "Set the Auth token first - paste the HMAC key Smartlane issued."
         )
 
     try:

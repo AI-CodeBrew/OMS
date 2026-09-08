@@ -387,9 +387,9 @@ export default function SmartlaneBusinessPage() {
             <div>
               <h2 className="text-sm font-semibold text-slate-800">Credentials</h2>
               <p className="mt-1 text-xs text-slate-500">
-                From Smartlane&apos;s business portal — sign in there with the client id and
-                secret to get the JWT token. The token expires, so paste a fresh one when
-                calls start failing.
+                Paste the business code, client id, secret, and Auth token Smartlane sent.
+                The Auth token is the HMAC key (not a login JWT). Test Connection should
+                then return &quot;Business API - Version 1.0&quot;.
               </p>
             </div>
 
@@ -421,11 +421,11 @@ export default function SmartlaneBusinessPage() {
             </div>
 
             <Field
-              label="JWT token"
+              label="Auth token"
               hint={
                 config?.has_jwt_token
-                  ? "Stored. Leave blank to keep it — paste a new one when it expires."
-                  : "Not set yet. Get it from the business portal."
+                  ? "Stored. Leave blank to keep it — paste a new one if they reissue it."
+                  : "Not set yet. Paste the Auth token from Smartlane (HMAC key)."
               }
             >
               <PasswordInput

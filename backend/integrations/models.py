@@ -17,10 +17,10 @@ class SmartlaneBusinessConfig(models.Model):
     ShopifyConnection and SmartlaneConnection above - the same
     field-level-encryption caveat applies to all three.
 
-    jwt_token is not fetched programmatically: a human logs into Smartlane's
-    business portal with the client id, secret and the calling machine's IP,
-    and pastes the token it hands back. It expires, so it is editable and
-    the UI has to make re-pasting easy.
+    jwt_token is the HMAC key Smartlane call an "Auth token" (base64 of
+    client_id:client_secret:ip). It is not fetched from /portal; they
+    issue it and we paste it here. Calls fail with "Invalid Authentication
+    Code" until this value and the PHP-style hex HMAC match.
     """
 
     SINGLETON_PK = 1

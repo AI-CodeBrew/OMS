@@ -12,6 +12,12 @@ Signing, per Smartlane's "Business API Draft 1.0":
     hash   = base64_encode(hash_hmac('sha256', string, <shared JWT token>))
     header X-SMART-LANE-SIGNATURE: <hash>
 
+PHP's hash_hmac() returns a hex string unless the 4th argument is true, so
+the hash they actually check is base64(hex(hmac-sha256)), not base64 of the
+raw digest. Confirmed against GET /business/{code}: raw-digest HMAC is
+rejected as "Invalid Authentication Code"; hex-then-base64 returns 200
+"Business API - Version 1.0".
+
 That spec is a PHP snippet, and reproducing it in Python has several ways
 to be silently wrong - every one of them produces a valid-looking request
 that Smartlane rejects with no useful error. Each is isolated as a flag
@@ -64,6 +70,10 @@ class SignatureOptions:
     # Whether ?query=params are part of the signed url. The doc's examples
     # are all bare paths, so this is untested either way.
     sign_query_string: bool = True
+    # PHP hash_hmac('sha256', ...) with no 4th arg returns hex. Passing
+    # True would return raw bytes. Smartlane's check matches the default
+    # (hex, then base64). Keep the raw path as a diagnostic switch only.
+    hmac_raw: bool = False
 
 
 DEFAULT_SIGNATURE_OPTIONS = SignatureOptions()
@@ -110,8 +120,9 @@ def sign(method, url, body, jwt_token, options=DEFAULT_SIGNATURE_OPTIONS):
     string_to_sign, body_bytes = build_string_to_sign(method, url, body, options)
     digest = hmac.new(
         jwt_token.encode("utf-8"), string_to_sign.encode("utf-8"), hashlib.sha256
-    ).digest()
-    return base64.b64encode(digest).decode("ascii"), string_to_sign, body_bytes
+    )
+    hashed = digest.digest() if options.hmac_raw else digest.hexdigest().encode("ascii")
+    return base64.b64encode(hashed).decode("ascii"), string_to_sign, body_bytes
 
 
 def base_url():
@@ -150,8 +161,8 @@ def _request(
     """
     if not config or not config.jwt_token:
         raise SmartlaneAPIError(
-            "No Smartlane business token configured. Add one on the Smartlane "
-            "page in the super admin console."
+            "No Smartlane business token configured. Add the Auth token "
+            "Smartlane issued on the Smartlane page in the super admin console."
         )
 
     url = build_url(path, params if options.sign_query_string else None)
