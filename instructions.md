@@ -56,7 +56,7 @@ Frontend (frontend/.env.local):
   NEXT_PUBLIC_SUPABASE_URL
   NEXT_PUBLIC_SUPABASE_ANON_KEY
   NEXT_PUBLIC_FEATURE_FLAGS
-  ADMIN_IP_ALLOWLIST         # server-only; hide /superadmin + /admin if IP not allowed (set on Vercel too)
+  ADMIN_IP_ALLOWLIST         # server-only; hide /superadmin + /admin if IP not allowed (set on Vercel too)..
 
 ================================================================================
 ARCHITECTURE
