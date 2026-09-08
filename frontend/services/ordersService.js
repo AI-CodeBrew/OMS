@@ -49,6 +49,24 @@ class OrdersService {
     return data;
   }
 
+  async warmup({ pageSize, dashKeys = [] } = {}) {
+    const search = new URLSearchParams();
+    if (pageSize) search.set("page_size", String(pageSize));
+    dashKeys.forEach((key) => {
+      if (key != null && key !== "") search.append("dash", key);
+    });
+    const qs = search.toString();
+    const response = await fetch(
+      `${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderWarmup}${qs ? `?${qs}` : ""}`,
+      { headers: authService.getAuthHeaders() }
+    );
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.detail || "Failed to load order views");
+    }
+    return data;
+  }
+
   async counts(params = {}) {
     const response = await fetch(
       `${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderCounts}${buildQuery(params)}`,

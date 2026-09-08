@@ -6,13 +6,15 @@ import dynamic from "next/dynamic";
 import ordersService from "../../../services/ordersService";
 import { connectOrdersSocket } from "../../../lib/ordersSocket";
 import {
+  dashboardPresetKeys,
   getCachedCounts,
   getCachedOrdersList,
   invalidateViewCache,
   ordersListKey,
-  setCachedCounts,
   setCachedOrdersList,
+  unfilteredListsAreWarm,
 } from "../../../lib/viewCache";
+import { warmupViews } from "../../../lib/warmupViews";
 import couriersService from "../../../services/couriersService";
 import integrationsService from "../../../services/integrationsService";
 import useLoadingStore from "../../../store/loadingStore";
@@ -28,6 +30,7 @@ import {
   ACTIONS_BY_STATUS,
   ACTIONS_NEEDING_PARAMS,
   SMARTLANE_LOAD_SHEET_COURIERS,
+  STATUS_TABS,
 } from "../../../components/orders/statusConfig";
 
 // Modals/panels only ever render once opened (each returns null while
@@ -57,6 +60,11 @@ const OrderDetailPanel = dynamic(() => import("../../../components/orders/OrderD
 });
 
 const EMPTY_FILTERS = { city: "", courier_id: "", gateway: "", date_from: "", date_to: "" };
+const TAB_STATUSES = STATUS_TABS.map((tab) => tab.value);
+
+function isPlainTabQuery(queryParams) {
+  return !queryParams.search && !queryParams.city && !queryParams.courier_id && !queryParams.gateway && !queryParams.date_from && !queryParams.date_to;
+}
 
 // The bulk-action endpoint reports per-order outcomes with HTTP 200, so
 // rejections have to be pulled out of the body and shown explicitly.
@@ -87,7 +95,7 @@ export default function OrdersPage() {
   const [orderCount, setOrderCount] = useState(0);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
-  const [counts, setCounts] = useState({});
+  const [counts, setCounts] = useState(() => getCachedCounts());
   const [couriers, setCouriers] = useState([]);
   const [smartlaneConnected, setSmartlaneConnected] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -136,9 +144,31 @@ export default function OrdersPage() {
     setPage(1);
   }, [queryParams]);
 
+  const applyCachedTab = useCallback(
+    (keepSelection = false) => {
+      const key = ordersListKey({
+        status: queryParams.status,
+        page,
+        pageSize,
+        filters: queryParams,
+      });
+      const cachedList = getCachedOrdersList(key);
+      const cachedCounts = getCachedCounts();
+      if (cachedList) {
+        setOrders(cachedList.orders);
+        setOrderCount(cachedList.orderCount);
+      }
+      if (cachedCounts && isPlainTabQuery(queryParams)) setCounts(cachedCounts);
+      if (!keepSelection) setSelectedIds(new Set());
+      return Boolean(cachedList);
+    },
+    [queryParams, page, pageSize]
+  );
+
   const load = useCallback(async (opts = {}) => {
     const gen = ++loadGen.current;
     const force = opts.force === true;
+    const plain = isPlainTabQuery(queryParams);
     const key = ordersListKey({
       status: queryParams.status,
       page,
@@ -147,13 +177,50 @@ export default function OrdersPage() {
     });
     setError("");
 
+    if (plain) {
+      const alreadyWarm = unfilteredListsAreWarm(pageSize, TAB_STATUSES);
+      if (!force && alreadyWarm && getCachedOrdersList(key)) {
+        applyCachedTab();
+        setLoading(false);
+        return;
+      }
+      if (!force) {
+        setOrders([]);
+        setOrderCount(0);
+        if (!alreadyWarm) setCounts(null);
+        setSelectedIds(new Set());
+        setLoading(true);
+      }
+      try {
+        if (force || !alreadyWarm) {
+          await warmupViews({ pageSize, dashKeys: dashboardPresetKeys() });
+          if (gen !== loadGen.current) return;
+        }
+        const shown = applyCachedTab(force);
+        if (!shown || page !== 1) {
+          const orderData = await ordersService.list({ ...queryParams, page, page_size: pageSize });
+          if (gen !== loadGen.current) return;
+          const nextOrders = orderData.results || [];
+          const nextCount = orderData.count || 0;
+          setOrders(nextOrders);
+          setOrderCount(nextCount);
+          setCachedOrdersList(key, { orders: nextOrders, orderCount: nextCount });
+          if (!force) setSelectedIds(new Set());
+        }
+      } catch (err) {
+        if (gen !== loadGen.current) return;
+        setError(err.message || "Failed to load orders");
+      } finally {
+        if (gen === loadGen.current) setLoading(false);
+      }
+      return;
+    }
+
     if (!force) {
       const cachedList = getCachedOrdersList(key);
-      const cachedCounts = getCachedCounts();
       if (cachedList) {
         setOrders(cachedList.orders);
         setOrderCount(cachedList.orderCount);
-        if (cachedCounts) setCounts(cachedCounts);
         setSelectedIds(new Set());
         setLoading(false);
         return;
@@ -169,21 +236,24 @@ export default function OrdersPage() {
         ordersService.counts(queryParams),
       ]);
       if (gen !== loadGen.current) return;
-      const nextOrders = orderData.results || [];
-      const nextCount = orderData.count || 0;
-      setOrders(nextOrders);
-      setOrderCount(nextCount);
+      setOrders(orderData.results || []);
+      setOrderCount(orderData.count || 0);
       setCounts(countData);
-      setSelectedIds(new Set());
-      setCachedOrdersList(key, { orders: nextOrders, orderCount: nextCount });
-      setCachedCounts(countData);
+      if (!force) setSelectedIds(new Set());
+      setCachedOrdersList(key, { orders: orderData.results || [], orderCount: orderData.count || 0 });
+      warmupViews({ pageSize, dashKeys: dashboardPresetKeys() }).catch(() => {});
     } catch (err) {
       if (gen !== loadGen.current) return;
       setError(err.message || "Failed to load orders");
     } finally {
       if (gen === loadGen.current) setLoading(false);
     }
-  }, [queryParams, page, pageSize]);
+  }, [applyCachedTab, queryParams, page, pageSize]);
+
+  const reloadAfterChange = useCallback(() => {
+    invalidateViewCache();
+    return load({ force: true });
+  }, [load]);
 
   useEffect(() => {
     load();
@@ -205,15 +275,14 @@ export default function OrdersPage() {
     const cleanup = connectOrdersSocket(() => {
       clearTimeout(reloadTimer.current);
       reloadTimer.current = setTimeout(() => {
-        invalidateViewCache();
-        load({ force: true });
+        reloadAfterChange();
       }, 300);
     });
     return () => {
       clearTimeout(reloadTimer.current);
       cleanup();
     };
-  }, [load]);
+  }, [reloadAfterChange]);
 
   function onToggleSelect(id) {
     setSelectedIds((prev) => {
@@ -302,7 +371,7 @@ export default function OrdersPage() {
       try {
         await ordersService.printSmartlaneLoadSheet(orderIds, courier);
         setPendingAction(null);
-        await load();
+        await reloadAfterChange();
       } catch (err) {
         setError(err.message || "Print failed");
       } finally {
@@ -340,7 +409,7 @@ export default function OrdersPage() {
           orderIds: blocked.map((r) => r.order_id),
           params: resolvedParams,
         });
-        await load();
+        await reloadAfterChange();
         return;
       }
 
@@ -351,8 +420,8 @@ export default function OrdersPage() {
       const failed = (data?.results || []).filter((r) => !r.success);
 
       setPendingAction(null);
-      // After load(), which clears the error banner on the way in.
-      await load();
+      // After reloadAfterChange(), which clears the error banner on the way in.
+      await reloadAfterChange();
       if (failed.length > 0) setError(describeFailures(failed));
     } catch (err) {
       setError(err.message || "Action failed");
@@ -375,7 +444,7 @@ export default function OrdersPage() {
       });
       const failed = (data?.results || []).filter((r) => !r.success);
       setStockShortfall(null);
-      await load();
+      await reloadAfterChange();
       if (failed.length > 0) setError(describeFailures(failed));
     } catch (err) {
       setError(err.message || "Action failed");
@@ -400,7 +469,9 @@ export default function OrdersPage() {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h1 className="text-[28px] font-semibold leading-8 text-slate-900">Local Orders</h1>
-          <p className="mt-1 text-sm text-slate-500">{counts.all ?? 0} orders for your organization.</p>
+          <p className="mt-1 text-sm text-slate-500">
+            {counts == null ? "Loading orders…" : `${counts.all ?? 0} orders for your organization.`}
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <DateRangeFilter
@@ -447,10 +518,7 @@ export default function OrdersPage() {
           selectedCount={selectedIds.size}
           availableActions={availableActions}
           onAction={(action) => startAction(action, Array.from(selectedIds))}
-          onRefresh={() => {
-            invalidateViewCache();
-            load({ force: true });
-          }}
+          onRefresh={reloadAfterChange}
           refreshing={loading}
         />
 
@@ -533,13 +601,13 @@ export default function OrdersPage() {
         />
       </div>
 
-      <NewOrderModal open={newOrderOpen} onClose={() => setNewOrderOpen(false)} onCreated={load} />
-      <VerifyDispatchModal open={dispatchOpen} onClose={() => setDispatchOpen(false)} onDispatched={load} />
-      <ScanReturnModal open={returnOpen} onClose={() => setReturnOpen(false)} onReturned={load} />
+      <NewOrderModal open={newOrderOpen} onClose={() => setNewOrderOpen(false)} onCreated={reloadAfterChange} />
+      <VerifyDispatchModal open={dispatchOpen} onClose={() => setDispatchOpen(false)} onDispatched={reloadAfterChange} />
+      <ScanReturnModal open={returnOpen} onClose={() => setReturnOpen(false)} onReturned={reloadAfterChange} />
       <ImportOrdersModal
         open={importOpen}
         onClose={() => setImportOpen(false)}
-        onImported={load}
+        onImported={reloadAfterChange}
       />
       <OrderActionModal
         action={pendingAction?.action}
@@ -571,7 +639,7 @@ export default function OrdersPage() {
         couriers={couriers}
         smartlaneConnected={smartlaneConnected}
         onClose={() => setDetailOrderId(null)}
-        onOrderChanged={load}
+        onOrderChanged={reloadAfterChange}
       />
     </div>
   );

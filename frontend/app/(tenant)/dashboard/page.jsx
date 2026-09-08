@@ -6,10 +6,14 @@ import ordersService from "../../../services/ordersService";
 import { connectOrdersSocket } from "../../../lib/ordersSocket";
 import {
   dashboardKey,
+  dashboardPresetsAreWarm,
+  dashboardPresetKeys,
+  dashboardRangeFor,
   getCachedDashboard,
   invalidateViewCache,
   setCachedDashboard,
 } from "../../../lib/viewCache";
+import { warmupViews } from "../../../lib/warmupViews";
 
 // recharts is a large library - loading it on demand instead of eagerly
 // means the KPI cards and header below render immediately on the very
@@ -41,17 +45,6 @@ const KPI_GROUPS = [
   { key: "returned", label: "Returned", statuses: ["returned"], color: "#f97316" },
 ];
 
-function toDateInputValue(d) {
-  return d.toISOString().slice(0, 10);
-}
-
-function rangeFor(days) {
-  const to = new Date();
-  const from = new Date();
-  if (days !== null) from.setDate(to.getDate() - (days - 1));
-  return { date_from: days === null ? "" : toDateInputValue(from), date_to: toDateInputValue(to) };
-}
-
 const QUICK_RANGES = [
   { key: "7", label: "1 Week", days: 7 },
   { key: "30", label: "30 Days", days: 30 },
@@ -77,65 +70,90 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const reloadTimer = useRef(null);
+  const loadGen = useRef(0);
 
   const params = useMemo(() => {
     if (customRange) return customRange;
     const preset = QUICK_RANGES.find((r) => r.key === activeRange);
-    return rangeFor(preset ? preset.days : 30);
+    return dashboardRangeFor(preset ? preset.days : 30);
   }, [activeRange, customRange]);
+
+  const isPreset = !customRange;
 
   useEffect(() => {
     let cancelled = false;
+    const gen = ++loadGen.current;
     const key = dashboardKey(params);
-    const cached = getCachedDashboard(key);
-    if (cached) {
-      setData(cached);
-      setLoading(false);
+
+    async function load(force) {
       setError("");
-      return undefined;
+      if (!force && isPreset && dashboardPresetsAreWarm()) {
+        setData(getCachedDashboard(key));
+        setLoading(false);
+        return;
+      }
+      if (!force && !isPreset) {
+        const cached = getCachedDashboard(key);
+        if (cached) {
+          setData(cached);
+          setLoading(false);
+          return;
+        }
+      }
+      if (!force) {
+        setLoading(true);
+        setData(null);
+      }
+      try {
+        await warmupViews({ dashKeys: dashboardPresetKeys() });
+        if (cancelled || gen !== loadGen.current) return;
+        if (isPreset) {
+          setData(getCachedDashboard(key));
+        } else {
+          const d = await ordersService.dashboard(params);
+          if (cancelled || gen !== loadGen.current) return;
+          setCachedDashboard(key, d);
+          setData(d);
+        }
+      } catch (err) {
+        if (!cancelled && gen === loadGen.current) setError(err.message || "Failed to load dashboard");
+      } finally {
+        if (!cancelled && gen === loadGen.current) setLoading(false);
+      }
     }
-    setLoading(true);
-    setData(null);
-    setError("");
-    ordersService
-      .dashboard(params)
-      .then((d) => {
-        if (cancelled) return;
-        setCachedDashboard(key, d);
-        setData(d);
-      })
-      .catch((err) => {
-        if (!cancelled) setError(err.message || "Failed to load dashboard");
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+
+    load(false);
     return () => {
       cancelled = true;
     };
-  }, [params]);
+  }, [params, isPreset]);
 
   useEffect(() => {
     const cleanup = connectOrdersSocket(() => {
       clearTimeout(reloadTimer.current);
-      reloadTimer.current = setTimeout(() => {
+      reloadTimer.current = setTimeout(async () => {
         invalidateViewCache();
         const key = dashboardKey(params);
-        ordersService
-          .dashboard(params)
-          .then((d) => {
+        try {
+          await warmupViews({ dashKeys: dashboardPresetKeys() });
+          if (isPreset) {
+            setData(getCachedDashboard(key));
+          } else {
+            const d = await ordersService.dashboard(params);
             setCachedDashboard(key, d);
             setData(d);
-            setLoading(false);
-          })
-          .catch((err) => setError(err.message || "Failed to load dashboard"));
+          }
+          setLoading(false);
+        } catch (err) {
+          setError(err.message || "Failed to load dashboard");
+        }
       }, 300);
     });
     return () => {
       clearTimeout(reloadTimer.current);
       cleanup();
     };
-  }, [params]);
+  }, [params, isPreset]);
 
   const statusBreakdown = data?.status_breakdown || {};
   const kpis = KPI_GROUPS.map((g) => ({

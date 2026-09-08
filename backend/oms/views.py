@@ -112,7 +112,7 @@ class OrderViewSet(viewsets.ModelViewSet):
     pagination_class = OrderPagination
 
     def get_permissions(self):
-        if self.action in ("list", "returns_summary"):
+        if self.action in ("list", "returns_summary", "warmup", "counts", "dashboard"):
             return [RequireAnyModule()]
         return super().get_permissions()
 
@@ -143,6 +143,109 @@ class OrderViewSet(viewsets.ModelViewSet):
             request.query_params.get("page") or "1",
             request.query_params.get("page_size") or str(OrderPagination.page_size),
         )
+
+    def _base_order_qs(self, organization_id):
+        return (
+            Order.objects.filter(organization_id=organization_id)
+            .select_related("courier", "parent_order")
+            .prefetch_related("items")
+        )
+
+    def _counts_payload(self, organization_id):
+        cached = get_cached_counts(organization_id)
+        if cached is not None:
+            return cached
+        rows = (
+            Order.objects.filter(organization_id=organization_id)
+            .values("status")
+            .annotate(count=Count("id"))
+        )
+        counts = {value: 0 for value, _label in Order.STATUS_CHOICES}
+        for row in rows:
+            counts[row["status"]] = row["count"]
+        counts["all"] = sum(counts.values())
+        set_cached_counts(organization_id, counts)
+        return counts
+
+    def _tab_list_payload(self, request, tab_status, page_size):
+        organization_id = request.organization_id
+        cached = get_cached_list(organization_id, tab_status, "1", str(page_size))
+        if cached is not None:
+            return cached
+        qs = self._base_order_qs(organization_id)
+        if tab_status != "all":
+            qs = qs.filter(status=tab_status)
+        total = qs.count()
+        rows = list(qs[:page_size])
+        probability_map = services.get_probability_map(
+            organization_id=organization_id,
+            phone_numbers=[o.customer_phone for o in rows],
+        )
+        serializer = self.get_serializer(
+            rows,
+            many=True,
+            context={**self.get_serializer_context(), "probability_map": probability_map},
+        )
+        payload = {
+            "count": total,
+            "next": None,
+            "previous": None,
+            "results": serializer.data,
+        }
+        set_cached_list(organization_id, tab_status, "1", str(page_size), payload)
+        return payload
+
+    def _dashboard_payload(self, queryset):
+        status_rows = queryset.values("status").annotate(count=Count("id"))
+        status_breakdown = {value: 0 for value, _label in Order.STATUS_CHOICES}
+        for row in status_rows:
+            status_breakdown[row["status"]] = row["count"]
+        trend_rows = (
+            queryset.annotate(day=TruncDate(Coalesce("placed_at", "created_at")))
+            .values("day")
+            .annotate(count=Count("id"))
+            .order_by("day")
+        )
+        trend = [{"date": row["day"].isoformat(), "count": row["count"]} for row in trend_rows]
+        grand_total_expr = (
+            F("total_amount")
+            - F("coupon_discount")
+            - F("gift_card_discount")
+            - F("loyalty_amount")
+            - F("wallet_amount")
+            + F("total_tax")
+            + F("donation_amount")
+            + F("shipping_amount")
+            + F("express_stitching_amount")
+        )
+        money = queryset.aggregate(grand_total_sum=Sum(grand_total_expr), paid_sum=Sum("amount_paid"))
+        grand_total_sum = money["grand_total_sum"] or 0
+        paid_sum = money["paid_sum"] or 0
+        pending_receivable = max(grand_total_sum - paid_sum, 0)
+        city_breakdown = list(
+            queryset.exclude(city="")
+            .values("city")
+            .annotate(count=Count("id"))
+            .order_by("-count")[:8]
+        )
+        courier_breakdown = list(
+            queryset.filter(courier__isnull=False)
+            .values(name=F("courier__name"))
+            .annotate(count=Count("id"))
+            .order_by("-count")[:8]
+        )
+        return {
+            "total_orders": queryset.count(),
+            "status_breakdown": status_breakdown,
+            "trend": trend,
+            "cod_summary": {
+                "collected": str(paid_sum),
+                "pending": str(pending_receivable),
+                "grand_total": str(grand_total_sum),
+            },
+            "city_breakdown": city_breakdown,
+            "courier_breakdown": courier_breakdown,
+        }
 
     def list(self, request, *args, **kwargs):
         cache_parts = self._list_cache_parts(request)
@@ -283,9 +386,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         # filter combination's counts under another's key.
         cacheable = not any(v for v in params_without_status.values())
         if cacheable:
-            cached = get_cached_counts(request.organization_id)
-            if cached is not None:
-                return Response(cached)
+            return Response(self._counts_payload(request.organization_id))
 
         qs = self._apply_filters(
             Order.objects.filter(organization_id=request.organization_id), params_without_status
@@ -295,11 +396,44 @@ class OrderViewSet(viewsets.ModelViewSet):
         for row in rows:
             counts[row["status"]] = row["count"]
         counts["all"] = sum(counts.values())
-
-        if cacheable:
-            set_cached_counts(request.organization_id, counts)
-
         return Response(counts)
+
+    @action(detail=False, methods=["get"])
+    def warmup(self, request):
+        """Load every Orders status tab (page 1) plus requested Dashboard
+        ranges in one request. One DB connection, Redis filled, so the
+        first paint is complete and a later tab click does not hit
+        Postgres. Called again after a WebSocket invalidation."""
+        try:
+            page_size = int(request.query_params.get("page_size") or OrderPagination.page_size)
+        except (TypeError, ValueError):
+            page_size = OrderPagination.page_size
+        page_size = min(max(page_size, 1), OrderPagination.max_page_size)
+        organization_id = request.organization_id
+
+        counts = self._counts_payload(organization_id)
+        lists = {"all": self._tab_list_payload(request, "all", page_size)}
+        for status, _label in Order.STATUS_CHOICES:
+            lists[status] = self._tab_list_payload(request, status, page_size)
+
+        dashboards = {}
+        for raw in request.query_params.getlist("dash"):
+            if "|" not in raw:
+                continue
+            date_from, date_to = raw.split("|", 1)
+            cached = get_cached_dashboard(organization_id, date_from, date_to)
+            if cached is not None:
+                dashboards[f"{date_from}|{date_to}"] = cached
+                continue
+            qs = self._apply_filters(
+                Order.objects.filter(organization_id=organization_id),
+                {"date_from": date_from, "date_to": date_to},
+            )
+            payload = self._dashboard_payload(qs)
+            set_cached_dashboard(organization_id, date_from, date_to, payload)
+            dashboards[f"{date_from}|{date_to}"] = payload
+
+        return Response({"counts": counts, "lists": lists, "dashboards": dashboards})
 
     @action(
         detail=False,
@@ -383,67 +517,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         queryset = self._apply_filters(
             Order.objects.filter(organization_id=request.organization_id), request.query_params
         )
-
-        status_rows = queryset.values("status").annotate(count=Count("id"))
-        status_breakdown = {value: 0 for value, _label in Order.STATUS_CHOICES}
-        for row in status_rows:
-            status_breakdown[row["status"]] = row["count"]
-
-        # Day-by-day volume for the trend chart, keyed by the order's real
-        # placed date (not fetch date) - same Coalesce used everywhere else
-        # so this lines up with what the date filter itself means.
-        trend_rows = (
-            queryset.annotate(day=TruncDate(Coalesce("placed_at", "created_at")))
-            .values("day")
-            .annotate(count=Count("id"))
-            .order_by("day")
-        )
-        trend = [{"date": row["day"].isoformat(), "count": row["count"]} for row in trend_rows]
-
-        # grand_total is a Python property (see Order.grand_total) - mirrored
-        # here as a DB expression so it can be summed across the queryset in
-        # one query instead of loading every row into Python.
-        grand_total_expr = (
-            F("total_amount")
-            - F("coupon_discount")
-            - F("gift_card_discount")
-            - F("loyalty_amount")
-            - F("wallet_amount")
-            + F("total_tax")
-            + F("donation_amount")
-            + F("shipping_amount")
-            + F("express_stitching_amount")
-        )
-        money = queryset.aggregate(grand_total_sum=Sum(grand_total_expr), paid_sum=Sum("amount_paid"))
-        grand_total_sum = money["grand_total_sum"] or 0
-        paid_sum = money["paid_sum"] or 0
-        pending_receivable = max(grand_total_sum - paid_sum, 0)
-
-        city_breakdown = list(
-            queryset.exclude(city="")
-            .values("city")
-            .annotate(count=Count("id"))
-            .order_by("-count")[:8]
-        )
-        courier_breakdown = list(
-            queryset.filter(courier__isnull=False)
-            .values(name=F("courier__name"))
-            .annotate(count=Count("id"))
-            .order_by("-count")[:8]
-        )
-
-        payload = {
-            "total_orders": queryset.count(),
-            "status_breakdown": status_breakdown,
-            "trend": trend,
-            "cod_summary": {
-                "collected": str(paid_sum),
-                "pending": str(pending_receivable),
-                "grand_total": str(grand_total_sum),
-            },
-            "city_breakdown": city_breakdown,
-            "courier_breakdown": courier_breakdown,
-        }
+        payload = self._dashboard_payload(queryset)
         if cacheable:
             set_cached_dashboard(request.organization_id, date_from, date_to, payload)
         return Response(payload)

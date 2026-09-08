@@ -27,7 +27,7 @@ export default function OrderStatusTabs({ counts, activeStatus, onChange }) {
               {tab.label}
             </div>
             <div className={`mt-0.5 text-lg font-semibold ${isActive ? "text-brand-700" : "text-slate-900"}`}>
-              {count}
+              {counts == null ? "—" : count}
             </div>
           </button>
         );

@@ -23,6 +23,7 @@ export const API_ENDPOINTS = {
   oms: {
     orders: "/api/oms/orders/",
     orderCounts: "/api/oms/orders/counts/",
+    orderWarmup: "/api/oms/orders/warmup/",
     orderDashboard: "/api/oms/orders/dashboard/",
     orderReturnsSummary: "/api/oms/orders/returns-summary/",
     orderBulkAction: "/api/oms/orders/bulk-action/",
