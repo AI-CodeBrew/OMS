@@ -46,7 +46,7 @@ export default function OrdersTable({
           </tr>
         </thead>
         <tbody className="text-sm">
-          {loading ? (
+          {loading && orders.length === 0 ? (
             <tr>
               <td colSpan={16} className="px-4 py-6 text-center text-slate-500">
                 Loading…

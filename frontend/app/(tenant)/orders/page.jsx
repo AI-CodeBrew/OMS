@@ -5,6 +5,14 @@ import { useRouter, useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import ordersService from "../../../services/ordersService";
 import { connectOrdersSocket } from "../../../lib/ordersSocket";
+import {
+  getCachedCounts,
+  getCachedOrdersList,
+  invalidateViewCache,
+  ordersListKey,
+  setCachedCounts,
+  setCachedOrdersList,
+} from "../../../lib/viewCache";
 import couriersService from "../../../services/couriersService";
 import integrationsService from "../../../services/integrationsService";
 import useLoadingStore from "../../../store/loadingStore";
@@ -96,8 +104,8 @@ export default function OrdersPage() {
   const [stockShortfall, setStockShortfall] = useState(null);
   const [applyingAction, setApplyingAction] = useState(false);
   const [detailOrderId, setDetailOrderId] = useState(null);
-  const hasLoadedOnce = useRef(false);
   const reloadTimer = useRef(null);
+  const loadGen = useRef(0);
 
   // The contextual sidebar links to /orders?status=... - stay in sync when
   // navigation changes the URL externally (not just on first mount).
@@ -128,33 +136,54 @@ export default function OrdersPage() {
     setPage(1);
   }, [queryParams]);
 
-  const load = useCallback(async () => {
-    const firstLoad = !hasLoadedOnce.current;
+  const load = useCallback(async (opts = {}) => {
+    const gen = ++loadGen.current;
+    const force = opts.force === true;
+    const key = ordersListKey({
+      status: queryParams.status,
+      page,
+      pageSize,
+      filters: queryParams,
+    });
     setError("");
-    // Full-screen overlay only on the first visit. Tab/filter/page changes
-    // still refetch from Postgres, but swapping the table in place is faster
-    // than covering the page with "Loading orders" every click.
-    if (firstLoad) {
+
+    if (!force) {
+      const cachedList = getCachedOrdersList(key);
+      const cachedCounts = getCachedCounts();
+      if (cachedList) {
+        setOrders(cachedList.orders);
+        setOrderCount(cachedList.orderCount);
+        if (cachedCounts) setCounts(cachedCounts);
+        setSelectedIds(new Set());
+        setLoading(false);
+        return;
+      }
+      setOrders([]);
+      setOrderCount(0);
+      setSelectedIds(new Set());
       setLoading(true);
-      beginLoading("Loading orders");
     }
     try {
       const [orderData, countData] = await Promise.all([
         ordersService.list({ ...queryParams, page, page_size: pageSize }),
         ordersService.counts(queryParams),
       ]);
-      setOrders(orderData.results || []);
-      setOrderCount(orderData.count || 0);
+      if (gen !== loadGen.current) return;
+      const nextOrders = orderData.results || [];
+      const nextCount = orderData.count || 0;
+      setOrders(nextOrders);
+      setOrderCount(nextCount);
       setCounts(countData);
       setSelectedIds(new Set());
-      hasLoadedOnce.current = true;
+      setCachedOrdersList(key, { orders: nextOrders, orderCount: nextCount });
+      setCachedCounts(countData);
     } catch (err) {
+      if (gen !== loadGen.current) return;
       setError(err.message || "Failed to load orders");
     } finally {
-      setLoading(false);
-      if (firstLoad) endLoading();
+      if (gen === loadGen.current) setLoading(false);
     }
-  }, [queryParams, page, pageSize, beginLoading, endLoading]);
+  }, [queryParams, page, pageSize]);
 
   useEffect(() => {
     load();
@@ -175,9 +204,10 @@ export default function OrdersPage() {
   useEffect(() => {
     const cleanup = connectOrdersSocket(() => {
       clearTimeout(reloadTimer.current);
-      // Small debounce - several webhooks landing at once (a bulk Shopify
-      // sync) shouldn't trigger a refetch per event.
-      reloadTimer.current = setTimeout(load, 300);
+      reloadTimer.current = setTimeout(() => {
+        invalidateViewCache();
+        load({ force: true });
+      }, 300);
     });
     return () => {
       clearTimeout(reloadTimer.current);
@@ -417,7 +447,10 @@ export default function OrdersPage() {
           selectedCount={selectedIds.size}
           availableActions={availableActions}
           onAction={(action) => startAction(action, Array.from(selectedIds))}
-          onRefresh={load}
+          onRefresh={() => {
+            invalidateViewCache();
+            load({ force: true });
+          }}
           refreshing={loading}
         />
 

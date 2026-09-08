@@ -1,9 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import ordersService from "../../../services/ordersService";
-import useLoadingStore from "../../../store/loadingStore";
+import { connectOrdersSocket } from "../../../lib/ordersSocket";
+import {
+  dashboardKey,
+  getCachedDashboard,
+  invalidateViewCache,
+  setCachedDashboard,
+} from "../../../lib/viewCache";
 
 // recharts is a large library - loading it on demand instead of eagerly
 // means the KPI cards and header below render immediately on the very
@@ -58,20 +64,19 @@ function KpiCard({ label, value, color }) {
     <div className="rounded-lg border border-surface-border bg-white p-4">
       <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</p>
       <p className="mt-1.5 text-2xl font-semibold" style={{ color }}>
-        {value.toLocaleString()}
+        {value == null ? "—" : value.toLocaleString()}
       </p>
     </div>
   );
 }
 
 export default function DashboardPage() {
-  const beginLoading = useLoadingStore((s) => s.begin);
-  const endLoading = useLoadingStore((s) => s.end);
   const [activeRange, setActiveRange] = useState("30");
   const [customRange, setCustomRange] = useState(null);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const reloadTimer = useRef(null);
 
   const params = useMemo(() => {
     if (customRange) return customRange;
@@ -81,25 +86,56 @@ export default function DashboardPage() {
 
   useEffect(() => {
     let cancelled = false;
+    const key = dashboardKey(params);
+    const cached = getCachedDashboard(key);
+    if (cached) {
+      setData(cached);
+      setLoading(false);
+      setError("");
+      return undefined;
+    }
     setLoading(true);
+    setData(null);
     setError("");
-    beginLoading("Loading dashboard");
     ordersService
       .dashboard(params)
       .then((d) => {
-        if (!cancelled) setData(d);
+        if (cancelled) return;
+        setCachedDashboard(key, d);
+        setData(d);
       })
       .catch((err) => {
         if (!cancelled) setError(err.message || "Failed to load dashboard");
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
-        endLoading();
       });
     return () => {
       cancelled = true;
     };
-  }, [params, beginLoading, endLoading]);
+  }, [params]);
+
+  useEffect(() => {
+    const cleanup = connectOrdersSocket(() => {
+      clearTimeout(reloadTimer.current);
+      reloadTimer.current = setTimeout(() => {
+        invalidateViewCache();
+        const key = dashboardKey(params);
+        ordersService
+          .dashboard(params)
+          .then((d) => {
+            setCachedDashboard(key, d);
+            setData(d);
+            setLoading(false);
+          })
+          .catch((err) => setError(err.message || "Failed to load dashboard"));
+      }, 300);
+    });
+    return () => {
+      clearTimeout(reloadTimer.current);
+      cleanup();
+    };
+  }, [params]);
 
   const statusBreakdown = data?.status_breakdown || {};
   const kpis = KPI_GROUPS.map((g) => ({
@@ -137,18 +173,16 @@ export default function DashboardPage() {
 
       {error ? <p className="mt-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
 
-      {loading && !data ? (
-        <p className="mt-6 text-sm text-slate-500">Loading…</p>
-      ) : (
-        <>
-          <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-            {kpis.map((k) => (
-              <KpiCard key={k.key} label={k.label} value={k.value} color={k.color} />
-            ))}
-          </div>
+      <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+        {(loading ? KPI_GROUPS.map((k) => ({ ...k, value: null })) : kpis).map((k) => (
+          <KpiCard key={k.key} label={k.label} value={k.value} color={k.color} />
+        ))}
+      </div>
 
-          <DashboardCharts data={data} />
-        </>
+      {loading ? (
+        <div className="mt-4 h-[260px] rounded-lg border border-surface-border bg-surface" />
+      ) : (
+        <DashboardCharts data={data} />
       )}
     </div>
   );

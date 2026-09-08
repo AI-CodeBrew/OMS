@@ -1,8 +1,9 @@
 """Wires the in-process event bus (core.events) to two effects:
 
-1. Invalidating the Redis-cached order counts (core/redis_client.py)
+1. Dropping the Redis-cached Orders/Dashboard payloads (core/redis_client.py)
 2. Pushing a "something changed" message to any browser currently
    connected over WebSocket for that organization (core/consumers.py)
+   so the open tab refetches and the cache is rebuilt from fresh data.
 
 Subscribed once at startup from CoreConfig.ready() - see core/apps.py.
 Follows the pattern oms/signals.py documents for reacting to events
@@ -18,7 +19,7 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 
 from .events import subscribe
-from .redis_client import invalidate_counts_cache
+from .redis_client import invalidate_order_view_cache
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ def _on_order_event(sender, payload, **kwargs):
     if not organization_id:
         return
 
-    invalidate_counts_cache(organization_id)
+    invalidate_order_view_cache(organization_id)
 
     channel_layer = get_channel_layer()
     if channel_layer is None:

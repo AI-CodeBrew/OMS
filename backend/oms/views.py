@@ -12,7 +12,14 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.permissions import RequireAnyModule, RequireModule
-from core.redis_client import get_cached_counts, set_cached_counts
+from core.redis_client import (
+    get_cached_counts,
+    get_cached_dashboard,
+    get_cached_list,
+    set_cached_counts,
+    set_cached_dashboard,
+    set_cached_list,
+)
 from wms.services import InsufficientStock
 
 from . import importers, services
@@ -120,6 +127,48 @@ class OrderViewSet(viewsets.ModelViewSet):
         )
         return self._apply_filters(qs, self.request.query_params)
 
+    def _list_cache_parts(self, request):
+        """Return (status, page, page_size) when this list request is the
+        unfiltered tab-switch path, else None. Search/date/city/etc. must
+        not share a key with the plain tab view."""
+        extra = [
+            v
+            for k, v in request.query_params.items()
+            if k not in ("status", "page", "page_size") and v
+        ]
+        if extra:
+            return None
+        return (
+            request.query_params.get("status") or "all",
+            request.query_params.get("page") or "1",
+            request.query_params.get("page_size") or str(OrderPagination.page_size),
+        )
+
+    def list(self, request, *args, **kwargs):
+        cache_parts = self._list_cache_parts(request)
+        if cache_parts:
+            cached = get_cached_list(request.organization_id, *cache_parts)
+            if cached is not None:
+                return Response(cached)
+
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        rows = page if page is not None else queryset
+        phone_numbers = [o.customer_phone for o in rows]
+        probability_map = services.get_probability_map(
+            organization_id=request.organization_id, phone_numbers=phone_numbers
+        )
+        serializer = self.get_serializer(
+            rows, many=True, context={**self.get_serializer_context(), "probability_map": probability_map}
+        )
+        if page is not None:
+            payload = self.get_paginated_response(serializer.data).data
+        else:
+            payload = serializer.data
+        if cache_parts:
+            set_cached_list(request.organization_id, *cache_parts, payload)
+        return Response(payload)
+
     def _apply_filters(self, qs, params):
         status_param = params.get("status")
         if status_param:
@@ -180,21 +229,6 @@ class OrderViewSet(viewsets.ModelViewSet):
                 qs = qs.filter(effective_date__date__lte=date_to)
 
         return qs
-
-    def list(self, request, *args, **kwargs):
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        rows = page if page is not None else queryset
-        phone_numbers = [o.customer_phone for o in rows]
-        probability_map = services.get_probability_map(
-            organization_id=request.organization_id, phone_numbers=phone_numbers
-        )
-        serializer = self.get_serializer(
-            rows, many=True, context={**self.get_serializer_context(), "probability_map": probability_map}
-        )
-        if page is not None:
-            return self.get_paginated_response(serializer.data)
-        return Response(serializer.data)
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -333,6 +367,19 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get"])
     def dashboard(self, request):
+        extra = [
+            v
+            for k, v in request.query_params.items()
+            if k not in ("date_from", "date_to") and v
+        ]
+        cacheable = not extra
+        date_from = request.query_params.get("date_from") or ""
+        date_to = request.query_params.get("date_to") or ""
+        if cacheable:
+            cached = get_cached_dashboard(request.organization_id, date_from, date_to)
+            if cached is not None:
+                return Response(cached)
+
         queryset = self._apply_filters(
             Order.objects.filter(organization_id=request.organization_id), request.query_params
         )
@@ -385,20 +432,21 @@ class OrderViewSet(viewsets.ModelViewSet):
             .order_by("-count")[:8]
         )
 
-        return Response(
-            {
-                "total_orders": queryset.count(),
-                "status_breakdown": status_breakdown,
-                "trend": trend,
-                "cod_summary": {
-                    "collected": str(paid_sum),
-                    "pending": str(pending_receivable),
-                    "grand_total": str(grand_total_sum),
-                },
-                "city_breakdown": city_breakdown,
-                "courier_breakdown": courier_breakdown,
-            }
-        )
+        payload = {
+            "total_orders": queryset.count(),
+            "status_breakdown": status_breakdown,
+            "trend": trend,
+            "cod_summary": {
+                "collected": str(paid_sum),
+                "pending": str(pending_receivable),
+                "grand_total": str(grand_total_sum),
+            },
+            "city_breakdown": city_breakdown,
+            "courier_breakdown": courier_breakdown,
+        }
+        if cacheable:
+            set_cached_dashboard(request.organization_id, date_from, date_to, payload)
+        return Response(payload)
 
     @action(detail=False, methods=["post"], url_path="bulk-action")
     def bulk_action(self, request):
