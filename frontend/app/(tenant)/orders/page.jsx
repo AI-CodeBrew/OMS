@@ -96,6 +96,8 @@ export default function OrdersPage() {
   const [stockShortfall, setStockShortfall] = useState(null);
   const [applyingAction, setApplyingAction] = useState(false);
   const [detailOrderId, setDetailOrderId] = useState(null);
+  const hasLoadedOnce = useRef(false);
+  const reloadTimer = useRef(null);
 
   // The contextual sidebar links to /orders?status=... - stay in sync when
   // navigation changes the URL externally (not just on first mount).
@@ -127,9 +129,15 @@ export default function OrdersPage() {
   }, [queryParams]);
 
   const load = useCallback(async () => {
-    setLoading(true);
+    const firstLoad = !hasLoadedOnce.current;
     setError("");
-    beginLoading("Loading orders");
+    // Full-screen overlay only on the first visit. Tab/filter/page changes
+    // still refetch from Postgres, but swapping the table in place is faster
+    // than covering the page with "Loading orders" every click.
+    if (firstLoad) {
+      setLoading(true);
+      beginLoading("Loading orders");
+    }
     try {
       const [orderData, countData] = await Promise.all([
         ordersService.list({ ...queryParams, page, page_size: pageSize }),
@@ -139,11 +147,12 @@ export default function OrdersPage() {
       setOrderCount(orderData.count || 0);
       setCounts(countData);
       setSelectedIds(new Set());
+      hasLoadedOnce.current = true;
     } catch (err) {
       setError(err.message || "Failed to load orders");
     } finally {
       setLoading(false);
-      endLoading();
+      if (firstLoad) endLoading();
     }
   }, [queryParams, page, pageSize, beginLoading, endLoading]);
 
@@ -163,7 +172,6 @@ export default function OrdersPage() {
   // created/updated (Shopify webhook, manual edit, status change, ...)
   // instead of us waiting for a manual click/reload. See lib/ordersSocket.js
   // and backend/core/{consumers,realtime}.py.
-  const reloadTimer = useRef(null);
   useEffect(() => {
     const cleanup = connectOrdersSocket(() => {
       clearTimeout(reloadTimer.current);
