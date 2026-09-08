@@ -12,6 +12,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.permissions import RequireAnyModule, RequireModule
+from core.redis_client import get_cached_counts, set_cached_counts
 from wms.services import InsufficientStock
 
 from . import importers, services
@@ -240,6 +241,18 @@ class OrderViewSet(viewsets.ModelViewSet):
         # counts must reflect every tab, not just the active one.
         params_without_status = request.query_params.copy()
         params_without_status.pop("status", None)
+
+        # The unfiltered shape is the hot path (every status-tab click hits
+        # this with no other params) so it's the only one worth caching -
+        # see core/redis_client.py. A request carrying search/date/city/etc
+        # filters bypasses the cache entirely rather than risk serving one
+        # filter combination's counts under another's key.
+        cacheable = not any(v for v in params_without_status.values())
+        if cacheable:
+            cached = get_cached_counts(request.organization_id)
+            if cached is not None:
+                return Response(cached)
+
         qs = self._apply_filters(
             Order.objects.filter(organization_id=request.organization_id), params_without_status
         )
@@ -248,6 +261,10 @@ class OrderViewSet(viewsets.ModelViewSet):
         for row in rows:
             counts[row["status"]] = row["count"]
         counts["all"] = sum(counts.values())
+
+        if cacheable:
+            set_cached_counts(request.organization_id, counts)
+
         return Response(counts)
 
     @action(

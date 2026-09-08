@@ -9,3 +9,7 @@ certifi
 gunicorn
 whitenoise
 playwright
+redis
+channels
+channels-redis
+daphne

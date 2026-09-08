@@ -13,7 +13,17 @@
 # site-packages, which is part of the build artifact and so is still there
 # at runtime. (backend/Dockerfile is kept as a working Docker alternative,
 # but a service's runtime cannot be changed after creation.)
+#
+# Key Value (Redis) lives in the same Oregon region as oms-backend so the
+# internal REDIS_URL works. The live instance is oms-redis
+# (red-dafqsae7bikc73da07mg); this block keeps the blueprint in sync.
 services:
+  - type: keyvalue
+    name: oms-redis
+    plan: starter
+    region: oregon
+    ipAllowList: [] # internal-only; local dev uses redis://localhost:6379
+    maxmemoryPolicy: allkeys-lru
   - type: web
     name: oms-backend
     runtime: python
@@ -21,7 +31,7 @@ services:
     plan: free
     region: oregon
     buildCommand: pip install -r requirements.txt && playwright install chromium
-    startCommand: python manage.py collectstatic --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:$PORT
+    startCommand: python manage.py collectstatic --noinput && daphne -b 0.0.0.0 -p $PORT config.asgi:application
     healthCheckPath: /api/core/health/
     envVars:
       - key: PYTHON_VERSION
@@ -51,5 +61,10 @@ services:
         value: https://fyntech-oms.vercel.app
       - key: PUBLIC_BACKEND_URL
         sync: false
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: oms-redis
+          property: connectionString
       - key: SHOPIFY_API_VERSION
         value: "2024-10"

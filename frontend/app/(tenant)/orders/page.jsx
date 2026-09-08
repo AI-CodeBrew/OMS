@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import ordersService from "../../../services/ordersService";
+import { connectOrdersSocket } from "../../../lib/ordersSocket";
 import couriersService from "../../../services/couriersService";
 import integrationsService from "../../../services/integrationsService";
 import useLoadingStore from "../../../store/loadingStore";
@@ -157,6 +158,24 @@ export default function OrdersPage() {
       .then((d) => setSmartlaneConnected(Boolean(d.connected)))
       .catch(() => {});
   }, []);
+
+  // Live updates: the backend pushes a message here the moment an order is
+  // created/updated (Shopify webhook, manual edit, status change, ...)
+  // instead of us waiting for a manual click/reload. See lib/ordersSocket.js
+  // and backend/core/{consumers,realtime}.py.
+  const reloadTimer = useRef(null);
+  useEffect(() => {
+    const cleanup = connectOrdersSocket(() => {
+      clearTimeout(reloadTimer.current);
+      // Small debounce - several webhooks landing at once (a bulk Shopify
+      // sync) shouldn't trigger a refetch per event.
+      reloadTimer.current = setTimeout(load, 300);
+    });
+    return () => {
+      clearTimeout(reloadTimer.current);
+      cleanup();
+    };
+  }, [load]);
 
   function onToggleSelect(id) {
     setSelectedIds((prev) => {

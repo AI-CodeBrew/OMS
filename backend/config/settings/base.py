@@ -20,12 +20,17 @@ def env(key, default=None, required=False):
 SECRET_KEY = env("DJANGO_SECRET_KEY", default="dev-insecure-secret-key-change-me")
 
 INSTALLED_APPS = [
+    # Must be first - Django Channels docs: this overrides `runserver` to
+    # run through Daphne (ASGI) instead of Django's plain dev server, so
+    # local dev speaks WebSocket the same way production does.
+    "daphne",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "channels",
     "rest_framework",
     "corsheaders",
     "core",
@@ -70,6 +75,10 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = "config.wsgi.application"
+# Only used by gunicorn/manage.py's WSGI path; the real request path in
+# production is config.asgi (Daphne, see render.yaml) so WebSocket
+# connections have somewhere to go.
+ASGI_APPLICATION = "config.asgi.application"
 
 
 # --- Database ---------------------------------------------------------------
@@ -114,6 +123,21 @@ SUPABASE_URL = env("SUPABASE_URL", required=True)
 SUPABASE_ANON_KEY = env("SUPABASE_ANON_KEY")
 SUPABASE_SERVICE_ROLE_KEY = env("SUPABASE_SERVICE_ROLE_KEY", required=True)
 SUPABASE_JWT_SECRET = env("SUPABASE_JWT_SECRET", required=True)
+
+
+# --- Redis / Realtime -------------------------------------------------------
+# Backs two things: the order-counts cache (core/redis_client.py) and the
+# WebSocket push that tells an open Orders page a new order arrived
+# (core/realtime.py, core/consumers.py). Any standard redis:// URL works -
+# Render's managed Redis, Upstash, or a local redis-server in dev.
+REDIS_URL = env("REDIS_URL", default="redis://localhost:6379")
+
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {"hosts": [REDIS_URL]},
+    }
+}
 
 
 AUTH_PASSWORD_VALIDATORS = [
