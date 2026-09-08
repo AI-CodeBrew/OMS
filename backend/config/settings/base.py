@@ -107,13 +107,18 @@ DATABASES = {
         # progress instead of failing loudly. A short timeout turns that
         # into a real, catchable OperationalError instead.
         "OPTIONS": {"connect_timeout": 10},
-        # Default (0) opens and closes a fresh connection to Supabase's
-        # pooler on every single request - reusing one for up to 60s
-        # instead cuts that connect/auth round trip off most requests.
-        # Safe to leave generous here: gunicorn runs a single worker with
-        # no --threads flag (see render.yaml / Dockerfile), so this is at
-        # most one persistent connection, not one per worker.
-        "CONN_MAX_AGE": 60,
+        # Must stay 0 under Daphne. Gunicorn (one sync worker, no threads)
+        # could reuse a single connection for 60s; Daphne handles concurrent
+        # HTTP requests on a thread pool, and CONN_MAX_AGE>0 keeps each of
+        # those connections open after the response. The Orders page fires
+        # several APIs at once, plus Render health checks, plus a local
+        # runserver using the same DATABASE_URL - that overflowed Supabase
+        # session-pooler (max 15) with EMAXCONNSESSION and 500'd
+        # /orders, /dashboard, /health. Closing after each request keeps
+        # the live slot count at "in-flight requests" instead of
+        # "in-flight plus everything from the last minute."
+        "CONN_MAX_AGE": 0,
+        "CONN_HEALTH_CHECKS": True,
     }
 }
 
@@ -135,7 +140,15 @@ REDIS_URL = env("REDIS_URL", default="redis://localhost:6379")
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
-        "CONFIG": {"hosts": [REDIS_URL]},
+        "CONFIG": {
+            "hosts": [
+                {
+                    "address": REDIS_URL,
+                    "socket_connect_timeout": 2,
+                    "socket_timeout": 2,
+                }
+            ]
+        },
     }
 }
 

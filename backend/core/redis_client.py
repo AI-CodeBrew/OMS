@@ -24,7 +24,11 @@ def get_redis_client():
     global _pool
     if _pool is None:
         _pool = redis.ConnectionPool.from_url(
-            settings.REDIS_URL, decode_responses=True, max_connections=20
+            settings.REDIS_URL,
+            decode_responses=True,
+            max_connections=20,
+            socket_connect_timeout=2,
+            socket_timeout=2,
         )
     return redis.Redis(connection_pool=_pool)
 
