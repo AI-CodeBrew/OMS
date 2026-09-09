@@ -22,6 +22,14 @@ class ShopifyConnectionSerializer(serializers.ModelSerializer):
 
 class SmartlaneConnectionSerializer(serializers.ModelSerializer):
     webhook_url = serializers.SerializerMethodField()
+    # Smartlane has no self-service webhook-registration API (unlike
+    # Shopify's register_webhook/unregister_webhook), so there is nothing
+    # to verify a registration against - the only honest signal that the
+    # webhook is actually live is that Smartlane has called it at least
+    # once. Overrides the stored model field, which used to be hardcoded
+    # true on connect regardless of whether the URL was ever pasted
+    # anywhere.
+    webhooks_active = serializers.SerializerMethodField()
 
     class Meta:
         model = SmartlaneConnection
@@ -41,6 +49,9 @@ class SmartlaneConnectionSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         path = f"/api/integrations/smartlane/webhook/{connection.webhook_token}/"
         return request.build_absolute_uri(path) if request else path
+
+    def get_webhooks_active(self, connection):
+        return bool(connection.events_received_count)
 
 
 class ShopifySyncJobSerializer(serializers.ModelSerializer):
