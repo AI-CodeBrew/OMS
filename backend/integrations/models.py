@@ -158,6 +158,13 @@ class SmartlaneStoreLink(TenantScopedModel):
     kyc_ntn = models.CharField(max_length=50, blank=True, default="")
     kyc_years_in_business = models.PositiveSmallIntegerField(null=True, blank=True)
     kyc_business_address = models.CharField(max_length=500, blank=True, default="")
+    # Not part of Smartlane's KYC field list - these two exist only for
+    # provisioning a warehouse once the store goes active (their Add/Edit
+    # Warehouse endpoint wants City and Zip code separately from the free
+    # text KYC address). Kept on the link rather than the warehouse itself
+    # so they only need collecting once per org.
+    kyc_city = models.CharField(max_length=100, blank=True, default="")
+    kyc_zip_code = models.CharField(max_length=20, blank=True, default="")
     kyc_avg_order_value = models.DecimalField(
         max_digits=12, decimal_places=2, null=True, blank=True
     )
@@ -203,6 +210,50 @@ class SmartlaneStoreLink(TenantScopedModel):
     @property
     def is_live(self):
         return self.status == "active" and bool(self.smartlane_store_id)
+
+
+class SmartlaneStoreWarehouse(TenantScopedModel):
+    """A warehouse Smartlane created for a store, one per requested courier
+    offering - this is the row that actually binds a booking to a carrier
+    (see SmartlaneCourierOffering.warehouse_name_for and the plan's open
+    question this design rests on).
+
+    Created automatically once a SmartlaneStoreLink goes active (see
+    business_services.provision_warehouses) rather than by hand. Kept even
+    if provisioning fails, with the error recorded, so the admin page can
+    show what needs retrying instead of silently having nothing.
+    """
+
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("active", "Active"),
+        ("failed", "Failed"),
+        ("revoked", "Revoked"),
+    ]
+
+    store_link = models.ForeignKey(
+        SmartlaneStoreLink, on_delete=models.CASCADE, related_name="warehouses"
+    )
+    offering = models.ForeignKey(
+        SmartlaneCourierOffering, on_delete=models.PROTECT, related_name="+"
+    )
+    smartlane_warehouse_code = models.CharField(max_length=100, blank=True, default="")
+    name = models.CharField(max_length=150, blank=True, default="")
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
+    last_synced_at = models.DateTimeField(null=True, blank=True)
+    last_provision_error = models.CharField(max_length=500, blank=True, default="")
+
+    class Meta:
+        db_table = '"integrations"."smartlane_store_warehouses"'
+        constraints = [
+            models.UniqueConstraint(
+                fields=["store_link", "offering"],
+                name="integrations_one_warehouse_per_store_offering",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.name or self.offering_id} ({self.status})"
 
 
 class ShopifyConnection(TenantScopedModel):

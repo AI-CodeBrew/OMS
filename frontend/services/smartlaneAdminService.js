@@ -94,6 +94,20 @@ class SmartlaneAdminService {
       body: JSON.stringify({}),
     });
   }
+
+  getStoreWarehouses(id) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneStoreWarehouses(id)}`);
+  }
+
+  // Resolves even when some (or all) requested couriers fail to
+  // provision - the response's `errors` array is what the page renders,
+  // not something thrown away by a failed-response check.
+  provisionStoreWarehouses(id, { city, zip_code } = {}) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneStoreWarehousesProvision(id)}`, {
+      method: "POST",
+      body: JSON.stringify({ city, zip_code }),
+    });
+  }
 }
 
 export const smartlaneAdminService = new SmartlaneAdminService();

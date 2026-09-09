@@ -226,9 +226,16 @@ export default function SmartlaneIntegrationPage() {
                 <div className="flex justify-between">
                   <span className="text-slate-500">Webhooks:</span>
                   <span className="font-medium text-slate-900">
-                    {status.webhooks_active ? "Active" : "Inactive"}
+                    {status.webhooks_active ? "Active" : "Not yet confirmed"}
                   </span>
                 </div>
+                {!status.webhooks_active ? (
+                  <p className="text-xs text-slate-400">
+                    Smartlane hasn&apos;t called this webhook yet. Paste the URL below into
+                    their dashboard, then ask them to send a test event — this flips to
+                    &quot;Active&quot; the moment a real event arrives.
+                  </p>
+                ) : null}
                 <div className="flex justify-between">
                   <span className="text-slate-500">Events Received:</span>
                   <span className="font-medium text-slate-900">{status.events_received_count ?? 0}</span>

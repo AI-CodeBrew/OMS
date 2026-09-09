@@ -16,6 +16,9 @@ export const API_ENDPOINTS = {
     smartlaneStoresSync: "/api/core/admin/smartlane/stores/sync/",
     smartlaneStoreApprove: (id) => `/api/core/admin/smartlane/stores/${id}/approve/`,
     smartlaneStoreReject: (id) => `/api/core/admin/smartlane/stores/${id}/reject/`,
+    smartlaneStoreWarehouses: (id) => `/api/core/admin/smartlane/stores/${id}/warehouses/`,
+    smartlaneStoreWarehousesProvision: (id) =>
+      `/api/core/admin/smartlane/stores/${id}/warehouses/provision/`,
   },
   team: "/api/core/team/",
   teamMember: (userId) => `/api/core/team/${userId}/`,

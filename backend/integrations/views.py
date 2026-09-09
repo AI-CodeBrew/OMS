@@ -258,7 +258,6 @@ class SmartlaneConnectionView(APIView):
                 # blank out a warehouse code set earlier via patch().
                 **({"store_warehouse_code": warehouse_code} if warehouse_code else {}),
                 "is_connected": True,
-                "webhooks_active": True,
             },
         )
         write_audit_log(
