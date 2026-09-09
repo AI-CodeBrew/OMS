@@ -76,7 +76,7 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "config.wsgi.application"
 # Only used by gunicorn/manage.py's WSGI path; the real request path in
-# production is config.asgi (Daphne, see render.yaml) so WebSocket
+# production is config.asgi (Daphne, see backend/fly.toml) so WebSocket
 # connections have somewhere to go.
 ASGI_APPLICATION = "config.asgi.application"
 
@@ -165,7 +165,8 @@ SUPABASE_JWT_SECRET = env("SUPABASE_JWT_SECRET", required=True)
 # Backs two things: the order-counts cache (core/redis_client.py) and the
 # WebSocket push that tells an open Orders page a new order arrived
 # (core/realtime.py, core/consumers.py). Any standard redis:// URL works -
-# Render's managed Redis, Upstash, or a local redis-server in dev.
+# the oms-redis Fly app (backend/deploy/redis/fly.toml), Upstash, or a
+# local redis-server in dev.
 REDIS_URL = env("REDIS_URL", default="redis://localhost:6379")
 
 CHANNEL_LAYERS = {
@@ -250,7 +251,7 @@ ADMIN_IP_ALLOWLIST = env(
 
 
 # --- Logging --------------------------------------------------------------
-# Everything goes to stdout, which is what Render (and `docker logs`, and
+# Everything goes to stdout, which is what Fly (and `docker logs`, and
 # runserver) captures. LOG_LEVEL=DEBUG turns on full request/response
 # bodies in the Smartlane client without changing anything else.
 LOG_LEVEL = env("LOG_LEVEL", default="INFO").upper()

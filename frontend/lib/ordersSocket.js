@@ -28,7 +28,7 @@ const REFETCH_JITTER_MS = 1500;
 // calls `onUpdate` for every push - a new Shopify order, a status change,
 // anything core/realtime.py publishes. Returns a cleanup function; call it
 // on unmount. Reconnects with growing backoff if the connection drops (a
-// laptop sleeping/waking, a brief Render restart) so listening resumes on
+// laptop sleeping/waking, a machine restart on deploy) so listening resumes on
 // its own instead of needing a manual page refresh.
 export function connectOrdersSocket(onUpdate) {
   let socket = null;

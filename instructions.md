@@ -64,7 +64,7 @@ ARCHITECTURE
 
 project/
 ├── frontend/   # Next.js multi-tenant dashboard
-└── backend/    # Django API (Render) + Supabase Auth/Postgres
+└── backend/    # Django API (Fly.io) + Supabase Auth/Postgres
 
 Tenancy: organization_id on business tables; JWT app_metadata carries role + org.
 Super admin: /superadmin login → /admin/organizations (sidebar: Organizations, Users; IP-allowlisted); org users: /login → /dashboard.

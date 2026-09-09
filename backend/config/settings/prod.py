@@ -4,19 +4,17 @@ from .base import *  # noqa: F401,F403
 
 DEBUG = False
 
-# Render sets RENDER_EXTERNAL_HOSTNAME, Fly sets FLY_APP_NAME; also accept an
-# explicit allow-list. Both platform vars are kept so a rollback to Render
-# needs no code change.
+# Fly sets FLY_APP_NAME on every machine; DJANGO_ALLOWED_HOSTS is the
+# explicit allow-list on top of it (the Vercel frontend's origin lives
+# there, because Channels validates WebSocket Origin against ALLOWED_HOSTS
+# rather than CORS_ORIGINS). Any other platform is still supported through
+# DJANGO_ALLOWED_HOSTS alone - nothing here is Fly-only.
 _hosts = [
     h.strip()
     for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "").split(",")
     if h.strip()
 ]
-_render_host = os.environ.get("RENDER_EXTERNAL_HOSTNAME", "").strip()
-if _render_host and _render_host not in _hosts:
-    _hosts.append(_render_host)
-# Fly injects FLY_APP_NAME into every machine; <app>.fly.dev is the hostname
-# its proxy serves on.
+# <app>.fly.dev is the hostname Fly's proxy serves on.
 _fly_app = os.environ.get("FLY_APP_NAME", "").strip()
 _fly_host = f"{_fly_app}.fly.dev" if _fly_app else ""
 if _fly_host and _fly_host not in _hosts:
@@ -45,7 +43,5 @@ CSRF_TRUSTED_ORIGINS = [
     for o in os.environ.get("CSRF_TRUSTED_ORIGINS", "").split(",")
     if o.strip()
 ]
-if _render_host:
-    CSRF_TRUSTED_ORIGINS.append(f"https://{_render_host}")
 if _fly_host:
     CSRF_TRUSTED_ORIGINS.append(f"https://{_fly_host}")

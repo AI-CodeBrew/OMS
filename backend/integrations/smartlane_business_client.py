@@ -202,7 +202,7 @@ def _request(
 
     def fail(message):
         # Logged at error level regardless of LOG_LEVEL, so this shows up
-        # on Render by default - not just in the browser's Test Connection
+        # in `fly logs` by default - not just in the browser's Test Connection
         # panel, which only exists for calls made interactively from the
         # super-admin page. A booking or webhook call has no UI to show
         # this in, so the server log is the only place it will ever be

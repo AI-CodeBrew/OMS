@@ -19,7 +19,7 @@ def _db_ok():
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def health_plain(request):
-    """Minimal probe for Render / curl — body is just `ok`."""
+    """Minimal probe for uptime checks / curl — body is just `ok`."""
     if _db_ok():
         return HttpResponse("ok", content_type="text/plain", status=200)
     return HttpResponse("error", content_type="text/plain", status=503)

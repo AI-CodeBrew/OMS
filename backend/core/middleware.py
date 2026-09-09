@@ -9,7 +9,7 @@ ADMIN_API_PREFIXES = ("/api/core/admin/",)
 
 
 def get_client_ip(request):
-    """Prefer leftmost X-Forwarded-For hop (Render/Cloudflare), else REMOTE_ADDR."""
+    """Prefer leftmost X-Forwarded-For hop (Fly proxy/Cloudflare), else REMOTE_ADDR."""
     forwarded = request.META.get("HTTP_X_FORWARDED_FOR")
     if forwarded:
         return forwarded.split(",")[0].strip()

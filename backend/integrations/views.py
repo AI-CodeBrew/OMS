@@ -329,12 +329,17 @@ class SmartlaneWarehouseListView(APIView):
 class SmartlaneSyncView(APIView):
     """Runs the Smartlane status poll for this organization on demand.
 
-    The poll normally belongs on a schedule (manage.py poll_smartlane), but
-    nothing schedules it in this deployment and Render's free plan has no
-    shell to run it from - so without this there is no way at all to pull a
-    consignment number for an order sitting in Booking Pending, or to check
-    whether Smartlane has anything for us. Same code path as the scheduled
-    command, just triggered by a button.
+    The poll belongs on a schedule (manage.py poll_smartlane) and still
+    nothing schedules it - so this button remains the only way to pull a
+    consignment number for an order stuck in Booking Pending, or to check
+    whether Smartlane has anything for us, whenever the status webhook is
+    not delivering. Same code path as the command, just triggered by hand.
+
+    (The old reason for this - "the host has no shell to run it from" - no
+    longer applies: `fly ssh console -a oms-backend` runs the command
+    directly, and a scheduled Fly machine could run it properly. This stays
+    because a manual trigger is genuinely useful, not because it is the
+    only option.)
     """
 
     permission_classes = [IsOrgAdmin]
