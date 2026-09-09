@@ -1,0 +1,59 @@
+# Redis for the OMS backend: the channels_redis channel layer behind the
+# Orders WebSocket, plus the order-counts cache. Replaces the Render
+# "keyvalue" service oms-redis (red-dafqsae7bikc73da07mg).
+#
+# WHY THIS IS A SEPARATE FLY APP: a Fly app deploys exactly one image, and
+# this is the stock redis image while the backend is built from
+# backend/Dockerfile. Fly's [processes] can run several processes in one
+# app, but they all share a single image - co-locating would mean baking
+# redis-server into the Django image, and then every backend deploy would
+# restart Redis and drop the channel layer along with every live WebSocket.
+#
+# NOT `fly redis create`: that provisions Upstash, which bills per command,
+# and channels_redis re-issues a blocking BRPOP per connected consumer.
+app = "oms-redis"
+primary_region = "sjc"
+
+# Stock image, no build and no registry push. The command is inlined here
+# rather than living in a Dockerfile + entrypoint script, so this one file
+# is the whole service.
+[build]
+  image = "redis:7-alpine"
+
+[processes]
+  # maxmemory is 128mb, not the 200mb Render used: the 256mb VM only has
+  # ~207mb usable after the kernel and fly-init, so a 200mb cap let redis
+  # fill past what the machine has and be OOM-killed before its own
+  # allkeys-lru eviction ever engaged. The cap must sit below the machine,
+  # not at it. Measured idle use is ~8mb RSS, so 128mb is still ample.
+  #
+  # Started via `sh -c` only so $REDIS_PASSWORD expands. Note there is no
+  # --bind: with no bind directive redis listens on every interface,
+  # including IPv6, which matters because Fly's private network (*.internal)
+  # is IPv6-only and an IPv4-only bind would leave oms-redis.internal
+  # resolving to a port that refuses connections.
+  app = "sh -c 'exec redis-server --protected-mode no --port 6379 --requirepass $REDIS_PASSWORD --dir /data --appendonly yes --appendfsync everysec --maxmemory 128mb --maxmemory-policy allkeys-lru'"
+
+[mounts]
+  source = "oms_redis_data"
+  destination = "/data"
+  processes = ["app"]
+
+# Deliberately no [http_service] and no [[services]]. Both make `fly deploy`
+# provision public IPs and route the port - on an earlier attempt a
+# [[services]] block with no ports still left redis answering on a public
+# IPv4. With neither, this app has no public address at all and is reachable
+# only as oms-redis.internal from other apps in this org, which is what
+# Render's `ipAllowList: []` gave us. Health is checked on the machine
+# itself, not through the public proxy.
+[checks]
+  [checks.redis]
+    type = "tcp"
+    port = 6379
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "10s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

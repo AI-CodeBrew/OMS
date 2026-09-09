@@ -6,7 +6,6 @@ PyJWT[crypto]
 django-cors-headers
 requests
 certifi
-gunicorn
 whitenoise
 playwright
 redis

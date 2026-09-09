@@ -1,30 +1,52 @@
-# Dependencies / env
+# --- Secrets / env ---------------------------------------------------------
+# Order matters: gitignore is last-match-wins, so the broad patterns go
+# first and the exceptions last. This file previously ended with a second,
+# stray `.env*` line that silently overrode the !.env.example exceptions
+# below - the two committed .env.example files only survived because they
+# were already tracked, and any NEW one would have needed `git add -f`.
 .env
 .env.*
-.env.local
 .env*.local
+*.pem
 !.env.example
 !.env.example.*
-backend/.venv/
+
+# --- Python ----------------------------------------------------------------
+.venv/
+venv/
+**/__pycache__/
+*.pyc
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.sqlite3
+
+# --- Django ----------------------------------------------------------------
 backend/staticfiles/
 # Local FileSystemStorage target for PrintBatch.file (load sheet/airway
 # bill PDFs) - generated data, not source; production needs real object
 # storage (see the PrintBatch model's docstring) since this won't survive
 # a deploy anyway.
 backend/print_batches/
+
+# --- JS / Next -------------------------------------------------------------
 node_modules/
 frontend/.next/
-**/__pycache__/
-*.pyc
-.Python
-*.egg-info/
+frontend/out/
 dist/
 build/
+
+# --- Tooling / editors -----------------------------------------------------
+.vercel
 .DS_Store
 .idea/
 .vscode/
 *.log
-.coverage
-htmlcov/
-.vercel
-.env*
+
+# Deploy config (backend/fly.toml, backend/deploy/, backend/.dockerignore) is
+# deliberately NOT ignored - it is infrastructure source and the only thing
+# keeping the two Fly apps reproducible.

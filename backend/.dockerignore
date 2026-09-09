@@ -1,0 +1,28 @@
+# Without this, `COPY . .` baked a 283 MB macOS virtualenv and, worse, the
+# dev secrets in .env.backend into a readable image layer.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Secrets. settings/base.py calls load_dotenv() with override=False, so the
+# platform's real env always wins anyway - the file is only ever a local dev
+# convenience and has no business in the image.
+.env
+.env.*
+!.env.example
+
+# Infra config: the redis app is deployed on its own, and shipping its
+# fly.toml inside the Django image would only invite the two to drift.
+deploy/
+fly.toml
+
+# collectstatic regenerates this during the build.
+staticfiles/
+
+.git/
+.gitignore
+*.sqlite3
+.DS_Store

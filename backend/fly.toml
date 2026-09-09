@@ -1,0 +1,58 @@
+# Replaces the Render web service oms-backend (srv-da7votou01pc73c5no4g).
+# Unlike Render, where the dashboard settings won over render.yaml and the
+# two silently drifted, this file is the single source of truth - `fly
+# deploy` applies it every time, so the Playwright-style drift that broke
+# Chromium cannot recur.
+app = "oms-backend"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  DJANGO_SETTINGS_MODULE = "config.settings.prod"
+  SHOPIFY_API_VERSION = "2024-10"
+  PORT = "8000"
+  # Keeps Chromium inside site-packages, i.e. inside the image layer, rather
+  # than a $HOME cache that the runtime machine would not have.
+  PLAYWRIGHT_BROWSERS_PATH = "0"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  # Never scale to zero: Channels holds long-lived WebSockets and an
+  # auto-stopped machine drops them. Render's service was always-on too.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    path = "/api/core/health/"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "30s"
+    method = "GET"
+    # Checks hit the machine directly, so the Host header would otherwise be
+    # a raw private IPv6 address and ALLOWED_HOSTS would 400 the probe.
+    [http_service.checks.headers]
+      Host = "oms-backend.fly.dev"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  # 1gb, single combined machine - the API, the WebSockets and the Smartlane
+  # PDF rendering all share it, deliberately, rather than splitting chromium
+  # into its own process group.
+  #
+  # Measured on a real machine running this image: os+python+playwright
+  # imports sit at 168mb before anything else, django.setup() adds ~91mb,
+  # and rendering one PDF took total machine use to 341mb (chromium's own
+  # process tree RSS was 376mb). Peak is therefore ~450mb, so 1gb leaves
+  # roughly 2x headroom.
+  #
+  # The cost of keeping it combined: a chromium OOM takes the whole machine
+  # down, and with it every live Channels WebSocket, not just the failing
+  # print. At 1gb that should not happen - but if the logs ever show an
+  # out-of-memory kill, that is the cause, and the fix is either
+  # `fly scale memory 2048` or moving _render_pdf (integrations/
+  # smartlane_client.py) onto its own process group.
+  memory = "1gb"

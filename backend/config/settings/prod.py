@@ -4,7 +4,9 @@ from .base import *  # noqa: F401,F403
 
 DEBUG = False
 
-# Render sets RENDER_EXTERNAL_HOSTNAME; also accept an explicit allow-list.
+# Render sets RENDER_EXTERNAL_HOSTNAME, Fly sets FLY_APP_NAME; also accept an
+# explicit allow-list. Both platform vars are kept so a rollback to Render
+# needs no code change.
 _hosts = [
     h.strip()
     for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "").split(",")
@@ -13,6 +15,12 @@ _hosts = [
 _render_host = os.environ.get("RENDER_EXTERNAL_HOSTNAME", "").strip()
 if _render_host and _render_host not in _hosts:
     _hosts.append(_render_host)
+# Fly injects FLY_APP_NAME into every machine; <app>.fly.dev is the hostname
+# its proxy serves on.
+_fly_app = os.environ.get("FLY_APP_NAME", "").strip()
+_fly_host = f"{_fly_app}.fly.dev" if _fly_app else ""
+if _fly_host and _fly_host not in _hosts:
+    _hosts.append(_fly_host)
 # Local docker / health probes
 if "localhost" not in _hosts:
     _hosts.append("localhost")
@@ -39,3 +47,5 @@ CSRF_TRUSTED_ORIGINS = [
 ]
 if _render_host:
     CSRF_TRUSTED_ORIGINS.append(f"https://{_render_host}")
+if _fly_host:
+    CSRF_TRUSTED_ORIGINS.append(f"https://{_fly_host}")
