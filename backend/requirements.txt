@@ -1,6 +1,6 @@
 Django~=5.1
 djangorestframework
-psycopg2-binary
+psycopg[binary,pool]
 python-dotenv
 PyJWT[crypto]
 django-cors-headers

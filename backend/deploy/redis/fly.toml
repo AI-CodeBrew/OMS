@@ -12,7 +12,7 @@
 # NOT `fly redis create`: that provisions Upstash, which bills per command,
 # and channels_redis re-issues a blocking BRPOP per connected consumer.
 app = "oms-redis"
-primary_region = "sjc"
+primary_region = "sin"
 
 # Stock image, no build and no registry push. The command is inlined here
 # rather than living in a Dockerfile + entrypoint script, so this one file

@@ -106,19 +106,50 @@ DATABASES = {
         # own try/except to catch, so it just silently stops making
         # progress instead of failing loudly. A short timeout turns that
         # into a real, catchable OperationalError instead.
-        "OPTIONS": {"connect_timeout": 10},
-        # Must stay 0 under Daphne. Gunicorn (one sync worker, no threads)
-        # could reuse a single connection for 60s; Daphne handles concurrent
-        # HTTP requests on a thread pool, and CONN_MAX_AGE>0 keeps each of
-        # those connections open after the response. The Orders page fires
-        # several APIs at once, plus Render health checks, plus a local
-        # runserver using the same DATABASE_URL - that overflowed Supabase
-        # session-pooler (max 15) with EMAXCONNSESSION and 500'd
-        # /orders, /dashboard, /health. Closing after each request keeps
-        # the live slot count at "in-flight requests" instead of
-        # "in-flight plus everything from the last minute."
+        "OPTIONS": {
+            "connect_timeout": 10,
+            # psycopg3 prepares statements automatically after a few
+            # executions. Supabase's pooler in transaction mode hands each
+            # transaction a different backend, so a statement prepared on
+            # one is missing on the next and the query fails. None turns
+            # preparation off entirely.
+            "prepare_threshold": None,
+            # The actual fix for the per-request connect cost. CONN_MAX_AGE
+            # keeps one connection per *thread*, which does nothing under
+            # Daphne because each request is served on a different thread -
+            # measured: every request re-paid the full ~1.18s TLS+auth to
+            # ap-south-1 even with CONN_MAX_AGE=60. This pool is shared by
+            # every thread in the process, so that cost is paid min_size
+            # times at startup and then amortised away.
+            "pool": {
+                "min_size": 2,
+                "max_size": 10,
+                # Fail fast rather than queue forever if the pool is
+                # drained - matches connect_timeout's intent above.
+                "timeout": 10,
+            },
+        },
+        # Must be 0: Django refuses to start if CONN_MAX_AGE is set
+        # alongside OPTIONS["pool"], and with a pool it would be
+        # meaningless anyway - the pool owns connection lifetime now.
+        #
+        # History worth keeping: this was 0 originally because the session
+        # pooler (port 5432) caps at 15 connections and Daphne's threads
+        # each held one open, overflowing it with EMAXCONNSESSION and
+        # 500'ing /orders and /dashboard. It was then briefly 60 on the
+        # transaction pooler, which turned out to change nothing measurable
+        # for the reason described in OPTIONS["pool"] above.
         "CONN_MAX_AGE": 0,
+        # Required with CONN_MAX_AGE > 0: the pooler can drop an idle
+        # connection between requests, and without this Django hands the
+        # dead socket to the next request as a hard 500 instead of quietly
+        # reopening it.
         "CONN_HEALTH_CHECKS": True,
+        # Transaction mode gives each transaction a different server
+        # connection, so a server-side cursor opened by one statement is
+        # gone by the next. Django uses them for .iterator(); this makes it
+        # stream rows client-side instead.
+        "DISABLE_SERVER_SIDE_CURSORS": True,
     }
 }
 

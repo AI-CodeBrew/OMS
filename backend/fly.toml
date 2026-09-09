@@ -4,7 +4,7 @@
 # deploy` applies it every time, so the Playwright-style drift that broke
 # Chromium cannot recur.
 app = "oms-backend"
-primary_region = "sjc"
+primary_region = "sin"
 
 [build]
   dockerfile = "Dockerfile"

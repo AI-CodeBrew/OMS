@@ -13,12 +13,16 @@ from rest_framework.views import APIView
 
 from core.permissions import RequireAnyModule, RequireModule
 from core.redis_client import (
+    acquire_rebuild_lock,
     get_cached_counts,
     get_cached_dashboard,
     get_cached_list,
+    list_cache_key,
+    release_rebuild_lock,
     set_cached_counts,
     set_cached_dashboard,
     set_cached_list,
+    wait_for_rebuild,
 )
 from wms.services import InsufficientStock
 
@@ -155,15 +159,9 @@ class OrderViewSet(viewsets.ModelViewSet):
         cached = get_cached_counts(organization_id)
         if cached is not None:
             return cached
-        rows = (
-            Order.objects.filter(organization_id=organization_id)
-            .values("status")
-            .annotate(count=Count("id"))
-        )
-        counts = {value: 0 for value, _label in Order.STATUS_CHOICES}
-        for row in rows:
-            counts[row["status"]] = row["count"]
-        counts["all"] = sum(counts.values())
+        # Same query as core/realtime.py rebuilds on a write - shared so the
+        # two can never drift into reporting different numbers.
+        counts = services.compute_order_counts(organization_id)
         set_cached_counts(organization_id, counts)
         return counts
 
@@ -172,6 +170,30 @@ class OrderViewSet(viewsets.ModelViewSet):
         cached = get_cached_list(organization_id, tab_status, "1", str(page_size))
         if cached is not None:
             return cached
+
+        # Cache miss. core/realtime.py drops these keys and pushes "refetch"
+        # to every open tab at once, so misses arrive in herds - without this
+        # each tab would run the identical query below to build identical
+        # bytes. One caller wins the lock and rebuilds; the others wait for
+        # its result. wait_for_rebuild() is capped and returns None on
+        # timeout or Redis trouble, so the worst case is simply the old
+        # behaviour of everyone computing it, never a hung request.
+        lock_key = list_cache_key(organization_id, tab_status, "1", str(page_size))
+        holds_lock = acquire_rebuild_lock(lock_key)
+        if not holds_lock:
+            waited = wait_for_rebuild(lock_key)
+            if waited is not None:
+                return waited
+
+        try:
+            return self._build_tab_list_payload(
+                request, organization_id, tab_status, page_size
+            )
+        finally:
+            if holds_lock:
+                release_rebuild_lock(lock_key)
+
+    def _build_tab_list_payload(self, request, organization_id, tab_status, page_size):
         qs = self._base_order_qs(organization_id)
         if tab_status != "all":
             qs = qs.filter(status=tab_status)

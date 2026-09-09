@@ -632,3 +632,23 @@ def split_order(order, *, item_splits, actor_user_id=None):
         actor_user_id=actor_user_id,
     )
     return child
+
+
+def compute_order_counts(organization_id):
+    """The per-status counts behind the Orders tabs, straight from Postgres.
+
+    Extracted from OrderViewSet._counts_payload so core/realtime.py can
+    rebuild the cached value on a write instead of only deleting it - see
+    core/redis_client.set_cached_counts. Takes an organization_id rather
+    than a request because the realtime path has no request.
+    """
+    rows = (
+        Order.objects.filter(organization_id=organization_id)
+        .values("status")
+        .annotate(count=Count("id"))
+    )
+    counts = {value: 0 for value, _label in Order.STATUS_CHOICES}
+    for row in rows:
+        counts[row["status"]] = row["count"]
+    counts["all"] = sum(counts.values())
+    return counts

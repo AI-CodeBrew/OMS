@@ -16,6 +16,7 @@ instead of hidden behind a generic cache API.
 
 import json
 import logging
+import time
 
 import redis
 from django.core.serializers.json import DjangoJSONEncoder
@@ -179,3 +180,68 @@ def invalidate_order_view_cache(organization_id):
         logger.warning(
             "redis unavailable invalidating view cache for org %s", organization_id, exc_info=True
         )
+
+
+# --- Stampede control ---------------------------------------------------
+# invalidate_order_view_cache() drops an org's keys and core/realtime.py
+# immediately tells every open tab to refetch, so all of them miss at the
+# same instant and each opens its own Postgres connection. Ten tabs on one
+# order event is ~20 concurrent requests, which is what overflowed the
+# pooler before (see settings.base DATABASES). The transaction pooler
+# raises that ceiling, but the herd is still wasted work: every one of
+# those requests runs the same query to produce the same bytes.
+#
+# So the first request through rebuilds while the rest wait briefly for it
+# to land. Waiting is capped and always falls through to computing anyway -
+# a slow or dead Redis must never turn into a hung request.
+
+def list_cache_key(organization_id, status, page, page_size):
+    """Public name for the list key, so callers outside this module can pass
+    the same string to the rebuild-lock helpers without reaching for the
+    private _list_key()."""
+    return _list_key(organization_id, status, page, page_size)
+
+
+REBUILD_LOCK_TTL_SECONDS = 10
+REBUILD_WAIT_SECONDS = 2.0
+REBUILD_POLL_SECONDS = 0.05
+
+
+def acquire_rebuild_lock(cache_key):
+    """True if this caller should do the rebuild. SET NX is atomic, so
+    exactly one concurrent caller wins. Returns True on Redis failure too:
+    losing the lock service must degrade to 'everyone rebuilds' (the old
+    behaviour), never to 'nobody rebuilds'."""
+    try:
+        return bool(
+            get_redis_client().set(
+                f"lock:{cache_key}", "1", nx=True, ex=REBUILD_LOCK_TTL_SECONDS
+            )
+        )
+    except redis.RedisError:
+        logger.warning("redis unavailable acquiring rebuild lock %s", cache_key, exc_info=True)
+        return True
+
+
+def release_rebuild_lock(cache_key):
+    try:
+        get_redis_client().delete(f"lock:{cache_key}")
+    except redis.RedisError:
+        logger.warning("redis unavailable releasing rebuild lock %s", cache_key, exc_info=True)
+
+
+def wait_for_rebuild(cache_key, deadline=REBUILD_WAIT_SECONDS):
+    """Poll for the winner's freshly written value. Returns the parsed
+    payload, or None if it did not arrive in time - in which case the
+    caller computes it itself rather than waiting longer or erroring."""
+    waited = 0.0
+    while waited < deadline:
+        time.sleep(REBUILD_POLL_SECONDS)
+        waited += REBUILD_POLL_SECONDS
+        try:
+            raw = get_redis_client().get(cache_key)
+        except redis.RedisError:
+            return None
+        if raw:
+            return json.loads(raw)
+    return None

@@ -13,7 +13,7 @@ import {
   invalidateViewCache,
   setCachedDashboard,
 } from "../../../lib/viewCache";
-import { warmupViews } from "../../../lib/warmupViews";
+import { warmupViewsInBackground } from "../../../lib/warmupViews";
 
 // recharts is a large library - loading it on demand instead of eagerly
 // means the KPI cards and header below render immediately on the very
@@ -105,21 +105,24 @@ export default function DashboardPage() {
         setData(null);
       }
       try {
-        await warmupViews({ dashKeys: dashboardPresetKeys() });
+        // Fetch just this range and paint it. Previously this awaited
+        // warmupViews(), which also loads all 17 Orders tabs - the
+        // dashboard was waiting on work it does not display. The warmup
+        // still runs, below, once there is something on screen.
+        const d = await ordersService.dashboard(params);
         if (cancelled || gen !== loadGen.current) return;
-        if (isPreset) {
-          setData(getCachedDashboard(key));
-        } else {
-          const d = await ordersService.dashboard(params);
-          if (cancelled || gen !== loadGen.current) return;
-          setCachedDashboard(key, d);
-          setData(d);
-        }
+        setCachedDashboard(key, d);
+        setData(d);
       } catch (err) {
         if (!cancelled && gen === loadGen.current) setError(err.message || "Failed to load dashboard");
       } finally {
         if (!cancelled && gen === loadGen.current) setLoading(false);
       }
+
+      // Warm the Orders tabs and the other dashboard presets now that this
+      // range is on screen, so moving to Orders or switching preset is a
+      // cache hit rather than another cold round-trip.
+      warmupViewsInBackground({ dashKeys: dashboardPresetKeys() });
     }
 
     load(false);
@@ -135,18 +138,16 @@ export default function DashboardPage() {
         invalidateViewCache();
         const key = dashboardKey(params);
         try {
-          await warmupViews({ dashKeys: dashboardPresetKeys() });
-          if (isPreset) {
-            setData(getCachedDashboard(key));
-          } else {
-            const d = await ordersService.dashboard(params);
-            setCachedDashboard(key, d);
-            setData(d);
-          }
+          // Refresh what is on screen first, exactly as the initial load
+          // does - the visible range must not wait on the full warmup.
+          const d = await ordersService.dashboard(params);
+          setCachedDashboard(key, d);
+          setData(d);
           setLoading(false);
         } catch (err) {
           setError(err.message || "Failed to load dashboard");
         }
+        warmupViewsInBackground({ dashKeys: dashboardPresetKeys() });
       }, 300);
     });
     return () => {

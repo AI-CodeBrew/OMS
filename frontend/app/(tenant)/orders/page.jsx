@@ -11,10 +11,11 @@ import {
   getCachedOrdersList,
   invalidateViewCache,
   ordersListKey,
+  setCachedCounts,
   setCachedOrdersList,
   unfilteredListsAreWarm,
 } from "../../../lib/viewCache";
-import { warmupViews } from "../../../lib/warmupViews";
+import { warmupViewsInBackground } from "../../../lib/warmupViews";
 import couriersService from "../../../services/couriersService";
 import integrationsService from "../../../services/integrationsService";
 import useLoadingStore from "../../../store/loadingStore";
@@ -192,26 +193,37 @@ export default function OrdersPage() {
         setLoading(true);
       }
       try {
-        if (force || !alreadyWarm) {
-          await warmupViews({ pageSize, dashKeys: dashboardPresetKeys() });
-          if (gen !== loadGen.current) return;
-        }
-        const shown = applyCachedTab(force);
-        if (!shown || page !== 1) {
-          const orderData = await ordersService.list({ ...queryParams, page, page_size: pageSize });
-          if (gen !== loadGen.current) return;
-          const nextOrders = orderData.results || [];
-          const nextCount = orderData.count || 0;
-          setOrders(nextOrders);
-          setOrderCount(nextCount);
-          setCachedOrdersList(key, { orders: nextOrders, orderCount: nextCount });
-          if (!force) setSelectedIds(new Set());
-        }
+        // Fetch only the tab actually on screen, then paint. This used to
+        // await warmupViews() first, which loads all 17 status tabs in one
+        // backend request - fine once warm, but on a cold Redis it is ~51
+        // sequential queries and the user stared at a spinner for the whole
+        // thing before seeing a single row.
+        const [orderData, countData] = await Promise.all([
+          ordersService.list({ ...queryParams, page, page_size: pageSize }),
+          ordersService.counts(queryParams),
+        ]);
+        if (gen !== loadGen.current) return;
+        const nextOrders = orderData.results || [];
+        const nextCount = orderData.count || 0;
+        setOrders(nextOrders);
+        setOrderCount(nextCount);
+        setCounts(countData);
+        setCachedOrdersList(key, { orders: nextOrders, orderCount: nextCount });
+        setCachedCounts(countData);
+        if (!force) setSelectedIds(new Set());
       } catch (err) {
         if (gen !== loadGen.current) return;
         setError(err.message || "Failed to load orders");
       } finally {
         if (gen === loadGen.current) setLoading(false);
+      }
+
+      // The other tabs still get warmed - just after the user has something
+      // to look at rather than before. Started even when this generation is
+      // stale: the payload is keyed by pageSize, not by which tab asked, so
+      // the work is still the work everyone needs.
+      if (force || !alreadyWarm) {
+        warmupViewsInBackground({ pageSize, dashKeys: dashboardPresetKeys() });
       }
       return;
     }
@@ -241,7 +253,7 @@ export default function OrdersPage() {
       setCounts(countData);
       if (!force) setSelectedIds(new Set());
       setCachedOrdersList(key, { orders: orderData.results || [], orderCount: orderData.count || 0 });
-      warmupViews({ pageSize, dashKeys: dashboardPresetKeys() }).catch(() => {});
+      warmupViewsInBackground({ pageSize, dashKeys: dashboardPresetKeys() });
     } catch (err) {
       if (gen !== loadGen.current) return;
       setError(err.message || "Failed to load orders");
