@@ -51,10 +51,14 @@ class SignatureOptions:
     # PHP's json_encode writes {"a":1}, Python's default writes {"a": 1}.
     # A single space here changes the md5 and so the whole signature.
     compact_separators: bool = True
-    # PHP's json_encode escapes forward slashes as \/ unless the caller
-    # passes JSON_UNESCAPED_SLASHES. The KYC payload carries a logo URL,
-    # so this one decides real requests, not just theory.
-    escape_slashes: bool = True
+    # The doc's PHP snippet implies json_encode's default (escaped), but
+    # Smartlane's own reference client (Node.js, using JSON.stringify -
+    # which does NOT escape slashes) is what they actually test against.
+    # Trust the reference code over the doc's PHP pseudocode: default to
+    # unescaped. The KYC payload carries a logo URL, so this one decides
+    # real requests, not just theory - this was very likely the actual
+    # cause of every KYC submission being rejected.
+    escape_slashes: bool = False
     # The doc says: "In case of GET if request body is empty, replace
     # {request_body_array} with verb: GET". Read as an array ["verb" =>
     # "GET"], which is what json_encode would be given. The alternative
@@ -159,11 +163,19 @@ def _request(
     signature, string_to_sign, body_bytes = sign(method, url, body, config.jwt_token, options)
 
     headers = {
+        # Smartlane's own reference client sends the signature as
+        # "Authorization: MAC <sig>", not the custom header the doc
+        # names - almost certainly why every authenticated call (KYC,
+        # store list, ...) failed while the handshake (which likely
+        # checks no auth at all) kept succeeding. Sent alongside the
+        # doc's own header name too, in case either side is what their
+        # server actually reads - costs nothing, and covers both.
+        "Authorization": f"MAC {signature}",
         "X-SMART-LANE-SIGNATURE": signature,
         "Accept": "application/json",
+        # Their reference client sends this unconditionally, GET included.
+        "Content-Type": "application/json",
     }
-    if body_bytes is not None:
-        headers["Content-Type"] = "application/json"
 
     label = f"{method} {path}" + (f" [{context}]" if context else "")
     started = time.monotonic()
