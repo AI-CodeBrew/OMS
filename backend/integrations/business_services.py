@@ -256,22 +256,28 @@ def delete_offering(offering_id):
 _KYC_WIRE_FIELDS = [
     ("name", "kyc_name"),
     ("logo_url", "kyc_logo_url"),
+    ("poc_name", "kyc_poc_name"),
+    ("poc_email", "kyc_email"),
+    ("poc_phone", "kyc_phone"),
+    ("poc_cnic", "kyc_poc_cnic"),
     ("platform", "kyc_platform"),
+    ("address", "kyc_business_address"),
+    ("city", "kyc_city"),
+    ("state", "kyc_state"),
     ("industry", "kyc_industry"),
     ("ntn", "kyc_ntn"),
-    ("years_in_business", "kyc_years_in_business"),
-    ("business_address", "kyc_business_address"),
+    ("business_years", "kyc_years_in_business"),
     ("avg_order_value", "kyc_avg_order_value"),
-    ("avg_monthly_sales", "kyc_avg_monthly_sales"),
-    ("annual_retail_sales", "kyc_annual_retail_sales"),
-    ("poc_name", "kyc_poc_name"),
-    ("email", "kyc_email"),
-    ("phone", "kyc_phone"),
+    ("avg_monthly_sale", "kyc_avg_monthly_sales"),
+    ("annual_retail_sale", "kyc_annual_retail_sales"),
 ]
 
 # What an org must fill in before it can submit. Everything else is optional
 # on our side; Smartlane may disagree, which their KYC response will say.
-_KYC_REQUIRED = ["kyc_name", "kyc_industry", "kyc_business_address", "kyc_poc_name", "kyc_email", "kyc_phone"]
+_KYC_REQUIRED = [
+    "kyc_name", "kyc_industry", "kyc_business_address", "kyc_city", "kyc_state",
+    "kyc_poc_name", "kyc_email", "kyc_phone", "kyc_poc_cnic",
+]
 
 
 def build_kyc_payload(link):

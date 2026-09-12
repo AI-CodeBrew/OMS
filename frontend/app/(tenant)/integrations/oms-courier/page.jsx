@@ -5,20 +5,25 @@ import Link from "next/link";
 import Button from "../../../../components/shared/Button";
 import integrationsService from "../../../../services/integrationsService";
 
-// Mirrors Smartlane's KYC field list, in their order.
+// Mirrors Smartlane's real KYC request shape (from their Postman
+// collection, not the doc's prose field list - the doc omitted city,
+// state and CNIC entirely, and used different field names/order).
 const KYC_FIELDS = [
   { key: "name", label: "Business name", required: true },
   { key: "logo_url", label: "Logo URL", type: "url", placeholder: "https://…" },
   { key: "industry", label: "Industry", required: true },
   { key: "ntn", label: "NTN" },
-  { key: "years_in_business", label: "Years in business", type: "number" },
-  { key: "business_address", label: "Business address", required: true, wide: true },
+  { key: "business_years", label: "Years in business", type: "number" },
+  { key: "address", label: "Business address", required: true, wide: true },
+  { key: "city", label: "City", required: true },
+  { key: "state", label: "State/Province", required: true },
   { key: "avg_order_value", label: "Average order value", type: "number" },
-  { key: "avg_monthly_sales", label: "Average monthly sales", type: "number" },
-  { key: "annual_retail_sales", label: "Annual retail sales (approx.)", type: "number" },
+  { key: "avg_monthly_sale", label: "Average monthly sales", type: "number" },
+  { key: "annual_retail_sale", label: "Annual retail sales (approx.)", type: "number" },
   { key: "poc_name", label: "Contact person", required: true },
-  { key: "email", label: "Contact email", type: "email", required: true },
-  { key: "phone", label: "Contact phone", required: true },
+  { key: "poc_email", label: "Contact email", type: "email", required: true },
+  { key: "poc_phone", label: "Contact phone", required: true },
+  { key: "poc_cnic", label: "Contact CNIC", required: true },
 ];
 
 const STATUS_TONE = {

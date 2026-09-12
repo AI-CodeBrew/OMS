@@ -158,12 +158,13 @@ class SmartlaneStoreLink(TenantScopedModel):
     kyc_ntn = models.CharField(max_length=50, blank=True, default="")
     kyc_years_in_business = models.PositiveSmallIntegerField(null=True, blank=True)
     kyc_business_address = models.CharField(max_length=500, blank=True, default="")
-    # Not part of Smartlane's KYC field list - these two exist only for
-    # provisioning a warehouse once the store goes active (their Add/Edit
-    # Warehouse endpoint wants City and Zip code separately from the free
-    # text KYC address). Kept on the link rather than the warehouse itself
-    # so they only need collecting once per org.
+    # Confirmed by Smartlane's real Postman collection to be genuine KYC
+    # fields (their doc's prose field list omitted city/state/CNIC
+    # entirely) - kyc_city was originally added believing it was only
+    # needed for warehouse provisioning, but the KYC body itself requires
+    # it too. kyc_zip_code remains warehouse-only - not part of KYC.
     kyc_city = models.CharField(max_length=100, blank=True, default="")
+    kyc_state = models.CharField(max_length=100, blank=True, default="")
     kyc_zip_code = models.CharField(max_length=20, blank=True, default="")
     kyc_avg_order_value = models.DecimalField(
         max_digits=12, decimal_places=2, null=True, blank=True
@@ -177,6 +178,7 @@ class SmartlaneStoreLink(TenantScopedModel):
     kyc_poc_name = models.CharField(max_length=150, blank=True, default="")
     kyc_email = models.CharField(max_length=255, blank=True, default="")
     kyc_phone = models.CharField(max_length=50, blank=True, default="")
+    kyc_poc_cnic = models.CharField(max_length=50, blank=True, default="")
 
     # SmartlaneCourierOffering.key values - keys not FKs, so the catalog can
     # be reordered or pruned without rewriting requests. See that model's
