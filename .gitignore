@@ -47,6 +47,11 @@ build/
 .vscode/
 *.log
 
+# --- Claude Code -------------------------------------------------------------
+# Personal overrides/secrets (e.g. MCP server API keys) - never shared,
+# unlike .claude/settings.json or .mcp.json which are meant to be committed.
+.claude/settings.local.json
+
 # Deploy config (backend/fly.toml, backend/deploy/, backend/.dockerignore) is
 # deliberately NOT ignored - it is infrastructure source and the only thing
 # keeping the two Fly apps reproducible.
