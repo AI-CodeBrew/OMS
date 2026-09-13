@@ -174,19 +174,20 @@ def _request(
     signature, string_to_sign, body_bytes = sign(method, url, body, config.jwt_token, options)
 
     headers = {
-        # Smartlane's own reference client sends the signature as
-        # "Authorization: MAC <sig>", not the custom header the doc
-        # names - almost certainly why every authenticated call (KYC,
-        # store list, ...) failed while the handshake (which likely
-        # checks no auth at all) kept succeeding. Sent alongside the
-        # doc's own header name too, in case either side is what their
-        # server actually reads - costs nothing, and covers both.
-        "Authorization": f"MAC {signature}",
         "X-SMART-LANE-SIGNATURE": signature,
         "Accept": "application/json",
-        # Their reference client sends this unconditionally, GET included.
-        "Content-Type": "application/json",
     }
+    if body_bytes is not None:
+        # Only on requests that actually carry a JSON body. A real,
+        # working Postman GET (same token, same signature, same URL,
+        # confirmed accepted by Smartlane) sends neither this nor an
+        # Authorization header at all - both were added earlier from a
+        # Node.js reference snippet that turned out not to match what
+        # their server actually expects. Sending Content-Type on a
+        # bodyless GET is the likely reason every GET through this
+        # client kept getting "Invalid Authentication Code" despite a
+        # byte-for-byte correct signature.
+        headers["Content-Type"] = "application/json"
 
     label = f"{method} {path}" + (f" [{context}]" if context else "")
     started = time.monotonic()
