@@ -1,1 +1,10 @@
 .vercel
+node_modules
+.next
+.env
+.env.local
+.env.local.*
+.env.frontend
+
+.vercel
+.env*
