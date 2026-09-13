@@ -6,23 +6,23 @@ authenticates as a business with an HMAC signature and addresses stores by
 id underneath it. The only thing they share is the SmartlaneAPIError type,
 so callers upstream still have one exception to catch.
 
-Signing, per Smartlane's "Business API Draft 1.0":
+Signing matches Smartlane's GenerateHmacSignatureAction (PHP):
 
-    string = VERB + PHP_EOL + url + PHP_EOL + md5(json_encode(body))
-    hash   = base64_encode(hash_hmac('sha256', string, <shared JWT token>))
-    header X-SMART-LANE-SIGNATURE: <hash>
+    body     = GET ? {verb: GET} : request_body
+    jsonBody = json_encode(body, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+    string   = VERB + "\\n" + url + "\\n" + md5(jsonBody)
+    hash     = hash_hmac('SHA256', string, api_token)   # hex, not raw
+    signature = base64_encode(hash)
+    header   X-SMART-LANE-SIGNATURE
 
-PHP's hash_hmac() returns a hex string unless the 4th argument is true, so
-the hash they actually check is base64(hex(hmac-sha256)), not base64 of the
-raw digest. Confirmed against GET /business/{code}: raw-digest HMAC is
-rejected as "Invalid Authentication Code"; hex-then-base64 returns 200
-"Business API - Version 1.0".
+The HMAC `url` is always the business root
+(`https://gcp.smartlane.dev/business/{businessCode}`), even when the
+request is POST /{code}/store/new/kyc. Ali: generate url stays the same.
+Signing the request path is what produced 403 Invalid Authentication Code
+while Postman (root URL) succeeded.
 
-That spec is a PHP snippet, and reproducing it in Python has several ways
-to be silently wrong - every one of them produces a valid-looking request
-that Smartlane rejects with no useful error. Each is isolated as a flag
-below so a rejected signature is diagnosed by flipping one switch at a
-time rather than rewriting this function. See SignatureOptions.
+Each ambiguous flag is isolated on SignatureOptions so a rejected
+signature can be diagnosed by flipping one switch. See that class.
 """
 
 import base64
@@ -78,6 +78,10 @@ class SignatureOptions:
     # True would return raw bytes. Smartlane's check matches the default
     # (hex, then base64). Keep the raw path as a diagnostic switch only.
     hmac_raw: bool = False
+    # Working Postman generateMacSignature always hashes this URL, even
+    # when the request is POST /{code}/store/new/kyc:
+    #   https://gcp.smartlane.dev/business/{businessCode}
+    sign_business_root: bool = True
 
 
 DEFAULT_SIGNATURE_OPTIONS = SignatureOptions()
@@ -169,9 +173,14 @@ def _request(
             "Smartlane issued on the Smartlane page in the super admin console."
         )
 
-    url = build_url(path, params if options.sign_query_string else None)
     request_url = build_url(path, params)
-    signature, string_to_sign, body_bytes = sign(method, url, body, config.jwt_token, options)
+    if options.sign_business_root and config.business_code:
+        signed_url = build_url(f"/{config.business_code}")
+    else:
+        signed_url = build_url(path, params if options.sign_query_string else None)
+    signature, string_to_sign, body_bytes = sign(
+        method, signed_url, body, config.jwt_token, options
+    )
 
     headers = {
         "X-SMART-LANE-SIGNATURE": signature,
@@ -194,7 +203,7 @@ def _request(
 
     debug = {
         "method": method,
-        "signed_url": url,
+        "signed_url": signed_url,
         "request_url": request_url,
         "string_to_sign": string_to_sign,
         "signature": signature,
@@ -250,9 +259,8 @@ def _request(
         location = resp.headers.get("Location", "")
         logger.error("smartlane-business %s -> HTTP %s redirect to %r", label, resp.status_code, location)
         raise fail(
-            "Smartlane redirected to a login page instead of answering. That usually "
-            "means the signature was rejected, the token has expired, or this machine's "
-            "IP is not the one registered in the business portal."
+            "Smartlane redirected instead of answering. The HMAC was likely "
+            f"rejected. Signed {signed_url!r}, requested {request_url!r}."
         )
 
     if resp.status_code in (401, 403):
@@ -261,9 +269,9 @@ def _request(
             label, resp.status_code, (resp.text or "")[:300],
         )
         raise fail(
-            f"Smartlane rejected the request (HTTP {resp.status_code}). Check the token, "
-            f"the business code, and that this machine's public IP matches the one "
-            f"registered in the business portal. Response: {(resp.text or '')[:200]}"
+            f"Smartlane rejected the HMAC (HTTP {resp.status_code}). "
+            f"Signed {signed_url!r}, requested {request_url!r}. "
+            f"Response: {(resp.text or '')[:200]}"
         )
 
     if not resp.ok:
@@ -286,8 +294,8 @@ def _request(
 def test_connection(config, options=DEFAULT_SIGNATURE_OPTIONS):
     """GET /business/{business_code} - Smartlane's own handshake endpoint.
 
-    The cheapest possible proof that the signature, token, business code and
-    source IP are all correct: it takes no arguments and should answer
+    The cheapest possible proof that the signature, token and business
+    code are correct: it takes no arguments and should answer
     'Business API - Version 1.0'.
     """
     if not config or not config.business_code:
@@ -308,10 +316,8 @@ def submit_store_kyc(config, kyc, options=DEFAULT_SIGNATURE_OPTIONS):
     """POST /{businessCode}/store/new/kyc - sends a store for Smartlane's review.
 
     `kyc` must already be in Smartlane's wire shape and field order; see
-    business_services.build_kyc_payload, which is the single place that
-    mapping lives. The doc lists human labels ("Avg order value") rather
-    than JSON keys, so the exact names are an educated guess and may need
-    correcting once Smartlane confirms them.
+    business_services.build_kyc_payload. HMAC is signed against the
+    business root; this path is only the request URL.
     """
     payload, debug = _request(
         config,
