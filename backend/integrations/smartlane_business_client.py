@@ -325,18 +325,25 @@ def submit_store_kyc(config, kyc, options=DEFAULT_SIGNATURE_OPTIONS):
 
 
 def list_stores(config, search=None, options=DEFAULT_SIGNATURE_OPTIONS):
-    """GET /store - every store under the business, split active/in_active/in_review.
+    """GET /{businessCode}/store/list - every store under the business,
+    split active/in_active/in_review.
 
-    Note the path: the doc gives this one as /business/store, with no
-    business code, while every other endpoint is /business/{code}/...
-    That inconsistency is theirs, and is reproduced faithfully here rather
-    than "corrected" - worth confirming with them.
+    The doc claimed this path was /business/store with no business code -
+    confirmed wrong against Smartlane's own Postman collection, which
+    shows it business-code-scoped with a /list suffix like every other
+    store endpoint.
     """
     params = {"search": search} if search else None
-    payload, _ = _request(
-        config, "GET", "/store", params=params, context="Store list", options=options
+    payload, debug = _request(
+        config,
+        "GET",
+        f"/{config.business_code}/store/list",
+        params=params,
+        context="Store list",
+        options=options,
+        capture_debug=True,
     )
-    return payload
+    return payload, debug
 
 
 # --- Store warehouses --------------------------------------------------
@@ -348,15 +355,16 @@ def list_stores(config, search=None, options=DEFAULT_SIGNATURE_OPTIONS):
 def list_warehouses(config, store_id, search=None, options=DEFAULT_SIGNATURE_OPTIONS):
     """GET /{businessCode}/store/{store_id}/warehouse"""
     params = {"search": search} if search else None
-    payload, _ = _request(
+    payload, debug = _request(
         config,
         "GET",
         f"/{config.business_code}/store/{store_id}/warehouse",
         params=params,
         context="Warehouse list",
         options=options,
+        capture_debug=True,
     )
-    return payload
+    return payload, debug
 
 
 def add_or_edit_warehouse(config, store_id, warehouse, options=DEFAULT_SIGNATURE_OPTIONS):
@@ -405,17 +413,22 @@ def create_consignment(config, store_id, body, options=DEFAULT_SIGNATURE_OPTIONS
 
 
 def track_consignment(config, store_id, store_order_ids, options=DEFAULT_SIGNATURE_OPTIONS):
-    """GET /{businessCode}/store/{store_id}/consignment/track"""
-    params = [("store_order_id[]", str(oid)) for oid in store_order_ids]
-    payload, _ = _request(
+    """POST /{businessCode}/store/{store_id}/consignment/track
+
+    The doc implies GET with query params; Smartlane's own Postman
+    collection shows this as POST with a JSON body instead - confirmed
+    wrong, corrected here.
+    """
+    payload, debug = _request(
         config,
-        "GET",
+        "POST",
         f"/{config.business_code}/store/{store_id}/consignment/track",
-        params=params,
+        body={"store_order_id": [str(oid) for oid in store_order_ids]},
         context="Track consignment",
         options=options,
+        capture_debug=True,
     )
-    return payload
+    return payload, debug
 
 
 def cancel_consignment(config, store_id, store_order_id, options=DEFAULT_SIGNATURE_OPTIONS):
@@ -433,60 +446,221 @@ def cancel_consignment(config, store_id, store_order_id, options=DEFAULT_SIGNATU
 
 
 def fetch_airway_bill(config, store_id, store_order_ids, *, no_of_prints=1, options=DEFAULT_SIGNATURE_OPTIONS):
-    """GET /{businessCode}/store/{store_id}/consignment/airwaybill
+    """POST /{businessCode}/store/{store_id}/consignment/airway/bill
 
-    Same "not actually a JSON body" nature as the per-org client's
-    fetch_airway_bill - returns whatever Smartlane sends (HTML/portal
-    page), not parsed here.
+    The doc implies GET with query params and a path with no slash
+    ("airwaybill"); Smartlane's own Postman collection shows POST with a
+    JSON body and the path split ("airway/bill") - confirmed wrong on
+    both counts, corrected here.
     """
     if not store_order_ids:
         raise SmartlaneAPIError("No orders to print an airway bill for.")
-    params = [("store_order_id[]", str(oid)) for oid in store_order_ids]
-    params.append(("no_of_prints", str(no_of_prints)))
-    payload, _ = _request(
+    payload, debug = _request(
         config,
-        "GET",
-        f"/{config.business_code}/store/{store_id}/consignment/airwaybill",
-        params=params,
+        "POST",
+        f"/{config.business_code}/store/{store_id}/consignment/airway/bill",
+        body={"store_order_id": [str(oid) for oid in store_order_ids], "no_of_prints": str(no_of_prints)},
         context="Airway bill",
         options=options,
+        capture_debug=True,
     )
-    return payload
+    return payload, debug
 
 
 def fetch_load_sheet(
     config, store_id, *, courier=None, store_order_ids=None, start_date=None, end_date=None,
     options=DEFAULT_SIGNATURE_OPTIONS,
 ):
-    """GET /{businessCode}/store/{store_id}/consignment/loadsheet"""
+    """POST /{businessCode}/store/{store_id}/consignment/load_sheet
+
+    The doc implies GET with flat query params and path "loadsheet";
+    Smartlane's own Postman collection shows POST with a nested
+    `filters` body and path "load_sheet" (underscore) - confirmed wrong,
+    corrected here.
+    """
     if not store_order_ids and not (start_date and end_date):
         raise SmartlaneAPIError("Provide store_order_ids or both start_date and end_date.")
-    params = []
-    if courier:
-        params.append(("courier", courier))
-    if store_order_ids:
-        params += [("store_order_ids[]", str(oid)) for oid in store_order_ids]
-    else:
-        params += [("start_date", start_date), ("end_date", end_date)]
-    payload, _ = _request(
-        config,
-        "GET",
-        f"/{config.business_code}/store/{store_id}/consignment/loadsheet",
-        params=params,
-        context="Load sheet",
-        options=options,
-    )
-    return payload
-
-
-def shipper_advise(config, store_id, body, options=DEFAULT_SIGNATURE_OPTIONS):
-    """POST /{businessCode}/store/{store_id}/consignment/shipper/advise"""
+    filters = {
+        "store_order_ids": [str(oid) for oid in store_order_ids] if store_order_ids else [],
+        "courier": courier or "",
+        "date_range": {"start_date": start_date or "", "end_date": end_date or ""},
+    }
     payload, debug = _request(
         config,
         "POST",
-        f"/{config.business_code}/store/{store_id}/consignment/shipper/advise",
+        f"/{config.business_code}/store/{store_id}/consignment/load_sheet",
+        body={"filters": filters},
+        context="Load sheet",
+        options=options,
+        capture_debug=True,
+    )
+    return payload, debug
+
+
+def get_shipper_advice(config, store_id, options=DEFAULT_SIGNATURE_OPTIONS):
+    """GET /{businessCode}/store/{store_id}/consignment/shipper/advice
+
+    Path segment is "advice", not "advise" as the doc's prose spelled
+    it - confirmed against Smartlane's own Postman collection.
+    """
+    payload, debug = _request(
+        config,
+        "GET",
+        f"/{config.business_code}/store/{store_id}/consignment/shipper/advice",
+        context="Shipper advice",
+        options=options,
+        capture_debug=True,
+    )
+    return payload, debug
+
+
+def update_shipper_advice(config, store_id, body, options=DEFAULT_SIGNATURE_OPTIONS):
+    """POST /{businessCode}/store/{store_id}/consignment/shipper/advice
+
+    `body` per the doc/Postman example: consignment_number,
+    store_order_id, courier, reason, remarks, action ("Return" or
+    "Reattempt"). Same path-spelling correction as get_shipper_advice.
+    """
+    payload, debug = _request(
+        config,
+        "POST",
+        f"/{config.business_code}/store/{store_id}/consignment/shipper/advice",
         body=body,
-        context="Shipper advise",
+        context="Update shipper advice",
+        options=options,
+        capture_debug=True,
+    )
+    return payload, debug
+
+
+# --- Business-level lookups ---------------------------------------------
+# No store_id - these describe the business account itself, or feed
+# dropdowns (industries, cities) on forms like the KYC one.
+
+
+def fetch_industries(config, options=DEFAULT_SIGNATURE_OPTIONS):
+    """GET /{businessCode}/smartlane/industries"""
+    payload, debug = _request(
+        config,
+        "GET",
+        f"/{config.business_code}/smartlane/industries",
+        context="Industries",
+        options=options,
+        capture_debug=True,
+    )
+    return payload, debug
+
+
+def fetch_city_list(config, options=DEFAULT_SIGNATURE_OPTIONS):
+    """GET /{businessCode}/smartlane/city"""
+    payload, debug = _request(
+        config,
+        "GET",
+        f"/{config.business_code}/smartlane/city",
+        context="City list",
+        options=options,
+        capture_debug=True,
+    )
+    return payload, debug
+
+
+def fetch_finance_products(config, options=DEFAULT_SIGNATURE_OPTIONS):
+    """GET /{businessCode}/finance/products - business-level, no store_id."""
+    payload, debug = _request(
+        config,
+        "GET",
+        f"/{config.business_code}/finance/products",
+        context="Finance products",
+        options=options,
+        capture_debug=True,
+    )
+    return payload, debug
+
+
+# --- Store-level: activity log and finance -------------------------------
+
+
+def fetch_activity_log(config, store_id, search=None, options=DEFAULT_SIGNATURE_OPTIONS):
+    """GET /{businessCode}/store/{store_id}/activity/log?type=...
+
+    `search` is the doc's own param name for this - Postman's example
+    uses it to filter by log type (e.g. "consignment_status").
+    """
+    params = {"type": search} if search else None
+    payload, debug = _request(
+        config,
+        "GET",
+        f"/{config.business_code}/store/{store_id}/activity/log",
+        params=params,
+        context="Activity log",
+        options=options,
+        capture_debug=True,
+    )
+    return payload, debug
+
+
+def fetch_finance_information(config, store_id, options=DEFAULT_SIGNATURE_OPTIONS):
+    """GET /{businessCode}/store/{store_id}/finance/information"""
+    payload, debug = _request(
+        config,
+        "GET",
+        f"/{config.business_code}/store/{store_id}/finance/information",
+        context="Finance information",
+        options=options,
+        capture_debug=True,
+    )
+    return payload, debug
+
+
+def apply_finance(config, store_id, product_code, options=DEFAULT_SIGNATURE_OPTIONS):
+    """POST /{businessCode}/store/{store_id}/finance/application"""
+    payload, debug = _request(
+        config,
+        "POST",
+        f"/{config.business_code}/store/{store_id}/finance/application",
+        body={"product_code": product_code},
+        context="Apply finance",
+        options=options,
+        capture_debug=True,
+    )
+    return payload, debug
+
+
+# --- Business-level webhooks ----------------------------------------------
+
+
+def list_webhooks(config, store_id=None, options=DEFAULT_SIGNATURE_OPTIONS):
+    """GET /{businessCode}/web/hook?store_id=...
+
+    Business-level endpoint (no store_id in the path), but Smartlane's
+    own example still passes store_id as a query filter.
+    """
+    params = {"store_id": store_id} if store_id else None
+    payload, debug = _request(
+        config,
+        "GET",
+        f"/{config.business_code}/web/hook",
+        params=params,
+        context="Webhook list",
+        options=options,
+        capture_debug=True,
+    )
+    return payload, debug
+
+
+def register_webhook(config, store_id, webhook_type, url, options=DEFAULT_SIGNATURE_OPTIONS):
+    """POST /{businessCode}/web/hook
+
+    Body per Postman's example: store_id, type, url. Registering again
+    for the same store_id/type updates the existing registration rather
+    than creating a duplicate, per the doc.
+    """
+    payload, debug = _request(
+        config,
+        "POST",
+        f"/{config.business_code}/web/hook",
+        body={"store_id": store_id, "type": webhook_type, "url": url},
+        context="Webhook register",
         options=options,
         capture_debug=True,
     )

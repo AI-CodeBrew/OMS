@@ -143,3 +143,20 @@ def business_config_test(request):
     except SmartlaneBusinessError as exc:
         return _error(exc)
     return Response({"success": True, **result})
+
+
+@api_view(["POST"])
+@permission_classes([IsSuperAdmin])
+def api_explorer_test(request):
+    """The API Explorer panel's single dispatcher - one endpoint for all
+    18 Smartlane business-API actions rather than eighteen near-identical
+    routes. Same 200-even-on-failure reasoning as business_config_test:
+    a rejected request is a normal result the panel needs to render in
+    full, not an HTTP error."""
+    body = request.data or {}
+    action = body.get("action", "")
+    try:
+        result = service.run_admin_api_test(action, body.get("params") or {})
+    except SmartlaneBusinessError as exc:
+        return _error(exc)
+    return Response({"success": True, **result})

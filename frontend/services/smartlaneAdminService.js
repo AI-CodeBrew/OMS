@@ -108,6 +108,17 @@ class SmartlaneAdminService {
       body: JSON.stringify({ city, zip_code }),
     });
   }
+
+  // The API Explorer's single dispatcher - resolves for both outcomes,
+  // same as testConnection(): a rejected call comes back as
+  // {success: true, ok: false, error, debug} because the panel needs to
+  // render the failure detail, not throw it away.
+  runApiTest(action, params) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneApiExplorer}`, {
+      method: "POST",
+      body: JSON.stringify({ action, params }),
+    });
+  }
 }
 
 export const smartlaneAdminService = new SmartlaneAdminService();

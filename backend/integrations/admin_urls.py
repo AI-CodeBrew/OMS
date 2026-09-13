@@ -36,4 +36,5 @@ urlpatterns = [
         admin_views.store_link_warehouses_provision,
         name="admin-smartlane-store-warehouses-provision",
     ),
+    path("api-explorer/", admin_views.api_explorer_test, name="admin-smartlane-api-explorer"),
 ]

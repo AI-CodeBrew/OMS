@@ -24,6 +24,29 @@ const EMPTY_COURIER = {
   notes: "",
 };
 
+// Mirrors backend/integrations/business_services.py's API_TEST_ACTIONS
+// keys exactly - the dispatcher rejects anything not in that whitelist.
+const API_ACTIONS = [
+  { value: "store_list", label: "Store list" },
+  { value: "industries", label: "Industries" },
+  { value: "city_list", label: "City list" },
+  { value: "finance_products", label: "Finance products" },
+  { value: "activity_log", label: "Activity log", storeScoped: true },
+  { value: "warehouse_list", label: "Warehouse list", storeScoped: true },
+  { value: "warehouse_save", label: "Add/Edit warehouse", storeScoped: true },
+  { value: "finance_information", label: "Finance information", storeScoped: true },
+  { value: "apply_finance", label: "Apply finance", storeScoped: true },
+  { value: "consignment_create", label: "Create consignment", storeScoped: true },
+  { value: "consignment_track", label: "Track consignment", storeScoped: true },
+  { value: "consignment_cancel", label: "Cancel consignment", storeScoped: true },
+  { value: "airway_bill", label: "Airway bill", storeScoped: true },
+  { value: "load_sheet", label: "Load sheet", storeScoped: true },
+  { value: "shipper_advice_get", label: "Shipper advice (list)", storeScoped: true },
+  { value: "shipper_advice_update", label: "Shipper advice (update)", storeScoped: true },
+  { value: "webhook_list", label: "Webhook list" },
+  { value: "webhook_register", label: "Webhook register" },
+];
+
 const LINK_STATUS_TONE = {
   pending_approval: "bg-amber-50 text-amber-700",
   in_review: "bg-blue-50 text-blue-700",
@@ -71,6 +94,12 @@ export default function SmartlaneBusinessPage() {
   const [editingCourierId, setEditingCourierId] = useState(null);
   const [showCourierForm, setShowCourierForm] = useState(false);
   const [savingCourier, setSavingCourier] = useState(false);
+
+  const [apiAction, setApiAction] = useState(API_ACTIONS[0].value);
+  const [apiStoreId, setApiStoreId] = useState("");
+  const [apiParams, setApiParams] = useState("");
+  const [apiTesting, setApiTesting] = useState(false);
+  const [apiResult, setApiResult] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -309,6 +338,34 @@ export default function SmartlaneBusinessPage() {
     }
   }
 
+  async function onRunApiTest() {
+    let extra = {};
+    if (apiParams.trim()) {
+      try {
+        extra = JSON.parse(apiParams);
+      } catch {
+        setError("Extra params must be valid JSON.");
+        return;
+      }
+    }
+    // store_id from its own field, but an explicit one in the JSON
+    // textarea wins - lets webhook_register's own store_id (a different
+    // store than the one you're currently poking at) override it.
+    const params = apiStoreId.trim() ? { store_id: apiStoreId.trim(), ...extra } : extra;
+
+    setApiTesting(true);
+    setError("");
+    setApiResult(null);
+    try {
+      const data = await smartlaneAdminService.runApiTest(apiAction, params);
+      setApiResult(data);
+    } catch (err) {
+      setError(err.message || "Request failed");
+    } finally {
+      setApiTesting(false);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -491,6 +548,116 @@ export default function SmartlaneBusinessPage() {
               </Button>
             </div>
           </form>
+
+          <div className="rounded-xl border border-surface-border bg-white shadow-sm">
+            <div className="border-b border-surface-border px-5 py-3">
+              <h2 className="text-sm font-semibold text-slate-800">API Explorer</h2>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Fire any Smartlane business-API call directly and see the raw result — the
+                same thing Postman was used for, without leaving the OMS. Store list,
+                Industries, City list and Finance products need no store and work today;
+                everything else needs an active store first.
+              </p>
+            </div>
+            <div className="space-y-3 px-5 py-4">
+              <div className="grid gap-3 sm:grid-cols-[1fr_140px]">
+                <Field label="Action">
+                  <select
+                    value={apiAction}
+                    onChange={(e) => setApiAction(e.target.value)}
+                    className={inputClass}
+                  >
+                    {API_ACTIONS.map((a) => (
+                      <option key={a.value} value={a.value}>
+                        {a.label}
+                        {a.storeScoped ? "" : " (no store needed)"}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Store ID" hint="Only for store-scoped actions.">
+                  <input
+                    value={apiStoreId}
+                    onChange={(e) => setApiStoreId(e.target.value)}
+                    placeholder="e.g. 5"
+                    className={inputClass}
+                  />
+                </Field>
+              </div>
+              <Field
+                label="Extra params (JSON)"
+                hint={
+                  'e.g. {"store_order_ids": ["SLTEST001"]}, or {"body": {...}} for ' +
+                  "warehouse_save / consignment_create / shipper_advice_update."
+                }
+              >
+                <textarea
+                  rows={4}
+                  value={apiParams}
+                  onChange={(e) => setApiParams(e.target.value)}
+                  placeholder="{}"
+                  className={`${inputClass} font-mono text-xs`}
+                />
+              </Field>
+              <div className="flex justify-end">
+                <Button onClick={onRunApiTest} loading={apiTesting}>
+                  Send
+                </Button>
+              </div>
+            </div>
+
+            {apiResult ? (
+              <div
+                className={`border-t px-5 py-4 text-sm ${
+                  apiResult.ok
+                    ? "border-emerald-200 bg-emerald-50/50"
+                    : "border-red-200 bg-red-50/50"
+                }`}
+              >
+                <p
+                  className={`mb-2 text-sm font-semibold ${
+                    apiResult.ok ? "text-emerald-700" : "text-red-700"
+                  }`}
+                >
+                  {apiResult.ok ? "Success" : "Failed"}
+                </p>
+                {apiResult.ok ? (
+                  <pre className="overflow-x-auto rounded-lg bg-white px-3 py-2 text-xs text-slate-700">
+                    {JSON.stringify(apiResult.response, null, 2)}
+                  </pre>
+                ) : (
+                  <p className="text-red-700">{apiResult.error}</p>
+                )}
+                {apiResult.debug ? (
+                  <details open={!apiResult.ok} className="mt-3">
+                    <summary className="cursor-pointer text-xs font-medium text-slate-500 hover:text-slate-700">
+                      Signature detail
+                    </summary>
+                    <dl className="mt-2 space-y-2">
+                      {[
+                        ["Method", apiResult.debug.method],
+                        ["String to sign", apiResult.debug.string_to_sign],
+                        ["Signed URL", apiResult.debug.signed_url],
+                        ["Signature", apiResult.debug.signature],
+                        ["Body sent", apiResult.debug.body_sent ?? "(none)"],
+                        ["HTTP status", String(apiResult.debug.status_code ?? "—")],
+                        ["Response", apiResult.debug.response_body || "(empty)"],
+                      ].map(([label, value]) => (
+                        <div key={label}>
+                          <dt className="text-xs uppercase tracking-wide text-slate-400">
+                            {label}
+                          </dt>
+                          <dd className="mt-0.5 whitespace-pre-wrap break-all rounded bg-white px-2 py-1 font-mono text-xs text-slate-700">
+                            {value}
+                          </dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </details>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
 
           <div className="rounded-xl border border-surface-border bg-white shadow-sm">
             <div className="flex items-center justify-between gap-3 border-b border-surface-border px-5 py-3">

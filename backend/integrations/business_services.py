@@ -542,7 +542,7 @@ def sync_store_links():
         raise SmartlaneBusinessError("Configure the Smartlane business account first.")
 
     try:
-        payload = business_client.list_stores(config)
+        payload, _debug = business_client.list_stores(config)
     except SmartlaneAPIError as exc:
         raise SmartlaneBusinessError(str(exc), 502)
 
@@ -606,19 +606,22 @@ def list_warehouses_for_link(link):
 
 
 def build_warehouse_payload(link, offering, *, city, zip_code):
-    """The doc's Add/Edit Warehouse body, in its field order. `code` is
-    deliberately omitted - leaving it out is what makes Smartlane assign
-    one, which is what gets stored back as smartlane_warehouse_code."""
+    """The Add/Edit Warehouse body, field names/order confirmed against
+    Smartlane's own Postman collection (the doc's prose had guessed
+    shipper_email/shipper_phone - real fields are just email/phone, and
+    area comes before city in their real example). `code` is deliberately
+    omitted - leaving it out is what makes Smartlane assign one, which is
+    what gets stored back as smartlane_warehouse_code."""
     return {
         "name": offering.warehouse_name_for(link.organization.name),
         "shipper_name": link.kyc_poc_name,
-        "shipper_email": link.kyc_email,
-        "shipper_phone": link.kyc_phone,
+        "email": link.kyc_email,
+        "phone": link.kyc_phone,
         "address": link.kyc_business_address,
-        "city": city,
         "area": "",
-        "zip_code": zip_code,
+        "city": city,
         "service_type": offering.service_type,
+        "zip_code": zip_code,
         "auto_booking": offering.auto_booking,
     }
 
@@ -746,6 +749,162 @@ def provision_warehouses_for_store_link(link_id, body, *, actor_email=""):
         "link": _serialize_link(link, include_org=True),
         "warehouses": list_warehouses_for_link(link),
     }
+
+
+# --- Super-admin API Explorer -------------------------------------------
+# A "mini Postman" inside the OMS: one generic dispatcher rather than a
+# bespoke service function per Smartlane endpoint, since this exists
+# purely to let a super admin fire any business-API call from the admin
+# page and see the raw result - exactly what Postman was being used for
+# to validate these endpoints in the first place. Every action returns
+# through the same {"ok", "response"/"error", "debug"} shape
+# test_connection() already uses, so the frontend renders every action's
+# result through one existing pattern.
+
+
+def _api_test_store_list(config, params):
+    return business_client.list_stores(config, search=params.get("search"))
+
+
+def _api_test_industries(config, params):
+    return business_client.fetch_industries(config)
+
+
+def _api_test_city_list(config, params):
+    return business_client.fetch_city_list(config)
+
+
+def _api_test_finance_products(config, params):
+    return business_client.fetch_finance_products(config)
+
+
+def _api_test_activity_log(config, params):
+    return business_client.fetch_activity_log(
+        config, params["store_id"], search=params.get("search")
+    )
+
+
+def _api_test_warehouse_list(config, params):
+    return business_client.list_warehouses(
+        config, params["store_id"], search=params.get("search")
+    )
+
+
+def _api_test_warehouse_save(config, params):
+    return business_client.add_or_edit_warehouse(config, params["store_id"], params.get("body") or {})
+
+
+def _api_test_finance_information(config, params):
+    return business_client.fetch_finance_information(config, params["store_id"])
+
+
+def _api_test_apply_finance(config, params):
+    return business_client.apply_finance(config, params["store_id"], params.get("product_code", ""))
+
+
+def _api_test_consignment_create(config, params):
+    return business_client.create_consignment(config, params["store_id"], params.get("body") or {})
+
+
+def _api_test_consignment_track(config, params):
+    return business_client.track_consignment(
+        config, params["store_id"], params.get("store_order_ids") or []
+    )
+
+
+def _api_test_consignment_cancel(config, params):
+    return business_client.cancel_consignment(
+        config, params["store_id"], params.get("store_order_id", "")
+    )
+
+
+def _api_test_airway_bill(config, params):
+    return business_client.fetch_airway_bill(
+        config,
+        params["store_id"],
+        params.get("store_order_ids") or [],
+        no_of_prints=params.get("no_of_prints", 1),
+    )
+
+
+def _api_test_load_sheet(config, params):
+    return business_client.fetch_load_sheet(
+        config,
+        params["store_id"],
+        courier=params.get("courier"),
+        store_order_ids=params.get("store_order_ids"),
+        start_date=params.get("start_date"),
+        end_date=params.get("end_date"),
+    )
+
+
+def _api_test_shipper_advice_get(config, params):
+    return business_client.get_shipper_advice(config, params["store_id"])
+
+
+def _api_test_shipper_advice_update(config, params):
+    return business_client.update_shipper_advice(config, params["store_id"], params.get("body") or {})
+
+
+def _api_test_webhook_list(config, params):
+    return business_client.list_webhooks(config, params.get("store_id"))
+
+
+def _api_test_webhook_register(config, params):
+    return business_client.register_webhook(
+        config, params.get("store_id"), params.get("type", ""), params.get("url", "")
+    )
+
+
+# Business-level actions need no store_id; store-level ones require one -
+# distinguished here only for the frontend's dropdown labeling, the
+# dispatcher itself doesn't care.
+API_TEST_ACTIONS = {
+    "store_list": _api_test_store_list,
+    "industries": _api_test_industries,
+    "city_list": _api_test_city_list,
+    "finance_products": _api_test_finance_products,
+    "activity_log": _api_test_activity_log,
+    "warehouse_list": _api_test_warehouse_list,
+    "warehouse_save": _api_test_warehouse_save,
+    "finance_information": _api_test_finance_information,
+    "apply_finance": _api_test_apply_finance,
+    "consignment_create": _api_test_consignment_create,
+    "consignment_track": _api_test_consignment_track,
+    "consignment_cancel": _api_test_consignment_cancel,
+    "airway_bill": _api_test_airway_bill,
+    "load_sheet": _api_test_load_sheet,
+    "shipper_advice_get": _api_test_shipper_advice_get,
+    "shipper_advice_update": _api_test_shipper_advice_update,
+    "webhook_list": _api_test_webhook_list,
+    "webhook_register": _api_test_webhook_register,
+}
+
+
+def run_admin_api_test(action, params):
+    """Dispatches one ad-hoc Smartlane business-API call for the admin
+    page's API Explorer panel - the in-OMS replacement for testing via
+    Postman. `action` is checked against a fixed whitelist (never
+    executes arbitrary code); `params` carries whatever that action
+    needs (store_id, store_order_ids, a raw `body` dict for POST-shaped
+    actions, ...). Mirrors test_connection()'s return shape so the
+    frontend renders every action's result through one pattern.
+    """
+    handler = API_TEST_ACTIONS.get(action)
+    if handler is None:
+        raise SmartlaneBusinessError(f"Unknown action: {action!r}.", 400)
+
+    config = SmartlaneBusinessConfig.load()
+    if not config.is_configured:
+        raise SmartlaneBusinessError("Configure the Smartlane business account first.")
+
+    try:
+        response, debug = handler(config, params or {})
+    except KeyError as exc:
+        raise SmartlaneBusinessError(f"Missing required parameter: {exc}.", 400)
+    except SmartlaneAPIError as exc:
+        return {"ok": False, "error": str(exc), "debug": getattr(exc, "debug", None)}
+    return {"ok": True, "response": response, "debug": debug}
 
 
 def _audit(link, action, summary, actor_email):

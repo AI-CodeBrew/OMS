@@ -19,6 +19,7 @@ export const API_ENDPOINTS = {
     smartlaneStoreWarehouses: (id) => `/api/core/admin/smartlane/stores/${id}/warehouses/`,
     smartlaneStoreWarehousesProvision: (id) =>
       `/api/core/admin/smartlane/stores/${id}/warehouses/provision/`,
+    smartlaneApiExplorer: "/api/core/admin/smartlane/api-explorer/",
   },
   team: "/api/core/team/",
   teamMember: (userId) => `/api/core/team/${userId}/`,
