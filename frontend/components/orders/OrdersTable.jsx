@@ -12,6 +12,7 @@ export default function OrdersTable({
   onToggleSelectAll,
   onRowAction,
   onOpenDetail,
+  onRaiseTicket,
 }) {
   const allSelected = orders.length > 0 && orders.every((o) => selectedIds.has(o.id));
   const someSelected = orders.some((o) => selectedIds.has(o.id));
@@ -104,7 +105,7 @@ export default function OrdersTable({
                   </button>
                 </td>
                 <td className="px-3 py-1.5 text-right">
-                  <OrderRowMenu order={order} onAction={onRowAction} />
+                  <OrderRowMenu order={order} onAction={onRowAction} onRaiseTicket={onRaiseTicket} />
                 </td>
               </tr>
             ))

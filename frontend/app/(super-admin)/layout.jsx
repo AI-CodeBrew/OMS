@@ -16,6 +16,11 @@ const NAV = [
     label: "Smartlane",
     match: (path) => path.startsWith("/admin/smartlane"),
   },
+  {
+    href: "/admin/tickets",
+    label: "Tickets",
+    match: (path) => path.startsWith("/admin/tickets"),
+  },
 ];
 
 function SuperAdminShell({ children }) {

@@ -12,6 +12,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+# Must match fly.toml's runtime [env] PLAYWRIGHT_BROWSERS_PATH=0 exactly.
+# That setting only takes effect on the running machine - it does nothing
+# for this build step unless it's also set here. Without it, install puts
+# Chromium in the default ~/.cache/ms-playwright, the running container
+# then looks in site-packages instead (because PLAYWRIGHT_BROWSERS_PATH=0
+# *is* set there), finds nothing, and every PDF render fails with
+# "Executable doesn't exist" - the bug this line fixes.
+ENV PLAYWRIGHT_BROWSERS_PATH=0
 # Needs to run as root (true for the whole Docker build, unlike Render's
 # native Python buildpack) so its internal apt-get install for Chromium's
 # system libraries actually succeeds - that's the real reason the browser

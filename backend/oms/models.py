@@ -1,6 +1,7 @@
 import uuid
 
 from django.db import models
+from django.db.models.expressions import RawSQL
 
 from core.models import TenantScopedModel
 
@@ -329,6 +330,106 @@ class OrderTransaction(TenantScopedModel):
 
     def __str__(self):
         return f"{self.amount} ({self.status}) on {self.order_id}"
+
+
+class Ticket(TenantScopedModel):
+    """A tenant user's support request - either attached to one order or
+    standalone (order is nullable). Status is the single source of truth
+    for the lifecycle, same pattern as Order.status: open -> seen (a
+    superadmin opened it) -> in_progress (they replied) -> resolved."""
+
+    STATUS_CHOICES = [
+        ("open", "Open"),
+        ("seen", "Seen"),
+        ("in_progress", "In Progress"),
+        ("resolved", "Resolved"),
+    ]
+
+    PRIORITY_CHOICES = [
+        ("low", "Low"),
+        ("medium", "Medium"),
+        ("high", "High"),
+        ("urgent", "Urgent"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    # Separate from the UUID pk on purpose: UUIDs aren't something a
+    # customer or agent can read out loud or type into a search box.
+    # Django's AutoField must be the primary key, so a second, human-facing
+    # sequential number is backed by its own Postgres sequence instead
+    # (created in the migration) - db_default means Django omits this
+    # column from INSERT entirely and lets the DB assign the next value,
+    # same as a real serial/identity column.
+    number = models.BigIntegerField(
+        unique=True, editable=False, db_default=RawSQL("nextval('oms.tickets_number_seq')", [])
+    )
+    order = models.ForeignKey(
+        Order, on_delete=models.CASCADE, related_name="tickets", null=True, blank=True
+    )
+    category = models.CharField(max_length=100)
+    sub_category = models.CharField(max_length=100, blank=True, default="")
+    description = models.TextField()
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="open")
+    priority = models.CharField(max_length=10, choices=PRIORITY_CHOICES, default="medium")
+    # Supabase auth.users.id - same non-FK pattern as OrderNote.author_user_id.
+    created_by_user_id = models.UUIDField(null=True, blank=True)
+    # Denormalized: Supabase Auth owns the display name/email, not Django,
+    # and the cross-org admin list needs a "who" without joining auth.users.
+    created_by_email = models.CharField(max_length=255, blank=True, default="")
+    # Which superadmin has claimed this ticket - set via the admin "Assign
+    # to me" action, not the tenant side. Nullable/blank means unassigned.
+    assigned_to_user_id = models.UUIDField(null=True, blank=True)
+    assigned_to_email = models.CharField(max_length=255, blank=True, default="")
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    resolved_by_user_id = models.UUIDField(null=True, blank=True)
+
+    class Meta:
+        db_table = '"oms"."tickets"'
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["organization", "-created_at"], name="oms_ticket_org_created_idx"),
+            models.Index(fields=["organization", "created_by_user_id"], name="oms_ticket_org_author_idx"),
+            models.Index(fields=["organization", "status"], name="oms_ticket_org_status_idx"),
+            models.Index(fields=["organization", "priority"], name="oms_ticket_org_priority_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.ticket_number} - {self.category} ({self.status})"
+
+    @property
+    def ticket_number(self):
+        return f"TKT-{self.number:06d}"
+
+
+class TicketMessage(TenantScopedModel):
+    """One message in a ticket's conversation. author_role is stored at
+    write time (not derived from author_user_id) purely so the UI can
+    align/label a bubble without a second lookup - there's no Django User
+    table to check a role against at render time.
+
+    is_internal marks a superadmin-only note (never returned by the
+    tenant-facing messages endpoint) - the standard helpdesk pattern of
+    letting support staff leave context for each other on a ticket without
+    the customer seeing it. Always False for tenant-authored messages."""
+
+    ROLE_CHOICES = [("tenant", "Tenant"), ("super_admin", "Super Admin")]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    ticket = models.ForeignKey(Ticket, on_delete=models.CASCADE, related_name="messages")
+    body = models.TextField()
+    author_user_id = models.UUIDField(null=True, blank=True)
+    author_role = models.CharField(max_length=20, choices=ROLE_CHOICES)
+    author_email = models.CharField(max_length=255, blank=True, default="")
+    is_internal = models.BooleanField(default=False)
+
+    class Meta:
+        db_table = '"oms"."ticket_messages"'
+        # Ascending - this is a conversation thread, it reads top-to-bottom,
+        # unlike every other timestamped model here.
+        ordering = ["created_at"]
+
+    def __str__(self):
+        return f"{self.author_role} on ticket {self.ticket_id}"
 
 
 def _print_batch_upload_path(instance, filename):

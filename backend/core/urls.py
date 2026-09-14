@@ -22,4 +22,7 @@ urlpatterns = [
     # Lives in the integrations app but is mounted here on purpose: the
     # /api/core/admin/ prefix is what AdminIPAllowlistMiddleware matches.
     path("admin/smartlane/", include("integrations.admin_urls")),
+    # Same reason - lives in the oms app (Ticket FKs Order) but is mounted
+    # here for the IP allowlist.
+    path("admin/tickets/", include("oms.admin_urls")),
 ]

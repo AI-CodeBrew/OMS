@@ -20,6 +20,12 @@ export const API_ENDPOINTS = {
     smartlaneStoreWarehousesProvision: (id) =>
       `/api/core/admin/smartlane/stores/${id}/warehouses/provision/`,
     smartlaneApiExplorer: "/api/core/admin/smartlane/api-explorer/",
+    tickets: "/api/core/admin/tickets/",
+    ticket: (id) => `/api/core/admin/tickets/${id}/`,
+    ticketResolve: (id) => `/api/core/admin/tickets/${id}/resolve/`,
+    ticketAssign: (id) => `/api/core/admin/tickets/${id}/assign/`,
+    ticketPriority: (id) => `/api/core/admin/tickets/${id}/priority/`,
+    ticketMessages: (id) => `/api/core/admin/tickets/${id}/messages/`,
   },
   team: "/api/core/team/",
   teamMember: (userId) => `/api/core/team/${userId}/`,
@@ -50,6 +56,9 @@ export const API_ENDPOINTS = {
     orderSplit: (id) => `/api/oms/orders/${id}/split/`,
     orderLoadsheet: (id) => `/api/oms/orders/${id}/loadsheet/`,
     orderAirwayBill: (id) => `/api/oms/orders/${id}/airway-bill/`,
+    tickets: "/api/oms/tickets/",
+    ticket: (id) => `/api/oms/tickets/${id}/`,
+    ticketMessages: (id) => `/api/oms/tickets/${id}/messages/`,
   },
   wms: {
     warehouses: "/api/wms/warehouses/",

@@ -27,7 +27,7 @@ from core.redis_client import (
 from wms.services import InsufficientStock
 
 from . import importers, services
-from .models import Courier, Order, OrderItem, OrderNote, OrderTransaction, PrintBatch
+from .models import Courier, Order, OrderItem, OrderNote, OrderTransaction, PrintBatch, Ticket, TicketMessage
 from .serializers import (
     CourierSerializer,
     OrderNoteSerializer,
@@ -36,6 +36,8 @@ from .serializers import (
     OrderSummarySerializer,
     OrderTransactionSerializer,
     PrintBatchSerializer,
+    TicketMessageSerializer,
+    TicketSerializer,
 )
 
 logger = logging.getLogger(__name__)
@@ -1169,6 +1171,84 @@ class PrintBatchViewSet(viewsets.ReadOnlyModelViewSet):
             f'attachment; filename="{batch.kind}-{batch.created_at:%Y-%m-%d}.{ext}"'
         )
         return response
+
+
+class TicketViewSet(viewsets.ModelViewSet):
+    """Support tickets - either attached to one order or standalone
+    (Ticket.order is nullable). Listing is narrower than every other
+    tenant viewset here: with no `order` filter, `list` only returns
+    tickets *this user* created (the sidebar's "My Tickets" page);
+    filtered by `?order=<id>` it returns every ticket on that order
+    regardless of who raised it (an order's Tickets tab, same visibility
+    model as OrderNote - any org member can see it). Retrieve/messages
+    are always org-scoped only, so a ticket reached via the order tab
+    stays reachable by id too."""
+
+    serializer_class = TicketSerializer
+    permission_classes = [RequireModule]
+    required_module = "oms"
+    pagination_class = OrderPagination
+
+    def get_queryset(self):
+        qs = Ticket.objects.filter(organization_id=self.request.organization_id).select_related("order")
+        if self.action == "list":
+            order_id = self.request.query_params.get("order")
+            if order_id:
+                qs = qs.filter(order_id=order_id)
+            else:
+                qs = qs.filter(created_by_user_id=self.request.user_id)
+
+            status_filter = self.request.query_params.get("status")
+            if status_filter:
+                qs = qs.filter(status=status_filter)
+            priority_filter = self.request.query_params.get("priority")
+            if priority_filter:
+                qs = qs.filter(priority=priority_filter)
+            q = (self.request.query_params.get("q") or "").strip()
+            if q:
+                qs = qs.filter(
+                    Q(category__icontains=q)
+                    | Q(sub_category__icontains=q)
+                    | Q(description__icontains=q)
+                    | Q(order__order_number__icontains=q)
+                )
+        return qs
+
+    def perform_create(self, serializer):
+        serializer.save(
+            organization_id=self.request.organization_id,
+            created_by_user_id=self.request.user_id,
+            created_by_email=getattr(self.request, "auth_email", "") or "",
+            status="open",
+        )
+
+    @action(detail=True, methods=["get", "post"])
+    def messages(self, request, pk=None):
+        ticket = self.get_object()
+        if request.method == "POST":
+            body = (request.data.get("body") or "").strip()
+            if not body:
+                return Response({"detail": "body is required"}, status=status.HTTP_400_BAD_REQUEST)
+            message = TicketMessage.objects.create(
+                organization_id=ticket.organization_id,
+                ticket=ticket,
+                body=body,
+                author_user_id=request.user_id,
+                author_role="tenant",
+                author_email=getattr(request, "auth_email", "") or "",
+            )
+            # A ticket the customer keeps replying to should reopen rather
+            # than silently sit resolved.
+            if ticket.status == "resolved":
+                ticket.status = "open"
+                ticket.save(update_fields=["status"])
+            return Response(TicketMessageSerializer(message).data, status=status.HTTP_201_CREATED)
+
+        # Internal (superadmin-only) notes never reach a tenant, regardless
+        # of which ticket they're asking about.
+        return Response(
+            TicketMessageSerializer(ticket.messages.filter(is_internal=False), many=True).data
+        )
 
 
 class ReportView(APIView):

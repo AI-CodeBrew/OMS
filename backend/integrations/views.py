@@ -17,6 +17,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.context import current_organization_id
+from core.events import publish_event
 from core.middleware import get_client_ip
 from core.permissions import IsOrgAdmin
 from core.rbac import write_audit_log
@@ -477,6 +478,20 @@ def smartlane_shipment_webhook(request, token):
                 if tracking_number and tracking_number != order.tracking_number:
                     order.tracking_number = tracking_number[:100]
                     order.save(update_fields=["tracking_number", "updated_at"])
+                    # No status change here, but the row itself did change -
+                    # without this, a consignment number arriving with no
+                    # accompanying status move is invisible to core/realtime.py
+                    # entirely (see order.status_changed's publish in
+                    # oms.services._transition, which this bypasses).
+                    publish_event(
+                        "order.updated",
+                        {
+                            "organization_id": str(order.organization_id),
+                            "order_id": str(order.id),
+                            "order_number": order.order_number,
+                            "source": "smartlane",
+                        },
+                    )
 
                 if order.status == "booking_pending" and tracking_number:
                     # The consignment number arriving is what "booked"

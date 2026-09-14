@@ -31,6 +31,7 @@ export default function Pagination({
   onPageChange,
   onPageSizeChange,
   maxPageSize = 1000,
+  itemLabel = "orders",
 }) {
   const [customMode, setCustomMode] = useState(false);
   const [customValue, setCustomValue] = useState("");
@@ -70,7 +71,7 @@ export default function Pagination({
     <div className="flex flex-wrap items-center justify-between gap-3 py-3 text-sm text-slate-500">
       <div className="flex items-center gap-3">
         <span>
-          Showing {from} to {to} of {count} orders
+          Showing {from} to {to} of {count} {itemLabel}
         </span>
 
         {customMode ? (

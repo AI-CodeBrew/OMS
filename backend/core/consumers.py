@@ -1,8 +1,10 @@
 """WebSocket consumer that tells every open browser tab on a given
-organization's Orders page "something changed, go refetch." Paired with
-core/realtime.py, which is what actually sends the messages this consumer
-forwards - this file only knows how to authenticate, join/leave the right
-group, and relay whatever it's given.
+organization's Orders page what changed - the fresh per-status counts and,
+when the event was about one order, that order's fresh row, so the tab can
+patch in place instead of always refetching. Paired with core/realtime.py,
+which is what actually sends the messages this consumer forwards - this
+file only knows how to authenticate, join/leave the right group, and relay
+whatever it's given.
 """
 
 import logging
@@ -61,6 +63,15 @@ class OrgOrdersConsumer(AsyncJsonWebsocketConsumer):
 
     # Dispatched for every channel_layer.group_send({"type": "order.update",
     # ...}) call in core/realtime.py - Channels maps the "type" string to
-    # this method name (dots become underscores) automatically.
+    # this method name (dots become underscores) automatically. counts/order
+    # are optional (core/realtime.py only attaches them when it managed to
+    # compute them) - forwarded as-is so the frontend can patch a single row
+    # instead of refetching everything; omitted entirely when absent rather
+    # than sent as null, matching the frontend's `if (frame.order)` checks.
     async def order_update(self, message):
-        await self.send_json({"event": message["event"], "payload": message["payload"]})
+        out = {"event": message["event"], "payload": message["payload"]}
+        if "counts" in message:
+            out["counts"] = message["counts"]
+        if "order" in message:
+            out["order"] = message["order"]
+        await self.send_json(out)

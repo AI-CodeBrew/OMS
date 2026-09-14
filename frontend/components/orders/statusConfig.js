@@ -45,11 +45,15 @@ export const ACTIONS_NEEDING_PARAMS = new Set([
 
 // Smartlane generates a load sheet for one courier at a time - these are
 // the picker options; "coming soon" entries mirror the CSV export
-// template's existing pattern for couriers not yet enabled.
+// template's existing pattern for couriers not yet enabled. Leopards and
+// BarqRaftar are both confirmed live (real orders auto-routed to each,
+// airway bills render correctly for both) - keep this in sync with
+// smartlane_client.SUPPORTED_COURIERS on the backend, which enforces the
+// same set server-side.
 export const SMARTLANE_LOAD_SHEET_COURIERS = [
   { value: "all", label: "All" },
   { value: "leopards", label: "Leopard" },
-  { value: "buraq", label: "Buraq (Coming Soon)", disabled: true },
+  { value: "barqraftar", label: "BarqRaftar" },
   { value: "postex", label: "PostEx (Coming Soon)", disabled: true },
 ];
 

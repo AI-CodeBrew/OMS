@@ -611,6 +611,19 @@ def poll_smartlane_statuses(organization_id, *, batch_size=100, limit=1000):
             if consignment and consignment != order.tracking_number:
                 order.tracking_number = _truncate(consignment, 100)
                 order.save(update_fields=["tracking_number", "updated_at"])
+                # Same reasoning as the webhook's identical branch (see
+                # integrations/views.py) - no status change here, but the
+                # row itself changed and would otherwise never reach
+                # core/realtime.py at all.
+                publish_event(
+                    "order.updated",
+                    {
+                        "organization_id": str(order.organization_id),
+                        "order_id": str(order.id),
+                        "order_number": order.order_number,
+                        "source": "smartlane",
+                    },
+                )
 
             if order.status == "booking_pending":
                 # The consignment number arriving is what "booked" means

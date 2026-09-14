@@ -18,6 +18,7 @@ import {
   CashIcon,
   IntegrationsIcon,
   LayersIcon,
+  TicketIcon,
 } from "./navIcons";
 
 // Top header tabs only — Integrations / Logs / Settings live in the sidebar.
@@ -69,6 +70,17 @@ export const BATCH_ITEM = {
   icon: LayersIcon,
 };
 
+// Every tenant user (not just org admins) can see their own tickets - the
+// only bottom-block item with that reach, so it gets its own unconditional
+// allow in canAccessPath below rather than the hasProduct()/isAdmin gates
+// every other item there uses.
+export const TICKETS_ITEM = {
+  key: "tickets",
+  label: "Tickets",
+  href: "/tickets",
+  icon: TicketIcon,
+};
+
 const MODULE_PATH_PREFIXES = {
   oms: ["/orders", "/dashboard"],
   // Returns Desk lives under WMS — keep the WMS sidebar when on /returns.
@@ -79,6 +91,7 @@ const MODULE_PATH_PREFIXES = {
   reports: ["/reports"],
   batch: ["/batch"],
   settings: ["/settings"],
+  tickets: ["/tickets"],
 };
 
 export function getActiveModule(pathname) {
@@ -116,6 +129,7 @@ export function getDefaultModuleHref(user) {
 export function canAccessPath(user, pathname) {
   if (!user) return false;
   if (pathname === "/settings" || pathname.startsWith("/settings/")) return true;
+  if (pathname === "/tickets" || pathname.startsWith("/tickets/")) return true;
 
   const isAdmin = user.role === "org_admin" || user.isOrgAdmin || user.role === "super_admin";
   const modules = Array.isArray(user.modules) ? user.modules : [];
@@ -175,4 +189,5 @@ export const SIDEBAR_ITEMS = {
   reports: [],
   batch: [],
   settings: [],
+  tickets: [],
 };

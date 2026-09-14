@@ -10,6 +10,7 @@ import {
   INTEGRATIONS_ITEM,
   REPORT_ITEM,
   BATCH_ITEM,
+  TICKETS_ITEM,
 } from "./moduleNav";
 import useAuthStore from "../../store/authStore";
 
@@ -198,6 +199,10 @@ export default function ModuleSidebar({ activeModule, expanded, onToggle }) {
         ) : null}
         <ItemComponent item={REPORT_ITEM} active={pathname === REPORT_ITEM.href} />
         <ItemComponent item={BATCH_ITEM} active={pathname === BATCH_ITEM.href} />
+        <ItemComponent
+          item={TICKETS_ITEM}
+          active={pathname === TICKETS_ITEM.href || pathname.startsWith(`${TICKETS_ITEM.href}/`)}
+        />
         <ItemComponent item={SETTINGS_ITEM} active={pathname === SETTINGS_ITEM.href} />
       </div>
     </aside>

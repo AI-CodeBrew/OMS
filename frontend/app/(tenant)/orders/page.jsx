@@ -59,12 +59,47 @@ const ImportOrdersModal = dynamic(() => import("../../../components/orders/Impor
 const OrderDetailPanel = dynamic(() => import("../../../components/orders/OrderDetailPanel"), {
   ssr: false,
 });
+const CreateTicketDialog = dynamic(() => import("../../../components/tickets/CreateTicketDialog"), {
+  ssr: false,
+});
 
 const EMPTY_FILTERS = { city: "", courier_id: "", gateway: "", date_from: "", date_to: "" };
 const TAB_STATUSES = STATUS_TABS.map((tab) => tab.value);
 
 function isPlainTabQuery(queryParams) {
   return !queryParams.search && !queryParams.city && !queryParams.courier_id && !queryParams.gateway && !queryParams.date_from && !queryParams.date_to;
+}
+
+// Patches one order in/out of/within `list` - a pure function (no state
+// reads/writes) so a whole WebSocket batch can be folded over one fresh
+// `prev` inside a single setOrders updater, rather than each item risking
+// acting on a stale array if several land in the same flush.
+function applyPatchToList(list, freshOrder, view) {
+  const matchesTab = view.activeStatus === "all" || freshOrder.status === view.activeStatus;
+  const noOtherFilters =
+    !view.appliedSearch && Object.values(view.appliedFilters).every((v) => !v);
+  const idx = list.findIndex((o) => o.id === freshOrder.id);
+
+  if (idx !== -1) {
+    if (matchesTab) {
+      const next = list.slice();
+      next[idx] = freshOrder;
+      return { list: next, delta: 0 };
+    }
+    const next = list.slice();
+    next.splice(idx, 1);
+    return { list: next, delta: -1 };
+  }
+  // Only insert the narrow, unambiguous case - page 1, this tab, no
+  // search/city/courier/gateway/date filter active. Anything more (mid
+  // pagination, filters applied) would need replicating the backend's full
+  // filter matching client-side just to decide, which isn't worth the risk
+  // of drifting out of sync - it shows up on the next reload there instead,
+  // same as before this existed.
+  if (matchesTab && view.page === 1 && noOtherFilters) {
+    return { list: [freshOrder, ...list].slice(0, view.pageSize), delta: 1 };
+  }
+  return { list, delta: 0 };
 }
 
 // The bulk-action endpoint reports per-order outcomes with HTTP 200, so
@@ -113,8 +148,17 @@ export default function OrdersPage() {
   const [stockShortfall, setStockShortfall] = useState(null);
   const [applyingAction, setApplyingAction] = useState(false);
   const [detailOrderId, setDetailOrderId] = useState(null);
+  const [ticketOrder, setTicketOrder] = useState(null);
   const reloadTimer = useRef(null);
   const loadGen = useRef(0);
+  // Read by the WebSocket patch callbacks below, which need the *current*
+  // tab/page/filters at the moment a message arrives but must not force the
+  // socket effect to reconnect every time the user changes any of them (see
+  // that effect's dependency array).
+  const viewRef = useRef({ activeStatus, page, pageSize, appliedSearch, appliedFilters });
+  useEffect(() => {
+    viewRef.current = { activeStatus, page, pageSize, appliedSearch, appliedFilters };
+  }, [activeStatus, page, pageSize, appliedSearch, appliedFilters]);
 
   // The contextual sidebar links to /orders?status=... - stay in sync when
   // navigation changes the URL externally (not just on first mount).
@@ -267,6 +311,32 @@ export default function OrdersPage() {
     return load({ force: true });
   }, [load]);
 
+  // Applies every order a WebSocket flush carried, without refetching -
+  // used when the push already included fresh rows (see the socket effect
+  // below). Identity never changes (only reads viewRef/uses stable setState
+  // functions) so it's safe to list in that effect's deps.
+  const applyOrderPatches = useCallback((freshOrders) => {
+    const view = viewRef.current;
+    let totalDelta = 0;
+    setOrders((prev) => {
+      let next = prev;
+      for (const freshOrder of freshOrders) {
+        const result = applyPatchToList(next, freshOrder, view);
+        next = result.list;
+        totalDelta += result.delta;
+      }
+      return next;
+    });
+    if (totalDelta !== 0) {
+      setOrderCount((c) => Math.max(0, c + totalDelta));
+    }
+  }, []);
+
+  const applyCountsPatch = useCallback((counts) => {
+    setCounts(counts);
+    setCachedCounts(counts);
+  }, []);
+
   useEffect(() => {
     load();
   }, [load]);
@@ -283,18 +353,43 @@ export default function OrdersPage() {
   // created/updated (Shopify webhook, manual edit, status change, ...)
   // instead of us waiting for a manual click/reload. See lib/ordersSocket.js
   // and backend/core/{consumers,realtime}.py.
+  //
+  // Each flush is a batch of frames (ordersSocket.js coalesces bursts, not
+  // individual pushes). A frame that already carries a fresh `order` (and
+  // usually `counts`) - status changes, tracking-only updates - gets patched
+  // in place with no refetch. Anything else (new orders, or the backend's
+  // own failure fallback when it couldn't serialize a row) still falls back
+  // to the original debounced full reload, unchanged.
   useEffect(() => {
-    const cleanup = connectOrdersSocket(() => {
-      clearTimeout(reloadTimer.current);
-      reloadTimer.current = setTimeout(() => {
-        reloadAfterChange();
-      }, 300);
+    const cleanup = connectOrdersSocket((batch) => {
+      const patchable = [];
+      let latestCounts = null;
+      let needsFullReload = false;
+
+      for (const frame of batch) {
+        if (frame?.order) {
+          patchable.push(frame.order);
+          if (frame.counts) latestCounts = frame.counts;
+        } else {
+          needsFullReload = true;
+        }
+      }
+
+      if (patchable.length > 0) applyOrderPatches(patchable);
+      if (latestCounts) applyCountsPatch(latestCounts);
+
+      if (needsFullReload) {
+        clearTimeout(reloadTimer.current);
+        reloadTimer.current = setTimeout(() => {
+          reloadAfterChange();
+        }, 300);
+      }
     });
     return () => {
       clearTimeout(reloadTimer.current);
       cleanup();
     };
-  }, [reloadAfterChange]);
+  }, [reloadAfterChange, applyOrderPatches, applyCountsPatch]);
 
   function onToggleSelect(id) {
     setSelectedIds((prev) => {
@@ -599,6 +694,7 @@ export default function OrdersPage() {
           onToggleSelectAll={onToggleSelectAll}
           onRowAction={(action, order) => startAction(action, [order.id])}
           onOpenDetail={setDetailOrderId}
+          onRaiseTicket={setTicketOrder}
         />
 
         <Pagination
@@ -652,6 +748,12 @@ export default function OrdersPage() {
         smartlaneConnected={smartlaneConnected}
         onClose={() => setDetailOrderId(null)}
         onOrderChanged={reloadAfterChange}
+      />
+      <CreateTicketDialog
+        open={Boolean(ticketOrder)}
+        order={ticketOrder}
+        onClose={() => setTicketOrder(null)}
+        onCreated={() => setTicketOrder(null)}
       />
     </div>
   );

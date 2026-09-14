@@ -1,5 +1,9 @@
+import json
 import logging
+import subprocess
+import sys
 import time
+from pathlib import Path
 from urllib.parse import urlencode
 
 import requests
@@ -13,9 +17,11 @@ BASE_URL = settings.SMARTLANE_API_BASE_URL
 
 # Per Smartlane's API doc v1.2, the load sheet is generated for one
 # courier at a time - these are the courier codes their API recognises.
-# Only Leopards is confirmed available; the rest mirror the CSV export's
-# existing "coming soon" pattern until confirmed live on this account.
-SUPPORTED_COURIERS = {"leopards"}
+# Leopards and BarqRaftar are confirmed live on this account (real
+# bookings auto-routed to both, airway bills render correctly for both);
+# the rest mirror the CSV export's existing "coming soon" pattern until
+# confirmed.
+SUPPORTED_COURIERS = {"leopards", "barqraftar"}
 
 
 class SmartlaneAPIError(Exception):
@@ -345,82 +351,55 @@ def _render_pdf(url, api_key, *, context=""):
     barcode-drawing script actually run before the page is captured -
     the same thing a person doing it manually via the browser's own
     Ctrl+P -> Save as PDF would get.
+
+    The actual rendering runs in playwright_pdf_worker.py as a subprocess,
+    not inline here - see that file's docstring for why: under Daphne on
+    Windows, Playwright's own internal browser-launch (which uses asyncio)
+    fails with a subprocess-not-supported error, because Daphne's Twisted
+    reactor has already swapped the whole process's event-loop policy for
+    one that can't spawn subprocesses at all. A freshly spawned python.exe
+    doesn't inherit that, so doing the render there instead fixes it -
+    this changes nothing about the render itself or its output.
     """
     _require_key(api_key)
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError as exc:
-        raise SmartlaneAPIError(
-            "PDF rendering isn't installed on this backend yet - run "
-            "'pip install -r requirements.txt' then 'playwright install chromium'."
-        ) from exc
-
     started = time.monotonic()
+    worker = Path(__file__).with_name("playwright_pdf_worker.py")
+    payload = json.dumps({"url": url, "api_key": api_key, "context": context}).encode("utf-8")
+
     try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch()
-            try:
-                page = browser.new_page()
+        result = subprocess.run(
+            [sys.executable, str(worker)],
+            input=payload,
+            capture_output=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise SmartlaneAPIError(f"Could not render {context or url} as PDF: timed out") from exc
 
-                # The auth headers go on the page request ONLY, via routing,
-                # rather than new_page(extra_http_headers=...) - that applies
-                # them to every request the page makes, images included, and
-                # an image host handed an unexpected Authorization header (S3
-                # and most CDNs) rejects it outright, which is how the load
-                # sheet's logo silently went missing from the PDF while the
-                # rest of the page rendered. Sending "Accept: text/html" for
-                # an image was the same kind of wrong. Leaving sub-resource
-                # headers untouched lets the browser send what it normally
-                # would, exactly like a person loading the page.
-                def _auth_document_only(route, request):
-                    if request.resource_type == "document":
-                        route.continue_(headers={
-                            **request.headers,
-                            "authorization": f"Bearer {api_key}",
-                            "accept": "text/html",
-                        })
-                    else:
-                        route.continue_()
+    stderr = (result.stderr or b"").decode("utf-8", errors="replace").strip()
+    if stderr:
+        # Every line the worker writes to stderr, success or failure alike
+        # (per-request warnings, the final timing line) - logged here so
+        # nothing from the render is silently lost just because it now
+        # happens in a subprocess.
+        for line in stderr.splitlines():
+            logger.info("smartlane pdf worker: %s", line)
 
-                page.route("**/*", _auth_document_only)
-
-                # Whatever the page couldn't load is what's missing from the
-                # PDF, so name it in the logs instead of leaving a blank spot
-                # to guess at.
-                page.on("requestfailed", lambda r: logger.warning(
-                    "smartlane pdf %s: %s request failed (%s) %s",
-                    context or url, r.resource_type,
-                    r.failure or "unknown error", r.url[:200]))
-                page.on("response", lambda r: r.status >= 400 and logger.warning(
-                    "smartlane pdf %s: %s -> HTTP %s %s",
-                    context or url, r.request.resource_type, r.status, r.url[:200]))
-
-                resp = page.goto(url, wait_until="networkidle", timeout=30000)
-                if resp is None or not resp.ok:
-                    status = resp.status if resp else "no response"
-                    body = page.content()[:500]
-                    logger.error("smartlane pdf render %s -> HTTP %s: %s", context or url, status, body)
-                    raise SmartlaneAPIError(f"{context or url} failed to load (HTTP {status})")
-                pdf_bytes = page.pdf(format="A4", print_background=True)
-            finally:
-                browser.close()
-    except SmartlaneAPIError:
-        raise
-    except Exception as exc:
-        logger.error("smartlane pdf render failed for %s: %s", context or url, exc)
+    if result.returncode != 0:
         # The Python package installing without its browser binary is a
         # deploy-config mistake, not something the user did wrong, so say
         # what has to happen on the server instead of dumping Playwright's
         # own multi-line "Executable doesn't exist at ..." blob into the UI.
-        if "Executable doesn't exist" in str(exc):
+        if "Executable doesn't exist" in stderr:
             raise SmartlaneAPIError(
                 f"Could not render {context or url} as PDF: the server is missing its "
                 "Chromium browser. The deploy's build step must run "
                 "'playwright install chromium' (with PLAYWRIGHT_BROWSERS_PATH=0), "
                 "not just 'pip install -r requirements.txt'."
-            ) from exc
-        raise SmartlaneAPIError(f"Could not render {context or url} as PDF: {exc}") from exc
+            )
+        raise SmartlaneAPIError(f"Could not render {context or url} as PDF: {stderr or 'unknown error'}")
 
+    pdf_bytes = result.stdout
     logger.info("smartlane pdf render %s -> %s bytes in %.2fs",
                 context or url, len(pdf_bytes), time.monotonic() - started)
     return pdf_bytes

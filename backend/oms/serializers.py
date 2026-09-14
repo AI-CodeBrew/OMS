@@ -1,6 +1,16 @@
 from rest_framework import serializers
 
-from .models import Courier, Order, OrderItem, OrderNote, OrderStatusEvent, OrderTransaction, PrintBatch
+from .models import (
+    Courier,
+    Order,
+    OrderItem,
+    OrderNote,
+    OrderStatusEvent,
+    OrderTransaction,
+    PrintBatch,
+    Ticket,
+    TicketMessage,
+)
 
 
 class PrintBatchSerializer(serializers.ModelSerializer):
@@ -67,6 +77,77 @@ class OrderNoteSerializer(serializers.ModelSerializer):
         model = OrderNote
         fields = ["id", "kind", "body", "author_user_id", "created_at"]
         read_only_fields = ["id", "author_user_id", "created_at"]
+
+
+class TicketMessageSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TicketMessage
+        fields = [
+            "id",
+            "body",
+            "author_user_id",
+            "author_role",
+            "author_email",
+            "is_internal",
+            "created_at",
+        ]
+        read_only_fields = ["id", "author_user_id", "author_role", "author_email", "created_at"]
+        # is_internal is settable, but only the admin write path
+        # (add_admin_message) ever passes it through - the tenant messages
+        # action never reads it off request.data, so a tenant can't flag
+        # their own message internal even though the field isn't read-only
+        # here.
+
+
+class TicketSerializer(serializers.ModelSerializer):
+    # Read-only convenience for list pages (tenant "My tickets", the order
+    # tab) that want to show which order a ticket belongs to without a
+    # second lookup - None for standalone tickets.
+    order_number = serializers.CharField(source="order.order_number", read_only=True, default=None)
+    ticket_number = serializers.CharField(read_only=True)
+
+    class Meta:
+        model = Ticket
+        fields = [
+            "id",
+            "ticket_number",
+            "order",
+            "order_number",
+            "category",
+            "sub_category",
+            "description",
+            "status",
+            "priority",
+            "created_by_user_id",
+            "created_by_email",
+            "resolved_at",
+            "created_at",
+        ]
+        read_only_fields = [
+            "id",
+            "ticket_number",
+            "status",
+            "created_by_user_id",
+            "created_by_email",
+            "resolved_at",
+            "created_at",
+        ]
+
+
+class AdminTicketSerializer(TicketSerializer):
+    """Adds the fields the tenant-side serializer has no use for - the
+    admin list spans every organization, so "which org" has to be spelled
+    out rather than assumed from request context, and assignment/internal
+    handling is admin-only state the tenant never sees."""
+
+    organization_name = serializers.CharField(source="organization.name", read_only=True)
+
+    class Meta(TicketSerializer.Meta):
+        fields = TicketSerializer.Meta.fields + [
+            "organization_name",
+            "assigned_to_user_id",
+            "assigned_to_email",
+        ]
 
 
 class OrderTransactionSerializer(serializers.ModelSerializer):

@@ -3,11 +3,22 @@
 import Dropdown from "../shared/Dropdown";
 import { ACTIONS_BY_STATUS } from "./statusConfig";
 
-export default function OrderRowMenu({ order, onAction }) {
+export default function OrderRowMenu({ order, onAction, onRaiseTicket }) {
   const actions = ACTIONS_BY_STATUS[order.status] || [];
-  if (actions.length === 0) {
-    return <span className="text-slate-300">—</span>;
-  }
+
+  // "Raise ticket" isn't a status mutation like everything in
+  // ACTIONS_BY_STATUS, so it's always present here rather than filtered by
+  // order.status, and dispatched through its own prop rather than
+  // onAction's bulk-action pipeline.
+  const items = [
+    ...actions.map((a) => ({
+      key: a.key || a.action,
+      label: a.label,
+      disabled: a.disabled,
+      onClick: () => onAction(a.action, order),
+    })),
+    { key: "raise_ticket", label: "Raise ticket", onClick: () => onRaiseTicket(order) },
+  ];
 
   return (
     <Dropdown
@@ -20,12 +31,7 @@ export default function OrderRowMenu({ order, onAction }) {
           ⋮
         </button>
       }
-      items={actions.map((a) => ({
-        key: a.key || a.action,
-        label: a.label,
-        disabled: a.disabled,
-        onClick: () => onAction(a.action, order),
-      }))}
+      items={items}
     />
   );
 }

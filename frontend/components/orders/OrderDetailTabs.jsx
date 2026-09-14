@@ -6,6 +6,7 @@ import TransactionDetailTab from "./tabs/TransactionDetailTab";
 import OrderNotesList from "./tabs/OrderNotesList";
 import OrderLogTab from "./tabs/OrderLogTab";
 import CustomerHistoryTab from "./tabs/CustomerHistoryTab";
+import OrderTicketsTab from "./tabs/OrderTicketsTab";
 
 const TABS = [
   { key: "line_items", label: "Line Items" },
@@ -15,6 +16,7 @@ const TABS = [
   { key: "custom_message", label: "Custom Message" },
   { key: "notes", label: "Notes" },
   { key: "customer_history", label: "Customer History" },
+  { key: "tickets", label: "Tickets" },
 ];
 
 export default function OrderDetailTabs({ order, onOrderChanged }) {
@@ -54,6 +56,7 @@ export default function OrderDetailTabs({ order, onOrderChanged }) {
           <OrderNotesList orderId={orderId} kind="note" placeholder="Add a note" />
         ) : null}
         {active === "customer_history" ? <CustomerHistoryTab orderId={orderId} /> : null}
+        {active === "tickets" ? <OrderTicketsTab order={order} /> : null}
       </div>
     </div>
   );

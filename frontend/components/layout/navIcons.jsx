@@ -222,6 +222,19 @@ export const IntegrationsIcon = ({ className }) => (
   </Base>
 );
 
+/** Perforated ticket stub - "Tickets" sidebar item. */
+export const TicketIcon = ({ className }) => (
+  <Base className={className}>
+    <path
+      d="M2.5 7.5A1.5 1.5 0 0 1 4 6h12a1.5 1.5 0 0 1 1.5 1.5v1a1.5 1.5 0 0 0 0 3v1A1.5 1.5 0 0 1 16 14H4a1.5 1.5 0 0 1-1.5-1.5v-1a1.5 1.5 0 0 0 0-3v-1Z"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinejoin="round"
+    />
+    <path d="M8 6v8" stroke="currentColor" strokeWidth="1.5" strokeDasharray="1.5 1.5" strokeLinecap="round" />
+  </Base>
+);
+
 export const WalletIcon = ({ className }) => (
   <Base className={className}>
     <path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h9A1.5 1.5 0 0 1 15 6.5V15H4.5A1.5 1.5 0 0 1 3 13.5v-7Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />

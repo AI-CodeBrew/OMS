@@ -17,34 +17,37 @@ function buildSocketUrl() {
 // them miss the cache and each opens its own Postgres connection. Ten open
 // tabs turn one new order into ~20 concurrent queries.
 //
-// Two things fix that here. A short random delay spreads the herd across a
-// window instead of stacking it on one millisecond, and while that timer
-// is pending any further frames just replace the payload rather than
-// queueing more refetches - so a Shopify burst of fifty orders still costs
-// one refetch, not fifty.
+// A short random delay spreads the herd across a window instead of
+// stacking it on one millisecond. Frames arriving while that timer is
+// pending are batched, not collapsed to just the latest one - each frame
+// can now carry a specific order/counts to patch (core/realtime.py), and
+// dropping all but the last would silently lose every other order's
+// update in the same burst. onUpdate is called once per window with the
+// whole batch, so a burst of fifty still costs one call, just carrying
+// fifty items instead of one.
 const REFETCH_JITTER_MS = 1500;
 
 // Opens the org-scoped orders WebSocket (backend: core/consumers.py) and
-// calls `onUpdate` for every push - a new Shopify order, a status change,
-// anything core/realtime.py publishes. Returns a cleanup function; call it
-// on unmount. Reconnects with growing backoff if the connection drops (a
-// laptop sleeping/waking, a machine restart on deploy) so listening resumes on
-// its own instead of needing a manual page refresh.
+// calls `onUpdate(batch)` for every burst of pushes - a new Shopify order,
+// a status change, anything core/realtime.py publishes. Returns a cleanup
+// function; call it on unmount. Reconnects with growing backoff if the
+// connection drops (a laptop sleeping/waking, a machine restart on deploy)
+// so listening resumes on its own instead of needing a manual page refresh.
 export function connectOrdersSocket(onUpdate) {
   let socket = null;
   let closedByCaller = false;
   let retryDelay = 1000;
   let pendingTimer = null;
-  let latest = null;
+  let batch = [];
 
   function scheduleUpdate(data) {
-    latest = data;
+    batch.push(data);
     if (pendingTimer) return;
     pendingTimer = setTimeout(() => {
       pendingTimer = null;
-      const payload = latest;
-      latest = null;
-      onUpdate(payload);
+      const flushed = batch;
+      batch = [];
+      onUpdate(flushed);
     }, Math.random() * REFETCH_JITTER_MS);
   }
 
