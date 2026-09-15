@@ -20,8 +20,10 @@ BASE_URL = settings.SMARTLANE_API_BASE_URL
 # Leopards and BarqRaftar are confirmed live on this account (real
 # bookings auto-routed to both, airway bills render correctly for both);
 # the rest mirror the CSV export's existing "coming soon" pattern until
-# confirmed.
-SUPPORTED_COURIERS = {"leopards", "barqraftar"}
+# confirmed. BarqRaftar's slug was previously guessed as "buraq", then
+# "barqraftar" - both wrong; Smartlane confirmed the real one is
+# "barq_raftar" (with the underscore).
+SUPPORTED_COURIERS = {"leopards", "barq_raftar"}
 
 
 class SmartlaneAPIError(Exception):

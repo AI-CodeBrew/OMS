@@ -49,11 +49,13 @@ export const ACTIONS_NEEDING_PARAMS = new Set([
 // BarqRaftar are both confirmed live (real orders auto-routed to each,
 // airway bills render correctly for both) - keep this in sync with
 // smartlane_client.SUPPORTED_COURIERS on the backend, which enforces the
-// same set server-side.
+// same set server-side. BarqRaftar's slug is "barq_raftar" (with the
+// underscore) - confirmed with Smartlane after "barqraftar" (and before
+// that "buraq") both turned out to be wrong guesses.
 export const SMARTLANE_LOAD_SHEET_COURIERS = [
   { value: "all", label: "All" },
   { value: "leopards", label: "Leopard" },
-  { value: "barqraftar", label: "BarqRaftar" },
+  { value: "barq_raftar", label: "BarqRaftar" },
   { value: "postex", label: "PostEx (Coming Soon)", disabled: true },
 ];
 
