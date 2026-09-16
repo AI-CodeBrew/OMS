@@ -99,6 +99,15 @@ class Order(TenantScopedModel):
         Courier, on_delete=models.SET_NULL, null=True, blank=True, related_name="orders"
     )
     tracking_number = models.CharField(max_length=100, blank=True, default="")
+    # Last time integrations.services.poll_smartlane_statuses asked Smartlane
+    # about this order - null means never checked. Drives the poll query's
+    # ordering (never-checked/longest-since-checked first) so a broad "check
+    # every non-final order" sweep rotates through the backlog instead of
+    # hammering the same ones every cycle. Set on both a match and a "no,
+    # Smartlane doesn't know this order" response - either way it's been
+    # asked, and needs to fall further back in the queue than orders not
+    # asked about yet.
+    smartlane_checked_at = models.DateTimeField(null=True, blank=True)
     issue_note = models.CharField(max_length=255, blank=True, default="")
     return_reason = models.CharField(max_length=255, blank=True, default="")
 
@@ -213,6 +222,10 @@ class Order(TenantScopedModel):
             models.Index(fields=["organization", "-created_at"], name="oms_order_org_created_idx"),
             models.Index(fields=["organization", "-placed_at"], name="oms_order_org_placed_idx"),
             models.Index(fields=["organization", "customer_phone"], name="oms_order_org_phone_idx"),
+            models.Index(
+                fields=["organization", "smartlane_checked_at"],
+                name="oms_order_org_sl_checked_idx",
+            ),
         ]
 
     def __str__(self):
@@ -469,7 +482,10 @@ class PrintBatch(TenantScopedModel):
 
     class Meta:
         db_table = '"oms"."print_batches"'
-        ordering = ["-created_at"]
+        # updated_at, not created_at - a reprint of the same order set
+        # reuses its row (see _save_print_batch) and should jump back to
+        # the top to reflect what was actually just downloaded.
+        ordering = ["-updated_at"]
 
     def __str__(self):
         return f"{self.get_kind_display()} ({self.order_count} orders) {self.created_at:%Y-%m-%d}"

@@ -5,6 +5,7 @@ from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
 from django.db import OperationalError, connections
+from django.db.models import F
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -522,27 +523,66 @@ def apply_smartlane_status(order, smartlane_status, *, tracking_number="", organ
     return True
 
 
-# Orders worth asking Smartlane about: booked through it and not yet at a
-# final outcome. booking_pending is included even though it has no
-# tracking_number yet - that's exactly the status the consignment number
-# itself is used to clear (see the booking_pending branch below).
-_TRACKABLE_STATUSES = (
-    "booking_pending",
-    "ready_to_print",
-    "ready_to_pick",
-    "dispatched",
-    "awaiting_dispatched",
-)
+# "Nothing wrong here, we just never processed this order locally" -
+# statuses it's safe to fast-forward straight to Booking Pending once
+# Smartlane proves the booking is real (see absorb_untracked_smartlane_order).
+# city_issue/dispatch_issue are deliberately excluded - those are real local
+# exceptions a human flagged and must not be silently jumped past.
+# awaiting_dispatched is also excluded - unlike the rest, that status is
+# specifically the manually-processed (non-Smartlane) dispatch queue in this
+# app's actual usage, not something that should ever get absorbed.
+_ABSORBABLE_STATUSES = {
+    "new", "pending_cc", "pending_cod",
+    "awaiting_assigning", "awaiting_approval", "approved",
+}
 
 
-def poll_smartlane_statuses(organization_id, *, batch_size=100, limit=1000):
+def absorb_untracked_smartlane_order(order, *, raw_status, row, actor_user_id=None):
+    """Order Smartlane recognises (a /track row or webhook event arrived for
+    it) whose local status shows it was never pushed through
+    oms.services.push_order_to_smartlane - most commonly, booked directly on
+    Smartlane's own portal (e.g. by file import) rather than through this
+    app. Shared by the poller and the webhook, same reasoning as
+    apply_smartlane_status just below: a status seen either way must never
+    produce a different outcome.
+
+    Absorbs on ANY recognised row, not just ones resolving to a dispatch/
+    delivered/returned target - a "queued"/"ready" row with no stage
+    timestamps yet is still proof of a real Smartlane consignment (exactly
+    the state push_order_to_smartlane itself produces the instant its
+    booking call is accepted, before any tracking number exists).
+
+    Deliberately does NOT check for a conflicting local courier assignment -
+    Smartlane's report wins regardless, per instruction.
+
+    Returns True if it changed the order."""
+    from oms import services as oms_services
+
+    if order.status not in _ABSORBABLE_STATUSES:
+        return False
+
+    target = _resolve_smartlane_target(raw_status, row)
+    if target == "cancelled":
+        # Nothing was ever fulfilled from stock for a cancelled booking -
+        # just record the outcome, no absorb_smartlane_booking needed.
+        oms_services.cancel_order(
+            order, reason="Cancelled by Smartlane (booked outside OMS)", actor_user_id=actor_user_id
+        )
+        return True
+
+    oms_services.absorb_smartlane_booking(order, actor_user_id=actor_user_id)
+    return True
+
+
+def poll_smartlane_statuses(organization_id, *, batch_size=100, limit=500):
     """Pulls booking/delivery outcomes from Smartlane and advances matching
-    orders.
+    orders - including orders booked directly on Smartlane's own portal that
+    this app never pushed there itself (see absorb_untracked_smartlane_order).
 
-    Runs as a scheduled job (see the poll_smartlane management command)
-    rather than waiting on the status webhook, because the webhook needs a
-    publicly reachable HTTPS URL while this works from anywhere. Same
-    data, a polling interval later.
+    Runs as a scheduled job (see integrations.poller, or the poll_smartlane
+    management command) rather than waiting on the status webhook, because
+    the webhook needs a publicly reachable HTTPS URL while this works from
+    anywhere. Same data, a polling interval later.
 
     Only ever moves an order forward - a stale or out-of-order tracking
     row must not drag something already delivered back into transit.
@@ -558,23 +598,27 @@ def poll_smartlane_statuses(organization_id, *, batch_size=100, limit=1000):
         logger.warning("smartlane poll skipped for org %s: not connected", organization_id)
         return {"checked": 0, "updated": 0, "detail": "Smartlane is not connected"}
 
-    # courier__name filters to orders actually booked through Smartlane -
-    # tracking_number can't be used for that here, since booking_pending
-    # orders don't have one yet by definition.
+    # Deliberately NOT filtered by courier="Smartlane" - that field is only
+    # ever set by push_order_to_smartlane/absorb_smartlane_booking, so an
+    # order booked directly on Smartlane's own portal (this app's actual,
+    # dominant workflow - see absorb_untracked_smartlane_order) would never
+    # have it set and would be invisible to this poll forever. Asking
+    # Smartlane about every non-final order and trusting its "unknown to us"
+    # 422 handling (smartlane_client.track_consignments) to filter out the
+    # rest is simpler and correct, at the cost of some wasted lookups.
+    # smartlane_checked_at, nulls first, rotates the never/least-recently-
+    # checked orders to the front each cycle instead of only ever checking
+    # the same newest ones.
     orders = list(
-        Order.all_objects.filter(
-            organization_id=organization_id,
-            status__in=_TRACKABLE_STATUSES,
-            courier__name="Smartlane",
-        )[:limit]
+        Order.all_objects.filter(organization_id=organization_id)
+        .exclude(status__in=TERMINAL_STATUSES)
+        .order_by(F("smartlane_checked_at").asc(nulls_first=True), "id")[:limit]
     )
     if not orders:
-        logger.info("smartlane poll for org %s: no trackable orders (statuses=%s, courier=Smartlane)",
-                    organization_id, list(_TRACKABLE_STATUSES))
+        logger.info("smartlane poll for org %s: no non-final orders", organization_id)
         return {"checked": 0, "updated": 0}
 
-    logger.info("smartlane poll for org %s: checking %s order(s) %s",
-                organization_id, len(orders), [o.order_number for o in orders[:20]])
+    logger.info("smartlane poll for org %s: checking %s order(s)", organization_id, len(orders))
 
     # Keyed by both spellings of the order number - Smartlane does not
     # reliably echo back the leading '#' (see
@@ -585,6 +629,7 @@ def poll_smartlane_statuses(organization_id, *, batch_size=100, limit=1000):
         for key in dict.fromkeys([o.order_number, f"#{stripped}", stripped]):
             by_number.setdefault(key, o)
     updated = 0
+    checked = 0
 
     for start in range(0, len(orders), batch_size):
         chunk = orders[start : start + batch_size]
@@ -592,9 +637,25 @@ def poll_smartlane_statuses(organization_id, *, batch_size=100, limit=1000):
         # both "#10133" and "10133" would guarantee a 422, because Smartlane
         # rejects the whole request if any single id is unknown to it and
         # only one of the two spellings can ever exist.
-        rows = smartlane_client.track_consignments(
-            connection.api_key, [o.order_number for o in chunk]
+        try:
+            rows = smartlane_client.track_consignments(
+                connection.api_key, [o.order_number for o in chunk]
+            )
+        except smartlane_client.SmartlaneAPIError as exc:
+            # One bad chunk (rate limit, transient 5xx, or a batch so
+            # overwhelmingly unknown-to-Smartlane that the one 422 retry
+            # track_consignments does still isn't enough) must not abort
+            # every other chunk in this run - it'll be retried next poll
+            # since it isn't stamped below.
+            logger.error("smartlane poll chunk failed for org %s (%s order(s)): %s",
+                         organization_id, len(chunk), exc)
+            continue
+
+        checked += len(chunk)
+        Order.all_objects.filter(id__in=[o.id for o in chunk]).update(
+            smartlane_checked_at=timezone.now()
         )
+
         for row in rows:
             if not isinstance(row, dict):
                 continue
@@ -625,19 +686,36 @@ def poll_smartlane_statuses(organization_id, *, batch_size=100, limit=1000):
                     },
                 )
 
-            if order.status == "booking_pending":
-                # The consignment number arriving is what "booked" means
-                # here - move on to Ready to Print the moment it's known,
-                # independent of the delivered/returned mapping below.
-                if consignment:
-                    try:
+            try:
+                if order.status in _ABSORBABLE_STATUSES:
+                    if absorb_untracked_smartlane_order(order, raw_status=raw_status, row=row):
+                        updated += 1
+                    continue
+
+                if order.status == "booking_pending":
+                    # The consignment number arriving is what "booked" means
+                    # here - move on to Ready to Print the moment it's known.
+                    if consignment:
                         oms_services.advance_booking_confirmed(order)
                         updated += 1
-                    except oms_services.InvalidTransition:
-                        pass
-                continue
+                        continue
+                    # No CN yet - the one other thing worth acting on this
+                    # early is Smartlane cancelling the booking before ever
+                    # issuing one (the webhook already handles this; the
+                    # poll path didn't, since it always continued here
+                    # regardless of what raw_status said - a real order
+                    # could sit stuck in Booking Pending forever if that
+                    # webhook was ever missed). apply_smartlane_status's own
+                    # "cancelled" branch doesn't need a tracking number;
+                    # its delivered/returned/dispatch branches safely no-op
+                    # here via _catch_up_to_dispatched's own no-CN-at-all guard.
+                    if apply_smartlane_status(
+                        order, raw_status, tracking_number=consignment,
+                        organization_id=organization_id, row=row,
+                    ):
+                        updated += 1
+                    continue
 
-            try:
                 if apply_smartlane_status(
                     order,
                     raw_status,
@@ -650,12 +728,18 @@ def poll_smartlane_statuses(organization_id, *, batch_size=100, limit=1000):
                 # Already past this point locally - the tracking row is
                 # stale, not wrong. Skip rather than fail the whole poll.
                 continue
+            except Exception:
+                # One order's unexpected failure (e.g. a genuine DB error
+                # out of consume_for_order) must not abort the whole batch.
+                logger.exception("smartlane poll: unexpected error handling order %s",
+                                  order.order_number)
+                continue
 
     connection.last_event_at = timezone.now()
     connection.save(update_fields=["last_event_at"])
     logger.info("smartlane poll for org %s finished: checked %s, updated %s",
-                organization_id, len(orders), updated)
-    return {"checked": len(orders), "updated": updated}
+                organization_id, checked, updated)
+    return {"checked": checked, "updated": updated}
 
 
 def _month_windows(start, end):

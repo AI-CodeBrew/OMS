@@ -47,6 +47,7 @@ export const API_ENDPOINTS = {
     report: "/api/oms/report/",
     printBatches: "/api/oms/print-batches/",
     printBatchDownload: (id) => `/api/oms/print-batches/${id}/download/`,
+    dailyPrintBatches: "/api/oms/daily-batches/",
     order: (id) => `/api/oms/orders/${id}/`,
     orderNotes: (id) => `/api/oms/orders/${id}/notes/`,
     orderTransactions: (id) => `/api/oms/orders/${id}/transactions/`,

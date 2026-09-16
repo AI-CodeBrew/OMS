@@ -1,5 +1,6 @@
 import logging
 
+from django.db import transaction
 from django.db.models import Count, Q
 from django.utils import timezone
 
@@ -117,7 +118,31 @@ def _transition(order, to_status, *, actor_user_id=None, note="", extra_fields=N
         raise InvalidTransition(
             f"Cannot move order {order.order_number} from {order.status!r} to {to_status!r}"
         )
+    return _apply_transition(
+        order, to_status, actor_user_id=actor_user_id, note=note, extra_fields=extra_fields
+    )
 
+
+def _force_transition(order, to_status, *, actor_user_id=None, note="", extra_fields=None):
+    """Same bookkeeping as _transition, deliberately WITHOUT checking
+    ALLOWED_TRANSITIONS. Reserved for integrations.services.absorb_smartlane_booking
+    (via absorb_smartlane_booking below) - the one place allowed to jump an
+    order straight to Booking Pending from wherever it's sitting locally,
+    because Smartlane has already proven the booking is real (it was made
+    directly on their portal, outside this app's own approve/assign/push
+    pipeline). Every other call site must keep going through _transition."""
+    logger.warning(
+        "order %s FORCED transition %s -> %s (bypassing ALLOWED_TRANSITIONS)",
+        order.order_number, order.status, to_status,
+    )
+    return _apply_transition(
+        order, to_status, actor_user_id=actor_user_id, note=note, extra_fields=extra_fields
+    )
+
+
+def _apply_transition(order, to_status, *, actor_user_id=None, note="", extra_fields=None):
+    """All the bookkeeping a transition needs, minus the legality check -
+    shared by _transition (checked) and _force_transition (unchecked)."""
     from_status = order.status
     order.status = to_status
     update_fields = ["status", "updated_at"]
@@ -282,6 +307,8 @@ def cancel_order(order, *, reason="", actor_user_id=None):
     # a Smartlane-side failure (already picked up, API hiccup) must not
     # block the local cancellation, which is the actually-authoritative one.
     if order.courier_id and order.courier.name == "Smartlane":
+        from wms import services as wms_services
+
         try:
             from integrations import smartlane_client
             from integrations.models import SmartlaneConnection
@@ -292,6 +319,15 @@ def cancel_order(order, *, reason="", actor_user_id=None):
             smartlane_client.cancel_consignment(connection.api_key, order.order_number)
         except Exception:
             pass
+        # consume_for_order only ever runs for a Smartlane courier (push_
+        # order_to_smartlane/absorb_smartlane_booking, both set courier to
+        # "Smartlane" in the same breath as consuming), so this is exactly
+        # the population that has stock to put back. Idempotent per order
+        # (release_order_stock checks for its own prior reversal), so this
+        # is safe even if abandon_smartlane_booking already released it.
+        wms_services.release_order_stock(
+            order, actor_user_id=actor_user_id, note="Order cancelled by Smartlane/staff"
+        )
     return _transition(order, "cancelled", actor_user_id=actor_user_id, note=reason)
 
 
@@ -363,18 +399,52 @@ def push_order_to_smartlane(order, *, actor_user_id=None, force=False):
     courier, _ = Courier.objects.get_or_create(
         organization_id=order.organization_id, name="Smartlane", defaults={"is_active": True}
     )
-    order = _transition(
-        order,
-        "booking_pending",
-        actor_user_id=actor_user_id,
-        extra_fields={"courier_id": courier.id},
-    )
-    # force=True here because the shortage decision was already made above -
-    # re-checking would raise on exactly the case the user just approved.
-    wms_services.consume_for_order(order, force=True, actor_user_id=actor_user_id)
+    with transaction.atomic():
+        order = _transition(
+            order,
+            "booking_pending",
+            actor_user_id=actor_user_id,
+            extra_fields={"courier_id": courier.id},
+        )
+        # force=True here because the shortage decision was already made
+        # above - re-checking would raise on exactly the case the user just
+        # approved.
+        wms_services.consume_for_order(order, force=True, actor_user_id=actor_user_id)
     logger.info(
         "smartlane push COMPLETE for %s - now Booking Pending, awaiting a consignment number "
         "from the webhook or the poller", order.order_number,
+    )
+    return order
+
+
+def absorb_smartlane_booking(order, *, actor_user_id=None):
+    """Lands an order at Booking Pending for a booking Smartlane already
+    has, made outside this app entirely (booked directly on Smartlane's own
+    portal, e.g. by file import) rather than through push_order_to_smartlane.
+    No Smartlane API call happens here - Smartlane already knows about this
+    order (that's how the caller found it via integrations.services.
+    absorb_untracked_smartlane_order), so calling create_booking would
+    double-book it. Mirrors push_order_to_smartlane's booking_pending +
+    stock-consumption pair exactly, minus the outbound booking call, via
+    _force_transition since the order may be sitting anywhere pre-booking
+    (new, pending_cc, awaiting_approval, ...) - not just awaiting_assigning."""
+    from wms import services as wms_services
+
+    courier, _ = Courier.objects.get_or_create(
+        organization_id=order.organization_id, name="Smartlane", defaults={"is_active": True}
+    )
+    with transaction.atomic():
+        order = _force_transition(
+            order,
+            "booking_pending",
+            actor_user_id=actor_user_id,
+            note="Booked directly on Smartlane's portal - reconciled automatically",
+            extra_fields={"courier_id": courier.id},
+        )
+        wms_services.consume_for_order(order, force=True, actor_user_id=actor_user_id)
+    logger.info(
+        "smartlane absorb COMPLETE for %s - now Booking Pending (booked outside this app)",
+        order.order_number,
     )
     return order
 

@@ -1,9 +1,11 @@
 import csv
 import logging
+from datetime import timedelta
 
 from django.db.models import Count, F, Prefetch, Q, Sum
 from django.db.models.functions import Coalesce, TruncDate
 from django.http import HttpResponse, StreamingHttpResponse
+from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
@@ -27,7 +29,17 @@ from core.redis_client import (
 from wms.services import InsufficientStock
 
 from . import importers, services
-from .models import Courier, Order, OrderItem, OrderNote, OrderTransaction, PrintBatch, Ticket, TicketMessage
+from .models import (
+    Courier,
+    Order,
+    OrderItem,
+    OrderNote,
+    OrderStatusEvent,
+    OrderTransaction,
+    PrintBatch,
+    Ticket,
+    TicketMessage,
+)
 from .serializers import (
     CourierSerializer,
     OrderNoteSerializer,
@@ -721,19 +733,46 @@ class OrderViewSet(viewsets.ModelViewSet):
         which could return different data by then, or fail outright if a
         consignment was since cancelled. Best-effort: a storage hiccup
         here must not block the document the user is actively downloading
-        right now."""
+        right now.
+
+        Reprinting the exact same set of orders (same kind/courier/order
+        numbers) reuses the existing row instead of piling up a duplicate -
+        sorted so the comparison doesn't care what order the ids were
+        requested in. Skipped when order_numbers is empty (a date-ranged
+        load sheet has nothing stable to match on), which always creates a
+        fresh row same as before."""
         from django.core.files.base import ContentFile
 
         try:
-            batch = PrintBatch.all_objects.create(
-                organization_id=organization_id,
-                kind=kind,
-                courier=courier or "",
-                order_count=len(order_numbers),
-                order_numbers=list(order_numbers),
-                content_type=content_type,
-                created_by_user_id=actor_user_id,
-            )
+            sorted_numbers = sorted(str(n) for n in order_numbers)
+            existing = None
+            if sorted_numbers:
+                existing = PrintBatch.all_objects.filter(
+                    organization_id=organization_id,
+                    kind=kind,
+                    courier=courier or "",
+                    order_numbers=sorted_numbers,
+                ).first()
+
+            if existing:
+                batch = existing
+                if batch.file:
+                    # FieldFile.save() below doesn't delete the old file on
+                    # its own - without this the previous PDF would leak in
+                    # storage forever, orphaned once the row points at a new one.
+                    batch.file.delete(save=False)
+                batch.content_type = content_type
+                batch.created_by_user_id = actor_user_id
+            else:
+                batch = PrintBatch.all_objects.create(
+                    organization_id=organization_id,
+                    kind=kind,
+                    courier=courier or "",
+                    order_count=len(sorted_numbers),
+                    order_numbers=sorted_numbers,
+                    content_type=content_type,
+                    created_by_user_id=actor_user_id,
+                )
             ext = "pdf" if content_type == "application/pdf" else "html"
             batch.file.save(f"{kind}.{ext}", ContentFile(content), save=True)
         except Exception:
@@ -1151,12 +1190,15 @@ class PrintBatchViewSet(viewsets.ReadOnlyModelViewSet):
         kind = self.request.query_params.get("kind")
         if kind:
             qs = qs.filter(kind=kind)
+        # updated_at, not created_at - matches Meta.ordering and what the
+        # "GENERATED" column actually displays (a reprint updates this row
+        # rather than creating a new one, see _save_print_batch).
         date_from = self.request.query_params.get("date_from")
         if date_from:
-            qs = qs.filter(created_at__date__gte=date_from)
+            qs = qs.filter(updated_at__date__gte=date_from)
         date_to = self.request.query_params.get("date_to")
         if date_to:
-            qs = qs.filter(created_at__date__lte=date_to)
+            qs = qs.filter(updated_at__date__lte=date_to)
         q = (self.request.query_params.get("q") or "").strip()
         if q:
             qs = qs.filter(order_numbers__icontains=q)
@@ -1168,9 +1210,85 @@ class PrintBatchViewSet(viewsets.ReadOnlyModelViewSet):
         ext = "pdf" if batch.content_type == "application/pdf" else "html"
         response = HttpResponse(batch.file.read(), content_type=batch.content_type)
         response["Content-Disposition"] = (
-            f'attachment; filename="{batch.kind}-{batch.created_at:%Y-%m-%d}.{ext}"'
+            f'attachment; filename="{batch.kind}-{batch.updated_at:%Y-%m-%d}.{ext}"'
         )
         return response
+
+
+class DailyReadyToPrintView(APIView):
+    """One row per calendar date, listing every order that reached Ready to
+    Print that day - independent of whether anyone has printed an airway
+    bill/load sheet for them yet (that's PrintBatch/PrintBatchViewSet above,
+    a record of what was manually generated; this is what's actually
+    eligible to be).
+
+    Built entirely from OrderStatusEvent, the permanent audit trail every
+    status transition already writes (see oms.services._transition) - no
+    new model or write path needed, this is a pure read."""
+
+    permission_classes = [RequireModule]
+    required_module = "oms"
+
+    def get(self, request):
+        events = OrderStatusEvent.objects.filter(
+            organization_id=request.organization_id, to_status="ready_to_print"
+        ).select_related("order", "order__courier").prefetch_related("order__items")
+
+        date_from = request.query_params.get("date_from")
+        date_to = request.query_params.get("date_to")
+        if date_from:
+            events = events.filter(created_at__date__gte=date_from)
+        if date_to:
+            events = events.filter(created_at__date__lte=date_to)
+        if not date_from and not date_to:
+            # Unbounded by default would mean scanning this org's entire
+            # history every time the tab is opened - recent activity is
+            # what this view is for, older days are still reachable via
+            # the date filter.
+            events = events.filter(created_at__date__gte=timezone.now().date() - timedelta(days=30))
+
+        by_date = {}
+        for event in events.order_by("-created_at"):
+            order = event.order
+            if order is None:
+                continue
+            day = timezone.localtime(event.created_at).date().isoformat()
+            bucket = by_date.setdefault(day, {})
+            bucket[order.id] = order  # dedupe if an order re-entered the status same day
+
+        results = []
+        for day in sorted(by_date, reverse=True):
+            orders = list(by_date[day].values())
+            products = sorted({
+                item.product_name
+                for order in orders
+                for item in order.items.all()
+                if item.product_name
+            })
+            couriers = sorted({order.courier.name for order in orders if order.courier_id})
+            results.append({
+                "date": day,
+                "order_count": len(orders),
+                "products": products,
+                "couriers": couriers,
+                # Minimal per-order shape (not the full OrderSerializer) -
+                # just enough for AirwayBillFilterModal's product-wise split
+                # (frontend/components/orders/AirwayBillFilterModal.jsx only
+                # reads .id and .items[].product_name) and for
+                # printSmartlaneLoadSheet, which only needs the id list.
+                "orders": [
+                    {
+                        "id": str(order.id),
+                        "order_number": order.order_number,
+                        "items": [
+                            {"product_name": item.product_name}
+                            for item in order.items.all()
+                        ],
+                    }
+                    for order in orders
+                ],
+            })
+        return Response(results)
 
 
 class TicketViewSet(viewsets.ModelViewSet):

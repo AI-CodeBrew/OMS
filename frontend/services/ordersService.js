@@ -164,12 +164,19 @@ class OrdersService {
   // Real Smartlane-generated documents (proxied from Smartlane's own api,
   // rendered to actual PDF server-side) - always match whichever courier
   // Smartlane actually booked.
-  async printSmartlaneAirwayBill(orderIds) {
+  // `label` is purely a filename hint (e.g. a product name) for callers
+  // generating several airway bills back to back - Smartlane's response
+  // carries no such distinction, so without it every download would land
+  // as the same "airway-bill-<date>.pdf" name.
+  async printSmartlaneAirwayBill(orderIds, label) {
     const dateStamp = new Date().toISOString().slice(0, 10);
+    const suffix = label
+      ? `-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40)}`
+      : "";
     await this._postAndDownloadDocument(
       `${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderSmartlaneAirwayBill}`,
       { order_ids: orderIds },
-      `airway-bill-${dateStamp}.pdf`
+      `airway-bill${suffix}-${dateStamp}.pdf`
     );
   }
 
