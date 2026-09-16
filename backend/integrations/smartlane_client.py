@@ -150,7 +150,9 @@ def _build_consignment(order):
     weight_kg = round(total_weight_g / 1000, 2) if total_weight_g else 0.5
 
     return {
-        "store_order_id": order.order_number,
+        # Portal bookings use 10758; Shopify OMS numbers are #10758. Same
+        # digits, no hash, so /track and the Smartlane UI line up.
+        "store_order_id": str(order.order_number).lstrip("#"),
         "consignee_name": order.customer_name,
         "consignee_email": order.customer_email or _dummy_email(order),
         "consignee_phone": order.customer_phone,
@@ -211,49 +213,9 @@ def _unknown_ids_from_422(payload, wanted):
     return unknown
 
 
-def track_consignments(api_key, store_order_ids):
-    """Bulk status lookup for orders booked through Smartlane.
-
-    GET /consignment/track?store_order_id[]=...&store_order_id[]=...
-
-    This is a pull rather than a push, which is what makes automatic
-    delivery/return updates (and picking up the consignment number after
-    booking) possible without a publicly reachable webhook URL.
-    """
-    _require_key(api_key)
-    if not store_order_ids:
-        return []
-
-    # Smartlane validates the whole request: if ANY id is unknown to them it
-    # rejects the entire call with 422 and returns nothing at all - so one
-    # order we never managed to book would blind us to every other order in
-    # the batch. Tolerate the 422, drop the ids it names, and ask again for
-    # the rest.
-    wanted = [str(oid) for oid in store_order_ids]
-    payload = _request(
-        "GET", "/track", api_key,
-        context=f"Tracking {len(wanted)} order(s)",
-        params=[("store_order_id[]", o) for o in wanted],
-        tolerate=(422,),
-    )
-
-    if isinstance(payload, dict) and payload.get("code") == 422:
-        unknown = _unknown_ids_from_422(payload, wanted)
-        if unknown:
-            logger.warning("smartlane track: %s order(s) unknown to Smartlane (never booked?): %s",
-                           len(unknown), sorted(unknown))
-        remaining = [o for o in wanted if o not in unknown]
-        if not remaining:
-            logger.warning("smartlane track: none of the requested orders exist at Smartlane")
-            return []
-        payload = _request(
-            "GET", "/track", api_key,
-            context=f"Tracking {len(remaining)} known order(s)",
-            params=[("store_order_id[]", o) for o in remaining],
-        )
-
-    # Their responses wrap the rows under a data/consignments key
-    # depending on endpoint; accept either, and a bare list too.
+def _parse_track_rows(payload):
+    """Smartlane wraps rows under data/consignments/result depending on
+    endpoint; accept either, and a bare list too."""
     if isinstance(payload, dict):
         for key in ("data", "consignments", "result"):
             if isinstance(payload.get(key), list):
@@ -267,6 +229,81 @@ def track_consignments(api_key, store_order_ids):
         return payload
     logger.warning("smartlane track returned unexpected type %s", type(payload).__name__)
     return []
+
+
+def _track_once(api_key, ids, context):
+    """One /track call. On 422 (any unknown id fails the whole batch), drop
+    the unknown ids and retry the rest. Returns (rows, unknown_ids)."""
+    if not ids:
+        return [], set()
+    payload = _request(
+        "GET", "/track", api_key,
+        context=context,
+        params=[("store_order_id[]", o) for o in ids],
+        tolerate=(422,),
+    )
+    if isinstance(payload, dict) and payload.get("code") == 422:
+        unknown = _unknown_ids_from_422(payload, ids)
+        if unknown:
+            logger.warning("smartlane track: %s order(s) unknown as %s",
+                           len(unknown), sorted(unknown))
+        remaining = [o for o in ids if o not in unknown]
+        if not remaining:
+            return [], unknown
+        payload = _request(
+            "GET", "/track", api_key,
+            context=f"Tracking {len(remaining)} known order(s)",
+            params=[("store_order_id[]", o) for o in remaining],
+        )
+        return _parse_track_rows(payload), unknown
+    return _parse_track_rows(payload), set()
+
+
+def track_consignments(api_key, store_order_ids):
+    """Bulk status lookup for orders booked through Smartlane.
+
+    GET /consignment/track?store_order_id[]=...&store_order_id[]=...
+
+    Asks without '#' first (portal bookings and new OMS bookings), then
+    retries unknowns with '#' (older OMS bookings stored as #10758). Never
+    sends both spellings in one request - Smartlane 422s the whole batch
+    if any id is unknown.
+    """
+    _require_key(api_key)
+    if not store_order_ids:
+        return []
+
+    stripped, hashed = [], []
+    seen_s, seen_h = set(), set()
+    for oid in store_order_ids:
+        raw = str(oid).strip()
+        no_hash = raw.lstrip("#") or raw
+        with_hash = raw if raw.startswith("#") else f"#{no_hash}"
+        if no_hash not in seen_s:
+            seen_s.add(no_hash)
+            stripped.append(no_hash)
+        if with_hash not in seen_h:
+            seen_h.add(with_hash)
+            hashed.append(with_hash)
+
+    rows, unknown = _track_once(
+        api_key, stripped, context=f"Tracking {len(stripped)} order(s)",
+    )
+    # Only retry the ones Smartlane did not know without '#'.
+    fallback = [h for h in hashed if h.lstrip("#") in unknown or h in unknown]
+    if fallback:
+        more, still = _track_once(
+            api_key, fallback, context=f"Tracking {len(fallback)} order(s) with #",
+        )
+        rows.extend(more)
+        if still:
+            logger.warning(
+                "smartlane track: %s order(s) unknown with or without #: %s",
+                len(still), sorted(still),
+            )
+    elif unknown and not rows:
+        logger.warning("smartlane track: none of the requested orders exist at Smartlane")
+    return rows
 
 
 def cancel_consignment(api_key, store_order_id):
