@@ -135,6 +135,27 @@ def _require_key(api_key):
         raise SmartlaneAPIError("Add your Smartlane API key on the Smartlane integration page first.")
 
 
+def _clean_order_id(value):
+    """Every outgoing request uses the bare digits, no leading '#' - portal
+    bookings use e.g. "10758", OMS order numbers are stored as "#10758".
+    Same convention as _build_consignment's store_order_id. Returned as a
+    string - fine for URL query params (/track, /airway/bill, /load_sheet),
+    which have no numeric type to begin with."""
+    return str(value).strip().lstrip("#")
+
+
+def _order_id_for_body(value):
+    """Same cleanup as _clean_order_id, but for JSON POST bodies (booking,
+    cancel, shipper advice) - there, unlike a URL, a quoted "10758" and a
+    bare 10758 are genuinely different JSON types, and Smartlane expects
+    the bare number. Falls back to the cleaned string if it isn't purely
+    numeric, rather than crashing on an order number that legitimately
+    isn't (Smartlane's own docs show alphanumeric ids like GCP26112024011
+    for some accounts)."""
+    cleaned = _clean_order_id(value)
+    return int(cleaned) if cleaned.isdigit() else cleaned
+
+
 def _dummy_email(order):
     # Smartlane's consignment schema carries a consignee_email field -
     # orders placed without one (common for COD checkouts) get a
@@ -151,8 +172,10 @@ def _build_consignment(order):
 
     return {
         # Portal bookings use 10758; Shopify OMS numbers are #10758. Same
-        # digits, no hash, so /track and the Smartlane UI line up.
-        "store_order_id": str(order.order_number).lstrip("#"),
+        # digits, no hash, so /track and the Smartlane UI line up. A bare
+        # number, not a quoted string, in this JSON body - see
+        # _order_id_for_body.
+        "store_order_id": _order_id_for_body(order.order_number),
         "consignee_name": order.customer_name,
         "consignee_email": order.customer_email or _dummy_email(order),
         "consignee_phone": order.customer_phone,
@@ -313,7 +336,7 @@ def cancel_consignment(api_key, store_order_id):
     return _request(
         "POST", "/cancel", api_key,
         context=f"Cancel {store_order_id}",
-        json={"store_order_id": str(store_order_id)},
+        json={"store_order_id": _order_id_for_body(store_order_id)},
     )
 
 
@@ -325,7 +348,7 @@ def fetch_airway_bill(api_key, store_order_ids, *, no_of_prints=1):
     if not store_order_ids:
         raise SmartlaneAPIError("No orders to print an airway bill for.")
 
-    params = [("store_order_id[]", str(oid)) for oid in store_order_ids]
+    params = [("store_order_id[]", _clean_order_id(oid)) for oid in store_order_ids]
     params.append(("no_of_prints", str(no_of_prints)))
     return _request(
         "GET", "/airway/bill", api_key,
@@ -351,7 +374,7 @@ def fetch_load_sheet(api_key, *, courier, store_order_ids=None, start_date=None,
 
     params = [("courier", courier)]
     if store_order_ids:
-        params += [("store_order_ids[]", str(oid)) for oid in store_order_ids]
+        params += [("store_order_ids[]", _clean_order_id(oid)) for oid in store_order_ids]
     else:
         params += [("start_date", start_date), ("end_date", end_date)]
 
@@ -364,14 +387,14 @@ def fetch_load_sheet(api_key, *, courier, store_order_ids=None, start_date=None,
 def _load_sheet_url(*, courier, store_order_ids=None, start_date=None, end_date=None):
     params = [("courier", courier)]
     if store_order_ids:
-        params += [("store_order_ids[]", str(oid)) for oid in store_order_ids]
+        params += [("store_order_ids[]", _clean_order_id(oid)) for oid in store_order_ids]
     else:
         params += [("start_date", start_date), ("end_date", end_date)]
     return f"{BASE_URL}/load_sheet?{urlencode(params)}"
 
 
 def _airway_bill_url(store_order_ids, *, no_of_prints=1):
-    params = [("store_order_id[]", str(oid)) for oid in store_order_ids]
+    params = [("store_order_id[]", _clean_order_id(oid)) for oid in store_order_ids]
     params.append(("no_of_prints", str(no_of_prints)))
     return f"{BASE_URL}/airway/bill?{urlencode(params)}"
 
@@ -488,7 +511,7 @@ def update_shipper_advice(api_key, *, consignment_number, store_order_id, courie
 
     body = {
         "consignment_number": consignment_number,
-        "store_order_id": str(store_order_id),
+        "store_order_id": _order_id_for_body(store_order_id),
         "courier": courier,
         "reason": reason,
         "remarks": remarks,
