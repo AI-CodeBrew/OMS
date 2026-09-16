@@ -176,8 +176,12 @@ CHANNEL_LAYERS = {
             "hosts": [
                 {
                     "address": REDIS_URL,
+                    # Fail fast if Redis is unreachable.
                     "socket_connect_timeout": 2,
-                    "socket_timeout": 2,
+                    # Must be None, not omitted. redis-py 8 defaults
+                    # socket_timeout to 5s, which races channels_redis
+                    # BZPOPMIN (also 5s) and drops every idle Orders socket.
+                    "socket_timeout": None,
                 }
             ]
         },
