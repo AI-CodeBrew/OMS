@@ -574,7 +574,7 @@ def absorb_untracked_smartlane_order(order, *, raw_status, row, actor_user_id=No
     return True
 
 
-def poll_smartlane_statuses(organization_id, *, batch_size=100, limit=500):
+def poll_smartlane_statuses(organization_id, *, batch_size=50, limit=500):
     """Pulls booking/delivery outcomes from Smartlane and advances matching
     orders - including orders booked directly on Smartlane's own portal that
     this app never pushed there itself (see absorb_untracked_smartlane_order).
@@ -586,6 +586,13 @@ def poll_smartlane_statuses(organization_id, *, batch_size=100, limit=500):
 
     Only ever moves an order forward - a stale or out-of-order tracking
     row must not drag something already delivered back into transit.
+
+    batch_size=50 is not a guess - Smartlane's /track rejects anything
+    bigger with "The store order id must not have more than 50 items"
+    (confirmed against a real response; their own API doc doesn't mention
+    this cap). Never seen before this function's query was broadened to
+    check every non-final order, because a 100-item batch of genuinely
+    Smartlane-booked orders alone was rare enough to never hit it.
     """
     from oms import services as oms_services
     from .models import SmartlaneConnection
