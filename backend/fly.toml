@@ -15,11 +15,14 @@ primary_region = "sin"
   PORT = "8000"
   # Keeps Chromium inside site-packages, i.e. inside the image layer, rather
   # than a $HOME cache that the runtime machine would not have.
-  PLAYWRIGHT_BROWSERS_PATH = "0"
+  PLAYWRIGHT_BROWSERS_PATH = "0"    
   # Only set here (runtime), never at Docker build time - same reasoning as
   # PLAYWRIGHT_BROWSERS_PATH above - so `collectstatic` during the image
   # build never starts the poller thread.
-  SMARTLANE_AUTO_POLL = "true"
+  # Temporarily off (2026-09-16) - the "please publish the store" booking
+  # failures started the same day this first went live, so it's paused
+  # while that's checked with Smartlane before re-enabling.
+  SMARTLANE_AUTO_POLL = "false"
 
 [http_service]
   internal_port = 8000
