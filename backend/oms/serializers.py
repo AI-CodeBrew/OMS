@@ -26,6 +26,7 @@ class PrintBatchSerializer(serializers.ModelSerializer):
             "order_numbers",
             "content_type",
             "created_at",
+            "updated_at",
             "download_url",
         ]
 

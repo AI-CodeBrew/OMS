@@ -243,6 +243,13 @@ SMARTLANE_BUSINESS_API_BASE_URL = env(
 # delivery never will until this is tunneled (ngrok etc.) or deployed.
 PUBLIC_BACKEND_URL = env("PUBLIC_BACKEND_URL", default="http://localhost:8000")
 
+# Starts integrations.poller's background thread (see IntegrationsConfig.ready)
+# so Smartlane statuses update on their own instead of only on a manual Sync
+# click. Off by default so it never fires during local manage.py commands/tests -
+# only fly.toml's [env] turns it on, for the real deployed server.
+SMARTLANE_AUTO_POLL = env("SMARTLANE_AUTO_POLL", default="false").lower() == "true"
+SMARTLANE_AUTO_POLL_INTERVAL_SECONDS = int(env("SMARTLANE_AUTO_POLL_INTERVAL_SECONDS", default="900"))
+
 # Comma-separated client IPs allowed to hit /api/core/admin/*
 ADMIN_IP_ALLOWLIST = env(
     "ADMIN_IP_ALLOWLIST",

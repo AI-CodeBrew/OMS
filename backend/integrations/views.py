@@ -493,6 +493,24 @@ def smartlane_shipment_webhook(request, token):
                         },
                     )
 
+                if order.status in services._ABSORBABLE_STATUSES:
+                    # Order Smartlane knows about but this app never pushed
+                    # there itself - most commonly booked directly on
+                    # Smartlane's own portal. See
+                    # services.absorb_untracked_smartlane_order.
+                    try:
+                        services.absorb_untracked_smartlane_order(
+                            order, raw_status=smartlane_status, row=payload
+                        )
+                    except Exception:
+                        logger.exception(
+                            "smartlane webhook: absorb failed for order %s", order_number
+                        )
+                    connection.events_received_count += 1
+                    connection.last_event_at = timezone.now()
+                    connection.save(update_fields=["events_received_count", "last_event_at"])
+                    return JsonResponse({"success": True})
+
                 if order.status == "booking_pending" and tracking_number:
                     # The consignment number arriving is what "booked"
                     # means here - same rule as the polling path.

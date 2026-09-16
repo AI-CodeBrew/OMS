@@ -44,6 +44,9 @@ const OrderActionModal = dynamic(() => import("../../../components/orders/OrderA
 const StockShortageModal = dynamic(() => import("../../../components/orders/StockShortageModal"), {
   ssr: false,
 });
+const AirwayBillFilterModal = dynamic(() => import("../../../components/orders/AirwayBillFilterModal"), {
+  ssr: false,
+});
 const VerifyDispatchModal = dynamic(() => import("../../../components/orders/VerifyDispatchModal"), {
   ssr: false,
 });
@@ -143,6 +146,7 @@ export default function OrdersPage() {
   const [returnOpen, setReturnOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState(null); // { action, orderIds }
+  const [airwayBillFilterOrders, setAirwayBillFilterOrders] = useState(null);
   // Set when a push-to-Smartlane was rejected for lack of stock - holds the
   // per-order shortage detail plus the ids to retry with force=true.
   const [stockShortfall, setStockShortfall] = useState(null);
@@ -429,16 +433,20 @@ export default function OrdersPage() {
     // courier param (Smartlane's load sheet api is one courier per call),
     // so it falls through to the param-collecting modal below instead.
     if (action === "print_airway_bill") {
+      // With more than one order, let the operator split by product (or
+      // keep the old "everyone in one PDF" behavior) before anything
+      // downloads - see AirwayBillFilterModal.
+      if (orderIds.length > 1) {
+        setAirwayBillFilterOrders(orders.filter((o) => orderIds.includes(o.id)));
+        return;
+      }
       setApplyingAction(true);
-      const bulk = orderIds.length > 1;
-      if (bulk) beginLoading(`Printing ${orderIds.length} airway bills`);
       try {
         await ordersService.printSmartlaneAirwayBill(orderIds);
       } catch (err) {
         setError(err.message || "Print failed");
       } finally {
         setApplyingAction(false);
-        if (bulk) endLoading();
       }
       return;
     }
@@ -741,6 +749,10 @@ export default function OrdersPage() {
         submitting={applyingAction}
         onProceed={onProceedDespiteShortage}
         onClose={() => setStockShortfall(null)}
+      />
+      <AirwayBillFilterModal
+        orders={airwayBillFilterOrders}
+        onClose={() => setAirwayBillFilterOrders(null)}
       />
       <OrderDetailPanel
         orderId={detailOrderId}
