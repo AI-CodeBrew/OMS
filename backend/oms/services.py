@@ -430,7 +430,9 @@ def absorb_smartlane_booking(order, *, actor_user_id=None):
     (new, pending_cc, awaiting_approval, ...) - not just awaiting_assigning."""
     from wms import services as wms_services
 
-    courier, _ = Courier.objects.get_or_create(
+    # all_objects: the poller has no HTTP tenant context, so
+    # Courier.objects is empty and get_or_create inserts a duplicate.
+    courier, _ = Courier.all_objects.get_or_create(
         organization_id=order.organization_id, name="Smartlane", defaults={"is_active": True}
     )
     with transaction.atomic():

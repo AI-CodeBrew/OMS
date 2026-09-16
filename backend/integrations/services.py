@@ -594,6 +594,7 @@ def poll_smartlane_statuses(organization_id, *, batch_size=50, limit=500):
     check every non-final order, because a 100-item batch of genuinely
     Smartlane-booked orders alone was rare enough to never hit it.
     """
+    from core.context import current_organization_id
     from oms import services as oms_services
     from .models import SmartlaneConnection
 
@@ -605,6 +606,18 @@ def poll_smartlane_statuses(organization_id, *, batch_size=50, limit=500):
         logger.warning("smartlane poll skipped for org %s: not connected", organization_id)
         return {"checked": 0, "updated": 0, "detail": "Smartlane is not connected"}
 
+    # Same as the webhook: tenant managers return nothing in a
+    # management command / poller thread without this.
+    _org_token = current_organization_id.set(organization_id)
+    try:
+        return _poll_smartlane_statuses_body(
+            organization_id, connection, oms_services, batch_size=batch_size, limit=limit,
+        )
+    finally:
+        current_organization_id.reset(_org_token)
+
+
+def _poll_smartlane_statuses_body(organization_id, connection, oms_services, *, batch_size, limit):
     # Deliberately NOT filtered by courier="Smartlane" - that field is only
     # ever set by push_order_to_smartlane/absorb_smartlane_booking, so an
     # order booked directly on Smartlane's own portal (this app's actual,
