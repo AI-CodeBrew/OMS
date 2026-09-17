@@ -1,4 +1,8 @@
-from django.db.models import F, Q
+import csv
+
+from django.db.models import Count, F, Q, Sum
+from django.db.models.functions import TruncDate
+from django.http import StreamingHttpResponse
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -65,16 +69,79 @@ class StockItemViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(organization_id=self.request.organization_id)
 
+    def _scoped_movements(self, request):
+        movements = StockMovement.objects.filter(organization_id=request.organization_id)
+        date_from = request.query_params.get("date_from")
+        date_to = request.query_params.get("date_to")
+        if date_from:
+            movements = movements.filter(created_at__date__gte=date_from)
+        if date_to:
+            movements = movements.filter(created_at__date__lte=date_to)
+        return movements
+
     @action(detail=False, methods=["get"])
     def summary(self, request):
+        # "export=csv" not "format=csv" - see oms.views.ReportView.get for
+        # why (DRF's own content-negotiation reserves "format").
+        if request.query_params.get("export") == "csv":
+            return self._csv(request)
+
         qs = StockItem.objects.filter(organization_id=request.organization_id)
+
+        # On-hand snapshot (negative/low) is always "right now" - a stock
+        # level has no meaningful "as of last week" reading. The movement
+        # totals below are the date-range-scoped part, for the Report page.
+        movements = self._scoped_movements(request)
+
+        # delta is negative for dispatch (stock leaving) and positive for a
+        # return restock (stock coming back) - see StockMovement.delta.
+        dispatched = movements.filter(reason="order_dispatch").aggregate(total=Sum("delta"))["total"] or 0
+        restocked = movements.filter(reason="return_restock").aggregate(total=Sum("delta"))["total"] or 0
+
         return Response(
             {
                 "total_skus": qs.count(),
                 "negative_count": qs.filter(quantity__lt=0).count(),
                 "low_count": qs.filter(quantity__gte=0, quantity__lte=F("reorder_level")).count(),
+                "units_dispatched": abs(dispatched),
+                "units_restocked": restocked,
+                "manual_adjustments": movements.filter(reason="manual_adjustment").count(),
             }
         )
+
+    def _csv(self, request):
+        movements = self._scoped_movements(request).annotate(_date=TruncDate("created_at"))
+        by_day = (
+            movements.values("_date", "reason")
+            .annotate(total=Sum("delta"), n=Count("id"))
+            .order_by("_date")
+        )
+        rows_by_date = {}
+        for row in by_day:
+            rows_by_date.setdefault(row["_date"], {})[row["reason"]] = row
+
+        header = ["Date", "Units Dispatched", "Units Restocked", "Manual Adjustments (count)"]
+
+        def rows():
+            yield header
+            for date, reasons in sorted(rows_by_date.items(), key=lambda kv: (kv[0] is None, kv[0])):
+                dispatched = abs((reasons.get("order_dispatch") or {}).get("total") or 0)
+                restocked = (reasons.get("return_restock") or {}).get("total") or 0
+                adjustments = (reasons.get("manual_adjustment") or {}).get("n") or 0
+                yield [date.isoformat() if date else "", dispatched, restocked, adjustments]
+
+        class Echo:
+            def write(self, value):
+                return value
+
+        writer = csv.writer(Echo())
+        response = StreamingHttpResponse(
+            (writer.writerow(row) for row in rows()), content_type="text/csv"
+        )
+        date_from = request.query_params.get("date_from") or "all"
+        date_to = request.query_params.get("date_to") or "all"
+        response["Content-Disposition"] = f'attachment; filename="wms_report_{date_from}_to_{date_to}.csv"'
+        return response
 
     @action(detail=False, methods=["post"], url_path="import-skus")
     def import_skus(self, request):

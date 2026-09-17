@@ -1,21 +1,26 @@
+// `tone` groups each status into a category for OrderStatusTabs' left-edge
+// accent stripe (blue = fresh/queue, amber = needs action, indigo = moving
+// through fulfillment, green = success, red = terminal/negative) - purely
+// visual, doesn't affect filtering/routing.
 export const STATUS_TABS = [
-  { value: "all", label: "All" },
-  { value: "new", label: "New" },
-  { value: "pending_cc", label: "Pending CC" },
-  { value: "pending_cod", label: "Pending COD" },
-  { value: "city_issue", label: "City Issue" },
-  { value: "awaiting_assigning", label: "Awaiting Assigning" },
-  { value: "awaiting_approval", label: "Awaiting Approval" },
-  { value: "approved", label: "Approved" },
-  { value: "booking_pending", label: "Booking Pending" },
-  { value: "ready_to_print", label: "Ready to Print" },
-  { value: "ready_to_pick", label: "Ready to Pick" },
-  { value: "dispatch_issue", label: "Dispatch Issue" },
-  { value: "awaiting_dispatched", label: "Awaiting Dispatched" },
-  { value: "dispatched", label: "Dispatched" },
-  { value: "delivered", label: "Delivered" },
-  { value: "cancelled", label: "Cancelled" },
-  { value: "returned", label: "Returned" },
+  { value: "all", label: "All", tone: "neutral" },
+  { value: "new", label: "New", tone: "blue" },
+  { value: "pending_cc", label: "Pending CC", tone: "blue" },
+  { value: "pending_cod", label: "Pending COD", tone: "blue" },
+  { value: "city_issue", label: "City Issue", tone: "amber" },
+  { value: "awaiting_assigning", label: "Awaiting Assigning", tone: "amber" },
+  { value: "awaiting_approval", label: "Awaiting Approval", tone: "amber" },
+  { value: "approved", label: "Approved", tone: "indigo" },
+  { value: "booking_pending", label: "Booking Pending", tone: "amber" },
+  { value: "ready_to_print", label: "Ready to Print", tone: "indigo" },
+  { value: "ready_to_pick", label: "Ready to Pick", tone: "indigo" },
+  { value: "awaiting_dispatched", label: "Awaiting Dispatched", tone: "indigo" },
+  { value: "dispatched", label: "Dispatched", tone: "indigo" },
+  { value: "out_for_delivery", label: "Out for Delivery", tone: "indigo" },
+  { value: "attempt", label: "Delivery Attempt Failed", tone: "amber" },
+  { value: "delivered", label: "Delivered", tone: "green" },
+  { value: "cancelled", label: "Cancelled", tone: "red" },
+  { value: "returned", label: "Returned", tone: "red" },
 ];
 
 export const STATUS_LABELS = STATUS_TABS.reduce((acc, tab) => {
@@ -128,6 +133,11 @@ export const ACTIONS_BY_STATUS = {
   ],
   dispatch_issue: [{ action: "retry_dispatch", label: "Retry dispatch" }, { action: "cancel", label: "Cancel" }],
   dispatched: [{ action: "mark_delivered", label: "Mark delivered" }],
+  // Smartlane-reported sub-stages of dispatched - same manual fallback
+  // available, since staff may need to mark delivered by hand regardless
+  // of which sub-stage the courier last reported.
+  out_for_delivery: [{ action: "mark_delivered", label: "Mark delivered" }],
+  attempt: [{ action: "mark_delivered", label: "Mark delivered" }],
   delivered: [],
   cancelled: [],
   returned: [],

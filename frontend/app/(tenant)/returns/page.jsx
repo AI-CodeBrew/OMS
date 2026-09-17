@@ -15,6 +15,7 @@ import { SEARCH_FIELDS } from "../../../components/orders/statusConfig";
 // cards and the table filter, so a card click and its badge always agree.
 const BUCKETS = [
   { value: "", label: "All" },
+  { value: "in_progress", label: "Return in Progress" },
   { value: "awaiting", label: "Awaiting Scan" },
   { value: "received", label: "Received" },
   { value: "damaged", label: "Damaged" },
@@ -37,6 +38,11 @@ function describeOutcome(entry) {
 }
 
 function bucketParams(bucket) {
+  // "Return in Progress" isn't status="returned" yet (Smartlane has just
+  // reported the courier is bringing it back) - drop the page's default
+  // status filter and switch to the return_in_progress flag instead.
+  if (bucket === "in_progress")
+    return { status: undefined, return_in_progress: "yes", received: undefined, return_condition: undefined };
   if (bucket === "awaiting") return { received: "no", return_condition: undefined };
   if (bucket === "received") return { received: "yes", return_condition: "good" };
   if (bucket === "damaged") return { received: "yes", return_condition: "bad" };
@@ -141,7 +147,11 @@ export default function ReturnsPage() {
     setPage(1);
   }
 
-  const pendingRows = orders.filter((o) => !o.return_received_at);
+  const isInProgress = bucket === "in_progress";
+  // Nothing here has reached status="returned" yet, so there's nothing to
+  // scan/receive - the bulk select/receive UI only applies to the other
+  // buckets, which are all real "returned" rows.
+  const pendingRows = isInProgress ? [] : orders.filter((o) => !o.return_received_at);
   const selectedRows = orders.filter((o) => selectedIds.has(o.id));
   const allPendingSelected =
     pendingRows.length > 0 && pendingRows.every((o) => selectedIds.has(o.id));
@@ -238,12 +248,19 @@ export default function ReturnsPage() {
         <p className="mt-4 rounded-md bg-green-50 px-3 py-2 text-sm text-green-700">{notice}</p>
       ) : null}
 
-      <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-5">
         <SummaryCard
           label="Total Returns"
           value={summary.total_returns ?? 0}
           active={bucket === ""}
           onClick={() => applyBucket("")}
+        />
+        <SummaryCard
+          label="Return in Progress"
+          value={summary.return_in_progress ?? 0}
+          hint="Courier bringing it back, not yet returned"
+          active={bucket === "in_progress"}
+          onClick={() => applyBucket("in_progress")}
         />
         <SummaryCard
           label="Awaiting Scan"
@@ -385,18 +402,20 @@ export default function ReturnsPage() {
               <thead className="border-b border-surface-border bg-surface text-[11px] font-medium uppercase tracking-wide text-slate-500">
                 <tr>
                   <th className="px-3 py-2 text-left">
-                    <input
-                      type="checkbox"
-                      checked={allPendingSelected}
-                      onChange={toggleAll}
-                      disabled={pendingRows.length === 0}
-                      aria-label="Select all awaiting scan"
-                    />
+                    {!isInProgress ? (
+                      <input
+                        type="checkbox"
+                        checked={allPendingSelected}
+                        onChange={toggleAll}
+                        disabled={pendingRows.length === 0}
+                        aria-label="Select all awaiting scan"
+                      />
+                    ) : null}
                   </th>
                   <th className="px-3 py-2 text-left">Order</th>
                   <th className="px-3 py-2 text-left">Customer</th>
                   <th className="px-3 py-2 text-left">Courier</th>
-                  <th className="px-3 py-2 text-left">Returned</th>
+                  <th className="px-3 py-2 text-left">{isInProgress ? "In Progress Since" : "Returned"}</th>
                   <th className="px-3 py-2 text-left">Received</th>
                   <th className="px-3 py-2 text-left">Scanned By</th>
                   <th className="px-3 py-2 text-right">Amount</th>
@@ -413,33 +432,41 @@ export default function ReturnsPage() {
                 ) : orders.length === 0 ? (
                   <tr>
                     <td colSpan={9} className="px-3 py-6 text-center text-slate-500">
-                      {bucket === "awaiting"
-                        ? "Nothing awaiting scan."
-                        : bucket === "received"
-                          ? "No returns received yet."
-                          : bucket === "damaged"
-                            ? "No damaged returns."
-                            : "No returned orders."}
+                      {bucket === "in_progress"
+                        ? "Nothing in progress."
+                        : bucket === "awaiting"
+                          ? "Nothing awaiting scan."
+                          : bucket === "received"
+                            ? "No returns received yet."
+                            : bucket === "damaged"
+                              ? "No damaged returns."
+                              : "No returned orders."}
                     </td>
                   </tr>
                 ) : (
                   orders.map((order) => (
                     <tr key={order.id} className="border-b border-surface-border last:border-0">
                       <td className="px-3 py-2">
-                        <input
-                          type="checkbox"
-                          checked={selectedIds.has(order.id)}
-                          onChange={() => toggleRow(order.id)}
-                          disabled={Boolean(order.return_received_at)}
-                          aria-label={`Select ${order.order_number}`}
-                        />
+                        {!isInProgress ? (
+                          <input
+                            type="checkbox"
+                            checked={selectedIds.has(order.id)}
+                            onChange={() => toggleRow(order.id)}
+                            disabled={Boolean(order.return_received_at)}
+                            aria-label={`Select ${order.order_number}`}
+                          />
+                        ) : null}
                       </td>
                       <td className="px-3 py-2 font-medium text-slate-800">{order.order_number}</td>
                       <td className="px-3 py-2 text-slate-600">{order.customer_name}</td>
                       <td className="px-3 py-2 text-slate-600">{order.courier_name || "—"}</td>
-                      <td className="px-3 py-2 text-slate-500">{formatDate(order.returned_at)}</td>
+                      <td className="px-3 py-2 text-slate-500">
+                        {formatDate(isInProgress ? order.return_in_progress_at : order.returned_at)}
+                      </td>
                       <td className="px-3 py-2">
-                        {order.return_received_at ? (
+                        {isInProgress ? (
+                          <span className="text-slate-400">—</span>
+                        ) : order.return_received_at ? (
                           <span className="text-slate-500">
                             {formatDate(order.return_received_at)}
                           </span>
@@ -450,13 +477,13 @@ export default function ReturnsPage() {
                         )}
                       </td>
                       <td className="px-3 py-2 text-slate-500">
-                        {order.return_received_by_email || "—"}
+                        {isInProgress ? "—" : order.return_received_by_email || "—"}
                       </td>
                       <td className="px-3 py-2 text-right tabular-nums text-slate-900">
                         {order.total_amount}
                       </td>
                       <td className="px-3 py-2 text-right">
-                        {order.return_received_at ? (
+                        {isInProgress ? null : order.return_received_at ? (
                           order.return_condition === "bad" ? (
                             <span className="rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-medium text-red-700">
                               Damaged

@@ -93,7 +93,13 @@ ALLOWED_TRANSITIONS = {
     "ready_to_pick": {"awaiting_dispatched", "dispatched", "cancelled"},
     "awaiting_dispatched": {"dispatched", "dispatch_issue", "cancelled"},
     "dispatch_issue": {"awaiting_dispatched", "cancelled"},
-    "dispatched": {"delivered", "returned"},
+    # out_for_delivery/attempt are Smartlane-reported sub-stages of
+    # "dispatched" - only ever reached via apply_smartlane_status, never a
+    # manual action. attempt loops back to out_for_delivery/dispatched
+    # because a failed attempt is normally retried, not an immediate return.
+    "dispatched": {"out_for_delivery", "attempt", "delivered", "returned"},
+    "out_for_delivery": {"attempt", "delivered", "returned"},
+    "attempt": {"out_for_delivery", "dispatched", "delivered", "returned"},
     "delivered": {"returned"},
     "cancelled": set(),
     "returned": set(),
@@ -534,6 +540,21 @@ def dispatch_order(order, *, tracking_number="", actor_user_id=None):
     if tracking_number:
         extra["tracking_number"] = tracking_number
     return _transition(order, "dispatched", actor_user_id=actor_user_id, extra_fields=extra)
+
+
+def mark_out_for_delivery(order, *, actor_user_id=None):
+    """Smartlane-reported sub-stage of dispatched - see ALLOWED_TRANSITIONS.
+    Only ever reached via integrations.services.apply_smartlane_status,
+    never a manual action."""
+    return _transition(order, "out_for_delivery", actor_user_id=actor_user_id)
+
+
+def mark_delivery_attempt_failed(order, *, actor_user_id=None):
+    """Smartlane-reported sub-stage of dispatched - see ALLOWED_TRANSITIONS.
+    Only ever reached via integrations.services.apply_smartlane_status,
+    never a manual action. Usually followed by another out_for_delivery/
+    dispatch event as the courier retries, not an immediate return."""
+    return _transition(order, "attempt", actor_user_id=actor_user_id)
 
 
 def cancel_fulfillment(order, *, actor_user_id=None):

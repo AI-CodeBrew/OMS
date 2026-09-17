@@ -40,8 +40,29 @@ class WmsService {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.stock}${buildQuery(params)}`);
   }
 
-  async stockSummary() {
-    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.stockSummary}`);
+  async stockSummary(params = {}) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.stockSummary}${buildQuery(params)}`);
+  }
+
+  async downloadStockReportCsv({ dateFrom, dateTo } = {}) {
+    const response = await fetch(
+      `${apiConfig.baseUrl}${API_ENDPOINTS.wms.stockSummary}${buildQuery({
+        date_from: dateFrom,
+        date_to: dateTo,
+        export: "csv",
+      })}`,
+      { headers: authService.getAuthHeaders() }
+    );
+    if (!response.ok) throw new Error("Report export failed");
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `wms_report_${dateFrom || "all"}_to_${dateTo || "all"}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
   }
 
   async createStockItem({ warehouse, sku, product_name, quantity = 0, reorder_level = 0 }) {

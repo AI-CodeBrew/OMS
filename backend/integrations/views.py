@@ -27,8 +27,13 @@ from . import business_services
 from . import shopify_client
 from . import services
 from . import smartlane_client
-from .models import ShopifyConnection, ShopifySyncJob, SmartlaneConnection
-from .serializers import ShopifyConnectionSerializer, ShopifySyncJobSerializer, SmartlaneConnectionSerializer
+from .models import ShopifyConnection, ShopifySyncJob, SmartlaneConnection, SmartlaneSyncJob
+from .serializers import (
+    ShopifyConnectionSerializer,
+    ShopifySyncJobSerializer,
+    SmartlaneConnectionSerializer,
+    SmartlaneSyncJobSerializer,
+)
 from .services import upsert_order_from_shopify
 
 logger = logging.getLogger(__name__)
@@ -327,23 +332,59 @@ class SmartlaneWarehouseListView(APIView):
         return Response(data)
 
 
+def _mark_stale_smartlane_job_failed(job):
+    job.status = "failed"
+    job.error_message = (
+        f"Sync stalled after {job.checked_count} order(s) (likely a server restart) - "
+        "click Sync to try again."
+    )
+    job.finished_at = timezone.now()
+    job.save(update_fields=["status", "error_message", "finished_at"])
+
+
 class SmartlaneSyncView(APIView):
-    """Runs the Smartlane status poll for this organization on demand.
+    """Kicks off a Smartlane status poll as a background thread and returns
+    immediately - same reasoning and shape as ShopifySyncView above (a full
+    poll can touch hundreds of orders, in chunks of 50 per Smartlane's own
+    /track limit, which is too slow for one request/response cycle and used
+    to block the whole tenant UI behind the global loading overlay for its
+    entire duration). Poll GET for progress. See
+    integrations/services.py's run_smartlane_sync for the actual work.
 
-    The poll belongs on a schedule (manage.py poll_smartlane) and still
-    nothing schedules it - so this button remains the only way to pull a
-    consignment number for an order stuck in Booking Pending, or to check
-    whether Smartlane has anything for us, whenever the status webhook is
-    not delivering. Same code path as the command, just triggered by hand.
-
-    (The old reason for this - "the host has no shell to run it from" - no
-    longer applies: `fly ssh console -a oms-backend` runs the command
-    directly, and a scheduled Fly machine could run it properly. This stays
-    because a manual trigger is genuinely useful, not because it is the
-    only option.)
+    The poll belongs on a schedule too (see integrations.poller, gated by
+    SMARTLANE_AUTO_POLL) - this button remains the only way to trigger one
+    on demand, e.g. right after fixing something on Smartlane's side rather
+    than waiting for the next automatic cycle.
     """
 
     permission_classes = [IsOrgAdmin]
+
+    def get(self, request):
+        job = SmartlaneSyncJob.objects.filter(organization_id=request.organization_id).first()
+        if not job:
+            return Response({"status": "idle"})
+        if job.status in ("pending", "running"):
+            age = (timezone.now() - job.updated_at).total_seconds()
+            if age > STALE_JOB_SECONDS:
+                _mark_stale_smartlane_job_failed(job)
+        return Response(SmartlaneSyncJobSerializer(job).data)
+
+    def delete(self, request):
+        # Same convention as ShopifySyncView.delete - flips status to
+        # "cancelled" immediately so the UI reacts instantly, covering both
+        # a genuinely live thread (which cooperatively checks
+        # cancel_requested between chunks, see services.poll_smartlane_statuses)
+        # and one whose thread already died.
+        job = SmartlaneSyncJob.objects.filter(
+            organization_id=request.organization_id, status__in=["pending", "running"]
+        ).first()
+        if not job:
+            return Response({"detail": "No sync in progress"}, status=http_status.HTTP_400_BAD_REQUEST)
+        job.cancel_requested = True
+        job.status = "cancelled"
+        job.finished_at = timezone.now()
+        job.save(update_fields=["cancel_requested", "status", "finished_at"])
+        return Response(SmartlaneSyncJobSerializer(job).data)
 
     def post(self, request):
         connection = SmartlaneConnection.objects.filter(
@@ -351,13 +392,26 @@ class SmartlaneSyncView(APIView):
         ).first()
         if not connection:
             return Response({"detail": "Smartlane is not connected"}, status=http_status.HTTP_404_NOT_FOUND)
-        try:
-            result = services.poll_smartlane_statuses(request.organization_id)
-        except smartlane_client.SmartlaneAPIError as exc:
-            logger.error("smartlane manual sync failed for org %s: %s", request.organization_id, exc)
-            return Response({"detail": str(exc)}, status=http_status.HTTP_502_BAD_GATEWAY)
-        logger.info("smartlane manual sync for org %s: %s", request.organization_id, result)
-        return Response(result)
+
+        existing = SmartlaneSyncJob.objects.filter(
+            organization_id=request.organization_id, status__in=["pending", "running"]
+        ).first()
+        if existing:
+            age = (timezone.now() - existing.updated_at).total_seconds()
+            if age <= STALE_JOB_SECONDS:
+                return Response(
+                    {"detail": "A sync is already in progress"}, status=http_status.HTTP_409_CONFLICT
+                )
+            _mark_stale_smartlane_job_failed(existing)
+
+        job = SmartlaneSyncJob.objects.create(organization_id=request.organization_id)
+        thread = threading.Thread(
+            target=services.run_smartlane_sync,
+            args=(request.organization_id, job.id),
+            daemon=True,
+        )
+        thread.start()
+        return Response(SmartlaneSyncJobSerializer(job).data, status=http_status.HTTP_202_ACCEPTED)
 
 
 class SmartlaneCityListView(APIView):

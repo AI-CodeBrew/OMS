@@ -1,13 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import integrationsService from "../../../../services/integrationsService";
 import Button from "../../../../components/shared/Button";
 import PasswordInput from "../../../../components/shared/PasswordInput";
-import useLoadingStore from "../../../../store/loadingStore";
 
 const EMPTY_FORM = { api_key: "", webhook_secret: "", store_warehouse_code: "" };
+// Same convention as the Shopify integration page's sync job polling.
+const ACTIVE_JOB_STATUSES = new Set(["pending", "running"]);
 
 function TruckIcon({ className }) {
   return (
@@ -21,8 +22,6 @@ function TruckIcon({ className }) {
 }
 
 export default function SmartlaneIntegrationPage() {
-  const beginLoading = useLoadingStore((s) => s.begin);
-  const endLoading = useLoadingStore((s) => s.end);
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [connecting, setConnecting] = useState(false);
@@ -35,8 +34,9 @@ export default function SmartlaneIntegrationPage() {
   const [savingWarehouse, setSavingWarehouse] = useState(false);
   const [warehouses, setWarehouses] = useState(null);
   const [syncing, setSyncing] = useState(false);
-  const [syncResult, setSyncResult] = useState(null);
+  const [syncJob, setSyncJob] = useState(null);
   const [loadingWarehouses, setLoadingWarehouses] = useState(false);
+  const pollRef = useRef(null);
 
   async function loadStatus() {
     setLoading(true);
@@ -44,15 +44,63 @@ export default function SmartlaneIntegrationPage() {
     try {
       const data = await integrationsService.getSmartlaneStatus();
       setStatus(data);
+      return data;
     } catch (err) {
       setError(err.message || "Failed to load integration status");
+      return null;
     } finally {
       setLoading(false);
     }
   }
 
+  function stopPolling() {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+    setSyncing(false);
+  }
+
+  // Same 2-second polling pattern as the Shopify integration page - no
+  // WebSocket involved, just a plain interval hitting the job-status GET.
+  function startPolling() {
+    if (pollRef.current) return;
+    setSyncing(true);
+    pollRef.current = setInterval(async () => {
+      try {
+        const job = await integrationsService.getSmartlaneSyncJobStatus();
+        setSyncJob(job);
+        if (!ACTIVE_JOB_STATUSES.has(job.status)) {
+          stopPolling();
+          if (job.status === "completed") {
+            setNotice(
+              `Sync finished: checked ${job.checked_count}, updated ${job.updated_count}.`
+            );
+            await loadStatus();
+          } else if (job.status === "failed") {
+            setError(job.error_message || "Sync failed");
+          } else if (job.status === "cancelled") {
+            setNotice(`Sync cancelled — ${job.checked_count} order(s) checked before stopping.`);
+          }
+        }
+      } catch {
+        // Transient poll failure - just try again on the next tick.
+      }
+    }, 2000);
+  }
+
   useEffect(() => {
     loadStatus();
+    // Resume polling if a sync was already running (e.g. page refresh mid-sync).
+    integrationsService
+      .getSmartlaneSyncJobStatus()
+      .then((job) => {
+        setSyncJob(job);
+        if (job && ACTIVE_JOB_STATUSES.has(job.status)) startPolling();
+      })
+      .catch(() => {});
+    return () => stopPolling();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -87,21 +135,31 @@ export default function SmartlaneIntegrationPage() {
   }
 
   // Pulls consignment numbers and delivery outcomes from Smartlane right
-  // now, instead of waiting for a webhook that may never arrive.
+  // now, instead of waiting for a webhook that may never arrive. Starts a
+  // background job and polls for progress - the rest of the app (including
+  // this page's own credential form) stays fully usable while it runs,
+  // unlike the old version which blocked everything behind the global
+  // loading overlay for the whole duration.
   async function onSyncNow() {
-    setSyncing(true);
     setError("");
-    setSyncResult(null);
-    beginLoading("Syncing with Smartlane");
+    setNotice("");
     try {
-      const result = await integrationsService.syncSmartlane();
-      setSyncResult(result);
-      await loadStatus();
+      const job = await integrationsService.syncSmartlane();
+      setSyncJob(job);
+      startPolling();
     } catch (err) {
       setError(err.message || "Failed to sync with Smartlane");
-    } finally {
-      setSyncing(false);
-      endLoading();
+    }
+  }
+
+  async function onCancelSync() {
+    try {
+      const job = await integrationsService.cancelSmartlaneSync();
+      setSyncJob(job);
+      stopPolling();
+      setNotice(`Sync cancelled — ${job.checked_count} order(s) checked before stopping.`);
+    } catch (err) {
+      setError(err.message || "Failed to cancel sync");
     }
   }
 
@@ -257,14 +315,40 @@ export default function SmartlaneIntegrationPage() {
                   back - consignment numbers for Booking Pending orders, and delivered /
                   returned outcomes. Use this instead of waiting on the webhook.
                 </span>
-                {syncResult ? (
-                  <div className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
-                    Checked {syncResult.checked} order{syncResult.checked === 1 ? "" : "s"},
-                    updated {syncResult.updated}.
-                    {syncResult.detail ? ` ${syncResult.detail}` : ""}
-                    {syncResult.checked === 0
-                      ? " (Nothing to check - no orders are booked with Smartlane and still in progress.)"
-                      : ""}
+
+                {syncing && syncJob ? (
+                  <div className="mt-2 space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs text-slate-500">
+                        Syncing… {syncJob.checked_count}
+                        {syncJob.total_available != null ? ` of ${syncJob.total_available}` : ""}{" "}
+                        order{syncJob.checked_count === 1 ? "" : "s"} checked
+                        {syncJob.total_available != null
+                          ? ` (${Math.max(syncJob.total_available - syncJob.checked_count, 0)} remaining)`
+                          : ""}
+                        {syncJob.updated_count ? `, ${syncJob.updated_count} updated` : ""}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={onCancelSync}
+                        className="shrink-0 text-xs font-medium text-red-600 hover:underline"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                    {syncJob.total_available ? (
+                      <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+                        <div
+                          className="h-full rounded-full bg-brand-500 transition-all"
+                          style={{
+                            width: `${Math.min(
+                              (syncJob.checked_count / syncJob.total_available) * 100,
+                              100
+                            )}%`,
+                          }}
+                        />
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
               </div>

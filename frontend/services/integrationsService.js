@@ -176,13 +176,35 @@ class IntegrationsService {
 
   // Runs the Smartlane status poll for this org on demand - the same pull
   // the scheduled poller does, for when you'd rather not wait for a webhook.
+  // Kicks off a background sync job and returns immediately (HTTP 202) -
+  // poll getSmartlaneSyncJobStatus() for progress, same pattern as Shopify's
+  // syncNow/getSyncJobStatus above.
   async syncSmartlane() {
     const response = await fetch(`${apiConfig.baseUrl}${SMARTLANE_BASE}/sync/`, {
       method: "POST",
       headers: authService.getAuthHeaders(),
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.detail || "Failed to sync with Smartlane");
+    if (!response.ok) throw new Error(data.detail || "Failed to start Smartlane sync");
+    return data;
+  }
+
+  async getSmartlaneSyncJobStatus() {
+    const response = await fetch(`${apiConfig.baseUrl}${SMARTLANE_BASE}/sync/`, {
+      headers: authService.getAuthHeaders(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Failed to load sync status");
+    return data;
+  }
+
+  async cancelSmartlaneSync() {
+    const response = await fetch(`${apiConfig.baseUrl}${SMARTLANE_BASE}/sync/`, {
+      method: "DELETE",
+      headers: authService.getAuthHeaders(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Failed to cancel sync");
     return data;
   }
 

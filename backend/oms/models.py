@@ -51,6 +51,12 @@ class Order(TenantScopedModel):
         ("dispatch_issue", "Dispatch Issue"),
         ("awaiting_dispatched", "Awaiting Dispatched"),
         ("dispatched", "Dispatched"),
+        # Smartlane-reported sub-stages of "dispatched" - richer than a
+        # plain "still moving" bucket, but still no manual action of their
+        # own (only ever reached via Smartlane data, see
+        # integrations.services.apply_smartlane_status).
+        ("out_for_delivery", "Out for Delivery"),
+        ("attempt", "Delivery Attempt Failed"),
         ("delivered", "Delivered"),
         ("cancelled", "Cancelled"),
         ("returned", "Returned"),
@@ -120,6 +126,14 @@ class Order(TenantScopedModel):
     placed_at = models.DateTimeField(null=True, blank=True)
     dispatched_at = models.DateTimeField(null=True, blank=True)
     delivered_at = models.DateTimeField(null=True, blank=True)
+    # Smartlane's "return_in_progress" stage - the parcel is already on its
+    # way back from the customer, but the return isn't final yet (that's
+    # returned_at below). Purely informational: does not change `status`,
+    # which stays wherever it already was (almost always dispatched/
+    # out_for_delivery/attempt). An earlier point on the exact same returns
+    # timeline return_received_at (further below) tracks the tail end of -
+    # belongs to WMS's returns-desk domain, not a new OMS pipeline status.
+    return_in_progress_at = models.DateTimeField(null=True, blank=True)
     # When the courier reported the parcel as coming back.
     returned_at = models.DateTimeField(null=True, blank=True)
     # When the warehouse physically received and scanned it back in - a

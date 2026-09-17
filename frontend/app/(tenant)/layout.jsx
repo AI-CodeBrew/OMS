@@ -37,7 +37,14 @@ function TenantShell({ children }) {
           expanded={sidebarExpanded}
           onToggle={() => setSidebarExpanded((e) => !e)}
         />
-        <main className="min-w-0 flex-1 rounded-tl-2xl bg-surface px-6 py-8">{children}</main>
+        {/* sticky + own scroll, matching ModuleSidebar's own top-16/
+            h-[calc(100vh-4rem)] treatment - otherwise the whole document
+            scrolls and rounded-tl-2xl (a fixed feature of this box's own
+            top edge) scrolls out of view after the first scroll, leaving a
+            flat/square corner instead of the rounded one. */}
+        <main className="sticky top-16 h-[calc(100vh-4rem)] min-w-0 flex-1 overflow-y-auto rounded-tl-2xl bg-surface px-6 py-8">
+          {children}
+        </main>
       </div>
     </div>
   );

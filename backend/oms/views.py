@@ -354,6 +354,14 @@ class OrderViewSet(viewsets.ModelViewSet):
         if return_condition in ("good", "bad"):
             qs = qs.filter(return_condition=return_condition)
 
+        # Returns desk "Return in Progress" bucket: Smartlane has reported
+        # the courier is bringing the parcel back, but it hasn't been
+        # formally marked "returned" yet - see return_in_progress_at on
+        # Order and _resolve_return_in_progress in integrations.services.
+        return_in_progress = params.get("return_in_progress")
+        if return_in_progress == "yes":
+            qs = qs.filter(return_in_progress_at__isnull=False).exclude(status="returned")
+
         date_from = params.get("date_from")
         date_to = params.get("date_to")
         if date_from or date_to:
@@ -519,6 +527,8 @@ class OrderViewSet(viewsets.ModelViewSet):
         params = request.query_params.copy()
         params.pop("received", None)
         params.pop("return_condition", None)
+        if params.get("export") == "csv":
+            return self._returns_csv(request, params)
         qs = self._apply_filters(
             Order.objects.filter(organization_id=request.organization_id, status="returned"),
             params,
@@ -526,14 +536,90 @@ class OrderViewSet(viewsets.ModelViewSet):
         total = qs.count()
         received = qs.filter(return_received_at__isnull=False, return_condition="good").count()
         damaged = qs.filter(return_received_at__isnull=False, return_condition="bad").count()
+
+        # Separate from the three buckets above - these orders haven't
+        # reached status="returned" yet, so they're outside `qs` entirely.
+        in_progress_qs = self._apply_filters(
+            Order.objects.filter(
+                organization_id=request.organization_id, return_in_progress_at__isnull=False
+            ).exclude(status="returned"),
+            params,
+        )
         return Response(
             {
                 "total_returns": total,
                 "received": received,
                 "damaged": damaged,
                 "awaiting_scan": total - received - damaged,
+                "return_in_progress": in_progress_qs.count(),
             }
         )
+
+    def _returns_csv(self, request, params):
+        """Day-by-day breakdown for the Report page, bucketed by
+        returned_at (the day the courier reported it back) - return-in-
+        progress orders aren't in that queryset yet (see returns_summary),
+        so they're tallied separately by return_in_progress_at and merged
+        into the same date rows."""
+        qs = self._apply_filters(
+            Order.objects.filter(organization_id=request.organization_id, status="returned"),
+            params,
+        ).annotate(_date=Coalesce(TruncDate("returned_at"), TruncDate("created_at")))
+        by_day = qs.values("_date").annotate(
+            total=Count("id"),
+            good=Count("id", filter=Q(return_received_at__isnull=False, return_condition="good")),
+            bad=Count("id", filter=Q(return_received_at__isnull=False, return_condition="bad")),
+        )
+
+        in_progress_qs = self._apply_filters(
+            Order.objects.filter(
+                organization_id=request.organization_id, return_in_progress_at__isnull=False
+            ).exclude(status="returned"),
+            params,
+        ).annotate(_date=Coalesce(TruncDate("return_in_progress_at"), TruncDate("created_at")))
+        in_progress_by_day = dict(
+            in_progress_qs.values_list("_date").annotate(n=Count("id"))
+        )
+
+        rows_by_date = {}
+        for row in by_day:
+            rows_by_date[row["_date"]] = row
+        for date, n in in_progress_by_day.items():
+            rows_by_date.setdefault(date, {"total": 0, "good": 0, "bad": 0})["in_progress"] = n
+
+        header = [
+            "Date", "Total Returns", "Return in Progress",
+            "Received (Good)", "Received (Bad)", "Awaiting Scan",
+        ]
+
+        def rows():
+            yield header
+            for date in sorted(rows_by_date, key=lambda d: (d is None, d)):
+                row = rows_by_date[date]
+                total = row.get("total", 0)
+                good = row.get("good", 0)
+                bad = row.get("bad", 0)
+                yield [
+                    date.isoformat() if date else "",
+                    total,
+                    row.get("in_progress", 0),
+                    good,
+                    bad,
+                    total - good - bad,
+                ]
+
+        class Echo:
+            def write(self, value):
+                return value
+
+        writer = csv.writer(Echo())
+        response = StreamingHttpResponse(
+            (writer.writerow(row) for row in rows()), content_type="text/csv"
+        )
+        date_from = request.query_params.get("date_from") or "all"
+        date_to = request.query_params.get("date_to") or "all"
+        response["Content-Disposition"] = f'attachment; filename="returns_report_{date_from}_to_{date_to}.csv"'
+        return response
 
     @action(detail=False, methods=["get"])
     def dashboard(self, request):

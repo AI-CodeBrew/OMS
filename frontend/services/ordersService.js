@@ -49,6 +49,27 @@ class OrdersService {
     return data;
   }
 
+  async downloadReturnsCsv({ dateFrom, dateTo } = {}) {
+    const response = await fetch(
+      `${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderReturnsSummary}${buildQuery({
+        date_from: dateFrom,
+        date_to: dateTo,
+        export: "csv",
+      })}`,
+      { headers: authService.getAuthHeaders() }
+    );
+    if (!response.ok) throw new Error("Report export failed");
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `returns_report_${dateFrom || "all"}_to_${dateTo || "all"}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+  }
+
   async warmup({ pageSize, dashKeys = [] } = {}) {
     const search = new URLSearchParams();
     if (pageSize) search.set("page_size", String(pageSize));

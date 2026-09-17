@@ -331,6 +331,43 @@ class SmartlaneConnection(TenantScopedModel):
         return f"Smartlane ({self.organization_id})"
 
 
+class SmartlaneSyncJob(TenantScopedModel):
+    """Tracks one background Smartlane status-sync run - the manual "Sync
+    now" button's equivalent of ShopifySyncJob below, simplified (no
+    mode/ranges - poll_smartlane_statuses always checks the same "every
+    non-final order" scope, there's no full/incremental/custom distinction
+    to make). No FK back to SmartlaneConnection - there's only ever one per
+    org, and only the most recent job is ever read (no job-history UI)."""
+
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("running", "Running"),
+        ("completed", "Completed"),
+        ("failed", "Failed"),
+        ("cancelled", "Cancelled"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default="pending")
+    # Cooperative cancellation - same convention as ShopifySyncJob.
+    # poll_smartlane_statuses checks this between chunks and stops itself.
+    cancel_requested = models.BooleanField(default=False)
+    # How many of this run's orders have been asked about so far / were
+    # actually recognised+updated by Smartlane, and how many are in scope
+    # for this run in total (poll_smartlane_statuses's query result count,
+    # capped at its own `limit`) - lets the UI show "X of Y checked".
+    checked_count = models.PositiveIntegerField(default=0)
+    updated_count = models.PositiveIntegerField(default=0)
+    total_available = models.PositiveIntegerField(null=True, blank=True)
+    error_message = models.CharField(max_length=500, blank=True, default="")
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = '"integrations"."smartlane_sync_jobs"'
+        ordering = ["-created_at"]
+
+
 class ShopifySyncJob(TenantScopedModel):
     """Tracks one background order-sync run. No FK back to a specific
     ShopifyConnection - there's only ever one per org, and only the most

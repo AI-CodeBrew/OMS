@@ -468,23 +468,22 @@ export default function OrdersPage() {
     // bypasses the bulk-action endpoint entirely - Smartlane generates it
     // for one courier at a time. We don't actually know which real
     // courier (Leopards, BarqRaftar, ...) Smartlane assigned to a given
-    // order - that lives only in Smartlane's own system - so "All" can
-    // only resolve automatically while exactly one courier is enabled
-    // here; once more are enabled, ask the user to pick one explicitly.
+    // order - that lives only in Smartlane's own system - so "All" fetches
+    // one load sheet per enabled courier instead: each request sends every
+    // selected order, and Smartlane's own PDF only includes the ones that
+    // actually belong to that courier.
     if (action === "print_loadsheet") {
-      let courier = params.courier;
-      if (courier === "all") {
-        const enabled = SMARTLANE_LOAD_SHEET_COURIERS.filter((c) => !c.disabled && c.value !== "all");
-        if (enabled.length !== 1) {
-          setError("More than one courier is enabled - pick a specific courier instead of All.");
-          return;
-        }
-        courier = enabled[0].value;
-      }
+      const courier = params.courier;
+      const couriersToPrint =
+        courier === "all"
+          ? SMARTLANE_LOAD_SHEET_COURIERS.filter((c) => !c.disabled && c.value !== "all").map((c) => c.value)
+          : [courier];
       setApplyingAction(true);
       if (bulk) beginLoading(`Printing ${orderIds.length} load sheets`);
       try {
-        await ordersService.printSmartlaneLoadSheet(orderIds, courier);
+        for (const c of couriersToPrint) {
+          await ordersService.printSmartlaneLoadSheet(orderIds, c);
+        }
         setPendingAction(null);
         await reloadAfterChange();
       } catch (err) {
@@ -730,14 +729,18 @@ export default function OrdersPage() {
         count={pendingAction?.orderIds?.length || 0}
         couriers={
           pendingAction?.action === "assign_courier" && smartlaneConnected
-            ? // Smartlane stays first/default so it's still the obvious
-              // choice, but real courier rows (Trax, TCS, Leopards, ...)
-              // are offered alongside it - Smartlane's own API has no way
-              // to request a specific network (it auto-routes), so
-              // picking one of these is a deliberate manual bypass for
-              // orders staff want to book directly instead of through
-              // Smartlane, not an accidental way to skip it.
-              [{ id: "smartlane", name: "Smartlane" }, ...couriers]
+            ? // Only the synthetic "smartlane" entry actually books
+              // anything right now (see isSmartlane/resolvedAction below) -
+              // real courier rows (Trax, TCS, Leopards, ...), including any
+              // "Smartlane" row Smartlane itself created as a plain Courier
+              // FK, are shown greyed out as coming soon instead of offered
+              // as a working manual-assign path.
+              [
+                { id: "smartlane", name: "Smartlane" },
+                ...couriers
+                  .filter((c) => (c.name || "").trim().toLowerCase() !== "smartlane")
+                  .map((c) => ({ ...c, name: `${c.name} (Coming Soon)`, disabled: true })),
+              ]
             : couriers
         }
         submitting={applyingAction}

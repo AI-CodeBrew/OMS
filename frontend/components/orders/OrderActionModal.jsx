@@ -48,7 +48,7 @@ export default function OrderActionModal({ action, couriers, count, onSubmit, on
           >
             <option value="">Select a courier…</option>
             {(couriers || []).map((c) => (
-              <option key={c.id} value={c.id}>
+              <option key={c.id} value={c.id} disabled={c.disabled}>
                 {c.name}
               </option>
             ))}

@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import ShopifyConnection, ShopifySyncJob, SmartlaneConnection
+from .models import ShopifyConnection, ShopifySyncJob, SmartlaneConnection, SmartlaneSyncJob
 
 
 class ShopifyConnectionSerializer(serializers.ModelSerializer):
@@ -52,6 +52,22 @@ class SmartlaneConnectionSerializer(serializers.ModelSerializer):
 
     def get_webhooks_active(self, connection):
         return bool(connection.events_received_count)
+
+
+class SmartlaneSyncJobSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SmartlaneSyncJob
+        fields = [
+            "id",
+            "status",
+            "checked_count",
+            "updated_count",
+            "total_available",
+            "error_message",
+            "started_at",
+            "finished_at",
+            "created_at",
+        ]
 
 
 class ShopifySyncJobSerializer(serializers.ModelSerializer):

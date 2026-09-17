@@ -315,8 +315,14 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
 
 
 # How Smartlane's reported states map onto our pipeline. Anything not
-# listed (queued, ready, dispatch, in_transit, out_for_delivery, ...)
-# means the parcel is still moving, which "dispatched" already covers.
+# listed (queued, ready, dispatch, in_transit, ...) means the parcel is
+# still moving, which "dispatched" already covers. out_for_delivery/attempt
+# get their own OMS statuses (see oms.models.Order.STATUS_CHOICES) rather
+# than collapsing into "dispatched" like the rest of this set - they're
+# Smartlane's own vocabulary for sub-stages of dispatched a user actually
+# cares to see distinguished (dispute is deliberately NOT handled - out of
+# scope; return_in_progress is handled separately below, it's not a status
+# transition at all, see _resolve_return_in_progress).
 _SMARTLANE_STATUS_MAP = {
     "delivered": "delivered",
     "complete": "delivered",
@@ -325,23 +331,23 @@ _SMARTLANE_STATUS_MAP = {
     "returned": "returned",
     "cancel": "cancelled",
     "cancelled": "cancelled",
+    "out_for_delivery": "out_for_delivery",
+    "attempt": "attempt",
 }
 
 # Shared with the webhook (views.smartlane_shipment_webhook) so a status
 # seen by polling and the same status arriving by webhook always produce
 # the same outcome - moves the order on to Dispatched.
 #
-# "dispatch" (not "dispatched") and "attempt" are taken from the per-stage
-# timestamp fields on Smartlane's own Consignment Status webhook payload -
-# queue / ready / dispatch / out_for_delivery / attempt /
-# return_in_progress / complete / return / cancel / dispute - which is the
-# vocabulary their pipeline actually uses. "picked"/"in_transit" are kept
-# because they cost nothing, but they do NOT appear in that payload.
+# "dispatch" (not "dispatched") is taken from the per-stage timestamp
+# fields on Smartlane's own Consignment Status webhook payload - queue /
+# ready / dispatch / out_for_delivery / attempt / return_in_progress /
+# complete / return / cancel / dispute - which is the vocabulary their
+# pipeline actually uses. "picked"/"in_transit" are kept because they cost
+# nothing, but they do NOT appear in that payload.
 _SMARTLANE_DISPATCH_STATUSES = {
     "dispatch",
     "dispatched",
-    "out_for_delivery",
-    "attempt",
     "picked",
     "in_transit",
 }
@@ -363,15 +369,18 @@ def _stage_happened(row, key):
 
 def _resolve_smartlane_target(smartlane_status, row=None):
     """What a Smartlane event means for our pipeline - "delivered",
-    "returned", "cancelled", "dispatch" (still moving, not yet a final
-    outcome), or None (nothing actionable).
+    "returned", "cancelled", "attempt", "out_for_delivery", "dispatch"
+    (still moving, not yet any of the more specific sub-stages), or None
+    (nothing actionable).
 
     Stage timestamps (row) are tried first when available, string status
     (_SMARTLANE_STATUS_MAP/_SMARTLANE_DISPATCH_STATUSES) is the fallback
-    for when row is missing or its stage fields are all still blank.
-    return_in_progress deliberately does NOT count as "returned" here -
-    it means the return has started, not that it's finished; only a real
-    `return` timestamp is treated as the final outcome.
+    for when row is missing or its stage fields are all still blank. Checked
+    most-advanced-stage-first, since a later stage having happened implies
+    every earlier one already did too. return_in_progress deliberately does
+    NOT count as "returned" here - it means the return has started, not
+    that it's finished; only a real `return` timestamp is treated as the
+    final outcome (see _resolve_return_in_progress for that stage instead).
     """
     if row:
         if _stage_happened(row, "complete"):
@@ -380,7 +389,11 @@ def _resolve_smartlane_target(smartlane_status, row=None):
             return "returned"
         if _stage_happened(row, "cancel"):
             return "cancelled"
-        if any(_stage_happened(row, k) for k in ("dispatch", "out_for_delivery", "attempt")):
+        if _stage_happened(row, "attempt"):
+            return "attempt"
+        if _stage_happened(row, "out_for_delivery"):
+            return "out_for_delivery"
+        if _stage_happened(row, "dispatch"):
             return "dispatch"
 
     target = _SMARTLANE_STATUS_MAP.get(smartlane_status)
@@ -389,6 +402,17 @@ def _resolve_smartlane_target(smartlane_status, row=None):
     if smartlane_status in _SMARTLANE_DISPATCH_STATUSES:
         return "dispatch"
     return None
+
+
+def _resolve_return_in_progress(smartlane_status, row=None):
+    """Whether this event indicates Smartlane's return_in_progress stage -
+    checked independently of _resolve_smartlane_target since it's not a
+    status transition, just a timestamp (see Order.return_in_progress_at
+    and its docstring for why this belongs to WMS's returns-desk domain
+    rather than the OMS status pipeline)."""
+    if row and _stage_happened(row, "return_in_progress"):
+        return True
+    return smartlane_status == "return_in_progress"
 
 
 def extract_smartlane_event(payload):
@@ -470,6 +494,26 @@ def _catch_up_to_dispatched(order, tracking_number=""):
     return order.status == "dispatched"
 
 
+def _advance_to_dispatch_substate(order, target, tracking_number=""):
+    """Lands an order on "out_for_delivery" or "attempt" - Smartlane
+    sub-stages of dispatched (see oms.services.ALLOWED_TRANSITIONS) -
+    catching up to at least dispatched first via _catch_up_to_dispatched if
+    the order hasn't gotten there locally yet. Same "Smartlane reporting it
+    is proof it happened" reasoning that function already uses."""
+    from oms import services as oms_services
+
+    if order.status == target:
+        return False
+    if order.status not in ("dispatched", "out_for_delivery", "attempt"):
+        if not _catch_up_to_dispatched(order, tracking_number):
+            return False
+    if target == "out_for_delivery":
+        oms_services.mark_out_for_delivery(order)
+    else:
+        oms_services.mark_delivery_attempt_failed(order)
+    return True
+
+
 def apply_smartlane_status(order, smartlane_status, *, tracking_number="", organization_id, row=None):
     """Applies one Smartlane status to one order. Shared by the webhook and
     the poller so a status seen either way can never produce a different
@@ -482,6 +526,14 @@ def apply_smartlane_status(order, smartlane_status, *, tracking_number="", organ
     Raises oms.services.InvalidTransition for the caller to log/skip.
     """
     from oms import services as oms_services
+
+    # Independent of `target` below - not a status transition, just a
+    # timestamp WMS can use later (see Order.return_in_progress_at). Checked
+    # on every event regardless of what else it resolves to, since a real
+    # payload could carry this stage timestamp alongside a later one.
+    if _resolve_return_in_progress(smartlane_status, row) and not order.return_in_progress_at:
+        order.return_in_progress_at = timezone.now()
+        order.save(update_fields=["return_in_progress_at", "updated_at"])
 
     target = _resolve_smartlane_target(smartlane_status, row)
     before = order.status
@@ -510,6 +562,9 @@ def apply_smartlane_status(order, smartlane_status, *, tracking_number="", organ
         if order.status == "cancelled":
             return False
         oms_services.cancel_order(order, reason="Cancelled by Smartlane")
+    elif target in ("out_for_delivery", "attempt"):
+        if not _advance_to_dispatch_substate(order, target, tracking_number):
+            return False
     elif target == "dispatch":
         if order.status == "dispatched":
             return False
@@ -574,7 +629,7 @@ def absorb_untracked_smartlane_order(order, *, raw_status, row, actor_user_id=No
     return True
 
 
-def poll_smartlane_statuses(organization_id, *, batch_size=50, limit=500):
+def poll_smartlane_statuses(organization_id, *, batch_size=50, limit=500, job=None):
     """Pulls booking/delivery outcomes from Smartlane and advances matching
     orders - including orders booked directly on Smartlane's own portal that
     this app never pushed there itself (see absorb_untracked_smartlane_order).
@@ -593,6 +648,14 @@ def poll_smartlane_statuses(organization_id, *, batch_size=50, limit=500):
     this cap). Never seen before this function's query was broadened to
     check every non-final order, because a 100-item batch of genuinely
     Smartlane-booked orders alone was rare enough to never hit it.
+
+    `job` is an optional SmartlaneSyncJob (see run_smartlane_sync) - when
+    given, progress (total_available/checked_count/updated_count) is saved
+    as the run proceeds and cancel_requested is honoured between chunks, so
+    the manual "Sync now" button can show live progress and be cancelled
+    instead of blocking on one opaque request. The auto-poller
+    (integrations.poller) and the poll_smartlane management command don't
+    have a job and just get the plain synchronous behaviour as before.
     """
     from core.context import current_organization_id
     from oms import services as oms_services
@@ -611,13 +674,13 @@ def poll_smartlane_statuses(organization_id, *, batch_size=50, limit=500):
     _org_token = current_organization_id.set(organization_id)
     try:
         return _poll_smartlane_statuses_body(
-            organization_id, connection, oms_services, batch_size=batch_size, limit=limit,
+            organization_id, connection, oms_services, batch_size=batch_size, limit=limit, job=job,
         )
     finally:
         current_organization_id.reset(_org_token)
 
 
-def _poll_smartlane_statuses_body(organization_id, connection, oms_services, *, batch_size, limit):
+def _poll_smartlane_statuses_body(organization_id, connection, oms_services, *, batch_size, limit, job=None):
     # Deliberately NOT filtered by courier="Smartlane" - that field is only
     # ever set by push_order_to_smartlane/absorb_smartlane_booking, so an
     # order booked directly on Smartlane's own portal (this app's actual,
@@ -636,9 +699,15 @@ def _poll_smartlane_statuses_body(organization_id, connection, oms_services, *, 
     )
     if not orders:
         logger.info("smartlane poll for org %s: no non-final orders", organization_id)
+        if job is not None:
+            job.total_available = 0
+            _save_progress(job, ["total_available", "updated_at"])
         return {"checked": 0, "updated": 0}
 
     logger.info("smartlane poll for org %s: checking %s order(s)", organization_id, len(orders))
+    if job is not None:
+        job.total_available = len(orders)
+        _save_progress(job, ["total_available", "updated_at"])
 
     # Keyed by both spellings of the order number - Smartlane does not
     # reliably echo back the leading '#' (see
@@ -755,11 +824,60 @@ def _poll_smartlane_statuses_body(organization_id, connection, oms_services, *, 
                                   order.order_number)
                 continue
 
+        if job is not None:
+            job.checked_count = checked
+            job.updated_count = updated
+            _save_progress(job, ["checked_count", "updated_count", "updated_at"])
+            # Cooperative cancellation - same convention as run_shopify_sync.
+            # Only these two fields, so this doesn't clobber the counters
+            # just saved above with a stale in-memory copy.
+            job.refresh_from_db(fields=["cancel_requested", "status"])
+            if job.cancel_requested:
+                logger.info("smartlane poll for org %s: cancelled after %s/%s order(s)",
+                            organization_id, checked, len(orders))
+                return {"checked": checked, "updated": updated, "cancelled": True}
+
     connection.last_event_at = timezone.now()
     connection.save(update_fields=["last_event_at"])
     logger.info("smartlane poll for org %s finished: checked %s, updated %s",
                 organization_id, checked, updated)
     return {"checked": checked, "updated": updated}
+
+
+def run_smartlane_sync(organization_id, job_id):
+    """The actual sync work behind the manual "Sync now" button, run on a
+    background thread (see integrations/views.py's SmartlaneSyncView.post) -
+    same shape as run_shopify_sync just above, so the two integrations'
+    manual-sync UX match. Threads don't inherit the request thread's tenant
+    contextvar, so this uses `all_objects` with an explicit organization_id
+    throughout rather than relying on ambient context."""
+    from .models import SmartlaneSyncJob
+
+    job = SmartlaneSyncJob.all_objects.get(organization_id=organization_id, id=job_id)
+    try:
+        job.status = "running"
+        job.started_at = timezone.now()
+        _save_progress(job, ["status", "started_at", "updated_at"])
+
+        result = poll_smartlane_statuses(organization_id, job=job)
+
+        job.checked_count = result.get("checked", job.checked_count)
+        job.updated_count = result.get("updated", job.updated_count)
+        job.status = "cancelled" if result.get("cancelled") else "completed"
+        job.finished_at = timezone.now()
+        _save_progress(job, ["checked_count", "updated_count", "status", "finished_at", "updated_at"])
+    except Exception as exc:
+        # Unsupervised background thread, must not vanish silently.
+        logger.exception("smartlane sync job %s failed for org %s", job_id, organization_id)
+        job.status = "failed"
+        job.error_message = str(exc)[:500]
+        job.finished_at = timezone.now()
+        try:
+            _save_progress(job, ["status", "error_message", "finished_at", "updated_at"])
+        except OperationalError:
+            pass
+    finally:
+        connections.close_all()
 
 
 def _month_windows(start, end):
