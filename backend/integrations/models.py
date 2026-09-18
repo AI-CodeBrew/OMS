@@ -275,6 +275,12 @@ class ShopifyConnection(TenantScopedModel):
     # both the manual "Sync now" and the order webhook without disconnecting
     # (which would drop credentials/webhook registrations entirely).
     auto_sync_orders = models.BooleanField(default=True)
+    # Separate opt-in toggle for the *outbound* direction - fulfillment/
+    # tracking + an OMS:<Status> tag pushed to Shopify on every OMS status
+    # change (see integrations.services.sync_order_to_shopify). Defaults to
+    # off: unlike importing orders, writing to a merchant's live Shopify
+    # order is not something to switch on silently for existing connections.
+    push_status_to_shopify = models.BooleanField(default=False)
     # True once webhooks are successfully registered - toggleable from the
     # integrations page (see ShopifyConnectionView.patch), which calls
     # register/unregister_webhook against the ids stored below.

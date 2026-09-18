@@ -94,6 +94,28 @@ def create_fulfillment(
     return resp.json()["fulfillment"]
 
 
+def create_fulfillment_event(shop_domain, access_token, api_version, shopify_order_id, fulfillment_id, status):
+    """Advances Shopify's own "Delivery status" timeline on an existing
+    fulfillment - separate from create_fulfillment above, which only marks
+    the order fulfilled in the first place. `status` must be one of
+    Shopify's fixed shipment_status values (confirmed, in_transit,
+    out_for_delivery, delivered, attempted_delivery, failure, ...) - see
+    integrations.services._SHOPIFY_SHIPMENT_STATUS for the OMS mapping."""
+    url = (
+        f"{_base_url(shop_domain, api_version)}/orders/{shopify_order_id}"
+        f"/fulfillments/{fulfillment_id}/events.json"
+    )
+    headers = {"X-Shopify-Access-Token": access_token, "Content-Type": "application/json"}
+    payload = {"event": {"status": status}}
+    resp = requests.post(url, json=payload, headers=headers, timeout=15)
+    if not resp.ok:
+        raise ShopifyAPIError(
+            f"Failed to post fulfillment event ({status}) for order {shopify_order_id}: "
+            f"{resp.status_code} {resp.text}"
+        )
+    return resp.json()["fulfillment_event"]
+
+
 def fetch_order_count(shop_domain, access_token, api_version, *, created_at_min=None, created_at_max=None):
     url = f"{_base_url(shop_domain, api_version)}/orders/count.json"
     headers = {"X-Shopify-Access-Token": access_token}

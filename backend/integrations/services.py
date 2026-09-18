@@ -40,19 +40,40 @@ _SHOPIFY_STATUS_TAGS = {
 # create_booking stub) a placeholder, not a real courier tracking number.
 _SHOPIFY_FULFILLMENT_STATUSES = {"ready_to_print", "ready_to_pick", "dispatched", "delivered"}
 
+# OMS status -> Shopify's fixed Fulfillment Event `status` values, which
+# drive the "Delivery status" column on Shopify's own Orders list -
+# separate from (and posted after) the fulfillment created above. Only
+# valid once a fulfillment already exists, so these only ever fire for
+# statuses reached after dispatch. Shopify has no equivalent "returned"/
+# "cancelled" shipment status, so those two stay tag-only (see
+# _SHOPIFY_STATUS_TAGS) - a Delivery status like that would misrepresent
+# what Shopify itself understands a fulfillment's lifecycle to be.
+_SHOPIFY_SHIPMENT_STATUS = {
+    "dispatched": "in_transit",
+    "out_for_delivery": "out_for_delivery",
+    "attempt": "attempted_delivery",
+    "delivered": "delivered",
+}
+
 
 def sync_order_to_shopify(order):
     """Best-effort push of what the OMS pipeline now knows back onto the
-    Shopify order it came from: fulfillment tracking number/courier, and a
-    status tag (Booked/Dispatched/Delivered/Returned/Cancelled) merged
-    alongside the order's own custom tag and whatever tags the merchant
-    already had on the order.
+    Shopify order it came from: fulfillment tracking number/courier, a
+    Delivery-status timeline event (in_transit/out_for_delivery/
+    attempted_delivery/delivered - see _SHOPIFY_SHIPMENT_STATUS) once that
+    fulfillment exists, and a status tag (Booked/Dispatched/Delivered/
+    Returned/Cancelled) merged alongside the order's own custom tag and
+    whatever tags the merchant already had on the order.
 
     Called from oms.services._transition after every status change - never
     raises, since a Shopify API hiccup here must not block or roll back an
     OMS-side transition that already happened. Silently does nothing for
-    orders that didn't come from Shopify (no shopify_order_id) or when
-    Shopify isn't connected/synced for this org.
+    orders that didn't come from Shopify (no shopify_order_id), when
+    Shopify isn't connected for this org, or when the separate
+    "Status Push to Shopify" toggle (push_status_to_shopify) is off - this
+    is deliberately independent of auto_sync_orders (which only gates the
+    *inbound* import direction), since writing to a merchant's live Shopify
+    order is an opt-in a tenant should switch on explicitly.
 
     Deliberately does NOT touch Shopify's own order totals/shipping_lines -
     rewriting a live order's financial fields is a different, riskier
@@ -63,23 +84,39 @@ def sync_order_to_shopify(order):
         return
     try:
         connection = ShopifyConnection.all_objects.get(
-            organization_id=order.organization_id, is_connected=True, auto_sync_orders=True
+            organization_id=order.organization_id, is_connected=True, push_status_to_shopify=True
         )
     except ShopifyConnection.DoesNotExist:
         return
 
     args = (connection.shop_domain, connection.access_token, settings.SHOPIFY_API_VERSION)
 
-    if order.tracking_number and order.status in _SHOPIFY_FULFILLMENT_STATUSES:
+    if order.tracking_number and order.status in _SHOPIFY_FULFILLMENT_STATUSES and not order.shopify_fulfillment_id:
         try:
-            shopify_client.create_fulfillment(
+            fulfillment = shopify_client.create_fulfillment(
                 *args,
                 order.shopify_order_id,
                 tracking_number=order.tracking_number,
                 tracking_company=order.courier.name if order.courier_id else "",
             )
+            order.shopify_fulfillment_id = fulfillment.get("id")
+            Order.all_objects.filter(pk=order.pk).update(
+                shopify_fulfillment_id=order.shopify_fulfillment_id
+            )
         except shopify_client.ShopifyAPIError:
             pass  # already fulfilled, or Shopify-side issue - not fatal here
+
+    # Delivery-status timeline - only meaningful once a fulfillment exists,
+    # so this only fires for statuses reached after the block above (or a
+    # prior sync) has already set shopify_fulfillment_id.
+    shipment_status = _SHOPIFY_SHIPMENT_STATUS.get(order.status)
+    if shipment_status and order.shopify_fulfillment_id:
+        try:
+            shopify_client.create_fulfillment_event(
+                *args, order.shopify_order_id, order.shopify_fulfillment_id, shipment_status
+            )
+        except shopify_client.ShopifyAPIError:
+            pass
 
     status_tag = _SHOPIFY_STATUS_TAGS.get(order.status)
     if status_tag or order.tag:

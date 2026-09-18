@@ -80,6 +80,17 @@ class IntegrationsService {
     return data;
   }
 
+  async setPushStatusToShopify(enabled) {
+    const response = await fetch(`${apiConfig.baseUrl}${SHOPIFY_BASE}/`, {
+      method: "PATCH",
+      headers: authService.getAuthHeaders(),
+      body: JSON.stringify({ push_status_to_shopify: enabled }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Failed to update setting");
+    return data;
+  }
+
   async setWebhooksActive(enabled) {
     const response = await fetch(`${apiConfig.baseUrl}${SHOPIFY_BASE}/`, {
       method: "PATCH",

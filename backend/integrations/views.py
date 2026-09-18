@@ -150,6 +150,10 @@ class ShopifyConnectionView(APIView):
             connection.auto_sync_orders = bool(request.data["auto_sync_orders"])
             connection.save(update_fields=["auto_sync_orders"])
 
+        if "push_status_to_shopify" in request.data:
+            connection.push_status_to_shopify = bool(request.data["push_status_to_shopify"])
+            connection.save(update_fields=["push_status_to_shopify"])
+
         if "webhooks_active" in request.data:
             want_active = bool(request.data["webhooks_active"])
             if want_active and not connection.webhooks_active:

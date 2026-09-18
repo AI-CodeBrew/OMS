@@ -83,6 +83,11 @@ class Order(TenantScopedModel):
     # Set only for orders synced from Shopify - lets webhook/sync upsert
     # idempotently instead of creating duplicates on redelivery.
     shopify_order_id = models.BigIntegerField(null=True, blank=True)
+    # The Shopify Fulfillment created for this order (see integrations.
+    # services.sync_order_to_shopify) - once set, later status changes post
+    # a Fulfillment Event against this same id (Shopify's "Delivery status"
+    # timeline) instead of trying to create a second fulfillment.
+    shopify_fulfillment_id = models.BigIntegerField(null=True, blank=True)
 
     payment_gateway = models.CharField(max_length=10, choices=GATEWAY_CHOICES, default="cod")
     # Independent of `status` - a COD order can be Approved/Dispatched while

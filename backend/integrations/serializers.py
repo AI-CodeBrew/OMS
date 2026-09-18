@@ -14,6 +14,7 @@ class ShopifyConnectionSerializer(serializers.ModelSerializer):
             "currency",
             "is_connected",
             "auto_sync_orders",
+            "push_status_to_shopify",
             "webhooks_active",
             "last_synced_at",
             "created_at",

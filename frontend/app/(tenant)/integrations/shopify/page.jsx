@@ -357,6 +357,16 @@ export default function IntegrationsPage() {
     }
   }
 
+  async function onTogglePushStatus(enabled) {
+    setError("");
+    try {
+      const data = await integrationsService.setPushStatusToShopify(enabled);
+      setStatus((s) => ({ ...s, ...data }));
+    } catch (err) {
+      setError(err.message || "Failed to update setting");
+    }
+  }
+
   async function onToggleWebhooks(enabled) {
     setError("");
     setTogglingWebhooks(true);
@@ -669,6 +679,14 @@ export default function IntegrationsPage() {
                 checked={connected ? status.auto_sync_orders : false}
                 disabled={!connected}
                 onChange={onToggleAutoSync}
+              />
+              <FeatureToggle
+                title="Status Push to Shopify"
+                description="Push fulfillment/tracking + a status tag to Shopify as orders move through this system"
+                checked={connected ? status.push_status_to_shopify : false}
+                disabled={!connected}
+                onChange={onTogglePushStatus}
+                title2="Off by default - when on, every status change (Dispatched/Delivered/Returned/Cancelled) creates a Shopify fulfillment (if a tracking number exists) and tags the Shopify order accordingly."
               />
               <FeatureToggle
                 title="Real-time Webhooks"
