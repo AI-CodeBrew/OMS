@@ -30,6 +30,21 @@ def register_webhook(shop_domain, access_token, api_version, topic, address):
     return resp.json()["webhook"]
 
 
+def list_webhooks(shop_domain, access_token, api_version):
+    """Every webhook currently registered against this shop, across every
+    app - used to check for an existing (topic, address) pair before
+    registering, since Shopify 422s a repeat registration of the same pair
+    ("address ... has already been taken") rather than treating it as a
+    no-op."""
+    url = f"{_base_url(shop_domain, api_version)}/webhooks.json"
+    resp = requests.get(
+        url, headers={"X-Shopify-Access-Token": access_token}, params={"limit": 250}, timeout=15
+    )
+    if not resp.ok:
+        raise ShopifyAPIError(f"Failed to list webhooks: {resp.status_code} {resp.text}")
+    return resp.json().get("webhooks", [])
+
+
 def unregister_webhook(shop_domain, access_token, api_version, webhook_id):
     url = f"{_base_url(shop_domain, api_version)}/webhooks/{webhook_id}.json"
     resp = requests.delete(url, headers={"X-Shopify-Access-Token": access_token}, timeout=15)

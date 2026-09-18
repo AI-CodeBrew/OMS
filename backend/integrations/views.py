@@ -55,11 +55,32 @@ def _register_shopify_webhooks(shop_domain, access_token):
     """Registers every topic in _SHOPIFY_WEBHOOK_TOPICS and returns
     (webhook_ids, warnings) - shared by connect (POST) and re-enabling
     webhooks after they were turned off (PATCH), which previously
-    duplicated this loop with only the orders topics."""
+    duplicated this loop with only the orders topics.
+
+    Idempotent: checks Shopify's own webhook list first and reuses any
+    (topic, address) pair that's already registered instead of trying to
+    create it again. Without this, a retry after a partial failure (some
+    topics registered, one didn't, so webhooks_active stayed False - see
+    ShopifyConnectionView.patch) re-submitted every topic and Shopify 422'd
+    the ones that already existed with "address ... has already been
+    taken", which looked like every single topic failing.
+    """
+    try:
+        existing = shopify_client.list_webhooks(
+            shop_domain, access_token, settings.SHOPIFY_API_VERSION
+        )
+    except shopify_client.ShopifyAPIError:
+        existing = []
+    existing_ids = {(w.get("topic"), w.get("address")): w.get("id") for w in existing}
+
     ids = []
     warnings = []
     for topic, url_name in _SHOPIFY_WEBHOOK_TOPICS:
         address = f"{settings.PUBLIC_BACKEND_URL.rstrip('/')}{reverse(url_name)}"
+        existing_id = existing_ids.get((topic, address))
+        if existing_id:
+            ids.append(existing_id)
+            continue
         try:
             webhook = shopify_client.register_webhook(
                 shop_domain, access_token, settings.SHOPIFY_API_VERSION, topic, address
