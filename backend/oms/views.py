@@ -20,6 +20,7 @@ from core.redis_client import (
     get_cached_dashboard,
     get_cached_list,
     list_cache_key,
+    next_counts_version,
     release_rebuild_lock,
     set_cached_counts,
     set_cached_dashboard,
@@ -174,9 +175,14 @@ class OrderViewSet(viewsets.ModelViewSet):
         if cached is not None:
             return cached
         # Same query as core/realtime.py rebuilds on a write - shared so the
-        # two can never drift into reporting different numbers.
+        # two can never drift into reporting different numbers. Versioned
+        # the same way _refresh_counts is, so a rebuild triggered by this
+        # GET request can't clobber a fresher one already written by a
+        # concurrent order event (or vice versa) - see
+        # redis_client.next_counts_version.
+        version = next_counts_version(organization_id)
         counts = services.compute_order_counts(organization_id)
-        set_cached_counts(organization_id, counts)
+        set_cached_counts(organization_id, counts, version=version)
         return counts
 
     def _tab_list_payload(self, request, tab_status, page_size):

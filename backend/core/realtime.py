@@ -24,7 +24,7 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 
 from .events import subscribe
-from .redis_client import invalidate_order_view_cache, set_cached_counts
+from .redis_client import invalidate_order_view_cache, next_counts_version, set_cached_counts
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +56,12 @@ def _refresh_counts(organization_id):
     try:
         from oms.services import compute_order_counts
 
+        # Claimed *before* the query below, not after - see
+        # redis_client.next_counts_version for why this ordering is what
+        # makes the freshest concurrent rebuild win the cache write.
+        version = next_counts_version(organization_id)
         counts = compute_order_counts(organization_id)
-        set_cached_counts(organization_id, counts)
+        set_cached_counts(organization_id, counts, version=version)
         return counts
     except Exception:
         # Same rule as the push below: an order has already been committed,
