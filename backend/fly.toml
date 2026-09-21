@@ -23,6 +23,11 @@ primary_region = "sin"
   # failures were confirmed to be a Smartlane-side warehouse status issue,
   # unrelated to this poller (it reproduced identically with the poller off).
   SMARTLANE_AUTO_POLL = "true"
+  # Smartlane's LIVE Business API root. Deliberately without the business
+  # code (bs178998760511) - the client appends /{business_code} itself, taken
+  # from SmartlaneBusinessConfig. Local dev keeps the TEST default in
+  # settings/base.py.
+  SMARTLANE_BUSINESS_API_BASE_URL = "https://smartapi.pk/business"
 
 [http_service]
   internal_port = 8000
