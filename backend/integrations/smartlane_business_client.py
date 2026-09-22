@@ -57,14 +57,10 @@ class SignatureOptions:
     # PHP's json_encode writes {"a":1}, Python's default writes {"a": 1}.
     # A single space here changes the md5 and so the whole signature.
     compact_separators: bool = True
-    # The doc's PHP snippet implies json_encode's default (escaped), but
-    # Smartlane's own reference client (Node.js, using JSON.stringify -
-    # which does NOT escape slashes) is what they actually test against.
-    # Trust the reference code over the doc's PHP pseudocode: default to
-    # unescaped. The KYC payload carries a logo URL, so this one decides
-    # real requests, not just theory - this was very likely the actual
-    # cause of every KYC submission being rejected.
-    escape_slashes: bool = False
+    # Live KYC on smartapi.pk only accepted the stamp when slashes in
+    # logo_url were PHP-escaped (https:\/\/...). Unescaped JSON is 403
+    # even with the same URL and fields. Confirmed 2026-09-22 from Fly.
+    escape_slashes: bool = True
     # The doc says: "In case of GET if request body is empty, replace
     # {request_body_array} with verb: GET". Read as an array ["verb" =>
     # "GET"], which is what json_encode would be given. The alternative
@@ -78,15 +74,17 @@ class SignatureOptions:
     # True would return raw bytes. Smartlane's check matches the default
     # (hex, then base64). Keep the raw path as a diagnostic switch only.
     hmac_raw: bool = False
-    # Handshake / API Explorer GETs keep the business root. KYC POST must
-    # not: production 403s when the stamp is for the root and the request
-    # is /store/new/kyc (Invalid Authentication Code). See _KYC_SIGNATURE_OPTIONS.
+    # Live KYC (2026-09-22, Fly → smartapi.pk): HMAC is accepted only when
+    # this is the business root, even though we POST /store/new/kyc.
+    # Signing the KYC path is 403. Signing the root + escaped JSON is 422
+    # (validation) — auth passed.
     sign_business_root: bool = True
 
 
 DEFAULT_SIGNATURE_OPTIONS = SignatureOptions()
-# Same POST we send: verb POST, url = /{code}/store/new/kyc, body = KYC JSON.
-_KYC_SIGNATURE_OPTIONS = SignatureOptions(sign_business_root=False)
+# POST KYC: verb POST, HMAC url = business root, body = escaped KYC JSON
+# (same bytes on the wire). Confirmed against production.
+_KYC_SIGNATURE_OPTIONS = SignatureOptions(sign_business_root=True, escape_slashes=True)
 
 
 def _json_encode(payload, options):
@@ -319,9 +317,9 @@ def test_connection(config, options=DEFAULT_SIGNATURE_OPTIONS):
 def submit_store_kyc(config, kyc, options=None):
     """POST /{businessCode}/store/new/kyc - sends a store for Smartlane's review.
 
-    HMAC is the request itself: verb POST, url = this KYC path, body =
-    this `kyc` JSON. Those exact bytes are what we POST. Signing the
-    business root while requesting this path is the 403 you saw.
+    HMAC verb is POST. HMAC url is the business root. HMAC body is this
+    `kyc` JSON with PHP-escaped slashes — the same bytes we POST to
+    /store/new/kyc. Live smartapi.pk 403s any other URL/escape combo.
     """
     if not isinstance(kyc, dict) or not kyc:
         raise SmartlaneAPIError("KYC body is required to sign and POST.")
