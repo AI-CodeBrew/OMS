@@ -38,7 +38,7 @@ const STATUS_TONE = {
 const STATUS_BLURB = {
   pending_approval: "Submitted. Waiting for the platform team to review it.",
   in_review: "Approved here and sent to Smartlane, who are running their own review.",
-  active: "Live. You can book orders through the couriers below.",
+  active: "Live. The platform team has activated your Smartlane store.",
   rejected: "Not approved. See the reason below, fix it and submit again.",
   in_active: "Smartlane has this store marked inactive. Contact the platform team.",
 };
@@ -49,7 +49,6 @@ const inputClass =
 export default function OmsCourierPage() {
   const [data, setData] = useState(null);
   const [form, setForm] = useState({});
-  const [selected, setSelected] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -67,7 +66,6 @@ export default function OmsCourierPage() {
             Object.entries(result.link.kyc || {}).map(([k, v]) => [k, v ?? ""]),
           ),
         );
-        setSelected(result.link.requested_offerings || []);
       }
     } catch (err) {
       setError(err.message || "Failed to load");
@@ -86,10 +84,6 @@ export default function OmsCourierPage() {
   // reviewer and the form is read-only.
   const editable = !status || status === "draft" || status === "rejected";
 
-  function toggleCourier(key) {
-    setSelected((s) => (s.includes(key) ? s.filter((k) => k !== key) : [...s, key]));
-  }
-
   async function onSubmit(e) {
     e.preventDefault();
     setSaving(true);
@@ -99,7 +93,6 @@ export default function OmsCourierPage() {
       await integrationsService.submitOmsCourierOnboarding({
         ...form,
         platform: "api",
-        requested_offerings: selected,
       });
       setNotice("Request submitted. The platform team will review it.");
       await load();
@@ -123,8 +116,7 @@ export default function OmsCourierPage() {
         <h1 className="text-[28px] font-semibold leading-8 text-slate-900">OMS Courier</h1>
         <p className="mt-1 text-sm text-slate-500">
           Book through the platform&apos;s own Smartlane account — no Smartlane signup of your
-          own. Pick your couriers, send your business details, and the platform team reviews
-          the request.
+          own. Send your business details and the platform team reviews the request.
         </p>
       </div>
 
@@ -174,43 +166,6 @@ export default function OmsCourierPage() {
 
           <form onSubmit={onSubmit} className="mt-4 space-y-4">
             <div className="rounded-lg border border-surface-border bg-white p-5">
-              <h2 className="text-sm font-semibold text-slate-900">Couriers</h2>
-              <p className="mt-1 text-xs text-slate-500">
-                Pick the carriers you want to ship with.
-              </p>
-              {data.couriers.length === 0 ? (
-                <p className="mt-3 text-sm text-slate-500">
-                  None available yet — the platform team hasn&apos;t published any couriers.
-                </p>
-              ) : (
-                <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                  {data.couriers.map((c) => (
-                    <label
-                      key={c.key}
-                      className={`flex items-start gap-2.5 rounded-md border px-3 py-2.5 text-sm ${
-                        selected.includes(c.key)
-                          ? "border-brand-600 bg-brand-50"
-                          : "border-surface-border bg-white"
-                      } ${editable ? "cursor-pointer" : "cursor-default opacity-70"}`}
-                    >
-                      <input
-                        type="checkbox"
-                        className="mt-0.5"
-                        disabled={!editable}
-                        checked={selected.includes(c.key)}
-                        onChange={() => toggleCourier(c.key)}
-                      />
-                      <span className="min-w-0">
-                        <span className="block font-medium text-slate-800">{c.label}</span>
-                        <span className="block text-xs text-slate-500">{c.service_type}</span>
-                      </span>
-                    </label>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="rounded-lg border border-surface-border bg-white p-5">
               <h2 className="text-sm font-semibold text-slate-900">Business details</h2>
               <p className="mt-1 text-xs text-slate-500">
                 Smartlane needs these to open a store for you.
@@ -238,7 +193,7 @@ export default function OmsCourierPage() {
 
             {editable ? (
               <div className="flex justify-end">
-                <Button type="submit" loading={saving} disabled={selected.length === 0}>
+                <Button type="submit" loading={saving}>
                   {status === "rejected" ? "Resubmit request" : "Submit request"}
                 </Button>
               </div>

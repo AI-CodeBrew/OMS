@@ -45,30 +45,6 @@ class SmartlaneAdminService {
     });
   }
 
-  listCouriers() {
-    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneCouriers}`);
-  }
-
-  createCourier(courier) {
-    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneCouriers}`, {
-      method: "POST",
-      body: JSON.stringify(courier),
-    });
-  }
-
-  updateCourier(id, patch) {
-    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneCourier(id)}`, {
-      method: "PATCH",
-      body: JSON.stringify(patch),
-    });
-  }
-
-  deleteCourier(id) {
-    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneCourier(id)}`, {
-      method: "DELETE",
-    });
-  }
-
   listStoreLinks(status) {
     const qs = status ? `?status=${encodeURIComponent(status)}` : "";
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneStores}${qs}`);
@@ -99,9 +75,8 @@ class SmartlaneAdminService {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneStoreWarehouses(id)}`);
   }
 
-  // Resolves even when some (or all) requested couriers fail to
-  // provision - the response's `errors` array is what the page renders,
-  // not something thrown away by a failed-response check.
+  // Resolves even when some (or all) warehouses fail to provision -
+  // the response's `errors` array is what the page renders.
   provisionStoreWarehouses(id, { city, zip_code } = {}) {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneStoreWarehousesProvision(id)}`, {
       method: "POST",

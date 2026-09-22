@@ -132,7 +132,6 @@ const INTEGRATIONS = [
     href: "/integrations/oms-courier",
     live: true,
     features: [
-      { label: "Pick Your Couriers", done: true },
       { label: "Platform-managed Onboarding", done: true },
       { label: "Create Bookings", done: false },
       { label: "Real-time Tracking", done: false },

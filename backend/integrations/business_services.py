@@ -395,8 +395,6 @@ def submit_org_onboarding(organization_id, body, *, actor_user_id=None):
     ]
     if missing:
         raise SmartlaneBusinessError(f"Required: {', '.join(missing)}.")
-    if not link.requested_offerings:
-        raise SmartlaneBusinessError("Pick at least one courier.")
 
     link.status = "pending_approval"
     link.review_note = ""
