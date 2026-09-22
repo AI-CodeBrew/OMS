@@ -78,13 +78,15 @@ class SignatureOptions:
     # True would return raw bytes. Smartlane's check matches the default
     # (hex, then base64). Keep the raw path as a diagnostic switch only.
     hmac_raw: bool = False
-    # Working Postman generateMacSignature always hashes this URL, even
-    # when the request is POST /{code}/store/new/kyc:
-    #   https://gcp.smartlane.dev/business/{businessCode}
+    # Handshake / API Explorer GETs keep the business root. KYC POST must
+    # not: production 403s when the stamp is for the root and the request
+    # is /store/new/kyc (Invalid Authentication Code). See _KYC_SIGNATURE_OPTIONS.
     sign_business_root: bool = True
 
 
 DEFAULT_SIGNATURE_OPTIONS = SignatureOptions()
+# Same POST we send: verb POST, url = /{code}/store/new/kyc, body = KYC JSON.
+_KYC_SIGNATURE_OPTIONS = SignatureOptions(sign_business_root=False)
 
 
 def _json_encode(payload, options):
@@ -314,12 +316,12 @@ def test_connection(config, options=DEFAULT_SIGNATURE_OPTIONS):
     return payload, debug
 
 
-def submit_store_kyc(config, kyc, options=DEFAULT_SIGNATURE_OPTIONS):
+def submit_store_kyc(config, kyc, options=None):
     """POST /{businessCode}/store/new/kyc - sends a store for Smartlane's review.
 
-    HMAC verb is POST. HMAC body is this `kyc` object. The POST body is
-    that same JSON — one encode, signed and sent. See
-    business_services.build_kyc_payload for field order.
+    HMAC is the request itself: verb POST, url = this KYC path, body =
+    this `kyc` JSON. Those exact bytes are what we POST. Signing the
+    business root while requesting this path is the 403 you saw.
     """
     if not isinstance(kyc, dict) or not kyc:
         raise SmartlaneAPIError("KYC body is required to sign and POST.")
@@ -329,7 +331,7 @@ def submit_store_kyc(config, kyc, options=DEFAULT_SIGNATURE_OPTIONS):
         f"/{config.business_code}/store/new/kyc",
         body=kyc,
         context="Store KYC",
-        options=options,
+        options=options if options is not None else _KYC_SIGNATURE_OPTIONS,
         capture_debug=True,
     )
     return payload, debug
