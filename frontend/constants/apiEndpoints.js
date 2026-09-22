@@ -40,6 +40,7 @@ export const API_ENDPOINTS = {
     orderScanDispatch: "/api/oms/orders/scan-dispatch/",
     orderScanReturn: "/api/oms/orders/scan-return/",
     orderExport: "/api/oms/orders/export/",
+    orderProductNames: "/api/oms/orders/product-names/",
     orderImport: "/api/oms/orders/import-csv/",
     orderSmartlaneAirwayBill: "/api/oms/orders/smartlane-airway-bill/",
     orderSmartlaneLoadSheet: "/api/oms/orders/smartlane-load-sheet/",

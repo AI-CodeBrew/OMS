@@ -3,6 +3,7 @@
 import Checkbox from "../shared/Checkbox";
 import OrderRowMenu from "./OrderRowMenu";
 import { STATUS_LABELS } from "./statusConfig";
+import { formatPakPhone } from "../../lib/formatPhone";
 
 export default function OrdersTable({
   orders,
@@ -29,13 +30,15 @@ export default function OrdersTable({
                 onChange={() => onToggleSelectAll(orders)}
               />
             </th>
-            <th className="px-3 py-2">Order</th>
-            <th className="px-3 py-2">Cus. Name</th>
+            <th className="px-3 py-2">OMS Order ID</th>
+            <th className="px-3 py-2">Store Order ID</th>
+            <th className="px-3 py-2">Customer Name</th>
             <th className="px-3 py-2">Contact</th>
             <th className="px-3 py-2">Date &amp; Time</th>
             <th className="px-3 py-2">Fulfillment</th>
             <th className="px-3 py-2">Pay. Status</th>
             <th className="px-3 py-2">Shop</th>
+            <th className="px-3 py-2">Product Name</th>
             <th className="px-3 py-2">City</th>
             <th className="px-3 py-2">Courier</th>
             <th className="px-3 py-2">Tracking ID</th>
@@ -49,13 +52,13 @@ export default function OrdersTable({
         <tbody className="text-sm">
           {loading && orders.length === 0 ? (
             <tr>
-              <td colSpan={16} className="px-4 py-6 text-center text-slate-500">
+              <td colSpan={18} className="px-4 py-6 text-center text-slate-500">
                 Loading…
               </td>
             </tr>
           ) : orders.length === 0 ? (
             <tr>
-              <td colSpan={16} className="px-4 py-6 text-center text-slate-500">
+              <td colSpan={18} className="px-4 py-6 text-center text-slate-500">
                 No orders in this view.
               </td>
             </tr>
@@ -65,18 +68,24 @@ export default function OrdersTable({
                 <td className="px-3 py-1.5">
                   <Checkbox checked={selectedIds.has(order.id)} onChange={() => onToggleSelect(order.id)} />
                 </td>
+                <td className="px-3 py-1.5 text-slate-700">{order.supabase_order_no ?? "—"}</td>
                 <td className="px-3 py-1.5">
                   <div className="font-semibold text-slate-900">{order.order_number}</div>
                   <div className="text-[11px] text-slate-400">{STATUS_LABELS[order.status] || order.status}</div>
                 </td>
                 <td className="px-3 py-1.5 text-slate-700">{order.customer_name}</td>
-                <td className="px-3 py-1.5 text-slate-500">{order.customer_phone || "—"}</td>
+                <td className="px-3 py-1.5 text-slate-500">{formatPakPhone(order.customer_phone) || "—"}</td>
                 <td className="px-3 py-1.5 text-slate-500">
                   {new Date(order.placed_at || order.created_at).toLocaleString()}
                 </td>
                 <td className="px-3 py-1.5 capitalize text-slate-700">{order.fulfillment_status}</td>
                 <td className="px-3 py-1.5 capitalize text-slate-700">{order.payment_status}</td>
                 <td className="px-3 py-1.5 text-slate-700">{order.shop || "—"}</td>
+                <td className="px-3 py-1.5 text-slate-700">
+                  {order.items && order.items.length > 0
+                    ? order.items.map((i) => i.product_name).join(", ")
+                    : "—"}
+                </td>
                 <td className="px-3 py-1.5 text-slate-700">{order.city || "—"}</td>
                 <td className="px-3 py-1.5 text-slate-700">{order.courier_name || "—"}</td>
                 <td className="px-3 py-1.5 text-slate-500">{order.tracking_number || "—"}</td>

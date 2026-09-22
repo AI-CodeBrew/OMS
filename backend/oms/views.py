@@ -2,7 +2,7 @@ import csv
 import logging
 from datetime import timedelta
 
-from django.db.models import Count, F, Prefetch, Q, Sum
+from django.db.models import Count, F, OuterRef, Prefetch, Q, Subquery, Sum
 from django.db.models.functions import Coalesce, TruncDate
 from django.http import HttpResponse, StreamingHttpResponse
 from django.utils import timezone
@@ -317,7 +317,26 @@ class OrderViewSet(viewsets.ModelViewSet):
     def _apply_filters(self, qs, params):
         status_param = params.get("status")
         if status_param:
-            qs = qs.filter(status__in=[s.strip() for s in status_param.split(",") if s.strip()])
+            status_list = [s.strip() for s in status_param.split(",") if s.strip()]
+            qs = qs.filter(status__in=status_list)
+            if status_list == ["ready_to_print"]:
+                # Default ordering (Order.Meta.ordering = -created_at) sorts
+                # by when the row was first created, not by when it most
+                # recently reached Ready to Print - an order re-absorbed or
+                # re-processed later should surface first, same way a fresh
+                # one does. OrderStatusEvent is the audit trail already
+                # written by every _transition (see oms/services.py) and
+                # already used the same way by DailyReadyToPrintView.
+                latest_ready_to_print = (
+                    OrderStatusEvent.objects.filter(
+                        order=OuterRef("pk"), to_status="ready_to_print"
+                    )
+                    .order_by("-created_at")
+                    .values("created_at")[:1]
+                )
+                qs = qs.annotate(_ready_to_print_at=Subquery(latest_ready_to_print)).order_by(
+                    "-_ready_to_print_at"
+                )
 
         search = params.get("search")
         search_field = params.get("search_field", "order_number")
@@ -382,6 +401,24 @@ class OrderViewSet(viewsets.ModelViewSet):
                 qs = qs.filter(effective_date__date__lte=date_to)
 
         return qs
+
+    @action(detail=False, methods=["get"], url_path="product-names")
+    def product_names(self, request):
+        """Distinct product names matching `q`, for the search bar's
+        product-name autocomplete - a plain list, not paginated, capped at
+        10 since it's suggestions, not a browsable result set."""
+        q = (request.query_params.get("q") or "").strip()
+        if not q:
+            return Response({"results": []})
+        names = (
+            OrderItem.objects.filter(
+                order__organization_id=request.organization_id, product_name__icontains=q
+            )
+            .order_by("product_name")
+            .values_list("product_name", flat=True)
+            .distinct()[:10]
+        )
+        return Response({"results": list(names)})
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -1124,10 +1161,14 @@ class OrderViewSet(viewsets.ModelViewSet):
 
             filename = "orders_smartlane.csv"
         else:
-            # "All" - every stored field from both Order and OrderItem, one
-            # row per line item (order-level fields repeat across an
-            # order's rows) so nothing from either table is left out. An
-            # order with no items still gets one row with blank item columns.
+            # "All" - key order fields exported, one row per line item.
+            # Order-level fields repeat across an order's rows.
+            # An order with no items still gets one row with blank item columns.
+            # NOTE: Postal Code, CNIC, Address Line 2, Customer Type,
+            # Fulfillment Status, Order Source, Secondary Phone, Country,
+            # Coupon/Gift Card/Loyalty/Wallet/Tax/Donation amounts, and
+            # Item Vendor/Discount/Weight are intentionally excluded from the
+            # CSV export. All data is still stored in the database.
             queryset = queryset.prefetch_related(items_prefetch)
             header = [
                 "Order Number",
@@ -1135,37 +1176,23 @@ class OrderViewSet(viewsets.ModelViewSet):
                 "Customer Name",
                 "Customer Phone",
                 "Customer Email",
-                "Secondary Phone",
                 "Address Line 1",
-                "Address Line 2",
                 "City",
-                "Country",
-                "Postal Code",
-                "CNIC",
                 "Customer Tags",
-                "Customer Type",
                 "Payment Gateway",
                 "Payment Status",
-                "Fulfillment Status",
                 "Shop",
-                "Courier",
+                "Courier Status",
                 "Tracking Number",
                 "Issue Note",
                 "Return Reason",
-                "Order Source",
                 "Shipping Type",
                 "Total Amount",
-                "Coupon Discount",
-                "Gift Card Discount",
-                "Loyalty Amount",
-                "Wallet Amount",
-                "Total Tax",
-                "Donation Amount",
                 "Shipping Amount",
                 "Amount Paid",
                 "Grand Total",
                 "Amount Receivable",
-                "Placed At",
+                "Order Date",
                 "Dispatched At",
                 "Delivered At",
                 "Returned At",
@@ -1174,9 +1201,6 @@ class OrderViewSet(viewsets.ModelViewSet):
                 "Item Barcode",
                 "Item Quantity",
                 "Item Unit Price",
-                "Item Vendor",
-                "Item Discount Amount",
-                "Item Weight Grams",
             ]
 
             def rows():
@@ -1188,45 +1212,31 @@ class OrderViewSet(viewsets.ModelViewSet):
                         order.customer_name,
                         order.customer_phone,
                         order.customer_email,
-                        order.secondary_phone,
                         order.address_line1,
-                        order.address_line2,
                         order.city,
-                        order.country,
-                        order.postal_code,
-                        order.cnic,
                         order.customer_tags,
-                        order.customer_type,
                         order.payment_gateway,
                         order.payment_status,
-                        order.fulfillment_status,
                         order.shop,
                         order.courier.name if order.courier_id else "",
                         order.tracking_number,
                         order.issue_note,
                         order.return_reason,
-                        order.order_source,
                         order.shipping_type,
                         str(order.total_amount),
-                        str(order.coupon_discount),
-                        str(order.gift_card_discount),
-                        str(order.loyalty_amount),
-                        str(order.wallet_amount),
-                        str(order.total_tax),
-                        str(order.donation_amount),
                         str(order.shipping_amount),
                         str(order.amount_paid),
                         str(order.grand_total),
                         str(order.amount_receivable),
-                        (order.placed_at or order.created_at).isoformat(),
-                        order.dispatched_at.isoformat() if order.dispatched_at else "",
-                        order.delivered_at.isoformat() if order.delivered_at else "",
-                        order.returned_at.isoformat() if order.returned_at else "",
-                        order.created_at.isoformat(),
+                        (order.placed_at or order.created_at).date().isoformat(),
+                        order.dispatched_at.date().isoformat() if order.dispatched_at else "",
+                        order.delivered_at.date().isoformat() if order.delivered_at else "",
+                        order.returned_at.date().isoformat() if order.returned_at else "",
+                        order.created_at.date().isoformat(),
                     ]
                     items = list(order.items.all())
                     if not items:
-                        yield order_fields + ["", "", "", "", "", "", ""]
+                        yield order_fields + ["", "", "", ""]
                         continue
                     for item in items:
                         yield order_fields + [
@@ -1234,9 +1244,6 @@ class OrderViewSet(viewsets.ModelViewSet):
                             item.barcode,
                             item.quantity,
                             str(item.unit_price),
-                            item.vendor,
-                            str(item.discount_amount),
-                            item.weight_grams if item.weight_grams is not None else "",
                         ]
 
             filename = "orders_all.csv"

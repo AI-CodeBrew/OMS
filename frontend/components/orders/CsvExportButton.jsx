@@ -4,23 +4,23 @@ import { useState } from "react";
 import Dropdown from "../shared/Dropdown";
 import { Spinner } from "../shared/Button";
 import ordersService from "../../services/ordersService";
-import useLoadingStore from "../../store/loadingStore";
 
 const TEMPLATES = [
   { key: "all", label: "All", filename: "orders.csv" },
-  { key: "smartlane", label: "Smartlane", filename: "orders_smartlane.csv" },
+  { key: "smartlane", label: "Smartlane Template", filename: "orders_smartlane.csv" },
   { key: "leopard", label: "Leopard (Coming Soon)", disabled: true },
   { key: "postex", label: "PostEx (Coming Soon)", disabled: true },
 ];
 
 export default function CsvExportButton({ filterParams }) {
   const [exporting, setExporting] = useState(false);
-  const beginLoading = useLoadingStore((s) => s.begin);
-  const endLoading = useLoadingStore((s) => s.end);
 
+  // Deliberately no global loadingStore begin/end here - that fired the
+  // full-screen LoadingOverlay on top of this button's own inline Spinner,
+  // blocking the whole screen for what should be a quiet background
+  // download. The inline spinner below is the only feedback now.
   async function onExport(template, filename) {
     setExporting(true);
-    beginLoading("Preparing export");
     try {
       const blob = await ordersService.exportCsv({ ...filterParams, template });
       const url = window.URL.createObjectURL(blob);
@@ -35,7 +35,6 @@ export default function CsvExportButton({ filterParams }) {
       // Non-critical - user can retry the export directly.
     } finally {
       setExporting(false);
-      endLoading();
     }
   }
 

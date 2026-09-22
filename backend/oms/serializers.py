@@ -177,6 +177,7 @@ class OrderSerializer(serializers.ModelSerializer):
         model = Order
         fields = [
             "id",
+            "supabase_order_no",
             "order_number",
             "customer_name",
             "customer_phone",
@@ -244,6 +245,7 @@ class OrderSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "id",
+            "supabase_order_no",
             "status",
             "total_amount",
             "courier",

@@ -25,6 +25,19 @@ class OrdersService {
     return data;
   }
 
+  // Suggestions for the search bar's product-name autocomplete - a plain
+  // {results: [...]} list, not paginated.
+  async suggestProductNames(q) {
+    if (!q || !q.trim()) return [];
+    const response = await fetch(
+      `${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderProductNames}${buildQuery({ q })}`,
+      { headers: authService.getAuthHeaders() }
+    );
+    const data = await response.json().catch(() => ({ results: [] }));
+    if (!response.ok) return [];
+    return data.results || [];
+  }
+
   async dashboard(params = {}) {
     const response = await fetch(
       `${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderDashboard}${buildQuery(params)}`,

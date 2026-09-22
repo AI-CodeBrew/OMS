@@ -24,6 +24,21 @@ class Courier(TenantScopedModel):
         return self.name
 
 
+def _next_supabase_order_no():
+    """Atomically claims the next value of the oms.orders_supabase_no_seq
+    Postgres sequence (created in the migration that adds this field) -
+    one DB round trip, race-free by construction, regardless of which code
+    path is creating the Order (manual, Shopify webhook, CSV import,
+    Smartlane absorb). A plain app-level counter would need every one of
+    those call sites to coordinate; nextval() needs none of them to know
+    about each other."""
+    from django.db import connection
+
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT nextval('oms.orders_supabase_no_seq')")
+        return cursor.fetchone()[0]
+
+
 class Order(TenantScopedModel):
     STATUS_CHOICES = [
         # Entry state for every synced/imported order - "nobody has looked
@@ -75,6 +90,16 @@ class Order(TenantScopedModel):
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    # A plain, globally sequential, human-readable order number - unlike
+    # `id` (a random UUID, meaningless to read) or `order_number` (Shopify's
+    # own number, absent/arbitrary for non-Shopify orders). Backed by a real
+    # Postgres sequence (see the migration) so every insert - manual order,
+    # Shopify webhook, CSV import, Smartlane absorb - gets the next number
+    # automatically with no app-level counting/races. Global across every
+    # organization, not per-org, by design (confirmed with the user).
+    supabase_order_no = models.PositiveIntegerField(
+        null=True, blank=True, unique=True, editable=False, default=_next_supabase_order_no
+    )
     order_number = models.CharField(max_length=50)
     customer_name = models.CharField(max_length=255)
     customer_phone = models.CharField(max_length=50, blank=True, default="")

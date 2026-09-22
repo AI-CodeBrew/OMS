@@ -140,6 +140,7 @@ export default function OrdersPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [selectedIds, setSelectedIds] = useState(new Set());
+  const [sortBy, setSortBy] = useState("date"); // "date" | "oms_id" | "store_id"
 
   const [newOrderOpen, setNewOrderOpen] = useState(false);
   const [dispatchOpen, setDispatchOpen] = useState(false);
@@ -187,6 +188,36 @@ export default function OrdersPage() {
     }),
     [activeStatus, appliedSearch, searchField, appliedFilters]
   );
+
+  // Client-side sort of the current page — server always returns data in its
+  // own order; we re-sort locally without refetching.
+  const sortedOrders = useMemo(() => {
+    const list = [...orders];
+    if (sortBy === "oms_id") {
+      // Sort by internal numeric id descending (newest OMS ID first)
+      list.sort((a, b) => (b.id ?? 0) - (a.id ?? 0));
+    } else if (sortBy === "store_id") {
+      // Sort by store order number as a string — preserves the original
+      // insertion order within equal values (i.e. as-received, not
+      // re-sequenced). Nulls/dashes go to the end.
+      list.sort((a, b) => {
+        const an = a.order_number || "";
+        const bn = b.order_number || "";
+        if (!an && !bn) return 0;
+        if (!an) return 1;
+        if (!bn) return -1;
+        return an.localeCompare(bn, undefined, { numeric: true, sensitivity: "base" });
+      });
+    } else {
+      // Default: Date & Time descending (newest first)
+      list.sort((a, b) => {
+        const da = new Date(a.placed_at || a.created_at || 0).getTime();
+        const db = new Date(b.placed_at || b.created_at || 0).getTime();
+        return db - da;
+      });
+    }
+    return list;
+  }, [orders, sortBy]);
 
   // Any filter change invalidates the current page.
   useEffect(() => {
@@ -634,6 +665,8 @@ export default function OrdersPage() {
           onAction={(action) => startAction(action, Array.from(selectedIds))}
           onRefresh={reloadAfterChange}
           refreshing={loading}
+          sortBy={sortBy}
+          onSortChange={setSortBy}
         />
 
         {appliedFilters.date_from || appliedFilters.date_to ? (
@@ -694,7 +727,7 @@ export default function OrdersPage() {
         ) : null}
 
         <OrdersTable
-          orders={orders}
+          orders={sortedOrders}
           loading={loading}
           selectedIds={selectedIds}
           onToggleSelect={onToggleSelect}
