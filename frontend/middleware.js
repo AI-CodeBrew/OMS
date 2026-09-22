@@ -37,12 +37,11 @@ function isSuperAdminPath(pathname) {
 export function middleware(request) {
   const { pathname } = request.nextUrl;
 
-  // IP restriction commented out so superadmin can login without IP restriction
+  // TODO(re-enable): hide /superadmin + /admin unless client IP is allowlisted.
   // if (isSuperAdminPath(pathname)) {
   //   const allowlist = parseAllowlist();
   //   const clientIp = getClientIp(request);
   //   if (!allowlist.has(clientIp)) {
-  //     // Look like the route does not exist (no login page flash).
   //     return NextResponse.rewrite(new URL("/not-found-admin", request.url));
   //   }
   // }

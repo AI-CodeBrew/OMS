@@ -279,6 +279,19 @@ _KYC_REQUIRED = [
     "kyc_poc_name", "kyc_email", "kyc_phone", "kyc_poc_cnic",
 ]
 
+# Smartlane's /smartlane/industries list (2026-09-22). Free-text like
+# "Clothing" is 422 "The selected industry is invalid" after HMAC passes.
+_INDUSTRY_ALIASES = {
+    "clothing": "Fashion",
+    "clothes": "Fashion",
+    "apparel": "Fashion",
+    "garments": "Textile",
+    "fashion": "Fashion",
+    "grocery": "Retail-Grocery",
+    "cosmetics": "Cosmetics",
+    "electronics": "Electronics",
+}
+
 
 def build_kyc_payload(link):
     """The store link as Smartlane's KYC body.
@@ -298,6 +311,10 @@ def build_kyc_payload(link):
             payload[wire_key] = ""
             continue
         payload[wire_key] = str(value) if not isinstance(value, (int, str)) else value
+    industry = (payload.get("industry") or "").strip()
+    alias = _INDUSTRY_ALIASES.get(industry.lower())
+    if alias:
+        payload["industry"] = alias
     return payload
 
 
