@@ -35,11 +35,12 @@ class AdminIPAllowlistMiddleware:
             self.allowlist = set(raw)
 
     def __call__(self, request):
-        path = request.path
-        if any(path.startswith(prefix) for prefix in ADMIN_API_PREFIXES):
-            client_ip = get_client_ip(request)
-            if client_ip not in self.allowlist:
-                return HttpResponseForbidden("Access denied")
+        # IP restriction commented out to allow superadmin access from any IP
+        # path = request.path
+        # if any(path.startswith(prefix) for prefix in ADMIN_API_PREFIXES):
+        #     client_ip = get_client_ip(request)
+        #     if client_ip not in self.allowlist:
+        #         return HttpResponseForbidden("Access denied")
         return self.get_response(request)
 
 

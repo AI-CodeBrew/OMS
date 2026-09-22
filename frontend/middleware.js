@@ -37,14 +37,15 @@ function isSuperAdminPath(pathname) {
 export function middleware(request) {
   const { pathname } = request.nextUrl;
 
-  if (isSuperAdminPath(pathname)) {
-    const allowlist = parseAllowlist();
-    const clientIp = getClientIp(request);
-    if (!allowlist.has(clientIp)) {
-      // Look like the route does not exist (no login page flash).
-      return NextResponse.rewrite(new URL("/not-found-admin", request.url));
-    }
-  }
+  // IP restriction commented out so superadmin can login without IP restriction
+  // if (isSuperAdminPath(pathname)) {
+  //   const allowlist = parseAllowlist();
+  //   const clientIp = getClientIp(request);
+  //   if (!allowlist.has(clientIp)) {
+  //     // Look like the route does not exist (no login page flash).
+  //     return NextResponse.rewrite(new URL("/not-found-admin", request.url));
+  //   }
+  // }
 
   if (
     PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`)) ||

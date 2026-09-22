@@ -240,7 +240,7 @@ SMARTLANE_API_BASE_URL = env(
 # TEST environment, which is the only one they have given us - they issue
 # production credentials only after verifying the integration works here.
 SMARTLANE_BUSINESS_API_BASE_URL = env(
-    "SMARTLANE_BUSINESS_API_BASE_URL", default="https://gcp.smartlane.dev/business"
+    "SMARTLANE_BUSINESS_API_BASE_URL", default="https://smartapi.pk/business"
 )
 # Must be a publicly reachable URL for Shopify's webhook deliveries to
 # actually arrive - on localhost, webhook registration succeeds but

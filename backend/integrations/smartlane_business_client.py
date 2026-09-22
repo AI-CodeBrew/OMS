@@ -147,6 +147,65 @@ def build_url(path, params=None):
     return url
 
 
+def hmac_generate_url():
+    """POST target for Smartlane's generateMacSignature helper.
+
+    Production: https://smartapi.pk/api/hmac/generate
+    Test:       https://gcp.smartlane.dev/api/hmac/generate
+    """
+    configured = (getattr(settings, "SMARTLANE_HMAC_GENERATE_URL", None) or "").strip()
+    if configured:
+        return configured.rstrip("/")
+    business = base_url()
+    suffix = "/business"
+    if business.endswith(suffix):
+        return f"{business[:-len(suffix)]}/api/hmac/generate"
+    return f"{business}/api/hmac/generate"
+
+
+def generate_remote_signature(config, method, url, body, options=DEFAULT_SIGNATURE_OPTIONS):
+    """Mint X-SMART-LANE-SIGNATURE via Smartlane's own HMAC endpoint.
+
+    This is the two-step the working Postman / API Explorer scripts use:
+    POST {url, verb, api_token, body} to /api/hmac/generate, then attach
+    data.signature to the real request. Their PHP json_encode is the
+    source of truth for the body digest, so a stamp from here matches
+    what their verifier will recompute.
+    """
+    payload = {
+        "url": url,
+        "verb": method.upper(),
+        "api_token": config.jwt_token,
+        "body": {"verb": method.upper()} if body is None else body,
+    }
+    resp = requests.post(
+        hmac_generate_url(),
+        json=payload,
+        headers={"Accept": "application/json"},
+        timeout=20,
+        allow_redirects=False,
+    )
+    if not resp.ok:
+        raise SmartlaneAPIError(
+            f"HMAC generate failed: HTTP {resp.status_code} {(resp.text or '')[:200]}"
+        )
+    try:
+        parsed = resp.json()
+    except ValueError as exc:
+        raise SmartlaneAPIError("HMAC generate returned non-JSON.") from exc
+    signature = (parsed.get("data") or {}).get("signature") or parsed.get("signature")
+    if not signature:
+        raise SmartlaneAPIError(
+            f"HMAC generate did not return a signature: {(resp.text or '')[:200]}"
+        )
+    return signature
+
+
+def _is_hmac_rejected(exc):
+    debug = getattr(exc, "debug", None) or {}
+    return debug.get("status_code") in (401, 403)
+
+
 def _request(
     config,
     method,
@@ -157,6 +216,8 @@ def _request(
     context="",
     options=DEFAULT_SIGNATURE_OPTIONS,
     capture_debug=False,
+    signed_url_override=None,
+    prefer_remote_hmac=False,
 ):
     """Single funnel for every Business API call.
 
@@ -177,14 +238,25 @@ def _request(
         )
 
     request_url = build_url(path, params)
-    if options.sign_business_root and config.business_code:
+    if signed_url_override:
+        signed_url = signed_url_override
+    elif options.sign_business_root and config.business_code:
         signed_url = build_url(f"/{config.business_code}")
     else:
         signed_url = build_url(path, params if options.sign_query_string else None)
-    # Sign and send share one encode: sign() returns the bytes POST uses.
     signature, string_to_sign, body_bytes = sign(
         method, signed_url, body, config.jwt_token, options
     )
+    hmac_source = "local"
+    if prefer_remote_hmac or (method.upper() == "POST" and body is not None):
+        try:
+            signature = generate_remote_signature(
+                config, method, signed_url, body, options
+            )
+            hmac_source = "smartlane_generate"
+        except SmartlaneAPIError as exc:
+            hmac_source = f"local (generate unavailable: {exc})"
+            logger.warning("smartlane-business HMAC generate unavailable: %s", exc)
 
     headers = {
         "X-SMART-LANE-SIGNATURE": signature,
@@ -212,6 +284,7 @@ def _request(
         "string_to_sign": string_to_sign,
         "signature": signature,
         "body_sent": body_bytes.decode("utf-8") if body_bytes else None,
+        "hmac_source": hmac_source,
     }
 
     def fail(message):
@@ -316,12 +389,11 @@ def test_connection(config, options=DEFAULT_SIGNATURE_OPTIONS):
     return payload, debug
 
 
-def submit_store_kyc(config, kyc, options=None):
+def submit_store_kyc(config, kyc, options=DEFAULT_SIGNATURE_OPTIONS):
     """POST /{businessCode}/store/new/kyc - sends a store for Smartlane's review.
 
-    HMAC is the request itself: verb POST, url = this KYC path, body =
-    this `kyc` JSON. Those exact bytes are what we POST. Signing the
-    business root while requesting this path is the 403 you saw.
+    Signs the business root and uses Smartlane's /api/hmac/generate helper,
+    matching Postman and Smartlane's own PHP verifier.
     """
     if not isinstance(kyc, dict) or not kyc:
         raise SmartlaneAPIError("KYC body is required to sign and POST.")
@@ -331,8 +403,9 @@ def submit_store_kyc(config, kyc, options=None):
         f"/{config.business_code}/store/new/kyc",
         body=kyc,
         context="Store KYC",
-        options=options if options is not None else _KYC_SIGNATURE_OPTIONS,
+        options=options,
         capture_debug=True,
+        prefer_remote_hmac=True,
     )
     return payload, debug
 
