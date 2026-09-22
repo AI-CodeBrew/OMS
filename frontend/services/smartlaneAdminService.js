@@ -18,6 +18,7 @@ async function request(url, options = {}) {
     const err = new Error(data.error || "Request failed");
     err.code = data.code;
     err.status = response.status;
+    err.debug = data.debug;
     throw err;
   }
   return data;

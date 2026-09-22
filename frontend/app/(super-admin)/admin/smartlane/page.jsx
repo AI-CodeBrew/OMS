@@ -16,6 +16,7 @@ const EMPTY_FORM = {
 // keys exactly - the dispatcher rejects anything not in that whitelist.
 const API_ACTIONS = [
   { value: "store_list", label: "Store list" },
+  { value: "store_kyc", label: "New store KYC" },
   { value: "industries", label: "Industries" },
   { value: "city_list", label: "City list" },
   { value: "finance_products", label: "Finance products" },
@@ -501,7 +502,7 @@ export default function SmartlaneBusinessPage() {
                 label="Extra params (JSON)"
                 hint={
                   'e.g. {"store_order_ids": ["SLTEST001"]}, or {"body": {...}} for ' +
-                  "warehouse_save / consignment_create / shipper_advice_update."
+                  "store_kyc / warehouse_save / consignment_create / shipper_advice_update."
                 }
               >
                 <textarea

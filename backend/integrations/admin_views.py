@@ -17,10 +17,11 @@ from .business_services import SmartlaneBusinessError
 
 
 def _error(exc):
-    return Response(
-        {"success": False, "error": exc.message, "code": "smartlane_business_error"},
-        status=exc.status_code,
-    )
+    payload = {"success": False, "error": exc.message, "code": "smartlane_business_error"}
+    debug = getattr(exc, "debug", None)
+    if debug:
+        payload["debug"] = debug
+    return Response(payload, status=exc.status_code)
 
 
 @api_view(["GET", "PUT"])

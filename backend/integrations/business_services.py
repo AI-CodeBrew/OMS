@@ -283,15 +283,19 @@ _KYC_REQUIRED = [
 def build_kyc_payload(link):
     """The store link as Smartlane's KYC body.
 
+    Every wire field is always present and in this list's order: the HMAC
+    covers json_encode's output, and Smartlane's verifier re-encodes the
+    parsed body. Omitting empty keys here while they encode them as ""
+    (or the reverse) is a 403, not a validation error.
+
     Decimals become strings rather than floats: json.dumps would render a
-    Decimal as a float and change the digits, and the md5 of this body is
-    what the signature covers, so a rounding difference is a rejected
-    request rather than a rounding difference.
+    Decimal as a float and change the digits.
     """
     payload = {}
     for wire_key, field in _KYC_WIRE_FIELDS:
         value = getattr(link, field)
         if value is None or value == "":
+            payload[wire_key] = ""
             continue
         payload[wire_key] = str(value) if not isinstance(value, (int, str)) else value
     return payload
@@ -447,7 +451,9 @@ def approve_store_link(link_id, *, actor_email=""):
     try:
         response, _debug = business_client.submit_store_kyc(config, build_kyc_payload(link))
     except SmartlaneAPIError as exc:
-        raise SmartlaneBusinessError(f"Smartlane rejected the KYC: {exc}", 502)
+        err = SmartlaneBusinessError(f"Smartlane rejected the KYC: {exc}", 502)
+        err.debug = getattr(exc, "debug", None)
+        raise err
 
     link.status = "in_review"
     link.reviewed_by_email = actor_email or ""
@@ -760,6 +766,15 @@ def provision_warehouses_for_store_link(link_id, body, *, actor_email=""):
 # result through one existing pattern.
 
 
+def _api_test_store_kyc(config, params):
+    body = params.get("body")
+    if not isinstance(body, dict) or not body:
+        raise SmartlaneBusinessError(
+            'Pass KYC fields as {"body": {"name": "...", "platform": "api", ...}}.'
+        )
+    return business_client.submit_store_kyc(config, body)
+
+
 def _api_test_store_list(config, params):
     return business_client.list_stores(config, search=params.get("search"))
 
@@ -858,6 +873,7 @@ def _api_test_webhook_register(config, params):
 # distinguished here only for the frontend's dropdown labeling, the
 # dispatcher itself doesn't care.
 API_TEST_ACTIONS = {
+    "store_kyc": _api_test_store_kyc,
     "store_list": _api_test_store_list,
     "industries": _api_test_industries,
     "city_list": _api_test_city_list,
