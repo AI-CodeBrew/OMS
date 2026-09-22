@@ -242,9 +242,6 @@ SMARTLANE_API_BASE_URL = env(
 SMARTLANE_BUSINESS_API_BASE_URL = env(
     "SMARTLANE_BUSINESS_API_BASE_URL", default="https://gcp.smartlane.dev/business"
 )
-# Official generateMacSignature helper. Empty means derive it from the
-# business base (https://host/business → https://host/api/hmac/generate).
-SMARTLANE_HMAC_GENERATE_URL = env("SMARTLANE_HMAC_GENERATE_URL", default="")
 # Must be a publicly reachable URL for Shopify's webhook deliveries to
 # actually arrive - on localhost, webhook registration succeeds but
 # delivery never will until this is tunneled (ngrok etc.) or deployed.
