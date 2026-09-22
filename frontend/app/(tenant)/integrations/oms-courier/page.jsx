@@ -11,6 +11,17 @@ import integrationsService from "../../../../services/integrationsService";
 const KYC_FIELDS = [
   { key: "name", label: "Business name", required: true },
   { key: "logo_url", label: "Logo URL", type: "url", placeholder: "https://…" },
+  {
+    key: "platform",
+    label: "Platform",
+    required: true,
+    type: "select",
+    options: [
+      { value: "api", label: "API" },
+      { value: "shopify", label: "Shopify" },
+      { value: "wordpress", label: "WordPress" },
+    ],
+  },
   { key: "industry", label: "Industry", required: true },
   { key: "ntn", label: "NTN" },
   { key: "business_years", label: "Years in business", type: "number" },
@@ -48,7 +59,7 @@ const inputClass =
 
 export default function OmsCourierPage() {
   const [data, setData] = useState(null);
-  const [form, setForm] = useState({});
+  const [form, setForm] = useState({ platform: "api" });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -61,11 +72,12 @@ export default function OmsCourierPage() {
       const result = await integrationsService.getOmsCourierOnboarding();
       setData(result);
       if (result.link) {
-        setForm(
-          Object.fromEntries(
-            Object.entries(result.link.kyc || {}).map(([k, v]) => [k, v ?? ""]),
-          ),
+        const kyc = Object.fromEntries(
+          Object.entries(result.link.kyc || {}).map(([k, v]) => [k, v ?? ""]),
         );
+        setForm({ ...kyc, platform: kyc.platform || "api" });
+      } else {
+        setForm({ platform: "api" });
       }
     } catch (err) {
       setError(err.message || "Failed to load");
@@ -90,10 +102,7 @@ export default function OmsCourierPage() {
     setError("");
     setNotice("");
     try {
-      await integrationsService.submitOmsCourierOnboarding({
-        ...form,
-        platform: "api",
-      });
+      await integrationsService.submitOmsCourierOnboarding(form);
       setNotice("Request submitted. The platform team will review it.");
       await load();
     } catch (err) {
@@ -177,15 +186,31 @@ export default function OmsCourierPage() {
                       {f.label}
                       {f.required ? <span className="text-red-500"> *</span> : null}
                     </span>
-                    <input
-                      type={f.type || "text"}
-                      required={f.required}
-                      disabled={!editable}
-                      placeholder={f.placeholder}
-                      value={form[f.key] ?? ""}
-                      onChange={(e) => setForm({ ...form, [f.key]: e.target.value })}
-                      className={`${inputClass} disabled:bg-slate-50 disabled:text-slate-500`}
-                    />
+                    {f.type === "select" ? (
+                      <select
+                        required={f.required}
+                        disabled={!editable}
+                        value={form[f.key] ?? ""}
+                        onChange={(e) => setForm({ ...form, [f.key]: e.target.value })}
+                        className={`${inputClass} disabled:bg-slate-50 disabled:text-slate-500`}
+                      >
+                        {f.options.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        type={f.type || "text"}
+                        required={f.required}
+                        disabled={!editable}
+                        placeholder={f.placeholder}
+                        value={form[f.key] ?? ""}
+                        onChange={(e) => setForm({ ...form, [f.key]: e.target.value })}
+                        className={`${inputClass} disabled:bg-slate-50 disabled:text-slate-500`}
+                      />
+                    )}
                   </label>
                 ))}
               </div>
