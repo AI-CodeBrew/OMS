@@ -7,10 +7,7 @@ import ordersService from "../../../services/ordersService";
 
 const ITEM_FIELDS = [
   ["product_name", "Product", "text"],
-  ["vendor", "Vendor", "text"],
-  ["barcode", "Barcode", "text"],
   ["unit_price", "Price", "number"],
-  ["compare_at_price", "Compare At Price", "number"],
   ["quantity", "Qty", "number"],
   ["discount_amount", "Discount Amount", "number"],
   ["weight_grams", "Weight (grams)", "number"],
@@ -114,20 +111,8 @@ export default function LineItemsTab({ order, onOrderChanged }) {
                 </div>
                 <div className="flex flex-wrap gap-6 text-sm text-slate-600">
                   <div>
-                    <div className="text-xs text-slate-400">Vendor</div>
-                    {item.vendor || "—"}
-                  </div>
-                  <div>
-                    <div className="text-xs text-slate-400">Barcode</div>
-                    {item.barcode || "—"}
-                  </div>
-                  <div>
                     <div className="text-xs text-slate-400">Price</div>
                     {item.unit_price}
-                  </div>
-                  <div>
-                    <div className="text-xs text-slate-400">Compare At Price</div>
-                    {item.compare_at_price ?? "—"}
                   </div>
                   <div>
                     <div className="text-xs text-slate-400">QTY</div>
@@ -142,9 +127,11 @@ export default function LineItemsTab({ order, onOrderChanged }) {
                     {(item.quantity * item.unit_price - (item.discount_amount || 0)).toFixed(2)}
                   </div>
                 </div>
-                <Button variant="secondary" onClick={() => startEdit(item)}>
-                  Edit
-                </Button>
+                {order.status === "new" ? (
+                  <Button variant="secondary" onClick={() => startEdit(item)}>
+                    Edit
+                  </Button>
+                ) : null}
               </div>
             )}
           </div>

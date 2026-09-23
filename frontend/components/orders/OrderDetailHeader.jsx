@@ -62,7 +62,7 @@ export default function OrderDetailHeader({ order, draft, editing, onChange, onT
               Save
             </Button>
           </div>
-        ) : (
+        ) : order.status === "new" ? (
           <button
             type="button"
             onClick={onToggleEdit}
@@ -70,7 +70,7 @@ export default function OrderDetailHeader({ order, draft, editing, onChange, onT
           >
             Edit
           </button>
-        )}
+        ) : null}
       </div>
     </div>
   );

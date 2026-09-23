@@ -37,4 +37,17 @@ urlpatterns = [
         name="admin-smartlane-store-warehouses-provision",
     ),
     path("api-explorer/", admin_views.api_explorer_test, name="admin-smartlane-api-explorer"),
+    path("stores/browse/", admin_views.stores_browse, name="admin-smartlane-stores-browse"),
+    path("activity-log/", admin_views.activity_log, name="admin-smartlane-activity-log"),
+    path("requests/", admin_views.requests_list, name="admin-smartlane-requests"),
+    path(
+        "requests/<uuid:request_id>/approve/",
+        admin_views.request_approve,
+        name="admin-smartlane-request-approve",
+    ),
+    path(
+        "requests/<uuid:request_id>/reject/",
+        admin_views.request_reject,
+        name="admin-smartlane-request-reject",
+    ),
 ]

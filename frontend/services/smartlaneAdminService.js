@@ -95,6 +95,39 @@ class SmartlaneAdminService {
       body: JSON.stringify({ action, params }),
     });
   }
+
+  browseStores(search) {
+    const qs = search ? `?search=${encodeURIComponent(search)}` : "";
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneStoresBrowse}${qs}`);
+  }
+
+  getActivityLog(storeId, search) {
+    const params = new URLSearchParams({ store_id: storeId });
+    if (search) params.set("search", search);
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneActivityLog}?${params.toString()}`);
+  }
+
+  listRequests({ type, status } = {}) {
+    const params = new URLSearchParams();
+    if (type) params.set("type", type);
+    if (status) params.set("status", status);
+    const qs = params.toString() ? `?${params.toString()}` : "";
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneRequests}${qs}`);
+  }
+
+  approveRequest(id) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneRequestApprove(id)}`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  }
+
+  rejectRequest(id, note) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneRequestReject(id)}`, {
+      method: "POST",
+      body: JSON.stringify({ note }),
+    });
+  }
 }
 
 export const smartlaneAdminService = new SmartlaneAdminService();

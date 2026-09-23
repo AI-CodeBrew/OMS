@@ -18,6 +18,11 @@ export const API_ENDPOINTS = {
     smartlaneStoreWarehousesProvision: (id) =>
       `/api/core/admin/smartlane/stores/${id}/warehouses/provision/`,
     smartlaneApiExplorer: "/api/core/admin/smartlane/api-explorer/",
+    smartlaneStoresBrowse: "/api/core/admin/smartlane/stores/browse/",
+    smartlaneActivityLog: "/api/core/admin/smartlane/activity-log/",
+    smartlaneRequests: "/api/core/admin/smartlane/requests/",
+    smartlaneRequestApprove: (id) => `/api/core/admin/smartlane/requests/${id}/approve/`,
+    smartlaneRequestReject: (id) => `/api/core/admin/smartlane/requests/${id}/reject/`,
     tickets: "/api/core/admin/tickets/",
     ticket: (id) => `/api/core/admin/tickets/${id}/`,
     ticketResolve: (id) => `/api/core/admin/tickets/${id}/resolve/`,

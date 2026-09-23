@@ -32,4 +32,24 @@ urlpatterns = [
         views.OmsCourierOnboardingView.as_view(),
         name="oms-courier-onboarding",
     ),
+    path(
+        "oms-courier/requests/",
+        views.SmartlaneRequestsView.as_view(),
+        name="oms-courier-requests",
+    ),
+    path(
+        "oms-courier/warehouses/",
+        views.SmartlaneWarehousesView.as_view(),
+        name="oms-courier-warehouses",
+    ),
+    path(
+        "oms-courier/finance/",
+        views.SmartlaneFinanceView.as_view(),
+        name="oms-courier-finance",
+    ),
+    path(
+        "oms-courier/shipments/",
+        views.SmartlaneShipmentActionView.as_view(),
+        name="oms-courier-shipments",
+    ),
 ]

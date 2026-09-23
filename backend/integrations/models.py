@@ -258,6 +258,55 @@ class SmartlaneStoreWarehouse(TenantScopedModel):
         return f"{self.name or self.offering_id} ({self.status})"
 
 
+class SmartlaneRequest(TenantScopedModel):
+    """One tenant-initiated ask that needs a super-admin OK before it reaches
+    Smartlane: register/update a webhook, edit or revoke a warehouse, or apply
+    for financing. Same two-step shape as SmartlaneStoreLink's onboarding gate
+    (submit -> pending_approval -> admin approve/reject -> approval is what
+    actually calls Smartlane), shared across three request types instead of
+    three near-identical models - see business_services.approve_request for
+    the per-type dispatch.
+    """
+
+    TYPE_CHOICES = [
+        ("webhook", "Webhook"),
+        ("warehouse_edit", "Warehouse edit/revoke"),
+        ("finance", "Finance application"),
+    ]
+    STATUS_CHOICES = [
+        ("pending_approval", "Pending approval"),
+        ("rejected", "Rejected"),
+        ("approved", "Approved"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    store_link = models.ForeignKey(
+        SmartlaneStoreLink, on_delete=models.CASCADE, related_name="requests"
+    )
+    request_type = models.CharField(max_length=20, choices=TYPE_CHOICES)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending_approval")
+    # request_type-specific fields, e.g.
+    #  webhook: {"url": "...", "type": "..."}
+    #  warehouse_edit: {"warehouse_id": 5, "action": "edit"|"revoke", "name": ..., "shipper_name": ...,
+    #                    "email": ..., "phone": ..., "address": ..., "city": ..., "area": ...,
+    #                    "zip_code": ..., "service_type": ..., "auto_booking": true}
+    #  finance: {"product_code": "..."}
+    payload = models.JSONField(default=dict)
+    requested_by_user_id = models.UUIDField(null=True, blank=True)
+    requested_at = models.DateTimeField(null=True, blank=True)
+    reviewed_by_email = models.CharField(max_length=255, blank=True, default="")
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_note = models.CharField(max_length=500, blank=True, default="")
+    last_response = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        db_table = '"integrations"."smartlane_requests"'
+        ordering = ["-requested_at", "-created_at"]
+
+    def __str__(self):
+        return f"Smartlane {self.request_type} request ({self.status})"
+
+
 class ShopifyConnection(TenantScopedModel):
     """One Shopify store per organization. access_token/webhook_secret are
     stored plaintext for now, matching the legacy public.shopify_integrations

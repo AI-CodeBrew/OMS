@@ -18,6 +18,7 @@ from core.rbac import write_audit_log
 from .models import (
     SmartlaneBusinessConfig,
     SmartlaneCourierOffering,
+    SmartlaneRequest,
     SmartlaneStoreLink,
     SmartlaneStoreWarehouse,
 )
@@ -534,11 +535,25 @@ def _extract_store_id(payload):
 
 
 def _iter_store_rows(payload):
-    """GET /store returns active/in_active/in_review sections, paginated by
-    Laravel. Yields (row, status) over whatever shape actually comes back."""
+    """GET /store's real shape, confirmed live (2026-09-23) - `data` is one
+    flat, Laravel-paginated list and each row carries its own `status`
+    field inline. The doc's prose claims three separate active/in_active/
+    in_review sections instead; that never matches what the API actually
+    returns, so list_all_stores()/sync_store_links() always saw zero rows
+    until this handled the flat shape. The nested-sections shape is kept as
+    a fallback in case some other response from this endpoint really is
+    shaped that way."""
     if not isinstance(payload, dict):
         return
-    root = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    data = payload.get("data")
+
+    if isinstance(data, list):
+        for row in data:
+            if isinstance(row, dict) and row.get("status") in SmartlaneStoreLink.SMARTLANE_STATUSES:
+                yield row, row["status"]
+        return
+
+    root = data if isinstance(data, dict) else payload
     for status in SmartlaneStoreLink.SMARTLANE_STATUSES:
         section = root.get(status)
         if isinstance(section, dict):
@@ -770,6 +785,399 @@ def provision_warehouses_for_store_link(link_id, body, *, actor_email=""):
         "link": _serialize_link(link, include_org=True),
         "warehouses": list_warehouses_for_link(link),
     }
+
+
+# --- Read-only browsing (doc #3, #4, #10) -------------------------------
+# Thin wraps of business_client calls already exercised via the API
+# Explorer, now with dedicated endpoints/UI instead of the raw JSON panel.
+
+
+def list_all_stores(search=None):
+    """Doc #3 - browse every store Smartlane has on file for this business,
+    separate from list_store_links() which only lists *our* onboarding
+    requests.
+
+    Filters by name here rather than trusting Smartlane's own `search`
+    param alone - confirmed live (2026-09-23) that it's passed through but
+    the API ignores it and returns the full unfiltered list regardless, so
+    relying on it silently shows everything instead of a match.
+    """
+    config = SmartlaneBusinessConfig.load()
+    if not config.is_configured:
+        raise SmartlaneBusinessError("Configure the Smartlane business account first.")
+    try:
+        payload, _debug = business_client.list_stores(config, search=search)
+    except SmartlaneAPIError as exc:
+        raise SmartlaneBusinessError(str(exc), 502)
+    rows = [{"status": status, **row} for row, status in _iter_store_rows(payload)]
+    if search:
+        needle = search.strip().lower()
+        rows = [r for r in rows if needle in str(r.get("name") or "").lower()]
+    return rows
+
+
+def get_activity_log(store_id, search=None):
+    """Doc #4 - request/response/webhook log for one store."""
+    config = SmartlaneBusinessConfig.load()
+    if not config.is_configured:
+        raise SmartlaneBusinessError("Configure the Smartlane business account first.")
+    try:
+        payload, _debug = business_client.fetch_activity_log(config, store_id, search=search)
+    except SmartlaneAPIError as exc:
+        raise SmartlaneBusinessError(str(exc), 502)
+    return payload
+
+
+def get_warehouses_for_org(organization_id):
+    """Tenant-facing read of what's already provisioned for their own store -
+    the list the "Warehouses" section's edit/revoke request form picks from.
+    Same rows as the admin page's warehouse panel, just scoped to the
+    caller instead of taking a link_id."""
+    link = SmartlaneStoreLink.all_objects.filter(organization_id=organization_id).first()
+    if link is None or not link.is_live:
+        raise SmartlaneBusinessError("Your store must be active before viewing warehouses.")
+    return list_warehouses_for_link(link)
+
+
+def get_finance_products(organization_id):
+    """Doc #10 - finance products available to this org's store. Read-only,
+    no approval needed - it's a catalog listing, not an application."""
+    link = SmartlaneStoreLink.all_objects.filter(organization_id=organization_id).first()
+    if link is None or not link.is_live:
+        raise SmartlaneBusinessError("Your store must be active before viewing finance products.")
+    config = SmartlaneBusinessConfig.load()
+    if not config.is_configured:
+        raise SmartlaneBusinessError("Configure the Smartlane business account first.")
+    try:
+        payload, _debug = business_client.fetch_finance_information(config, link.smartlane_store_id)
+    except SmartlaneAPIError as exc:
+        raise SmartlaneBusinessError(str(exc), 502)
+    return payload
+
+
+# --- Tenant requests (webhook / warehouse edit-revoke / finance apply) ---
+# Doc #6/#7, #9, #11. Same two-step shape as store onboarding above: a
+# tenant submits, a super admin approves or rejects, and only approval
+# fires the actual Smartlane call. One shared model/dispatch across the
+# three request types rather than three near-identical ones - see
+# SmartlaneRequest's docstring.
+
+_REQUEST_TYPES = {value for value, _ in SmartlaneRequest.TYPE_CHOICES}
+
+
+def _serialize_request(req, *, include_org=False):
+    data = {
+        "id": str(req.id),
+        "request_type": req.request_type,
+        "status": req.status,
+        "status_display": req.get_status_display(),
+        "payload": req.payload,
+        "requested_at": req.requested_at,
+        "reviewed_at": req.reviewed_at,
+        "reviewed_by_email": req.reviewed_by_email,
+        "review_note": req.review_note,
+        "last_response": req.last_response,
+    }
+    if include_org:
+        data["organization_id"] = str(req.organization_id)
+        data["organization_name"] = req.store_link.organization.name
+    return data
+
+
+def _validate_request_payload(request_type, payload):
+    """Light shape-checking only - Smartlane's own response is what
+    actually validates the values, same philosophy as the KYC path."""
+    if request_type == "webhook":
+        if not (payload.get("url") or "").strip():
+            raise SmartlaneBusinessError("Webhook URL is required.")
+        if not (payload.get("type") or "").strip():
+            raise SmartlaneBusinessError("Webhook type is required.")
+    elif request_type == "warehouse_edit":
+        if not payload.get("warehouse_id"):
+            raise SmartlaneBusinessError("A warehouse must be selected.")
+        if payload.get("action") not in ("edit", "revoke"):
+            raise SmartlaneBusinessError("Action must be 'edit' or 'revoke'.")
+    elif request_type == "finance":
+        if not (payload.get("product_code") or "").strip():
+            raise SmartlaneBusinessError("A finance product must be selected.")
+    else:
+        raise SmartlaneBusinessError(f"Unknown request type: {request_type!r}.")
+
+
+def submit_request(organization_id, request_type, payload, *, actor_user_id=None):
+    if request_type not in _REQUEST_TYPES:
+        raise SmartlaneBusinessError(f"Unknown request type: {request_type!r}.")
+    link = SmartlaneStoreLink.all_objects.filter(organization_id=organization_id).first()
+    if link is None or not link.is_live:
+        raise SmartlaneBusinessError("Your store must be active before submitting this request.")
+    payload = payload or {}
+    _validate_request_payload(request_type, payload)
+
+    if request_type == "warehouse_edit":
+        warehouse = SmartlaneStoreWarehouse.all_objects.filter(
+            pk=payload.get("warehouse_id"), store_link=link
+        ).first()
+        if warehouse is None:
+            raise SmartlaneBusinessError("Warehouse not found.", 404)
+
+    req = SmartlaneRequest.all_objects.create(
+        organization_id=organization_id,
+        store_link=link,
+        request_type=request_type,
+        payload=payload,
+        requested_by_user_id=actor_user_id,
+        requested_at=timezone.now(),
+    )
+    return _serialize_request(req)
+
+
+def get_org_requests(organization_id, request_type=None):
+    qs = SmartlaneRequest.all_objects.filter(organization_id=organization_id).order_by(
+        "-requested_at", "-created_at"
+    )
+    if request_type:
+        qs = qs.filter(request_type=request_type)
+    return [_serialize_request(r) for r in qs]
+
+
+def list_requests(request_type=None, status=None):
+    qs = SmartlaneRequest.all_objects.select_related("store_link__organization").order_by(
+        "-requested_at", "-created_at"
+    )
+    if request_type:
+        qs = qs.filter(request_type=request_type)
+    if status:
+        qs = qs.filter(status=status)
+    return [_serialize_request(r, include_org=True) for r in qs]
+
+
+def _get_request(request_id):
+    req = (
+        SmartlaneRequest.all_objects.select_related("store_link__organization")
+        .filter(pk=request_id)
+        .first()
+    )
+    if req is None:
+        raise SmartlaneBusinessError("Request not found.", 404)
+    return req
+
+
+def _apply_webhook_request(config, link, payload):
+    return business_client.register_webhook(
+        config, link.smartlane_store_id, payload.get("type", ""), payload.get("url", "")
+    )
+
+
+def _apply_warehouse_edit_request(config, link, payload):
+    warehouse = SmartlaneStoreWarehouse.all_objects.filter(
+        pk=payload.get("warehouse_id"), store_link=link
+    ).first()
+    if warehouse is None:
+        raise SmartlaneBusinessError("Warehouse not found.", 404)
+
+    revoke = payload.get("action") == "revoke"
+    body = {
+        "name": payload.get("name") or warehouse.name,
+        "shipper_name": payload.get("shipper_name", ""),
+        "email": payload.get("email", ""),
+        "phone": payload.get("phone", ""),
+        "address": payload.get("address", ""),
+        "area": payload.get("area", ""),
+        "city": payload.get("city", ""),
+        "service_type": payload.get("service_type", ""),
+        "zip_code": payload.get("zip_code", ""),
+        "auto_booking": bool(payload.get("auto_booking", True)),
+    }
+    if revoke:
+        body["status"] = "revoke"
+
+    response, _debug = business_client.add_or_edit_warehouse(config, link.smartlane_store_id, body)
+    warehouse.status = "revoked" if revoke else "active"
+    if not revoke and body["name"]:
+        warehouse.name = body["name"]
+    warehouse.last_synced_at = timezone.now()
+    warehouse.last_provision_error = ""
+    warehouse.save()
+    return response
+
+
+def _apply_finance_request(config, link, payload):
+    return business_client.apply_finance(config, link.smartlane_store_id, payload.get("product_code", ""))
+
+
+_REQUEST_HANDLERS = {
+    "webhook": _apply_webhook_request,
+    "warehouse_edit": _apply_warehouse_edit_request,
+    "finance": _apply_finance_request,
+}
+
+
+def approve_request(request_id, *, actor_email=""):
+    """Fires the one Smartlane call this request represents. Same failure
+    handling as approve_store_link: a rejected call leaves the row in
+    pending_approval so it can be retried, rather than a state implying it
+    was sent."""
+    req = _get_request(request_id)
+    if req.status != "pending_approval":
+        raise SmartlaneBusinessError(
+            f"Only requests awaiting approval can be approved (this one is {req.status}).", 409
+        )
+    config = SmartlaneBusinessConfig.load()
+    if not config.is_configured:
+        raise SmartlaneBusinessError("Configure the Smartlane business account before approving requests.")
+
+    handler = _REQUEST_HANDLERS[req.request_type]
+    try:
+        response = handler(config, req.store_link, req.payload)
+    except SmartlaneAPIError as exc:
+        err = SmartlaneBusinessError(f"Smartlane rejected the request: {exc}", 502)
+        err.debug = getattr(exc, "debug", None)
+        raise err
+
+    req.status = "approved"
+    req.reviewed_by_email = actor_email or ""
+    req.reviewed_at = timezone.now()
+    req.review_note = ""
+    req.last_response = response if isinstance(response, dict) else {"raw": response}
+    req.save()
+
+    _audit(
+        req.store_link,
+        f"integrations.smartlane.request_approved.{req.request_type}",
+        f"Approved Smartlane {req.request_type} request for {req.store_link.organization.name}",
+        actor_email,
+    )
+    return _serialize_request(req, include_org=True)
+
+
+def reject_request(request_id, *, note="", actor_email=""):
+    req = _get_request(request_id)
+    if req.status != "pending_approval":
+        raise SmartlaneBusinessError(
+            f"Only requests awaiting approval can be rejected (this one is {req.status}).", 409
+        )
+    note = (note or "").strip()
+    if not note:
+        raise SmartlaneBusinessError("Give a reason - the organization sees it.")
+
+    req.status = "rejected"
+    req.review_note = note[:500]
+    req.reviewed_by_email = actor_email or ""
+    req.reviewed_at = timezone.now()
+    req.save()
+
+    _audit(
+        req.store_link,
+        f"integrations.smartlane.request_rejected.{req.request_type}",
+        f"Rejected Smartlane {req.request_type} request for {req.store_link.organization.name}: {note[:200]}",
+        actor_email,
+    )
+    return _serialize_request(req, include_org=True)
+
+
+# --- Shipments panel (doc #12-#17) ---------------------------------------
+# Direct actions, no approval gate - booking/tracking/cancelling a shipment
+# is routine day-to-day operation, not something to hold for manual review.
+# Each wrapper resolves store_id from the caller's own active store link
+# rather than accepting one - unlike the admin API Explorer, this surface is
+# tenant-facing and must never let an org act on another org's store.
+
+
+def _get_live_link_for_org(organization_id):
+    link = SmartlaneStoreLink.all_objects.filter(organization_id=organization_id).first()
+    if link is None or not link.is_live:
+        raise SmartlaneBusinessError("Your store must be active before using shipments.")
+    return link
+
+
+def _shipments_config():
+    config = SmartlaneBusinessConfig.load()
+    if not config.is_configured:
+        raise SmartlaneBusinessError("Configure the Smartlane business account first.")
+    return config
+
+
+def create_consignment_for_org(organization_id, body):
+    link = _get_live_link_for_org(organization_id)
+    config = _shipments_config()
+    try:
+        payload, _debug = business_client.create_consignment(config, link.smartlane_store_id, body or {})
+    except SmartlaneAPIError as exc:
+        raise SmartlaneBusinessError(str(exc), 502)
+    return payload
+
+
+def track_consignment_for_org(organization_id, store_order_ids):
+    link = _get_live_link_for_org(organization_id)
+    config = _shipments_config()
+    try:
+        payload, _debug = business_client.track_consignment(
+            config, link.smartlane_store_id, store_order_ids or []
+        )
+    except SmartlaneAPIError as exc:
+        raise SmartlaneBusinessError(str(exc), 502)
+    return payload
+
+
+def cancel_consignment_for_org(organization_id, store_order_id):
+    link = _get_live_link_for_org(organization_id)
+    config = _shipments_config()
+    try:
+        payload, _debug = business_client.cancel_consignment(
+            config, link.smartlane_store_id, store_order_id or ""
+        )
+    except SmartlaneAPIError as exc:
+        raise SmartlaneBusinessError(str(exc), 502)
+    return payload
+
+
+def get_airway_bill_for_org(organization_id, store_order_ids, *, no_of_prints=1):
+    link = _get_live_link_for_org(organization_id)
+    config = _shipments_config()
+    try:
+        payload, _debug = business_client.fetch_airway_bill(
+            config, link.smartlane_store_id, store_order_ids or [], no_of_prints=no_of_prints
+        )
+    except SmartlaneAPIError as exc:
+        raise SmartlaneBusinessError(str(exc), 502)
+    return payload
+
+
+def get_load_sheet_for_org(organization_id, *, courier=None, store_order_ids=None, start_date=None, end_date=None):
+    link = _get_live_link_for_org(organization_id)
+    config = _shipments_config()
+    try:
+        payload, _debug = business_client.fetch_load_sheet(
+            config,
+            link.smartlane_store_id,
+            courier=courier,
+            store_order_ids=store_order_ids,
+            start_date=start_date,
+            end_date=end_date,
+        )
+    except SmartlaneAPIError as exc:
+        raise SmartlaneBusinessError(str(exc), 502)
+    return payload
+
+
+def get_shipper_advice_for_org(organization_id):
+    link = _get_live_link_for_org(organization_id)
+    config = _shipments_config()
+    try:
+        payload, _debug = business_client.get_shipper_advice(config, link.smartlane_store_id)
+    except SmartlaneAPIError as exc:
+        raise SmartlaneBusinessError(str(exc), 502)
+    return payload
+
+
+def update_shipper_advice_for_org(organization_id, body):
+    link = _get_live_link_for_org(organization_id)
+    config = _shipments_config()
+    try:
+        payload, _debug = business_client.update_shipper_advice(config, link.smartlane_store_id, body or {})
+    except SmartlaneAPIError as exc:
+        raise SmartlaneBusinessError(str(exc), 502)
+    return payload
 
 
 # --- Super-admin API Explorer -------------------------------------------

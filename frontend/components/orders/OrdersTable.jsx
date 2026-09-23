@@ -2,7 +2,6 @@
 
 import Checkbox from "../shared/Checkbox";
 import OrderRowMenu from "./OrderRowMenu";
-import { STATUS_LABELS } from "./statusConfig";
 import { formatPakPhone } from "../../lib/formatPhone";
 
 export default function OrdersTable({
@@ -20,33 +19,33 @@ export default function OrdersTable({
 
   return (
     <div className="max-h-[70vh] overflow-auto rounded-lg border border-surface-border bg-white">
-      <table className="w-full text-left">
+      <table className="w-full table-fixed text-left">
         <thead className="sticky top-0 z-10 border-b border-surface-border bg-surface text-[11px] font-medium uppercase tracking-wide text-slate-500">
           <tr>
-            <th className="px-3 py-2">
+            <th className="w-10 px-3 py-2">
               <Checkbox
                 checked={allSelected}
                 indeterminate={someSelected && !allSelected}
                 onChange={() => onToggleSelectAll(orders)}
               />
             </th>
-            <th className="px-3 py-2">OMS Order ID</th>
-            <th className="px-3 py-2">Store Order ID</th>
-            <th className="px-3 py-2">Customer Name</th>
-            <th className="px-3 py-2">Contact</th>
-            <th className="px-3 py-2">Date &amp; Time</th>
-            <th className="px-3 py-2">Fulfillment</th>
-            <th className="px-3 py-2">Pay. Status</th>
-            <th className="px-3 py-2">Shop</th>
-            <th className="px-3 py-2">Product Name</th>
-            <th className="px-3 py-2">City</th>
-            <th className="px-3 py-2">Courier</th>
-            <th className="px-3 py-2">Tracking ID</th>
-            <th className="px-3 py-2 text-right">Delivery Charges</th>
-            <th className="px-3 py-2">Tag</th>
-            <th className="px-3 py-2 text-right">Amount</th>
-            <th className="px-3 py-2" />
-            <th className="px-3 py-2" />
+            <th className="w-16 px-3 py-2">OMS Order ID</th>
+            <th className="w-20 px-3 py-2">Store Order ID</th>
+            <th className="w-40 px-3 py-2">Customer Name</th>
+            <th className="w-32 px-3 py-2">Contact</th>
+            <th className="w-40 px-3 py-2">Date &amp; Time</th>
+            <th className="w-24 px-3 py-2">Fulfillment</th>
+            <th className="w-24 px-3 py-2">Pay. Status</th>
+            <th className="w-28 px-3 py-2">Shop</th>
+            <th className="w-56 px-3 py-2 pl-6">Product Name</th>
+            <th className="w-28 px-3 py-2">City</th>
+            <th className="w-24 px-3 py-2">Courier</th>
+            <th className="w-32 px-3 py-2">Tracking ID</th>
+            <th className="w-28 px-3 py-2 text-right">Delivery Charges</th>
+            <th className="w-20 px-3 py-2">Tag</th>
+            <th className="w-24 px-3 py-2 text-right">Amount</th>
+            <th className="w-20 px-3 py-2" />
+            <th className="w-10 px-3 py-2" />
           </tr>
         </thead>
         <tbody className="text-sm">
@@ -70,21 +69,39 @@ export default function OrdersTable({
                 </td>
                 <td className="px-3 py-1.5 text-slate-700">{order.supabase_order_no ?? "—"}</td>
                 <td className="px-3 py-1.5">
-                  <div className="font-semibold text-slate-900">{order.order_number}</div>
-                  <div className="text-[11px] text-slate-400">{STATUS_LABELS[order.status] || order.status}</div>
+                  <div className="truncate font-semibold text-slate-900" title={order.order_number}>
+                    {String(order.order_number ?? "").replace(/^#/, "")}
+                  </div>
                 </td>
-                <td className="px-3 py-1.5 text-slate-700">{order.customer_name}</td>
+                <td className="px-3 py-1.5 text-slate-700">
+                  <div className="truncate" title={order.customer_name}>
+                    {order.customer_name}
+                  </div>
+                </td>
                 <td className="px-3 py-1.5 text-slate-500">{formatPakPhone(order.customer_phone) || "—"}</td>
-                <td className="px-3 py-1.5 text-slate-500">
-                  {new Date(order.placed_at || order.created_at).toLocaleString()}
+                <td className="whitespace-nowrap px-3 py-1.5 text-slate-500">
+                  {new Date(order.placed_at || order.created_at).toLocaleString([], {
+                    year: "numeric",
+                    month: "numeric",
+                    day: "numeric",
+                    hour: "numeric",
+                    minute: "2-digit",
+                  })}
                 </td>
                 <td className="px-3 py-1.5 capitalize text-slate-700">{order.fulfillment_status}</td>
                 <td className="px-3 py-1.5 capitalize text-slate-700">{order.payment_status}</td>
                 <td className="px-3 py-1.5 text-slate-700">{order.shop || "—"}</td>
-                <td className="px-3 py-1.5 text-slate-700">
-                  {order.items && order.items.length > 0
-                    ? order.items.map((i) => i.product_name).join(", ")
-                    : "—"}
+                <td className="px-3 py-1.5 pl-6 text-slate-700">
+                  {order.items && order.items.length > 0 ? (
+                    <div
+                      className="truncate"
+                      title={order.items.map((i) => i.product_name).join(", ")}
+                    >
+                      {order.items.map((i) => i.product_name).join(", ")}
+                    </div>
+                  ) : (
+                    "—"
+                  )}
                 </td>
                 <td className="px-3 py-1.5 text-slate-700">{order.city || "—"}</td>
                 <td className="px-3 py-1.5 text-slate-700">{order.courier_name || "—"}</td>

@@ -4,14 +4,7 @@ import Button from "../shared/Button";
 import { ACTIONS_BY_STATUS } from "./statusConfig";
 
 const MONEY_FIELDS = [
-  ["coupon_discount", "Coupon Code Dis."],
-  ["gift_card_discount", "Gift Card Dis."],
-  ["loyalty_amount", "Loyalty Amount"],
-  ["wallet_amount", "Wallet Amount"],
-  ["total_tax", "Total Tax"],
-  ["donation_amount", "Donation Amount"],
   ["shipping_amount", "Shipping"],
-  ["express_stitching_amount", "Express Stitching"],
   ["amount_paid", "Amount Paid"],
 ];
 
@@ -55,7 +48,6 @@ export default function OrderItemsEditor({ order, draft, editing, onChange, onAc
         )}
         <MoneyCell label="Grand Total" value={order.grand_total} />
         <MoneyCell label="Amount Receivable" value={order.amount_receivable} />
-        <MoneyCell label="You Owe Customer" value={order.owed_to_customer} />
       </div>
 
       <div className="flex flex-wrap justify-end gap-2 border-t border-surface-border pt-4">

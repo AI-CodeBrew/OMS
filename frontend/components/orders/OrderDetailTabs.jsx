@@ -2,20 +2,12 @@
 
 import { useState } from "react";
 import LineItemsTab from "./tabs/LineItemsTab";
-import TransactionDetailTab from "./tabs/TransactionDetailTab";
-import OrderNotesList from "./tabs/OrderNotesList";
 import OrderLogTab from "./tabs/OrderLogTab";
-import CustomerHistoryTab from "./tabs/CustomerHistoryTab";
 import OrderTicketsTab from "./tabs/OrderTicketsTab";
 
 const TABS = [
   { key: "line_items", label: "Line Items" },
-  { key: "transactions", label: "Transaction Detail" },
-  { key: "comments", label: "Comments" },
   { key: "log", label: "Order Log" },
-  { key: "custom_message", label: "Custom Message" },
-  { key: "notes", label: "Notes" },
-  { key: "customer_history", label: "Customer History" },
   { key: "tickets", label: "Tickets" },
 ];
 
@@ -44,18 +36,7 @@ export default function OrderDetailTabs({ order, onOrderChanged }) {
 
       <div className="pt-3">
         {active === "line_items" ? <LineItemsTab order={order} onOrderChanged={onOrderChanged} /> : null}
-        {active === "transactions" ? <TransactionDetailTab orderId={orderId} /> : null}
-        {active === "comments" ? (
-          <OrderNotesList orderId={orderId} kind="comment" placeholder="Add a comment" />
-        ) : null}
         {active === "log" ? <OrderLogTab orderId={orderId} /> : null}
-        {active === "custom_message" ? (
-          <OrderNotesList orderId={orderId} kind="custom_message" placeholder="Add a custom message" />
-        ) : null}
-        {active === "notes" ? (
-          <OrderNotesList orderId={orderId} kind="note" placeholder="Add a note" />
-        ) : null}
-        {active === "customer_history" ? <CustomerHistoryTab orderId={orderId} /> : null}
         {active === "tickets" ? <OrderTicketsTab order={order} /> : null}
       </div>
     </div>

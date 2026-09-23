@@ -969,3 +969,112 @@ class OmsCourierOnboardingView(APIView):
         except business_services.SmartlaneBusinessError as exc:
             return Response({"detail": exc.message}, status=exc.status_code)
         return Response(link)
+
+
+class SmartlaneRequestsView(APIView):
+    """Tenant-facing webhook / warehouse-edit / finance-application
+    requests. Same convention as OmsCourierOnboardingView: plain body,
+    `detail` on error. Submitting only ever queues the request -
+    core.SmartlaneRequest starts pending_approval and nothing reaches
+    Smartlane until a super admin approves it from the admin console."""
+
+    permission_classes = [IsOrgAdmin]
+
+    def get(self, request):
+        requests = business_services.get_org_requests(
+            request.organization_id, request_type=request.query_params.get("type") or None
+        )
+        return Response({"requests": requests})
+
+    def post(self, request):
+        body = request.data or {}
+        try:
+            req = business_services.submit_request(
+                request.organization_id,
+                body.get("request_type", ""),
+                body.get("payload") or {},
+                actor_user_id=request.user_id,
+            )
+        except business_services.SmartlaneBusinessError as exc:
+            return Response({"detail": exc.message}, status=exc.status_code)
+        return Response(req)
+
+
+class SmartlaneWarehousesView(APIView):
+    """Tenant-facing read of what's already provisioned for the caller's own
+    store - what the "Warehouses" section's edit/revoke request form picks
+    from. Provisioning a *new* warehouse stays admin-only/unchanged
+    (business_services.provision_warehouse), this is read-only."""
+
+    permission_classes = [IsOrgAdmin]
+
+    def get(self, request):
+        try:
+            warehouses = business_services.get_warehouses_for_org(request.organization_id)
+        except business_services.SmartlaneBusinessError as exc:
+            return Response({"detail": exc.message}, status=exc.status_code)
+        return Response({"warehouses": warehouses})
+
+
+class SmartlaneFinanceView(APIView):
+    """Doc #10 - finance products available to the caller's own store.
+    Read-only; applying is SmartlaneRequestsView with request_type=finance."""
+
+    permission_classes = [IsOrgAdmin]
+
+    def get(self, request):
+        try:
+            products = business_services.get_finance_products(request.organization_id)
+        except business_services.SmartlaneBusinessError as exc:
+            return Response({"detail": exc.message}, status=exc.status_code)
+        return Response({"products": products})
+
+
+_SHIPMENT_ACTIONS = {
+    "consignment_create": lambda org_id, params: business_services.create_consignment_for_org(
+        org_id, params.get("body") or {}
+    ),
+    "consignment_track": lambda org_id, params: business_services.track_consignment_for_org(
+        org_id, params.get("store_order_ids") or []
+    ),
+    "consignment_cancel": lambda org_id, params: business_services.cancel_consignment_for_org(
+        org_id, params.get("store_order_id", "")
+    ),
+    "airway_bill": lambda org_id, params: business_services.get_airway_bill_for_org(
+        org_id, params.get("store_order_ids") or [], no_of_prints=params.get("no_of_prints", 1)
+    ),
+    "load_sheet": lambda org_id, params: business_services.get_load_sheet_for_org(
+        org_id,
+        courier=params.get("courier"),
+        store_order_ids=params.get("store_order_ids"),
+        start_date=params.get("start_date"),
+        end_date=params.get("end_date"),
+    ),
+    "shipper_advice_get": lambda org_id, params: business_services.get_shipper_advice_for_org(org_id),
+    "shipper_advice_update": lambda org_id, params: business_services.update_shipper_advice_for_org(
+        org_id, params.get("body") or {}
+    ),
+}
+
+
+class SmartlaneShipmentActionView(APIView):
+    """Doc #12-#17 - a tenant-safe version of the admin API Explorer:
+    whitelist-dispatched by `action`, but store_id is always resolved from
+    the caller's own active store link (business_services._get_live_link_for_org),
+    never taken from the request, so an org can only ever act on its own
+    store. No approval gate - booking/tracking/cancelling a shipment is
+    routine operation, not something to hold for manual review."""
+
+    permission_classes = [IsOrgAdmin]
+
+    def post(self, request):
+        body = request.data or {}
+        action = body.get("action", "")
+        handler = _SHIPMENT_ACTIONS.get(action)
+        if handler is None:
+            return Response({"detail": f"Unknown action: {action!r}."}, status=400)
+        try:
+            result = handler(request.organization_id, body.get("params") or {})
+        except business_services.SmartlaneBusinessError as exc:
+            return Response({"detail": exc.message}, status=exc.status_code)
+        return Response({"result": result})

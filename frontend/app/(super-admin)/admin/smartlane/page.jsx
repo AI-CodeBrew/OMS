@@ -40,6 +40,7 @@ const LINK_STATUS_TONE = {
   pending_approval: "bg-amber-50 text-amber-700",
   in_review: "bg-blue-50 text-blue-700",
   active: "bg-emerald-50 text-emerald-700",
+  approved: "bg-emerald-50 text-emerald-700",
   rejected: "bg-red-50 text-red-700",
   in_active: "bg-slate-100 text-slate-600",
   draft: "bg-slate-100 text-slate-600",
@@ -84,6 +85,27 @@ export default function SmartlaneBusinessPage() {
   const [apiParams, setApiParams] = useState("");
   const [apiTesting, setApiTesting] = useState(false);
   const [apiResult, setApiResult] = useState(null);
+
+  // All Stores (doc #3) - separate from `links` above, which is only our
+  // own onboarding requests. Search always filters by name; the eye icon
+  // is the one way to see everything.
+  const [storesSearch, setStoresSearch] = useState("");
+  const [stores, setStores] = useState(null);
+  const [storesLoading, setStoresLoading] = useState(false);
+
+  // Activity Log (doc #4). Smartlane's `type` param is required, not
+  // optional like the doc's prose implies - "consignment_status" is the
+  // only value confirmed against their Postman collection so far.
+  const [logStoreId, setLogStoreId] = useState("");
+  const [logSearch, setLogSearch] = useState("consignment_status");
+  const [logResult, setLogResult] = useState(null);
+  const [logLoading, setLogLoading] = useState(false);
+
+  // Webhook / warehouse-edit / finance requests (doc #6/#7, #9, #11)
+  const [requestTypeFilter, setRequestTypeFilter] = useState("");
+  const [requests, setRequests] = useState([]);
+  const [requestsLoading, setRequestsLoading] = useState(false);
+  const [busyRequestId, setBusyRequestId] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -280,6 +302,113 @@ export default function SmartlaneBusinessPage() {
     }
   }
 
+  async function onBrowseStores() {
+    if (!storesSearch.trim()) {
+      setError('Enter a store name, or click the eye icon to see all stores.');
+      return;
+    }
+    setStoresLoading(true);
+    setError("");
+    try {
+      const data = await smartlaneAdminService.browseStores(storesSearch.trim());
+      setStores(data.stores || []);
+    } catch (err) {
+      setError(err.message || "Failed to load stores");
+    } finally {
+      setStoresLoading(false);
+    }
+  }
+
+  async function onShowAllStores() {
+    setStoresLoading(true);
+    setError("");
+    try {
+      const data = await smartlaneAdminService.browseStores();
+      setStores(data.stores || []);
+    } catch (err) {
+      setError(err.message || "Failed to load stores");
+    } finally {
+      setStoresLoading(false);
+    }
+  }
+
+  async function onLoadActivityLog() {
+    if (!logStoreId.trim()) {
+      setError("Store ID is required.");
+      return;
+    }
+    if (!logSearch.trim()) {
+      setError("Type is required — Smartlane rejects the call without it.");
+      return;
+    }
+    setLogLoading(true);
+    setError("");
+    try {
+      const data = await smartlaneAdminService.getActivityLog(logStoreId.trim(), logSearch.trim());
+      setLogResult(data.activity);
+    } catch (err) {
+      setError(err.message || "Failed to load activity log");
+    } finally {
+      setLogLoading(false);
+    }
+  }
+
+  const loadRequests = useCallback(async (type) => {
+    setRequestsLoading(true);
+    setError("");
+    try {
+      const data = await smartlaneAdminService.listRequests({ type: type || undefined });
+      setRequests(data.requests || []);
+    } catch (err) {
+      setError(err.message || "Failed to load requests");
+    } finally {
+      setRequestsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadRequests(requestTypeFilter);
+  }, [requestTypeFilter, loadRequests]);
+
+  async function onApproveRequest(req) {
+    if (!window.confirm(`Approve this ${req.request_type.replace("_", " ")} request for ${req.organization_name}?`)) {
+      return;
+    }
+    setBusyRequestId(req.id);
+    setError("");
+    setSuccess("");
+    try {
+      await smartlaneAdminService.approveRequest(req.id);
+      setSuccess(`Approved ${req.organization_name}'s ${req.request_type.replace("_", " ")} request.`);
+      await loadRequests(requestTypeFilter);
+    } catch (err) {
+      setError(err.message || "Failed to approve");
+    } finally {
+      setBusyRequestId(null);
+    }
+  }
+
+  async function onRejectRequest(req) {
+    const note = window.prompt(`Why is this request being rejected? ${req.organization_name} sees this.`);
+    if (note === null) return;
+    if (!note.trim()) {
+      setError("A reason is required — the organization sees it.");
+      return;
+    }
+    setBusyRequestId(req.id);
+    setError("");
+    setSuccess("");
+    try {
+      await smartlaneAdminService.rejectRequest(req.id, note.trim());
+      setSuccess(`Rejected ${req.organization_name}'s request.`);
+      await loadRequests(requestTypeFilter);
+    } catch (err) {
+      setError(err.message || "Failed to reject");
+    } finally {
+      setBusyRequestId(null);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -306,11 +435,12 @@ export default function SmartlaneBusinessPage() {
         <p className="px-1 py-10 text-sm text-slate-500">Loading configuration…</p>
       ) : (
         <>
-          <div className="rounded-xl border border-surface-border bg-white shadow-sm">
-            <div className="border-b border-surface-border px-5 py-3">
+          <details className="group rounded-xl border border-surface-border bg-white shadow-sm">
+            <summary className="flex cursor-pointer list-none items-center justify-between px-5 py-3 [&::-webkit-details-marker]:hidden">
               <h2 className="text-sm font-semibold text-slate-800">Status</h2>
-            </div>
-            <dl className="grid gap-4 px-5 py-5 sm:grid-cols-2">
+              <span className="-rotate-90 text-slate-400 transition-transform group-open:rotate-0">▾</span>
+            </summary>
+            <dl className="grid gap-4 border-t border-surface-border px-5 py-5 sm:grid-cols-2">
               <div>
                 <dt className="text-xs uppercase tracking-wide text-slate-400">Environment</dt>
                 <dd className="mt-1 break-all text-sm text-slate-800">{config?.base_url}</dd>
@@ -343,7 +473,7 @@ export default function SmartlaneBusinessPage() {
                 <p className="text-xs text-red-600">{config.last_verify_error}</p>
               </div>
             ) : null}
-          </div>
+          </details>
 
           {testResult ? (
             <div
@@ -401,19 +531,19 @@ export default function SmartlaneBusinessPage() {
             </div>
           ) : null}
 
-          <form
-            onSubmit={onSave}
-            className="space-y-4 rounded-xl border border-surface-border bg-white p-6 shadow-sm"
-          >
-            <div>
-              <h2 className="text-sm font-semibold text-slate-800">Credentials</h2>
-              <p className="mt-1 text-xs text-slate-500">
-                Paste the business code, client id, secret, and Auth token Smartlane sent.
-                The Auth token is the HMAC key (not a login JWT). Test Connection should
-                then return &quot;Business API - Version 1.0&quot;.
-              </p>
-            </div>
-
+          <details className="group rounded-xl border border-surface-border bg-white shadow-sm">
+            <summary className="flex cursor-pointer list-none items-start justify-between gap-4 px-5 py-3 [&::-webkit-details-marker]:hidden">
+              <div>
+                <h2 className="text-sm font-semibold text-slate-800">Credentials</h2>
+                <p className="mt-1 text-xs text-slate-500">
+                  Paste the business code, client id, secret, and Auth token Smartlane sent.
+                  The Auth token is the HMAC key (not a login JWT). Test Connection should
+                  then return &quot;Business API - Version 1.0&quot;.
+                </p>
+              </div>
+              <span className="-rotate-90 shrink-0 text-slate-400 transition-transform group-open:rotate-0">▾</span>
+            </summary>
+            <form onSubmit={onSave} className="space-y-4 border-t border-surface-border p-6">
             <div className="grid gap-4 sm:grid-cols-2">
               <Field label="Business code" hint="Used in every endpoint path.">
                 <input
@@ -461,19 +591,23 @@ export default function SmartlaneBusinessPage() {
                 Save credentials
               </Button>
             </div>
-          </form>
+            </form>
+          </details>
 
-          <div className="rounded-xl border border-surface-border bg-white shadow-sm">
-            <div className="border-b border-surface-border px-5 py-3">
-              <h2 className="text-sm font-semibold text-slate-800">API Explorer</h2>
-              <p className="mt-0.5 text-xs text-slate-500">
-                Fire any Smartlane business-API call directly and see the raw result — the
-                same thing Postman was used for, without leaving the OMS. Store list,
-                Industries, City list and Finance products need no store and work today;
-                everything else needs an active store first.
-              </p>
-            </div>
-            <div className="space-y-3 px-5 py-4">
+          <details className="group rounded-xl border border-surface-border bg-white shadow-sm">
+            <summary className="flex cursor-pointer list-none items-start justify-between gap-4 px-5 py-3 [&::-webkit-details-marker]:hidden">
+              <div>
+                <h2 className="text-sm font-semibold text-slate-800">API Explorer</h2>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  Fire any Smartlane business-API call directly and see the raw result — the
+                  same thing Postman was used for, without leaving the OMS. Store list,
+                  Industries, City list and Finance products need no store and work today;
+                  everything else needs an active store first.
+                </p>
+              </div>
+              <span className="-rotate-90 shrink-0 text-slate-400 transition-transform group-open:rotate-0">▾</span>
+            </summary>
+            <div className="space-y-3 border-t border-surface-border px-5 py-4">
               <div className="grid gap-3 sm:grid-cols-[1fr_140px]">
                 <Field label="Action">
                   <select
@@ -528,15 +662,25 @@ export default function SmartlaneBusinessPage() {
                     : "border-red-200 bg-red-50/50"
                 }`}
               >
-                <p
-                  className={`mb-2 text-sm font-semibold ${
-                    apiResult.ok ? "text-emerald-700" : "text-red-700"
-                  }`}
-                >
-                  {apiResult.ok ? "Success" : "Failed"}
-                </p>
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <p
+                    className={`text-sm font-semibold ${
+                      apiResult.ok ? "text-emerald-700" : "text-red-700"
+                    }`}
+                  >
+                    {apiResult.ok ? "Success" : "Failed"}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setApiResult(null)}
+                    title="Close"
+                    className="rounded-full px-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                  >
+                    ✕
+                  </button>
+                </div>
                 {apiResult.ok ? (
-                  <pre className="overflow-x-auto rounded-lg bg-white px-3 py-2 text-xs text-slate-700">
+                  <pre className="max-h-96 overflow-auto rounded-lg bg-white px-3 py-2 text-xs text-slate-700">
                     {JSON.stringify(apiResult.response, null, 2)}
                   </pre>
                 ) : (
@@ -571,7 +715,7 @@ export default function SmartlaneBusinessPage() {
                 ) : null}
               </div>
             ) : null}
-          </div>
+          </details>
 
           <div className="rounded-xl border border-surface-border bg-white shadow-sm">
             <div className="flex items-center justify-between gap-3 border-b border-surface-border px-5 py-3">
@@ -762,6 +906,170 @@ export default function SmartlaneBusinessPage() {
                         </div>
                       </details>
                     ) : null}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <div className="rounded-xl border border-surface-border bg-white shadow-sm">
+            <div className="border-b border-surface-border px-5 py-3">
+              <h2 className="text-sm font-semibold text-slate-800">All Stores</h2>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Every store Smartlane has on file for this business, not just the ones onboarded
+                through this OMS.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-end gap-2 px-5 py-4">
+              <Field label="Search">
+                <input
+                  value={storesSearch}
+                  onChange={(e) => setStoresSearch(e.target.value)}
+                  placeholder="Store name…"
+                  className={inputClass}
+                />
+              </Field>
+              <Button variant="secondary" onClick={onBrowseStores} loading={storesLoading}>
+                Search
+              </Button>
+              <button
+                type="button"
+                onClick={onShowAllStores}
+                title="Show all stores"
+                className="ml-auto flex items-center gap-1.5 rounded-lg border border-surface-border px-3 py-2 text-sm text-slate-600 hover:bg-slate-50"
+              >
+                <span aria-hidden="true">👁</span> All
+              </button>
+            </div>
+            {stores ? (
+              stores.length === 0 ? (
+                <p className="px-5 pb-5 text-sm text-slate-500">No stores found.</p>
+              ) : (
+                <ul className="divide-y divide-surface-border">
+                  {stores.map((s, i) => (
+                    <li key={s.id || s.store_id || i} className="flex flex-wrap items-center justify-between gap-2 px-5 py-3 text-sm">
+                      <span className="text-slate-800">{s.name || "—"}</span>
+                      <span
+                        className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                          LINK_STATUS_TONE[s.status] || "bg-slate-100 text-slate-600"
+                        }`}
+                      >
+                        {s.status}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )
+            ) : null}
+          </div>
+
+          <div className="rounded-xl border border-surface-border bg-white shadow-sm">
+            <div className="border-b border-surface-border px-5 py-3">
+              <h2 className="text-sm font-semibold text-slate-800">Activity Log</h2>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Request, response and webhook log for one store.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-end gap-2 px-5 py-4">
+              <Field label="Store ID">
+                <input
+                  value={logStoreId}
+                  onChange={(e) => setLogStoreId(e.target.value)}
+                  placeholder="e.g. 5"
+                  className={inputClass}
+                />
+              </Field>
+              <Field label="Type (required)">
+                <select
+                  value={logSearch}
+                  onChange={(e) => setLogSearch(e.target.value)}
+                  className={inputClass}
+                >
+                  <option value="consignment_status">Consignment status</option>
+                </select>
+              </Field>
+              <Button variant="secondary" onClick={onLoadActivityLog} loading={logLoading}>
+                Load
+              </Button>
+            </div>
+            {logResult ? (
+              <pre className="mx-5 mb-5 overflow-x-auto rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-700">
+                {JSON.stringify(logResult, null, 2)}
+              </pre>
+            ) : null}
+          </div>
+
+          <div className="rounded-xl border border-surface-border bg-white shadow-sm">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-surface-border px-5 py-3">
+              <div>
+                <h2 className="text-sm font-semibold text-slate-800">Requests</h2>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  Webhook, warehouse edit/revoke and finance-application requests. Approving
+                  sends the one Smartlane call it represents; nothing is sent until then.
+                </p>
+              </div>
+              <select
+                value={requestTypeFilter}
+                onChange={(e) => setRequestTypeFilter(e.target.value)}
+                className={`${inputClass} w-auto`}
+              >
+                <option value="">All types</option>
+                <option value="webhook">Webhook</option>
+                <option value="warehouse_edit">Warehouse edit/revoke</option>
+                <option value="finance">Finance application</option>
+              </select>
+            </div>
+
+            {requestsLoading ? (
+              <p className="px-5 py-8 text-center text-sm text-slate-500">Loading…</p>
+            ) : requests.length === 0 ? (
+              <p className="px-5 py-8 text-center text-sm text-slate-500">No requests yet.</p>
+            ) : (
+              <ul className="divide-y divide-surface-border">
+                {requests.map((req) => (
+                  <li key={req.id} className="px-5 py-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-sm font-medium text-slate-800">
+                            {req.organization_name}
+                          </span>
+                          <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-600">
+                            {req.request_type.replace("_", " ")}
+                          </span>
+                          <span
+                            className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                              LINK_STATUS_TONE[req.status] || "bg-slate-100 text-slate-600"
+                            }`}
+                          >
+                            {req.status_display}
+                          </span>
+                        </div>
+                        <pre className="mt-1 whitespace-pre-wrap break-all text-xs text-slate-500">
+                          {JSON.stringify(req.payload)}
+                        </pre>
+                        {req.review_note ? (
+                          <p className="mt-1 text-xs text-red-600">Rejected: {req.review_note}</p>
+                        ) : null}
+                      </div>
+                      {req.status === "pending_approval" ? (
+                        <div className="flex shrink-0 items-center gap-2">
+                          <Button
+                            variant="secondary"
+                            onClick={() => onRejectRequest(req)}
+                            disabled={busyRequestId === req.id}
+                          >
+                            Reject
+                          </Button>
+                          <Button
+                            onClick={() => onApproveRequest(req)}
+                            loading={busyRequestId === req.id}
+                          >
+                            Approve
+                          </Button>
+                        </div>
+                      ) : null}
+                    </div>
                   </li>
                 ))}
               </ul>

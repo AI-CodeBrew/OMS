@@ -256,6 +256,64 @@ class IntegrationsService {
     if (!response.ok) throw new Error(data.detail || "Failed to submit request");
     return data;
   }
+
+  // --- Webhook / warehouse-edit / finance requests (need super-admin OK
+  // before they reach Smartlane - see SmartlaneRequestsView) ---
+  async getOmsCourierRequests(type) {
+    const qs = type ? `?type=${encodeURIComponent(type)}` : "";
+    const response = await fetch(`${apiConfig.baseUrl}/api/integrations/oms-courier/requests/${qs}`, {
+      headers: authService.getAuthHeaders(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Failed to load requests");
+    return data;
+  }
+
+  async submitOmsCourierRequest(requestType, payload) {
+    const response = await fetch(`${apiConfig.baseUrl}/api/integrations/oms-courier/requests/`, {
+      method: "POST",
+      headers: authService.getAuthHeaders(),
+      body: JSON.stringify({ request_type: requestType, payload }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Failed to submit request");
+    return data;
+  }
+
+  // Read-only list of warehouses already provisioned for the caller's own
+  // store - what the edit/revoke request form picks from.
+  async getOmsCourierWarehouses() {
+    const response = await fetch(`${apiConfig.baseUrl}/api/integrations/oms-courier/warehouses/`, {
+      headers: authService.getAuthHeaders(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Failed to load warehouses");
+    return data;
+  }
+
+  // Read-only finance product catalog for the caller's own store.
+  async getOmsCourierFinance() {
+    const response = await fetch(`${apiConfig.baseUrl}/api/integrations/oms-courier/finance/`, {
+      headers: authService.getAuthHeaders(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Failed to load finance products");
+    return data;
+  }
+
+  // Consignment create/track/cancel, Airway Bill, Load Sheet, Shipper
+  // Advise - one dispatcher, mirroring the admin API Explorer but always
+  // scoped to the caller's own store (see SmartlaneShipmentActionView).
+  async runOmsCourierShipmentAction(action, params) {
+    const response = await fetch(`${apiConfig.baseUrl}/api/integrations/oms-courier/shipments/`, {
+      method: "POST",
+      headers: authService.getAuthHeaders(),
+      body: JSON.stringify({ action, params }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Request failed");
+    return data;
+  }
 }
 
 export const integrationsService = new IntegrationsService();

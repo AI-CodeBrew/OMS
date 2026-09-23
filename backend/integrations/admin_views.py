@@ -132,6 +132,73 @@ def store_link_warehouses_provision(request, link_id):
     return Response({"success": True, **result})
 
 
+@api_view(["GET"])
+@permission_classes([IsSuperAdmin])
+def stores_browse(request):
+    """Doc #3 - every store Smartlane has on file, not just our own
+    onboarding requests (see store_links above for that)."""
+    try:
+        stores = service.list_all_stores(search=request.query_params.get("search") or None)
+    except SmartlaneBusinessError as exc:
+        return _error(exc)
+    return Response({"success": True, "stores": stores})
+
+
+@api_view(["GET"])
+@permission_classes([IsSuperAdmin])
+def activity_log(request):
+    """Doc #4 - request/response/webhook log for one store."""
+    store_id = request.query_params.get("store_id")
+    if not store_id:
+        return _error(SmartlaneBusinessError("store_id is required.", 400))
+    try:
+        result = service.get_activity_log(store_id, search=request.query_params.get("search") or None)
+    except SmartlaneBusinessError as exc:
+        return _error(exc)
+    return Response({"success": True, "activity": result})
+
+
+@api_view(["GET"])
+@permission_classes([IsSuperAdmin])
+def requests_list(request):
+    """Webhook/warehouse-edit/finance requests awaiting or past review -
+    doc #6/#7, #9, #11."""
+    try:
+        result = service.list_requests(
+            request_type=request.query_params.get("type") or None,
+            status=request.query_params.get("status") or None,
+        )
+    except SmartlaneBusinessError as exc:
+        return _error(exc)
+    return Response({"success": True, "requests": result})
+
+
+@api_view(["POST"])
+@permission_classes([IsSuperAdmin])
+def request_approve(request, request_id):
+    try:
+        result = service.approve_request(
+            request_id, actor_email=getattr(request, "auth_email", "") or ""
+        )
+    except SmartlaneBusinessError as exc:
+        return _error(exc)
+    return Response({"success": True, "request": result})
+
+
+@api_view(["POST"])
+@permission_classes([IsSuperAdmin])
+def request_reject(request, request_id):
+    try:
+        result = service.reject_request(
+            request_id,
+            note=(request.data or {}).get("note", ""),
+            actor_email=getattr(request, "auth_email", "") or "",
+        )
+    except SmartlaneBusinessError as exc:
+        return _error(exc)
+    return Response({"success": True, "request": result})
+
+
 @api_view(["POST"])
 @permission_classes([IsSuperAdmin])
 def business_config_test(request):

@@ -8,17 +8,8 @@ const FIELD_ROWS = [
   ["customer_phone", "Number"],
   ["secondary_phone", "Secondary Number"],
   ["city", "City"],
-  ["country", "Country"],
-  ["postal_code", "Postal Code"],
   ["address_line1", "Address 1"],
-  ["address_line2", "Address 2"],
-  ["agent_id", "Agent ID"],
-  ["customer_type", "Customer Type"],
-  ["cnic", "CNIC"],
   ["customer_tags", "Customer Tags"],
-  ["price_conversion_rate", "Price Conversion Rate"],
-  ["preferred_courier", "Customer Preferred Courier"],
-  ["risk_status", "Risk Status"],
 ];
 
 export default function CustomerDetailPanel({ order, draft, editing, onChange }) {
@@ -35,14 +26,6 @@ export default function CustomerDetailPanel({ order, draft, editing, onChange })
           onChange={(value) => onChange(field, value)}
         />
       ))}
-
-      <EditableField
-        label="Expected Delivery Date"
-        type="date"
-        value={editing ? draft.expected_delivery_date : order.expected_delivery_date}
-        editing={editing}
-        onChange={(value) => onChange("expected_delivery_date", value)}
-      />
 
       <div>
         <div className="text-xs text-slate-500">Current Status Updated At</div>
