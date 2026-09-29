@@ -30,29 +30,58 @@ const STATUS_LABELS = {
   99: "Cancelled",
 };
 
+const PAGE_SIZE = 20;
+
 function todayMinus(days) {
   const d = new Date();
   d.setDate(d.getDate() - days);
   return d.toISOString().slice(0, 10);
 }
 
-// Field names aren't confirmed against a real BarqRaftar response - see
-// _lib/barqraftarService.js's module note - so several plausible
-// spellings are tried for each value, same defensive stance as the
-// backend client.
+// GET /orders reports status as the numeric id ("1") but GET /order reports
+// the slug ("pending") - confirmed live - so both are mapped to the id.
+const STATUS_SLUGS = {
+  pending: 1,
+  awaiting_pickup: 2,
+  picked_up: 3,
+  dispatched: 4,
+  return_by_consignee: 5,
+  re_attempt_requested: 6,
+  hold_requested: 7,
+  return_requested: 8,
+  delivered: 9,
+  return_transit: 10,
+  return_in_progress: 11,
+  return_confirmation: 12,
+  return_rfc_origin: 13,
+  re_attempt_approval: 14,
+  rfc_origin: 30,
+  in_transit: 31,
+  received_at_fc: 32,
+  returned_to_shipper: 98,
+  cancelled: 99,
+};
+
+function statusCodeOf(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const n = Number(value);
+  if (Number.isFinite(n)) return n;
+  return STATUS_SLUGS[String(value).toLowerCase()] ?? null;
+}
+
+// Real BarqRaftar order shape (confirmed live): tracking number is
+// `number`, our own order number is `customer_reference`, destination is
+// `to_city.name`.
 function rowFields(row) {
-  const data = row.data && typeof row.data === "object" ? row.data : row;
-  const trackingNumber = data.tracking_number || data.number || "";
-  const referenceId = data.reference_id || data.customer_reference || data.reference || "";
-  const statusCode = Number(data.status ?? data.status_id);
   return {
-    trackingNumber,
-    referenceId,
-    statusCode: Number.isFinite(statusCode) ? statusCode : null,
-    customerName: data.customer_name || "",
-    codAmount: data.cod_amount ?? "",
-    date: data.created_at || data.date || "",
-    logs: Array.isArray(data.status_logs) ? data.status_logs : [],
+    trackingNumber: row.number || row.tracking_number || "",
+    referenceId: row.customer_reference || row.reference_id || "",
+    statusCode: statusCodeOf(row.status),
+    customerName: row.customer_name || "",
+    city: row.to_city?.name || "",
+    codAmount: row.cod_amount ?? "",
+    date: row.created_at ? new Date(row.created_at).toLocaleString() : "",
+    logs: Array.isArray(row.status_logs) ? row.status_logs : [],
   };
 }
 
@@ -87,15 +116,27 @@ function TrackModal({ trackingNumber, onClose }) {
           </div>
           {row.logs.length > 0 ? (
             <ul className="space-y-2 border-l-2 border-surface-border pl-3">
-              {row.logs.map((log, i) => (
-                <li key={i} className="text-xs">
-                  <span className="font-medium text-slate-700">
-                    {STATUS_LABELS[Number(log.status)] || `Status ${log.status}`}
-                  </span>
-                  {log.created_at ? <span className="text-slate-400"> — {log.created_at}</span> : null}
-                  {log.rider_name ? <div className="text-slate-500">Rider: {log.rider_name} {log.rider_contact || ""}</div> : null}
-                </li>
-              ))}
+              {row.logs.map((log, i) => {
+                // Dispatched (4) log entries carry the rider under these
+                // exact keys, per BarqRaftar's docs.
+                const rider = log["Delivery Rider Name"];
+                const riderContact = log["Rider Contact"];
+                return (
+                  <li key={log.id || i} className="text-xs">
+                    <span className="font-medium text-slate-700">
+                      {STATUS_LABELS[statusCodeOf(log.status)] || log.status_value || `Status ${log.status}`}
+                    </span>
+                    {log.created_at ? (
+                      <span className="text-slate-400"> — {new Date(log.created_at).toLocaleString()}</span>
+                    ) : null}
+                    {rider ? (
+                      <div className="text-slate-500">
+                        Rider: {rider} {riderContact || ""}
+                      </div>
+                    ) : null}
+                  </li>
+                );
+              })}
             </ul>
           ) : (
             <p className="text-xs text-slate-500">No status history yet.</p>
@@ -114,6 +155,7 @@ export default function ShipmentsTab({ onError }) {
     search: "",
   });
   const [rows, setRows] = useState(null);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
   const [trackingTarget, setTrackingTarget] = useState(null);
@@ -123,16 +165,19 @@ export default function ShipmentsTab({ onError }) {
     setLoading(true);
     onError("");
     try {
+      // `search` is tried as a tracking number, then as our order number,
+      // by the backend (see barqraftar/views.py's BarqRaftarShipmentsView).
       const data = await barqraftarService.getShipments({
         date_from: filters.date_from,
         date_to: filters.date_to,
         status: filters.status,
-        tracking_number: filters.search || undefined,
+        search: filters.search.trim() || undefined,
         page,
-        limit: 20,
+        limit: PAGE_SIZE,
       });
-      const list = Array.isArray(data) ? data : data.data || data.orders || [];
+      const list = data.orders || [];
       setRows(list.map(rowFields));
+      setTotal(Number(data.total) || list.length);
     } catch (err) {
       onError(err.message || "Failed to load shipments");
       setRows([]);
@@ -272,6 +317,7 @@ export default function ShipmentsTab({ onError }) {
                 <th className="py-2">Tracking</th>
                 <th className="py-2">Order</th>
                 <th className="py-2">Customer</th>
+                <th className="py-2">City</th>
                 <th className="py-2">COD</th>
                 <th className="py-2">Status</th>
                 <th className="py-2" />
@@ -293,6 +339,7 @@ export default function ShipmentsTab({ onError }) {
                     </td>
                     <td className="py-2">{row.referenceId}</td>
                     <td className="py-2">{row.customerName}</td>
+                    <td className="py-2">{row.city}</td>
                     <td className="py-2">{row.codAmount}</td>
                     <td className="py-2">{STATUS_LABELS[row.statusCode] || row.statusCode || "-"}</td>
                     <td className="py-2">
@@ -363,11 +410,14 @@ export default function ShipmentsTab({ onError }) {
         </div>
       )}
 
-      <div className="mt-4 flex justify-end gap-2">
+      <div className="mt-4 flex items-center justify-end gap-2">
+        <span className="text-xs text-slate-500">
+          {total} shipment{total === 1 ? "" : "s"}
+        </span>
         <Button variant="secondary" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
           Previous
         </Button>
-        <Button variant="secondary" onClick={() => setPage((p) => p + 1)}>
+        <Button variant="secondary" disabled={page * PAGE_SIZE >= total} onClick={() => setPage((p) => p + 1)}>
           Next
         </Button>
       </div>

@@ -274,15 +274,18 @@ class BarqRaftarPickupAddressesView(APIView):
         except BarqRaftarAPIError as exc:
             return Response({"detail": str(exc)}, status=http_status.HTTP_502_BAD_GATEWAY)
 
+        # BarqRaftar answers {"status": true, "message": ..., "pickup_address_id":
+        # <new id>} (confirmed live). The origin city follows the address.
         if data.get("set_default"):
-            saved_id = (
-                result.get("id") or result.get("pickup_address_id")
-                if isinstance(result, dict) else None
-            ) or data.get("pickup_address_id")
+            saved_id = result.get("pickup_address_id") if isinstance(result, dict) else None
             if saved_id:
                 connection.pickup_address_id = str(saved_id)
                 connection.pickup_address_label = data.get("name", "")
-                connection.save(update_fields=["pickup_address_id", "pickup_address_label", "updated_at"])
+                connection.from_city_id = str(data.get("city_id", "")).strip()
+                connection.from_city_name = (data.get("city_name") or "").strip()
+                connection.save(update_fields=[
+                    "pickup_address_id", "pickup_address_label", "from_city_id", "from_city_name", "updated_at",
+                ])
 
         return Response(result if isinstance(result, dict) else {"result": result})
 
@@ -309,11 +312,26 @@ class BarqRaftarShipmentsView(APIView):
                 "paid_at_from", "paid_at_to",
             )
         }
+        # One search box on the Shipments tab: try it as a tracking number
+        # first, then as our own order number (BarqRaftar's reference_id).
+        search = (request.query_params.get("search") or "").strip()
         try:
-            data = client.list_orders(connection.api_key, connection.api_secret, **filters)
+            if search:
+                data = client.list_orders(
+                    connection.api_key, connection.api_secret, **{**filters, "tracking_number": search},
+                )
+                if not client._rows(data):
+                    data = client.list_orders(
+                        connection.api_key, connection.api_secret,
+                        **{**filters, "reference_id": search.lstrip("#")},
+                    )
+            else:
+                data = client.list_orders(connection.api_key, connection.api_secret, **filters)
         except BarqRaftarAPIError as exc:
             return Response({"detail": str(exc)}, status=http_status.HTTP_502_BAD_GATEWAY)
-        return Response(data if isinstance(data, dict) else {"data": data})
+        # {"status": "success", "orders": [...], "total", "from", "to"} -
+        # confirmed live; passed through as-is.
+        return Response(data if isinstance(data, dict) else {"orders": data})
 
 
 class BarqRaftarShipmentTrackView(APIView):
@@ -333,13 +351,18 @@ class BarqRaftarShipmentTrackView(APIView):
                 status=http_status.HTTP_400_BAD_REQUEST,
             )
         try:
-            data = client.get_order(
+            order = client.get_order(
                 connection.api_key, connection.api_secret,
                 tracking_number=tracking_number, reference_id=reference_id,
             )
         except BarqRaftarAPIError as exc:
             return Response({"detail": str(exc)}, status=http_status.HTTP_502_BAD_GATEWAY)
-        return Response(data if isinstance(data, dict) else {"data": data})
+        if not order:
+            return Response(
+                {"detail": "BarqRaftar has no order with that tracking number/reference."},
+                status=http_status.HTTP_404_NOT_FOUND,
+            )
+        return Response(order)
 
 
 class BarqRaftarPaymentsView(APIView):
@@ -412,6 +435,10 @@ class BarqRaftarShipmentActionView(APIView):
                 )
             except BarqRaftarAPIError as exc:
                 return Response({"detail": str(exc)}, status=http_status.HTTP_502_BAD_GATEWAY)
+            # Refusals are HTTP 200 with orders_result[0].success=false.
+            refused = client.first_result_error(result)
+            if refused:
+                return Response({"detail": f"BarqRaftar: {refused}"}, status=http_status.HTTP_400_BAD_REQUEST)
             return Response(result if isinstance(result, dict) else {"result": result})
 
         if action_name == "cancel":

@@ -24,9 +24,8 @@ export default function PaymentsTab({ onError }) {
     setLoading(true);
     onError("");
     try {
-      const data = await barqraftarService.getPayments({ dateFrom, dateTo });
-      const list = Array.isArray(data) ? data : data.payments || data.data || [];
-      setPayments(list);
+      const data = await barqraftarService.getPayments({ dateFrom, dateTo, limit: 100 });
+      setPayments(data.payments || []);
     } catch (err) {
       onError(err.message || "Failed to load payments");
       setPayments([]);
@@ -94,23 +93,30 @@ export default function PaymentsTab({ onError }) {
       ) : !payments || payments.length === 0 ? (
         <p className="text-sm text-slate-500">No payments in this range.</p>
       ) : (
+        // Row fields per BarqRaftar's docs (company_payments.data[]).
         <table className="w-full text-left text-sm">
           <thead>
             <tr className="text-xs uppercase text-slate-500">
-              <th className="py-2">Payment</th>
+              <th className="py-2">Invoice</th>
               <th className="py-2">Date</th>
-              <th className="py-2">Amount</th>
+              <th className="py-2">Orders</th>
+              <th className="py-2">COD Collected</th>
+              <th className="py-2">Shipping</th>
+              <th className="py-2">Net Payable</th>
               <th className="py-2" />
             </tr>
           </thead>
           <tbody className="divide-y divide-surface-border">
             {payments.map((row) => {
-              const id = row.id ?? row.payment_id;
+              const id = row.id;
               return (
                 <tr key={id}>
-                  <td className="py-2">{row.reference || row.title || `#${id}`}</td>
-                  <td className="py-2">{row.date || row.created_at || "-"}</td>
-                  <td className="py-2">{row.amount ?? row.total ?? "-"}</td>
+                  <td className="py-2">{row.invoice_number || `#${id}`}</td>
+                  <td className="py-2">{row.created_at || "-"}</td>
+                  <td className="py-2">{row.orders_count ?? "-"}</td>
+                  <td className="py-2">{row.net_collected_amount ?? "-"}</td>
+                  <td className="py-2">{row.net_shipping_charges ?? row.shipping_charges ?? "-"}</td>
+                  <td className="py-2 font-medium">{row.net_payable ?? "-"}</td>
                   <td className="py-2 text-right">
                     <button
                       type="button"
@@ -131,9 +137,55 @@ export default function PaymentsTab({ onError }) {
         {detailLoading ? (
           <p className="text-sm text-slate-500">Loading…</p>
         ) : detail ? (
-          <pre className="max-h-96 overflow-auto whitespace-pre-wrap text-xs text-slate-700">
-            {JSON.stringify(detail, null, 2)}
-          </pre>
+          // {"company_payment": {...}, "orders": [{"order": {...}}]} per
+          // BarqRaftar's docs.
+          <div className="space-y-3">
+            {detail.company_payment ? (
+              <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
+                <div>
+                  <div className="text-xs text-slate-500">Invoice</div>
+                  <div>{detail.company_payment.invoice_number}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">COD Collected</div>
+                  <div>{detail.company_payment.net_collected_amount}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">Shipping</div>
+                  <div>{detail.company_payment.net_shipping_charges}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">Net Payable</div>
+                  <div className="font-medium">{detail.company_payment.net_payable}</div>
+                </div>
+              </div>
+            ) : null}
+            <table className="w-full text-left text-xs">
+              <thead>
+                <tr className="uppercase text-slate-500">
+                  <th className="py-1">Tracking</th>
+                  <th className="py-1">Order</th>
+                  <th className="py-1">Customer</th>
+                  <th className="py-1">COD</th>
+                  <th className="py-1">Delivered</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-surface-border">
+                {(detail.orders || []).map((item) => {
+                  const o = item.order || {};
+                  return (
+                    <tr key={item.id || o.id}>
+                      <td className="py-1">{o.number}</td>
+                      <td className="py-1">{o.customer_reference}</td>
+                      <td className="py-1">{o.customer_name}</td>
+                      <td className="py-1">{o.cod_amount}</td>
+                      <td className="py-1">{o.delivered_at || "-"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         ) : null}
       </Modal>
     </div>

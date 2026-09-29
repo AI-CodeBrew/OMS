@@ -56,8 +56,9 @@ export default function CitiesTab({ onError, onNotice }) {
       </div>
 
       <p className="mb-3 text-xs text-slate-500">
-        Used to match an order's city to BarqRaftar's own list when booking. An order whose city text
-        doesn't match anything here moves to City Issue instead of being booked blind.
+        The cities BarqRaftar currently delivers to. When booking, an order's city is matched against
+        these names or their short code (e.g. LHR). An order whose city doesn't match any of them moves
+        to City Issue instead of being booked blind.
       </p>
 
       {loading ? (
@@ -69,7 +70,9 @@ export default function CitiesTab({ onError, onNotice }) {
           {filtered.map((c) => (
             <div key={c.id} className="truncate py-1 text-sm text-slate-700">
               {c.name}{" "}
-              <span className="text-xs text-slate-400">#{c.id}</span>
+              <span className="text-xs text-slate-400">
+                {c.city_key ? `${c.city_key} · ` : ""}#{c.id}
+              </span>
             </div>
           ))}
         </div>

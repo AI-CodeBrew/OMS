@@ -44,6 +44,9 @@ export default function SettingsCard({ status, onChanged, onError, onNotice }) {
         {status.pickup_address_label || status.pickup_address_id ? (
           <p className="text-sm text-slate-800">
             {status.pickup_address_label || `Address #${status.pickup_address_id}`}
+            {status.from_city_name ? (
+              <span className="text-slate-500"> - ships from {status.from_city_name}</span>
+            ) : null}
           </p>
         ) : (
           <p className="text-sm text-amber-600">

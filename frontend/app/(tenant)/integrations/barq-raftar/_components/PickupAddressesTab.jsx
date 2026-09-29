@@ -10,17 +10,16 @@ const EMPTY_FORM = {
   city_id: "",
   person_of_contact: "",
   phone_number: "",
+  set_default: true,
 };
 
-// BarqRaftar's own response shape for a pickup address isn't confirmed
-// against a real response (see _lib/barqraftarService.js's module note),
-// so every field read here tries a couple of plausible spellings.
-function addressId(row) {
-  return row.id ?? row.pickup_address_id ?? row.address_id;
-}
-
+// Real BarqRaftar pickup-address shape (confirmed live): id, name, address,
+// city_id (a string, e.g. "1"), city {id, name}, person_of_contact,
+// phone_number. BarqRaftar has no working "edit" - sending an existing id
+// to their store API creates a new address instead - so this tab only adds.
 export default function PickupAddressesTab({ status, onChanged, onError, onNotice }) {
   const [addresses, setAddresses] = useState(null);
+  const [cities, setCities] = useState([]);
   const [loading, setLoading] = useState(true);
   const [form, setForm] = useState(EMPTY_FORM);
   const [showForm, setShowForm] = useState(false);
@@ -32,8 +31,7 @@ export default function PickupAddressesTab({ status, onChanged, onError, onNotic
     onError("");
     try {
       const data = await barqraftarService.getPickupAddresses();
-      const list = Array.isArray(data) ? data : data.addresses || data.data || [];
-      setAddresses(list);
+      setAddresses(data.addresses || []);
     } catch (err) {
       onError(err.message || "Failed to load pickup addresses");
       setAddresses([]);
@@ -44,19 +42,28 @@ export default function PickupAddressesTab({ status, onChanged, onError, onNotic
 
   useEffect(() => {
     load();
+    barqraftarService
+      .getCities()
+      .then((data) => setCities(data.cities || []))
+      .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  function cityName(cityId) {
+    return cities.find((c) => String(c.id) === String(cityId))?.name || "";
+  }
 
   async function onSubmit(e) {
     e.preventDefault();
     setSaving(true);
     onError("");
     try {
-      await barqraftarService.savePickupAddress(form);
-      onNotice("Pickup address saved.");
+      await barqraftarService.savePickupAddress({ ...form, city_name: cityName(form.city_id) });
+      onNotice(form.set_default ? "Pickup address added and set as default." : "Pickup address added.");
       setForm(EMPTY_FORM);
       setShowForm(false);
       await load();
+      if (form.set_default) onChanged();
     } catch (err) {
       onError(err.message || "Failed to save pickup address");
     } finally {
@@ -65,13 +72,16 @@ export default function PickupAddressesTab({ status, onChanged, onError, onNotic
   }
 
   async function onSetDefault(row) {
-    const id = addressId(row);
-    setSettingDefaultId(id);
+    setSettingDefaultId(row.id);
     onError("");
     try {
+      // The origin city (from_city_id) every booking needs comes from the
+      // default pickup address - so it's saved in the same breath.
       await barqraftarService.updateSettings({
-        pickup_address_id: String(id),
+        pickup_address_id: String(row.id),
         pickup_address_label: row.name || row.address || "",
+        from_city_id: String(row.city_id ?? row.city?.id ?? ""),
+        from_city_name: row.city?.name || cityName(row.city_id),
       });
       onNotice("Default pickup address updated.");
       onChanged();
@@ -100,18 +110,25 @@ export default function PickupAddressesTab({ status, onChanged, onError, onNotic
                 required
                 value={form.name}
                 onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+                placeholder="e.g. Main Warehouse"
                 className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
               />
             </label>
             <label className="block">
-              <span className="mb-1 block text-xs font-medium text-slate-600">City ID</span>
-              <input
+              <span className="mb-1 block text-xs font-medium text-slate-600">City</span>
+              <select
                 required
                 value={form.city_id}
                 onChange={(e) => setForm((f) => ({ ...f, city_id: e.target.value }))}
-                placeholder="From the Cities tab"
                 className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
-              />
+              >
+                <option value="">Select a city…</option>
+                {cities.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
             </label>
           </div>
           <label className="block">
@@ -144,6 +161,15 @@ export default function PickupAddressesTab({ status, onChanged, onError, onNotic
               />
             </label>
           </div>
+          <label className="flex items-center gap-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={form.set_default}
+              onChange={(e) => setForm((f) => ({ ...f, set_default: e.target.checked }))}
+              className="h-4 w-4 rounded border-surface-border"
+            />
+            Make this the default pickup address
+          </label>
           <Button type="submit" loading={saving}>
             Save Address
           </Button>
@@ -157,13 +183,23 @@ export default function PickupAddressesTab({ status, onChanged, onError, onNotic
       ) : (
         <ul className="divide-y divide-surface-border">
           {addresses.map((row) => {
-            const id = addressId(row);
-            const isDefault = String(id) === String(status.pickup_address_id);
+            const isDefault = String(row.id) === String(status.pickup_address_id);
             return (
-              <li key={id} className="flex items-center justify-between py-3">
+              <li key={row.id} className="flex items-center justify-between gap-3 py-3">
                 <div>
-                  <div className="text-sm font-medium text-slate-900">{row.name || `Address #${id}`}</div>
-                  <div className="text-xs text-slate-500">{row.address}</div>
+                  <div className="text-sm font-medium text-slate-900">
+                    {row.name || `Address #${row.id}`}{" "}
+                    <span className="text-xs font-normal text-slate-400">#{row.id}</span>
+                  </div>
+                  <div className="text-xs text-slate-500">
+                    {row.address}
+                    {row.city?.name ? ` - ${row.city.name}` : ""}
+                  </div>
+                  {row.person_of_contact || row.phone_number ? (
+                    <div className="text-xs text-slate-400">
+                      {row.person_of_contact} {row.phone_number}
+                    </div>
+                  ) : null}
                 </div>
                 {isDefault ? (
                   <span className="rounded-full bg-green-100 px-2 py-0.5 text-[11px] font-medium text-green-700">
@@ -172,7 +208,7 @@ export default function PickupAddressesTab({ status, onChanged, onError, onNotic
                 ) : (
                   <Button
                     variant="secondary"
-                    loading={settingDefaultId === id}
+                    loading={settingDefaultId === row.id}
                     onClick={() => onSetDefault(row)}
                   >
                     Set as default

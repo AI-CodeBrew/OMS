@@ -54,37 +54,66 @@ _CANCELLED_CODES = {99}
 # cancellable, used by cancel_on_barqraftar below.
 _STILL_CANCELLABLE_CODES = {1, 2}
 
+# BarqRaftar's full status table (id -> slug -> label), from their API docs.
+# GET /orders reports status as the numeric id ("1"), but GET /order and
+# get_multiple_orders report the slug ("pending") - confirmed live - so
+# both spellings have to resolve to the same code.
+_STATUSES = [
+    (1, "pending", "Pending"),
+    (2, "awaiting_pickup", "Awaiting Pickup"),
+    (3, "picked_up", "Picked Up"),
+    (4, "dispatched", "Dispatched"),
+    (5, "return_by_consignee", "Return by Consignee"),
+    (6, "re_attempt_requested", "Re-Attempt Requested"),
+    (7, "hold_requested", "Hold Requested"),
+    (8, "return_requested", "Return Requested"),
+    (9, "delivered", "Delivered"),
+    (10, "return_transit", "Return Transit"),
+    (11, "return_in_progress", "Return In Progress"),
+    (12, "return_confirmation", "Return Confirmation"),
+    (13, "return_rfc_origin", "RFC Origin (Return)"),
+    (14, "re_attempt_approval", "Re-attempt Approval"),
+    (30, "rfc_origin", "RFC Origin"),
+    (31, "in_transit", "In Transit"),
+    (32, "received_at_fc", "Received at FC"),
+    (98, "returned_to_shipper", "Returned to Shipper"),
+    (99, "cancelled", "Cancelled"),
+]
+_SLUG_TO_CODE = {slug: code for code, slug, _ in _STATUSES}
+_CODE_TO_LABEL = {code: label for code, _, label in _STATUSES}
+
 
 # --------------------------------------------------------------- Helpers --
 
 def _coerce_status_code(value):
+    """Numeric id ("1"/1) or slug ("pending") -> int code, else None."""
+    if value is None or value == "":
+        return None
     try:
         return int(value)
     except (TypeError, ValueError):
-        return None
+        return _SLUG_TO_CODE.get(str(value).strip().lower())
 
 
 def _extract_order_fields(row):
-    """Defensively reads one BarqRaftar order row (GET /order,
-    get_multiple_orders, or a bulk_store orders_result entry). BarqRaftar's
-    exact response shape isn't confirmed against a real response (the
-    Postman collection's saved responses are all empty), so several
-    plausible field spellings are tried for each value rather than
-    assuming one. Returns (tracking_number, reference_id, status_code,
+    """Reads one BarqRaftar order - a GET /orders or get_multiple_orders row,
+    a GET /order result (client.get_order already unwraps its {"order": ...}
+    envelope, but a still-wrapped one is unwrapped here too), or a
+    bulk_store orders_result entry. Confirmed field names: the tracking
+    number is "number" (orders) / "tracking_number" (orders_result), our
+    own reference is "customer_reference" (orders) / "reference_id"
+    (orders_result). Returns (tracking_number, reference_id, status_code,
     status_label, status_logs)."""
     if not isinstance(row, dict):
         return "", "", None, "", []
-    data = row.get("data") if isinstance(row.get("data"), dict) else row
-    tracking_number = (
-        data.get("tracking_number") or data.get("number") or data.get("order_number") or ""
-    )
-    reference_id = (
-        data.get("reference_id") or data.get("customer_reference") or data.get("reference") or ""
-    )
-    status_code = _coerce_status_code(data.get("status") if "status" in data else data.get("status_id"))
-    status_label = str(
-        data.get("status_label") or data.get("new_status") or data.get("status") or ""
-    )
+    data = row
+    for wrapper in ("order", "data"):
+        if isinstance(data.get(wrapper), dict):
+            data = data[wrapper]
+    tracking_number = data.get("number") or data.get("tracking_number") or ""
+    reference_id = data.get("customer_reference") or data.get("reference_id") or ""
+    status_code = _coerce_status_code(data.get("status"))
+    status_label = _CODE_TO_LABEL.get(status_code, str(data.get("status") or ""))
     logs = data.get("status_logs")
     if not isinstance(logs, list):
         logs = []
@@ -112,7 +141,7 @@ def extract_webhook_event(payload):
     tracking_number = order.get("number") or order.get("tracking_number") or ""
     reference_id = order.get("customer_reference") or order.get("reference_id") or ""
     status_code = _coerce_status_code(order.get("status"))
-    status_label = str(payload_data.get("new_status") or order.get("status") or "")
+    status_label = str(payload_data.get("new_status") or _CODE_TO_LABEL.get(status_code, ""))
     return str(tracking_number), str(reference_id), status_code, status_label
 
 
@@ -139,17 +168,20 @@ def _normalize_phone(phone):
 # BarqRaftarConnection.city_aliases, editable from the Cities tab) is even
 # needed. Deliberately small and literal - no fuzzy/partial matching, since
 # a wrong auto-match would silently address a parcel to the wrong city.
+# BarqRaftar's own 3-letter city_key (LHR, ISL, RWP, FSD, GRW, TAX, WAH, ...)
+# is matched automatically in resolve_city_id, so these only cover spellings
+# that are neither a city name nor its key.
 _BUILT_IN_CITY_ALIASES = {
-    "khi": "karachi",
-    "lhr": "lahore",
     "isb": "islamabad",
-    "isl": "islamabad",
-    "rwp": "rawalpindi",
     "pindi": "rawalpindi",
-    "fsd": "faisalabad",
+    "rawalpindi cantt": "rawalpindi",
+    "lahore cantt": "lahore",
+    "wah": "wah cantt",
+    "wah cantonment": "wah cantt",
+    "khi": "karachi",
+    "pew": "peshawar",
     "mux": "multan",
     "hyd": "hyderabad",
-    "pew": "peshawar",
     "qta": "quetta",
 }
 
@@ -176,16 +208,25 @@ def get_cities(connection, *, force_refresh=False):
     if not stale:
         return connection.cities_cache
 
+    # {"status": "success", "cities": [{"id", "name", "city_key", "active",
+    # "restrict_orders", ...}]} - confirmed live. A city BarqRaftar has
+    # switched off (active=0) or restricted (restrict_orders=1) is left out,
+    # so an order for it lands on City Issue instead of a booking BarqRaftar
+    # would refuse.
     rows = client.fetch_cities(connection.api_key, connection.api_secret)
     cities = []
     for row in rows:
         if not isinstance(row, dict):
             continue
-        city_id = row.get("id") if "id" in row else row.get("city_id")
-        name = row.get("name") or row.get("city") or row.get("city_name")
+        city_id = row.get("id")
+        name = row.get("name")
         if city_id is None or not name:
             continue
-        cities.append({"id": city_id, "name": str(name)})
+        if str(row.get("active", 1)) in ("0", "False", "false"):
+            continue
+        if str(row.get("restrict_orders", 0)) in ("1", "True", "true"):
+            continue
+        cities.append({"id": city_id, "name": str(name), "city_key": str(row.get("city_key") or "")})
 
     connection.cities_cache = cities
     connection.cities_cached_at = timezone.now()
@@ -215,6 +256,11 @@ def resolve_city_id(connection, city_name):
     for city in cities:
         if _normalize_city_name(city["name"]) == lookup:
             return city
+    # BarqRaftar's own short code (LHR, ISL, RWP, ...) - checked after the
+    # names so a city literally named like another's key can't shadow it.
+    for city in cities:
+        if city.get("city_key") and _normalize_city_name(city["city_key"]) == lookup:
+            return city
     return None
 
 
@@ -237,8 +283,15 @@ def _cod_amount(order):
     Same rule Smartlane's own client applies via payment_method - see
     integrations/smartlane_client.py's _build_consignment."""
     if order.payment_gateway == "cod":
-        return float(order.amount_receivable)
+        # BarqRaftar's docs type cod_amount/total_amount as integers (rupees).
+        return int(round(order.amount_receivable))
     return 0
+
+
+def _as_int(value):
+    """City/address ids are integers in BarqRaftar's docs; the connection
+    stores them as strings (CharField), so convert on the way out."""
+    return int(value) if str(value).strip().isdigit() else value
 
 
 def _next_reference_id(order):
@@ -284,10 +337,10 @@ def _build_order_payload(order, connection, city, reference_id):
         "customer_contact": phone,
         "customer_email": order.customer_email or "",
         "special_handling": False,
-        "total_amount": float(order.grand_total),
+        "total_amount": int(round(order.grand_total)),
         "cod_amount": cod_amount,
-        "to_city_id": city["id"],
-        "from_city_id": connection.from_city_id,
+        "to_city_id": _as_int(city["id"]),
+        "from_city_id": _as_int(connection.from_city_id),
         "shipment_type": "cod" if cod_amount > 0 else "courier",
         "weight_grams": _order_weight(order, connection),
         "line_items": line_items or [{"name": order.order_number, "quantity": 1}],
@@ -351,7 +404,10 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False):
             for oid in order_ids
         ]
 
-    if connection.create_pickup_request and not connection.pickup_address_id:
+    # from_city_id is required on every BarqRaftar order, pickup request or
+    # not - it's taken from the default pickup address (see the Pickup
+    # Addresses tab's "Set as default"), so both need that set first.
+    if not connection.from_city_id or (connection.create_pickup_request and not connection.pickup_address_id):
         return [
             {"order_id": str(oid), "success": False,
              "error": "Set a default pickup address on the BarqRaftar integration page first."}
@@ -453,14 +509,24 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False):
 
             if row is not None:
                 tn, _r, _s, _sl, _logs = _extract_order_fields(row)
+                message = str(row.get("message") or row.get("error") or "")
                 if row.get("success") and tn:
                     tracking_number = tn
                 elif row.get("success"):
                     error_message = "BarqRaftar accepted the order but returned no tracking number."
+                elif "already exist" in message.lower():
+                    # Docs: {"success": false, "message": "Order already
+                    # exist in BarqRaftar"} - i.e. an earlier attempt
+                    # (whose local step failed) did go through. Left blank
+                    # so the lookup below adopts that booking instead of
+                    # reporting a failure for a parcel that is real. (In
+                    # practice BarqRaftar was seen accepting the same
+                    # reference_id more than once, so this is a fallback -
+                    # the real double-booking guard is the Awaiting
+                    # Assigning status check above.)
+                    pass
                 else:
-                    error_message = str(
-                        row.get("message") or row.get("error") or "BarqRaftar rejected this order."
-                    )
+                    error_message = message or "BarqRaftar rejected this order."
 
             if not tracking_number and not error_message:
                 # Not matched in the response at all, or BarqRaftar's
@@ -470,9 +536,14 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False):
                     confirm_row = client.get_order(
                         connection.api_key, connection.api_secret, reference_id=ref,
                     )
-                    tn, _r, _s, _sl, _logs = _extract_order_fields(confirm_row)
-                    if tn:
+                    tn, _r, confirm_status, _sl, _logs = _extract_order_fields(confirm_row)
+                    if tn and confirm_status not in _CANCELLED_CODES:
                         tracking_number = tn
+                    elif tn:
+                        error_message = (
+                            f"BarqRaftar reports reference {ref} as an already-cancelled order, "
+                            "so it wasn't booked again - check it on the BarqRaftar portal."
+                        )
                     else:
                         error_message = (
                             "BarqRaftar didn't confirm this booking - try Sync now shortly, "
@@ -578,12 +649,17 @@ def cancel_on_barqraftar(order):
         return  # Already cancelled on BarqRaftar, or nothing usable to check against.
     if status_code in _STILL_CANCELLABLE_CODES:
         try:
-            client.change_status(
+            result = client.change_status(
                 connection.api_key, connection.api_secret,
                 [{"tracking_number": shipment.tracking_number, "status": "cancelled"}],
             )
         except BarqRaftarAPIError as exc:
             raise BarqRaftarBookingError(f"BarqRaftar refused to cancel: {exc}") from exc
+        # A refused status change is still HTTP 200 - the failure is only in
+        # orders_result[0] (confirmed live: "Order not exist in BarqRaftar").
+        refused = client.first_result_error(result)
+        if refused:
+            raise BarqRaftarBookingError(f"BarqRaftar refused to cancel: {refused}")
         return
     raise BarqRaftarBookingError(
         f"BarqRaftar reports this shipment is already {status_label or status_code} "

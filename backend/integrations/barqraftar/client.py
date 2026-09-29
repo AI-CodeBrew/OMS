@@ -1,16 +1,25 @@
 """Thin HTTP client for BarqRaftar's own courier API (base
-https://barqraftar.pk/api/v1, per their Postman collection - see
-NOTES.md/the collection itself for the full endpoint list). Modelled
-closely on integrations/smartlane_client.py's _request funnel, but kept
-entirely separate: BarqRaftar auth is a `key`/`secret` header pair (not a
-bearer token), and this module must never import from smartlane_client.py
+https://barqraftar.pk/api/v1 - docs at https://barqraftar.pk/api-documentation).
+Modelled closely on integrations/smartlane_client.py's _request funnel, but
+kept entirely separate: BarqRaftar auth is a `key`/`secret` header pair (not
+a bearer token), and this module must never import from smartlane_client.py
 or vice versa, so neither integration can ever affect the other's
 behaviour.
 
-No sample responses were available when this was written (the Postman
-collection's saved responses are empty), so every reader below is
-defensive: it looks for rows under a few plausible keys and never assumes
-a field is present.
+Response shapes below were confirmed against real responses from a live
+account (2026-09-29) plus BarqRaftar's own API documentation page:
+- Errors (bad key/secret, missing params, ...) come back as HTTP 400 with
+  {"error": true, "message": ..., "error_code"?: "BR001"} - a bad key/secret
+  has NO error_code at all, just the message. See _request.
+- GET /order wraps the order: {"status": "success", "order": {...}}, and an
+  unknown tracking number is HTTP 200 {"status": "false", "order": {}} - see
+  get_order, which unwraps both to the bare order dict (or {}).
+- Order "status" is a numeric string ("1") in GET /orders, but a slug
+  ("pending") in GET /order and get_multiple_orders - normalised by
+  barqraftar/services.py's _coerce_status_code.
+- bulk_store / bulk_change_status report per-order outcomes as HTTP 200
+  {"orders_result": [{"success": false, "message": ...}]} - a failed
+  status change is NOT an HTTP error. See first_result_error.
 """
 
 import logging
@@ -25,9 +34,12 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = settings.BARQRAFTAR_API_BASE_URL
 
-# BarqRaftar's own documented error codes (see the Postman collection's
-# description). BR000 means the key/secret pair itself was rejected.
+# BarqRaftar's own documented error codes. BR000 means the key/secret pair
+# itself was rejected - though in practice a bad key/secret comes back with
+# no error_code at all, just this message (confirmed live), so both are
+# checked in _request.
 _CREDENTIALS_ERROR_CODE = "BR000"
+_CREDENTIALS_ERROR_HINT = "api key"
 
 
 def _headers(api_key, api_secret):
@@ -82,24 +94,30 @@ def _request(method, path, api_key, api_secret, *, context="", expect="json",
             f"BarqRaftar rejected the API key/secret (HTTP {resp.status_code})."
         )
 
-    # BR000 (bad key/secret) can also come back as a 200 with an error code
-    # in the body, per BarqRaftar's own documented error codes - checked
-    # before the generic not-ok handling below so it gets a clearer message.
-    body_for_code_check = None
+    # BarqRaftar's own error envelope: {"error": true, "message": ...,
+    # "error_code"?: ...} - HTTP 400 in practice (confirmed live for a bad
+    # key/secret and for BR001), but checked regardless of status so a 200
+    # carrying it can never be mistaken for success. {"success": false} is
+    # the same idea from the endpoints that use a `success` flag instead
+    # (company_addresses/store, company_payments). Checked before the
+    # generic not-ok handling below so the user sees BarqRaftar's own
+    # message, not a raw "400 {...}".
+    body = None
     if resp.content and "json" in (resp.headers.get("Content-Type") or "").lower():
         try:
-            body_for_code_check = resp.json()
+            body = resp.json()
         except ValueError:
-            body_for_code_check = None
-    if isinstance(body_for_code_check, dict) and (
-        body_for_code_check.get("code") == _CREDENTIALS_ERROR_CODE
-        or body_for_code_check.get("error_code") == _CREDENTIALS_ERROR_CODE
-    ):
-        logger.error("barqraftar %s -> BR000 credentials error: %s", label, body_for_code_check)
-        raise BarqRaftarAPIError(
-            "BarqRaftar rejected the API key/secret (BR000). "
-            "Check them on the BarqRaftar integration page."
-        )
+            body = None
+    if isinstance(body, dict) and (body.get("error") is True or body.get("success") is False):
+        message = str(body.get("message") or "BarqRaftar reported an error.")
+        code = body.get("error_code") or body.get("code") or ""
+        logger.error("barqraftar %s -> HTTP %s error %s: %s", label, resp.status_code, code or "-", message)
+        if code == _CREDENTIALS_ERROR_CODE or _CREDENTIALS_ERROR_HINT in message.lower():
+            raise BarqRaftarAPIError(
+                f"BarqRaftar rejected the API key/secret: {message} "
+                "Check them on the BarqRaftar integration page."
+            )
+        raise BarqRaftarAPIError(f"BarqRaftar: {message}" + (f" ({code})" if code else ""))
 
     if not resp.ok and resp.status_code not in tolerate:
         logger.error("barqraftar %s -> HTTP %s: %s", label, resp.status_code, (resp.text or "")[:500])
@@ -138,27 +156,43 @@ def _require_credentials(api_key, api_secret):
         raise BarqRaftarAPIError("Add your BarqRaftar API key and secret on the BarqRaftar integration page first.")
 
 
+# Where each endpoint actually puts its rows (confirmed live / per their
+# docs): /cities -> "cities", /orders and get_multiple_orders -> "orders",
+# get_pickup_address -> "addresses" (live) or data.pickup_addresses (docs),
+# company_payments/index -> company_payments.data (a Laravel paginator),
+# bulk_store / bulk_change_status -> "orders_result".
+_ROW_KEYS = ("cities", "orders", "addresses", "pickup_addresses", "company_payments",
+             "orders_result", "data", "result")
+
+
 def _rows(payload):
-    """BarqRaftar's response shape isn't documented (no sample responses in
-    their own Postman collection) - accept whichever of these plausible
-    containers is actually present, or a bare list, same defensive stance
-    as smartlane_client._parse_track_rows."""
+    """Pulls the list of rows out of any BarqRaftar response envelope."""
     if isinstance(payload, list):
         return payload
     if isinstance(payload, dict):
-        for key in ("data", "orders", "result", "orders_result"):
+        for key in _ROW_KEYS:
             value = payload.get(key)
             if isinstance(value, list):
                 return value
-            if isinstance(value, dict) and isinstance(value.get("data"), list):
-                return value["data"]
-        # Get Pickup Addresses / Get Payments style: {"data": {"data": [...]}}
-        inner = payload.get("data")
-        if isinstance(inner, dict):
-            for key in ("data", "orders", "result"):
-                if isinstance(inner.get(key), list):
-                    return inner[key]
+            if isinstance(value, dict):
+                if isinstance(value.get("data"), list):
+                    return value["data"]
+                for inner_key in _ROW_KEYS:
+                    if isinstance(value.get(inner_key), list):
+                        return value[inner_key]
     return []
+
+
+def first_result_error(payload):
+    """bulk_store / bulk_change_status answer HTTP 200 even when an order
+    failed - the failure is only in orders_result[i].success. Returns the
+    first failed row's message, or "" if every row succeeded."""
+    if not isinstance(payload, dict):
+        return ""
+    for row in payload.get("orders_result") or []:
+        if isinstance(row, dict) and row.get("success") is False:
+            return str(row.get("message") or "BarqRaftar rejected the request.")
+    return ""
 
 
 # ---------------------------------------------------------------- Cities --
@@ -175,7 +209,14 @@ def bulk_store(api_key, api_secret, orders, *, create_pickup_request=False,
                 pickup_address_id=None, pickup_address=None):
     """POST /orders/bulk_store. `orders` is a list of BarqRaftar order dicts
     already built by barqraftar/services.py's payload builder. Returns the
-    raw response dict (callers read `orders_result`)."""
+    raw response dict - per BarqRaftar's docs:
+    {"failed_orders_count", "success_orders_count", "orders_result": [
+      {"success": true, "reference_id", "tracking_number", "message"} |
+      {"success": false, "reference_id", "message": "Order already exist in BarqRaftar"}]}.
+
+    create_pickup_request is sent as the strings "true"/"false" exactly as
+    the collection's own (working) requests do, even though the docs call
+    it a boolean."""
     _require_credentials(api_key, api_secret)
     if not orders:
         return {"orders_result": []}
@@ -186,7 +227,9 @@ def bulk_store(api_key, api_secret, orders, *, create_pickup_request=False,
     }
     if create_pickup_request:
         if pickup_address_id:
-            body["pickup_address_id"] = pickup_address_id
+            body["pickup_address_id"] = (
+                int(pickup_address_id) if str(pickup_address_id).isdigit() else pickup_address_id
+            )
         elif pickup_address:
             body["pickup_address"] = pickup_address
     return _request(
@@ -196,6 +239,11 @@ def bulk_store(api_key, api_secret, orders, *, create_pickup_request=False,
 
 
 def get_order(api_key, api_secret, *, tracking_number=None, reference_id=None):
+    """GET /order. Returns the bare order dict - BarqRaftar wraps it as
+    {"status": "success", "order": {...}} - or {} when BarqRaftar doesn't
+    know it (HTTP 200 {"status": "false", "order": {}}, confirmed live).
+    Unwrapping here matters: the wrapper's own "status": "success" would
+    otherwise be read as the order's status."""
     _require_credentials(api_key, api_secret)
     if tracking_number:
         params = {"tracking_number": tracking_number}
@@ -205,9 +253,13 @@ def get_order(api_key, api_secret, *, tracking_number=None, reference_id=None):
         context = f"Track (reference {reference_id})"
     else:
         raise BarqRaftarAPIError("get_order needs either tracking_number or reference_id.")
-    return _request(
+    payload = _request(
         "GET", "/order", api_key, api_secret, context=context, params=params, tolerate=(404,),
     )
+    if not isinstance(payload, dict) or str(payload.get("status")).lower() == "false":
+        return {}
+    order = payload.get("order")
+    return order if isinstance(order, dict) else {}
 
 
 def get_multiple_orders(api_key, api_secret, tracking_numbers, *, page=1, per_page=100):
@@ -247,10 +299,10 @@ def change_status(api_key, api_secret, items):
 
 def print_labels(api_key, api_secret, tracking_numbers, *, response_type="pdf", label_format="a4"):
     """POST /orders/print_orders. Max 20 tracking numbers per BarqRaftar's
-    own limit (enforced by the caller - see barqraftar/services.py). With
-    response_type="pdf" the raw bytes are returned directly; with "link" the
-    caller gets back a URL to download instead (their response shape isn't
-    documented, so barqraftar/services.py handles both)."""
+    own limit (enforced by the caller - see barqraftar/views.py). With
+    response_type="pdf" BarqRaftar answers application/pdf directly
+    (confirmed live) and the raw bytes are returned; with "link" it's
+    {"success": true, "link": ..., "label_format": ...}."""
     _require_credentials(api_key, api_secret)
     if not tracking_numbers:
         raise BarqRaftarAPIError("No orders to print a label for.")
@@ -309,8 +361,14 @@ def list_pickup_addresses(api_key, api_secret):
 
 def save_pickup_address(api_key, api_secret, *, pickup_address_id=None, name, address, city_id,
                          person_of_contact, phone_number, latitude=None, longitude=None):
-    """POST /company_addresses/store - form-data, not JSON, per the Postman
-    collection."""
+    """POST /company_addresses/store - form-data, not JSON. Answers
+    {"status": true, "message": "Address added successfully!",
+    "pickup_address_id": <new id>} (confirmed live).
+
+    NOTE: despite the docs calling pickup_address_id the way to UPDATE an
+    existing address, sending it created a brand-new address instead
+    (confirmed live, 2026-09-29) - so the UI only ever offers "add", never
+    "edit"."""
     _require_credentials(api_key, api_secret)
     data = {
         "name": name,
@@ -343,7 +401,18 @@ def list_payments(api_key, api_secret, *, date_from=None, date_to=None, page=1, 
     payload = _request(
         "GET", "/company_payments/index", api_key, api_secret, context="List payments", params=params,
     )
-    return _rows(payload) if isinstance(payload, (list, dict)) and _rows(payload) else payload
+    # {"success": true, "company_payments": <Laravel paginator>} - rows are
+    # company_payments.data (confirmed live; empty for this account so far,
+    # row fields per BarqRaftar's docs: id, invoice_number, orders_count,
+    # net_collected_amount, net_payable, ...).
+    pager = payload.get("company_payments") if isinstance(payload, dict) else None
+    pager = pager if isinstance(pager, dict) else {}
+    return {
+        "payments": _rows(payload),
+        "total": pager.get("total") or 0,
+        "current_page": pager.get("current_page") or 1,
+        "last_page": pager.get("last_page") or 1,
+    }
 
 
 def payment_detail(api_key, api_secret, payment_id):
