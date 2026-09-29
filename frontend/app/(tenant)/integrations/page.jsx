@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import integrationsService from "../../../services/integrationsService";
+import barqraftarService from "./barq-raftar/_lib/barqraftarService";
 
 function ShopifyLogo({ className }) {
   return (
@@ -38,10 +39,14 @@ function SmartlaneLogo({ className }) {
   );
 }
 
-function LeopardWordmark({ className }) {
+// Stacked on two lines so the 10-char name still fits inside the 48px tile.
+function BarqRaftarWordmark({ className }) {
   return (
-    <span className={`font-black italic tracking-tight text-slate-900 ${className || ""}`}>
-      Leopard<span className="text-orange-500">s</span>
+    <span
+      className={`flex flex-col items-center font-black italic leading-none tracking-tight ${className || ""}`}
+    >
+      <span className="text-red-600">Barq</span>
+      <span className="text-slate-900">Raftar</span>
     </span>
   );
 }
@@ -138,17 +143,17 @@ const INTEGRATIONS = [
     ],
   },
   {
-    key: "leopard",
-    name: "Leopard Courier",
-    tagline: "Connect to Leopard Courier for seamless domestic shipping.",
-    logo: LeopardWordmark,
+    key: "barq_raftar",
+    name: "BarqRaftar",
+    tagline: "Connect to BarqRaftar for fast domestic deliveries.",
+    logo: BarqRaftarWordmark,
     wordmark: true,
-    href: null,
-    live: false,
+    href: "/integrations/barq-raftar",
+    live: true,
     features: [
-      { label: "Create Shipments", done: false },
-      { label: "Print Labels", done: false },
-      { label: "Track Shipments", done: false },
+      { label: "Create Shipments", done: true },
+      { label: "Print Labels", done: true },
+      { label: "Track Shipments", done: true },
       { label: "COD Reconciliation", done: false },
     ],
   },
@@ -248,6 +253,10 @@ export default function IntegrationsOverviewPage() {
     integrationsService
       .getSmartlaneStatus()
       .then((d) => setConnectedMap((m) => ({ ...m, smartlane: Boolean(d.connected) })))
+      .catch(() => {});
+    barqraftarService
+      .getStatus()
+      .then((d) => setConnectedMap((m) => ({ ...m, barq_raftar: Boolean(d.connected) })))
       .catch(() => {});
   }, []);
 

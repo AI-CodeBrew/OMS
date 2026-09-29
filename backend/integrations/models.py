@@ -494,3 +494,17 @@ class ShopifySyncJob(TenantScopedModel):
 
     def __str__(self):
         return f"{self.mode} sync ({self.status})"
+
+
+# BarqRaftar's models live in their own subpackage (integrations/barqraftar/),
+# in their own Postgres schema, entirely separate from Smartlane/Shopify
+# above - see that package's models.py. Django only auto-discovers an app's
+# *single* models module (this file) or a models/ package, not an arbitrary
+# subpackage, so this import is what makes it find BarqRaftarConnection,
+# BarqRaftarShipment and BarqRaftarSyncJob at all. Import only, never edit
+# BarqRaftar's own models from here.
+from .barqraftar.models import (  # noqa: E402,F401
+    BarqRaftarConnection,
+    BarqRaftarShipment,
+    BarqRaftarSyncJob,
+)

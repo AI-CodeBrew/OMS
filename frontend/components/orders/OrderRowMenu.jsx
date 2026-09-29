@@ -2,9 +2,12 @@
 
 import Dropdown from "../shared/Dropdown";
 import { ACTIONS_BY_STATUS } from "./statusConfig";
+import useBarqRaftarStatusStore from "../../app/(tenant)/integrations/barq-raftar/_lib/barqraftarStatusStore";
+import { withBarqRaftarActions } from "../../app/(tenant)/integrations/barq-raftar/_lib/orderActions";
 
 export default function OrderRowMenu({ order, onAction, onRaiseTicket }) {
-  const actions = ACTIONS_BY_STATUS[order.status] || [];
+  const barqraftarConnected = useBarqRaftarStatusStore((s) => s.connected);
+  const actions = withBarqRaftarActions(order.status, ACTIONS_BY_STATUS[order.status] || [], barqraftarConnected);
 
   // "Raise ticket" isn't a status mutation like everything in
   // ACTIONS_BY_STATUS, so it's always present here rather than filtered by

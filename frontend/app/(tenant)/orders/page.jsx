@@ -33,6 +33,12 @@ import {
   SMARTLANE_LOAD_SHEET_COURIERS,
   STATUS_TABS,
 } from "../../../components/orders/statusConfig";
+// BarqRaftar's own service/status-store/action-list - kept inside its own
+// feature folder rather than the shared services/ files above; see that
+// folder for everything else BarqRaftar.
+import barqraftarService from "../integrations/barq-raftar/_lib/barqraftarService";
+import useBarqRaftarStatusStore from "../integrations/barq-raftar/_lib/barqraftarStatusStore";
+import { withBarqRaftarActions } from "../integrations/barq-raftar/_lib/orderActions";
 
 // Modals/panels only ever render once opened (each returns null while
 // closed) - loading them on demand instead of bundling them into the
@@ -382,6 +388,10 @@ export default function OrdersPage() {
       .getSmartlaneStatus()
       .then((d) => setSmartlaneConnected(Boolean(d.connected)))
       .catch(() => {});
+    barqraftarService
+      .getStatus()
+      .then((d) => useBarqRaftarStatusStore.getState().setStatus(d))
+      .catch(() => {});
   }, []);
 
   // Live updates: the backend pushes a message here the moment an order is
@@ -448,13 +458,15 @@ export default function OrdersPage() {
     [orders, selectedIds]
   );
 
+  const barqraftarConnected = useBarqRaftarStatusStore((s) => s.connected);
+
   const availableActions = useMemo(() => {
     if (selectedOrders.length === 0) return [];
     const statuses = new Set(selectedOrders.map((o) => o.status));
     if (statuses.size > 1) return [];
     const [status] = statuses;
-    return ACTIONS_BY_STATUS[status] || [];
-  }, [selectedOrders]);
+    return withBarqRaftarActions(status, ACTIONS_BY_STATUS[status] || [], barqraftarConnected);
+  }, [selectedOrders, barqraftarConnected]);
 
   async function startAction(action, orderIds) {
     // Airway bill needs no courier param (Smartlane returns whichever
@@ -474,6 +486,20 @@ export default function OrdersPage() {
       setApplyingAction(true);
       try {
         await ordersService.printSmartlaneAirwayBill(orderIds);
+      } catch (err) {
+        setError(err.message || "Print failed");
+      } finally {
+        setApplyingAction(false);
+      }
+      return;
+    }
+
+    // Same shape as print_airway_bill above - BarqRaftar's own labels
+    // endpoint returns a document directly, not a bulk-action mutation.
+    if (action === "print_barqraftar_labels") {
+      setApplyingAction(true);
+      try {
+        await barqraftarService.printLabels(orderIds);
       } catch (err) {
         setError(err.message || "Print failed");
       } finally {

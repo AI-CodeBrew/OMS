@@ -27,6 +27,7 @@ from core.redis_client import (
     set_cached_list,
     wait_for_rebuild,
 )
+from integrations.barqraftar.exceptions import BarqRaftarBookingError
 from wms.services import InsufficientStock
 
 from . import importers, services
@@ -692,6 +693,23 @@ class OrderViewSet(viewsets.ModelViewSet):
         action_name = request.data.get("action")
         order_ids = request.data.get("order_ids") or []
         params = request.data.get("params") or {}
+
+        # Booked in one batch (not per order through BULK_ACTIONS below) so
+        # that "create a pickup request" on a multi-order booking makes ONE
+        # pickup request, not one per order - see
+        # integrations.barqraftar.services.book_orders, whose result shape
+        # matches BULK_ACTIONS' own loop exactly (including
+        # error_code="insufficient_stock"), so the stock-shortage modal and
+        # its force-retry need no frontend changes.
+        if action_name == "push_to_barqraftar":
+            from integrations.barqraftar import services as barqraftar_services
+
+            results = barqraftar_services.book_orders(
+                request.organization_id, order_ids,
+                actor_user_id=request.user_id, force=bool(params.get("force")),
+            )
+            return Response({"results": results})
+
         handler = BULK_ACTIONS.get(action_name)
         if not handler:
             return Response(
@@ -728,7 +746,14 @@ class OrderViewSet(viewsets.ModelViewSet):
                         "shortages": exc.shortages,
                     }
                 )
-            except (services.InvalidTransition, services.SmartlaneBookingError) as exc:
+            # BarqRaftarBookingError reaches here via the "cancel" handler
+            # below (services.cancel_order can now raise it - see that
+            # function's BarqRaftar branch) and via "abandon_booking" if it
+            # were ever pointed at a BarqRaftar order; push_to_barqraftar
+            # itself never reaches this loop at all (see the special case
+            # above).
+            except (services.InvalidTransition, services.SmartlaneBookingError,
+                    BarqRaftarBookingError) as exc:
                 results.append(
                     {
                         "order_id": order_id,

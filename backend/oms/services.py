@@ -105,6 +105,14 @@ ALLOWED_TRANSITIONS = {
     "returned": set(),
 }
 
+# Additive for the BarqRaftar integration (integrations/barqraftar/) - lets
+# a push to BarqRaftar land an order on City Issue when its city text
+# doesn't match any BarqRaftar city, the same way pending_cc/pending_cod
+# already can via confirm_order(city_ok=False). Does not change what any
+# other status can reach; Smartlane's push has no equivalent city check and
+# is unaffected. See flag_city_issue below.
+ALLOWED_TRANSITIONS["awaiting_assigning"].add("city_issue")
+
 
 class InvalidTransition(Exception):
     pass
@@ -304,7 +312,7 @@ def mark_delivered(order, *, actor_user_id=None):
     )
 
 
-def cancel_order(order, *, reason="", actor_user_id=None):
+def cancel_order(order, *, reason="", actor_user_id=None, propagate_to_courier=True):
     # Smartlane-booked orders (Booking Pending / Ready to Print / Ready to
     # Pick - the only statuses cancel is even reachable from once Smartlane
     # is involved, per ALLOWED_TRANSITIONS) have a live consignment on
@@ -334,7 +342,87 @@ def cancel_order(order, *, reason="", actor_user_id=None):
         wms_services.release_order_stock(
             order, actor_user_id=actor_user_id, note="Order cancelled by Smartlane/staff"
         )
+    # Additive, BarqRaftar-only branch (integrations/barqraftar/) - kept
+    # entirely separate from the Smartlane branch above, an `elif` so the
+    # two can never both run for the same order. Gated on the courier name
+    # FIRST (cheap, no import, no query against a table that may not exist
+    # yet if this deploy hasn't run the BarqRaftar migration) before ever
+    # touching integrations.barqraftar.
+    #
+    # propagate_to_courier=False is used by
+    # integrations.barqraftar.services.apply_barqraftar_status when
+    # BarqRaftar itself already reported the cancel (status 99) - calling
+    # their API again there would be pointless and could itself fail.
+    # BULK_ACTIONS["cancel"] (oms/views.py) does not pass this, so a
+    # staff-initiated cancel always defaults to True: unlike the Smartlane
+    # branch's best-effort /cancel call, BarqRaftar's API is asked FIRST
+    # and can refuse (parcel already picked up) - see
+    # integrations.barqraftar.services.cancel_on_barqraftar, whose
+    # BarqRaftarBookingError is left to propagate so the local cancel does
+    # not happen underneath a courier that is still actually carrying it.
+    elif order.courier_id and (order.courier.name or "").strip().lower() == "barqraftar":
+        from integrations.barqraftar import services as barqraftar_services
+
+        if propagate_to_courier:
+            barqraftar_services.cancel_on_barqraftar(order)
+        barqraftar_services.release_shipment_stock_and_deactivate(
+            order, actor_user_id=actor_user_id
+        )
     return _transition(order, "cancelled", actor_user_id=actor_user_id, note=reason)
+
+
+def flag_city_issue(order, note, *, actor_user_id=None):
+    """Moves an order to City Issue with a reason recorded both on the
+    order (issue_note - not shown anywhere in the orders UI today, but read
+    from the order's own Log tab via the status-change note) and the
+    status-change log. Additive for the BarqRaftar integration
+    (integrations/barqraftar/services.py's book_orders) - used when an
+    order's city text doesn't match any BarqRaftar city. Reachable from
+    awaiting_assigning because a push to a courier only happens from there
+    - see ALLOWED_TRANSITIONS."""
+    return _transition(
+        order, "city_issue", actor_user_id=actor_user_id, note=note,
+        extra_fields={"issue_note": (note or "")[:255]},
+    )
+
+
+def mark_returned_by_courier(order, *, reason="", actor_user_id=None):
+    """Moves straight to Returned when a courier integration itself reports
+    the parcel back, from whichever dispatch sub-stage the order is
+    currently sitting in (dispatched/out_for_delivery/attempt/delivered -
+    all reach "returned" directly, see ALLOWED_TRANSITIONS). scan_return
+    can't be reused for this: it looks the order up by order_number itself
+    (this already has the Order instance) and refuses out_for_delivery/
+    attempt, both of which a courier status feed reports routinely.
+    Additive - used only by integrations.barqraftar.services.
+    apply_barqraftar_status; Smartlane's own returned handling
+    (integrations/services.py) is unaffected and unchanged."""
+    return _transition(
+        order, "returned", actor_user_id=actor_user_id, note=reason,
+        extra_fields={"returned_at": timezone.now(), "return_reason": (reason or "")[:255]},
+    )
+
+
+def book_with_courier(order, *, courier_id, tracking_number, actor_user_id=None):
+    """Generic local bookkeeping for a courier integrated directly rather
+    than through Smartlane: courier assignment, the booking_pending
+    transition, and stock consumption - exactly the same atomic block
+    push_order_to_smartlane runs below, minus the outbound booking call
+    (the caller has already made it and already has a real tracking
+    number, unlike Smartlane's fire-and-forget /create). Additive - the
+    only caller today is integrations.barqraftar.services.book_orders."""
+    from wms import services as wms_services
+
+    with transaction.atomic():
+        order = _transition(
+            order, "booking_pending", actor_user_id=actor_user_id,
+            extra_fields={"courier_id": courier_id, "tracking_number": tracking_number},
+        )
+        # force=True: the caller already resolved the stock-shortage
+        # decision before booking with the courier (see book_orders) -
+        # re-checking here would raise on exactly the case just approved.
+        wms_services.consume_for_order(order, force=True, actor_user_id=actor_user_id)
+    return order
 
 
 def push_order_to_smartlane(order, *, actor_user_id=None, force=False):

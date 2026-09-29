@@ -23,6 +23,13 @@ primary_region = "sin"
   # failures were confirmed to be a Smartlane-side warehouse status issue,
   # unrelated to this poller (it reproduced identically with the poller off).
   SMARTLANE_AUTO_POLL = "true"
+  # BarqRaftar's own poller (integrations/barqraftar/poller.py) - same
+  # convention as SMARTLANE_AUTO_POLL just above. NOTE: only turn this on
+  # after migration 0017_barqraftar has actually been applied to the
+  # production database (migrations here are run by hand, not on deploy -
+  # see the Dockerfile) - the poller queries a table that migration
+  # creates.
+  BARQRAFTAR_AUTO_POLL = "true"
   # Smartlane's LIVE Business API root. Deliberately without the business
   # code (bs178998760511) - the client appends /{business_code} itself, taken
   # from SmartlaneBusinessConfig. Local dev keeps the TEST default in

@@ -12,3 +12,7 @@ redis
 channels
 channels-redis
 daphne
+# Merges the per-20-tracking-number PDFs BarqRaftar's print_orders returns
+# into one label PDF - see integrations/barqraftar/views.py's
+# BarqRaftarLabelsView. Not used anywhere else.
+pypdf

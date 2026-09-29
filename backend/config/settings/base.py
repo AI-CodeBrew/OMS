@@ -254,6 +254,16 @@ PUBLIC_BACKEND_URL = env("PUBLIC_BACKEND_URL", default="http://localhost:8000")
 SMARTLANE_AUTO_POLL = env("SMARTLANE_AUTO_POLL", default="false").lower() == "true"
 SMARTLANE_AUTO_POLL_INTERVAL_SECONDS = int(env("SMARTLANE_AUTO_POLL_INTERVAL_SECONDS", default="900"))
 
+# BarqRaftar's own consignment API - a direct integration, separate from
+# (and unrelated to) Smartlane's own routing of some parcels to a courier
+# it also happens to call "BarqRaftar" (see integrations/smartlane_client.py's
+# SUPPORTED_COURIERS). Per their Postman collection.
+BARQRAFTAR_API_BASE_URL = env("BARQRAFTAR_API_BASE_URL", default="https://barqraftar.pk/api/v1")
+# Same reasoning/convention as SMARTLANE_AUTO_POLL just above - off by
+# default so it never fires during local manage.py commands/tests.
+BARQRAFTAR_AUTO_POLL = env("BARQRAFTAR_AUTO_POLL", default="false").lower() == "true"
+BARQRAFTAR_AUTO_POLL_INTERVAL_SECONDS = int(env("BARQRAFTAR_AUTO_POLL_INTERVAL_SECONDS", default="900"))
+
 # Comma-separated client IPs allowed to hit /api/core/admin/*
 ADMIN_IP_ALLOWLIST = env(
     "ADMIN_IP_ALLOWLIST",

@@ -11,6 +11,7 @@ import OrderActionModal from "./OrderActionModal";
 import VerifyDispatchModal from "./VerifyDispatchModal";
 import StockShortageModal from "./StockShortageModal";
 import { ACTIONS_NEEDING_PARAMS, SMARTLANE_LOAD_SHEET_COURIERS } from "./statusConfig";
+import barqraftarService from "../../app/(tenant)/integrations/barq-raftar/_lib/barqraftarService";
 
 const EDITABLE_FIELDS = [
   "customer_name",
@@ -123,6 +124,18 @@ export default function OrderDetailPanel({ orderId, couriers, smartlaneConnected
       setError("");
       ordersService
         .printSmartlaneAirwayBill([orderId])
+        .catch((err) => setError(err.message || "Print failed"))
+        .finally(() => setWorking(false));
+      return;
+    }
+
+    // Same shape as print_airway_bill above - BarqRaftar's own labels
+    // endpoint returns a document directly, not a bulk-action mutation.
+    if (action === "print_barqraftar_labels") {
+      setWorking(true);
+      setError("");
+      barqraftarService
+        .printLabels([orderId])
         .catch((err) => setError(err.message || "Print failed"))
         .finally(() => setWorking(false));
       return;

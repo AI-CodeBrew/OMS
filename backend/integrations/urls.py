@@ -1,8 +1,12 @@
-from django.urls import path
+from django.urls import include, path
 
 from . import views
 
 urlpatterns = [
+    # BarqRaftar's own routes live entirely in integrations/barqraftar/ -
+    # see that package's urls.py. Nothing about Smartlane/Shopify below is
+    # touched by this include.
+    path("barqraftar/", include("integrations.barqraftar.urls")),
     path("shopify/", views.ShopifyConnectionView.as_view(), name="shopify-connection"),
     path("shopify/test/", views.ShopifyTestConnectionView.as_view(), name="shopify-test-connection"),
     path("shopify/sync/", views.ShopifySyncView.as_view(), name="shopify-sync"),

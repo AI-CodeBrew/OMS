@@ -10,16 +10,26 @@ class IntegrationsConfig(AppConfig):
     def ready(self):
         from django.conf import settings
 
-        if not settings.SMARTLANE_AUTO_POLL:
-            return
         # manage.py runserver's autoreloader runs ready() twice (the parent
         # watcher, then the reloaded child that sets RUN_MAIN) - only start
         # in the child so local dev doesn't end up with two poller threads.
         # Production runs a single `daphne` process directly (no runserver,
-        # no autoreloader), where RUN_MAIN is simply never set.
+        # no autoreloader), where RUN_MAIN is simply never set. Checked
+        # once, ahead of either poller below, so both are gated the same
+        # way Smartlane's always was.
         if "RUN_MAIN" in os.environ and os.environ.get("RUN_MAIN") != "true":
             return
 
-        from . import poller
+        if settings.SMARTLANE_AUTO_POLL:
+            from . import poller
 
-        poller.start_background_poller()
+            poller.start_background_poller()
+
+        # Independent flag/thread/module from Smartlane's poller just
+        # above - see integrations/barqraftar/poller.py. Off unless
+        # BARQRAFTAR_AUTO_POLL is set, same convention as Smartlane's own
+        # flag (config/settings/base.py).
+        if settings.BARQRAFTAR_AUTO_POLL:
+            from .barqraftar import poller as barqraftar_poller
+
+            barqraftar_poller.start_background_poller()
