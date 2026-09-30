@@ -79,9 +79,6 @@ export default function SmartlaneBusinessPage() {
   // Approve's inline credentials form - one open at a time.
   const [activateLinkId, setActivateLinkId] = useState(null);
   const [activateForm, setActivateForm] = useState(EMPTY_ACTIVATE_FORM);
-  // Last approve result per link, so a webhook that couldn't be registered
-  // stays explained next to its URL after the list reloads.
-  const [activateResults, setActivateResults] = useState({});
   const [copiedLinkId, setCopiedLinkId] = useState(null);
   // Warehouses aren't part of the store link list response - fetched
   // lazily per link (keyed by link.id) the first time its panel is
@@ -199,14 +196,15 @@ export default function SmartlaneBusinessPage() {
     setError("");
     setSuccess("");
     try {
-      const result = await smartlaneAdminService.activateStoreLink(link.id, {
+      await smartlaneAdminService.activateStoreLink(link.id, {
         api_key: activateForm.api_key.trim(),
         store_warehouse_code: activateForm.store_warehouse_code.trim(),
       });
-      setActivateResults((r) => ({ ...r, [link.id]: result }));
       setActivateLinkId(null);
       setActivateForm(EMPTY_ACTIVATE_FORM);
-      setSuccess(`${link.organization_name} is live on OMS Courier.`);
+      setSuccess(
+        `${link.organization_name} is live on OMS Courier. Add its webhook URL on the Smartlane portal.`,
+      );
       await load();
     } catch (err) {
       setError(err.message || "Failed to approve");
@@ -861,8 +859,7 @@ export default function SmartlaneBusinessPage() {
                       >
                         <p className="text-xs text-slate-500">
                           The API key and warehouse code Smartlane issued for this store. Saving
-                          turns on OMS Courier for {link.organization_name} and registers the
-                          webhook.
+                          turns on OMS Courier for {link.organization_name}.
                         </p>
                         <div className="mt-3 grid gap-3 sm:grid-cols-2">
                           <label className="block text-xs">
@@ -926,14 +923,10 @@ export default function SmartlaneBusinessPage() {
                             "not confirmed yet"
                           )}
                         </p>
-                        {activateResults[link.id]?.webhook_registered ? (
-                          <p className="text-emerald-700">Webhook registered with Smartlane.</p>
-                        ) : activateResults[link.id] ? (
+                        {!link.courier.webhooks_active ? (
                           <p className="text-amber-700">
-                            Webhook wasn&apos;t registered automatically:{" "}
-                            {activateResults[link.id].webhook_error} Paste the URL below into this
-                            store&apos;s Consignment Status and Shipper Advice webhooks on the
-                            Smartlane portal.
+                            Add this URL as the store&apos;s Consignment Status and Shipper Advice
+                            webhooks on the Smartlane portal.
                           </p>
                         ) : null}
                         <div className="flex items-center gap-1.5">

@@ -553,34 +553,6 @@ def send_store_link_to_smartlane(link_id, *, actor_email=""):
 # allowed too - approving again is how the credentials are changed later.
 _ACTIVATABLE_STATUSES = ("pending_approval", "in_review", "in_active", "active")
 
-# Smartlane's portal has two webhooks, "Consignment Status" and "Shipper
-# Advice", both pointed at the same URL (see views.smartlane_shipment_webhook,
-# which tells them apart by payload). These are the API's names for them as
-# best known - Smartlane hasn't confirmed them ("consignment_status" is the
-# activity log's confirmed type), so a rejection here is expected until they
-# do, and the admin page then shows the URL to paste in by hand.
-_WEBHOOK_TYPES = ("consignment_status", "shipper_advice")
-
-
-def _register_store_webhooks(link, url):
-    """Points the store's Smartlane webhooks at `url`. Returns "" when
-    registered, otherwise why not - never raises, since a missing webhook
-    must not undo an approval (the poller keeps statuses moving anyway)."""
-    if not link.smartlane_store_id:
-        return "No Smartlane store ID yet - send the request to Smartlane and sync first."
-    config = SmartlaneBusinessConfig.load()
-    if not config.is_configured:
-        return "The Smartlane business account isn't configured."
-    for webhook_type in _WEBHOOK_TYPES:
-        try:
-            business_client.register_webhook(config, link.smartlane_store_id, webhook_type, url)
-        except SmartlaneAPIError as exc:
-            return f"Smartlane rejected the {webhook_type} webhook: {exc}"
-        except Exception as exc:  # noqa: BLE001 - see docstring
-            logger.warning("smartlane webhook register failed for %s", link.id, exc_info=True)
-            return f"Could not reach Smartlane to register the {webhook_type} webhook: {exc}"
-    return ""
-
 
 def activate_store_link(
     link_id, *, api_key="", warehouse_code="", build_absolute_uri=None, actor_email=""
@@ -590,7 +562,9 @@ def activate_store_link(
     Stores the API key and warehouse code the platform team got from
     Smartlane in the org's OMS Courier SmartlaneConnection - separate from
     any Smartlane account the org connected itself, so either can be used
-    for booking - then points the store's webhooks at it.
+    for booking. The webhook is not registered from here: the admin page
+    shows the connection's webhook URL for the super admin to add on
+    Smartlane's portal.
 
     Independent of the KYC hand-off: the store may have been opened on
     Smartlane's portal directly. Blank fields keep what is already stored,
@@ -629,11 +603,6 @@ def activate_store_link(
     link.review_note = ""
     link.save()
 
-    path = connection.webhook_path
-    webhook_error = _register_store_webhooks(
-        link, build_absolute_uri(path) if build_absolute_uri else path
-    )
-
     _audit(
         link,
         "integrations.smartlane.store_activated",
@@ -644,8 +613,6 @@ def activate_store_link(
         "link": _serialize_link(
             link, include_org=True, connection=connection, build_absolute_uri=build_absolute_uri
         ),
-        "webhook_registered": not webhook_error,
-        "webhook_error": webhook_error,
     }
 
 

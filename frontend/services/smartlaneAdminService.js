@@ -58,8 +58,8 @@ class SmartlaneAdminService {
     });
   }
 
-  // Resolves with {link, webhook_registered, webhook_error} - a webhook
-  // that couldn't be registered doesn't fail the approval.
+  // Resolves with {link}. Nothing is registered with Smartlane - the
+  // super admin adds link.courier.webhook_url on Smartlane's portal.
   activateStoreLink(id, { api_key, store_warehouse_code }) {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneStoreActivate(id)}`, {
       method: "POST",
