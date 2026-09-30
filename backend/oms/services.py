@@ -105,14 +105,6 @@ ALLOWED_TRANSITIONS = {
     "returned": set(),
 }
 
-# Additive for the BarqRaftar integration (integrations/barqraftar/) - lets
-# a push to BarqRaftar land an order on City Issue when its city text
-# doesn't match any BarqRaftar city, the same way pending_cc/pending_cod
-# already can via confirm_order(city_ok=False). Does not change what any
-# other status can reach; Smartlane's push has no equivalent city check and
-# is unaffected. See flag_city_issue below.
-ALLOWED_TRANSITIONS["awaiting_assigning"].add("city_issue")
-
 
 class InvalidTransition(Exception):
     pass
@@ -369,21 +361,6 @@ def cancel_order(order, *, reason="", actor_user_id=None, propagate_to_courier=T
             order, actor_user_id=actor_user_id
         )
     return _transition(order, "cancelled", actor_user_id=actor_user_id, note=reason)
-
-
-def flag_city_issue(order, note, *, actor_user_id=None):
-    """Moves an order to City Issue with a reason recorded both on the
-    order (issue_note - not shown anywhere in the orders UI today, but read
-    from the order's own Log tab via the status-change note) and the
-    status-change log. Additive for the BarqRaftar integration
-    (integrations/barqraftar/services.py's book_orders) - used when an
-    order's city text doesn't match any BarqRaftar city. Reachable from
-    awaiting_assigning because a push to a courier only happens from there
-    - see ALLOWED_TRANSITIONS."""
-    return _transition(
-        order, "city_issue", actor_user_id=actor_user_id, note=note,
-        extra_fields={"issue_note": (note or "")[:255]},
-    )
 
 
 def mark_returned_by_courier(order, *, reason="", actor_user_id=None):

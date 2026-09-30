@@ -57,8 +57,8 @@ export default function CitiesTab({ onError, onNotice }) {
 
       <p className="mb-3 text-xs text-slate-500">
         The cities BarqRaftar currently delivers to. When booking, an order's city is matched against
-        these names or their short code (e.g. LHR). An order whose city doesn't match any of them moves
-        to City Issue instead of being booked blind.
+        these names or their short code (e.g. LHR). An order whose city doesn't match any of them is not
+        booked - it stays in Awaiting Assigning so it can go out with another courier.
       </p>
 
       {loading ? (

@@ -12,7 +12,7 @@ local copy, not a shared import - see _catch_up_to_dispatched below.
 
 Every function here takes/returns plain oms.Order instances and calls
 public oms.services functions (book_with_courier, advance_booking_confirmed,
-mark_returned_by_courier, cancel_order, flag_city_issue, ...) - none of it
+mark_returned_by_courier, cancel_order, ...) - none of it
 reaches into oms.services' own private helpers directly except via those.
 """
 
@@ -198,7 +198,7 @@ def get_cities(connection, *, force_refresh=False):
     failed - callers must not treat that as "no cities" (see
     resolve_city_id's docstring and book_orders, which calls this once
     upfront specifically so that failure is reported clearly instead of
-    silently sending every order to City Issue)."""
+    silently reporting every order's city as unserved)."""
     stale = (
         force_refresh
         or not connection.cities_cache
@@ -211,8 +211,8 @@ def get_cities(connection, *, force_refresh=False):
     # {"status": "success", "cities": [{"id", "name", "city_key", "active",
     # "restrict_orders", ...}]} - confirmed live. A city BarqRaftar has
     # switched off (active=0) or restricted (restrict_orders=1) is left out,
-    # so an order for it lands on City Issue instead of a booking BarqRaftar
-    # would refuse.
+    # so an order for it is refused up front (left in Awaiting Assigning)
+    # instead of sent to BarqRaftar only to come back "invalid to_city_id".
     rows = client.fetch_cities(connection.api_key, connection.api_secret)
     cities = []
     for row in rows:
@@ -238,7 +238,7 @@ def resolve_city_id(connection, city_name):
     """Normalised exact match of `city_name` against BarqRaftar's cached
     city list, trying the connection's own alias table first, then the
     small built-in one above. Returns {"id":..., "name":...} or None (no
-    match - the caller sends the order to City Issue instead of guessing).
+    match - the caller refuses the booking instead of guessing).
     Uses whatever is already cached on `connection` - call get_cities()
     once upfront if a fresh list matters; this never triggers its own
     network call, so a per-order loop never re-hits the cities API."""
@@ -387,7 +387,6 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False):
     shortage modal and force-retry work unchanged.
     """
     from oms.models import Courier, Order
-    from oms import services as oms_services
     from wms import services as wms_services
 
     orders_by_id = {
@@ -440,11 +439,18 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False):
 
         city = resolve_city_id(connection, order.city)
         if city is None:
-            note = f"BarqRaftar: no city match for {order.city!r}"
-            oms_services.flag_city_issue(order, note, actor_user_id=actor_user_id)
+            # Left exactly where it is (Awaiting Assigning), per the user's
+            # choice: BarqRaftar only serves a handful of cities, so a miss
+            # usually means "book this one with another courier" (e.g.
+            # Smartlane), not a typo to fix - moving it to City Issue would
+            # just add a resolve step before it could be booked elsewhere.
+            served = ", ".join(c["name"] for c in (connection.cities_cache or []))
             results.append({
                 "order_id": str(order_id), "order_number": order.order_number, "success": False,
-                "error": f"No BarqRaftar city match for {order.city!r} - moved to City Issue.",
+                "error": (
+                    f"BarqRaftar doesn't deliver to {order.city!r} - order left in Awaiting "
+                    f"Assigning, book it with another courier. BarqRaftar cities: {served}."
+                ),
             })
             continue
 
