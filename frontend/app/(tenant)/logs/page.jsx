@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Button from "../../../components/shared/Button";
 import teamService from "../../../services/teamService";
-import useAuthStore from "../../../store/authStore";
+import useAuthStore, { useEffectiveUser } from "../../../store/authStore";
 
 function toLocalInputValue(d) {
   const pad = (n) => String(n).padStart(2, "0");
@@ -13,7 +13,7 @@ function toLocalInputValue(d) {
 
 export default function LogsPage() {
   const router = useRouter();
-  const user = useAuthStore((s) => s.user);
+  const user = useEffectiveUser();
   const hydrated = useAuthStore((s) => s.hydrated);
   const isOrgAdmin = user?.role === "org_admin" || user?.isOrgAdmin === true;
 

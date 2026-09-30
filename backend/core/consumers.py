@@ -8,11 +8,13 @@ whatever it's given.
 """
 
 import logging
+from urllib.parse import unquote
 
 from asgiref.sync import sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 
 from .jwt_utils import InvalidSupabaseToken, decode_supabase_jwt
+from .middleware import resolve_active_org_id
 
 logger = logging.getLogger(__name__)
 
@@ -43,9 +45,14 @@ class OrgOrdersConsumer(AsyncJsonWebsocketConsumer):
             if claims:
                 app_meta = claims.get("app_metadata") or {}
                 user_meta = claims.get("user_metadata") or {}
-                organization_id = app_meta.get("organization_id") or user_meta.get(
-                    "organization_id"
-                )
+                if app_meta.get("role") == "super_admin":
+                    organization_id = await sync_to_async(resolve_active_org_id)(
+                        unquote(params.get("org", ""))
+                    )
+                else:
+                    organization_id = app_meta.get("organization_id") or user_meta.get(
+                        "organization_id"
+                    )
 
         if not organization_id:
             # 4401: unauthorized, mirrors the HTTP 401 this would get on a

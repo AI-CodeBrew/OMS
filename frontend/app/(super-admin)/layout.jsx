@@ -1,15 +1,23 @@
 "use client";
 
+import { useEffect } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import ProtectedRoute from "../../components/shared/ProtectedRoute";
 import authService from "../../services/authService";
+import useAuthStore from "../../store/authStore";
+import { invalidateViewCache } from "../../lib/viewCache";
 
 const NAV = [
   {
     href: "/admin/organizations",
     label: "Organizations",
     match: (path) => path.startsWith("/admin/organizations") || path === "/admin",
+  },
+  {
+    href: "/admin/stores",
+    label: "Stores",
+    match: (path) => path.startsWith("/admin/stores"),
   },
   {
     href: "/admin/smartlane",
@@ -26,6 +34,16 @@ const NAV = [
 function SuperAdminShell({ children }) {
   const router = useRouter();
   const pathname = usePathname();
+  const actingStore = useAuthStore((s) => s.actingStore);
+  const exitStore = useAuthStore((s) => s.exitStore);
+
+  // Reaching the panel (e.g. via browser Back) means we're no longer operating a store.
+  useEffect(() => {
+    if (!actingStore) return;
+    exitStore();
+    invalidateViewCache();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function logout() {
     authService.logout();

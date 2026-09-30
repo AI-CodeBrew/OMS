@@ -12,7 +12,7 @@ import {
   BATCH_ITEM,
   TICKETS_ITEM,
 } from "./moduleNav";
-import useAuthStore from "../../store/authStore";
+import { useEffectiveUser } from "../../store/authStore";
 
 function isItemActive(item, pathname, search) {
   if (!item.href) return false;
@@ -143,7 +143,7 @@ function MenuToggle({ expanded, onToggle }) {
 export default function ModuleSidebar({ activeModule, expanded, onToggle }) {
   const pathname = usePathname();
   const search = useSearchParams();
-  const user = useAuthStore((s) => s.user);
+  const user = useEffectiveUser();
   const isOrgAdmin =
     user?.role === "org_admin" || user?.isOrgAdmin === true || user?.role === "super_admin";
   const items = SIDEBAR_ITEMS[activeModule] || [];

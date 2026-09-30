@@ -5,10 +5,14 @@ import useAuthStore from "../store/authStore";
 // - passed as a query param because a WebSocket handshake can't carry a
 // custom Authorization header the way fetch() can.
 function buildSocketUrl() {
-  const token = useAuthStore.getState().accessToken;
+  const { accessToken: token, user, actingStore } = useAuthStore.getState();
   if (!token) return null;
   const wsBase = apiConfig.baseUrl.replace(/^http/, "ws");
-  return `${wsBase}/ws/orders/?token=${encodeURIComponent(token)}`;
+  const url = `${wsBase}/ws/orders/?token=${encodeURIComponent(token)}`;
+  if (user?.role === "super_admin" && actingStore?.id) {
+    return `${url}&org=${encodeURIComponent(actingStore.id)}`;
+  }
+  return url;
 }
 
 // The backend drops its Redis cache and pushes to every open tab in the

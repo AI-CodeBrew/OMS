@@ -1,6 +1,27 @@
+import { useMemo } from "react";
 import { create } from "zustand";
 
 const STORAGE_KEY = "oms_auth";
+// sessionStorage, so each browser tab can act as a different store.
+const ACTING_STORE_KEY = "oms_acting_store";
+
+function loadActingStore() {
+  try {
+    const raw = window.sessionStorage.getItem(ACTING_STORE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistActingStore(store) {
+  try {
+    if (store) window.sessionStorage.setItem(ACTING_STORE_KEY, JSON.stringify(store));
+    else window.sessionStorage.removeItem(ACTING_STORE_KEY);
+  } catch {
+    // storage unavailable - acting store then lasts only until reload
+  }
+}
 
 function loadPersisted() {
   try {
@@ -37,16 +58,30 @@ export const useAuthStore = create((set, get) => ({
   refreshToken: null,
   user: null,
   hydrated: false,
+  // { id, name, modules } of the store a super admin is currently operating.
+  actingStore: null,
 
   hydrateFromStorage: () => {
     if (typeof window === "undefined" || get().hydrated) return;
     const persisted = loadPersisted();
+    const user = persisted?.user || null;
     set({
       accessToken: persisted?.accessToken || null,
       refreshToken: persisted?.refreshToken || null,
-      user: persisted?.user || null,
+      user,
+      actingStore: user?.role === "super_admin" ? loadActingStore() : null,
       hydrated: true,
     });
+  },
+
+  enterStore: (store) => {
+    persistActingStore(store);
+    set({ actingStore: store });
+  },
+
+  exitStore: () => {
+    persistActingStore(null);
+    set({ actingStore: null });
   },
 
   setSession: ({ accessToken, refreshToken, user }) => {
@@ -57,7 +92,8 @@ export const useAuthStore = create((set, get) => ({
 
   clearSession: () => {
     persist({ accessToken: null });
-    set({ accessToken: null, refreshToken: null, user: null, hydrated: true });
+    persistActingStore(null);
+    set({ accessToken: null, refreshToken: null, user: null, actingStore: null, hydrated: true });
   },
 
   isAuthenticated: () => Boolean(get().accessToken),
@@ -75,5 +111,21 @@ export const useAuthStore = create((set, get) => ({
     return (user.modules || []).includes(moduleKey);
   },
 }));
+
+/** The user as tenant screens should see them: a super admin operating a store acts as its org admin. */
+export function useEffectiveUser() {
+  const user = useAuthStore((s) => s.user);
+  const actingStore = useAuthStore((s) => s.actingStore);
+  return useMemo(() => {
+    if (!user || user.role !== "super_admin" || !actingStore) return user;
+    return {
+      ...user,
+      organization_id: actingStore.id,
+      organization_name: actingStore.name,
+      modules: actingStore.modules || [],
+      isOrgAdmin: true,
+    };
+  }, [user, actingStore]);
+}
 
 export default useAuthStore;

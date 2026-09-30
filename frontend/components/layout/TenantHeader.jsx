@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import Dropdown from "../shared/Dropdown";
 import authService from "../../services/authService";
-import useAuthStore from "../../store/authStore";
+import { useEffectiveUser } from "../../store/authStore";
 import { getVisibleModules } from "./moduleNav";
 
 function BellIcon({ className }) {
@@ -31,13 +31,13 @@ function ChevronIcon({ className }) {
 
 export default function TenantHeader({ activeModule }) {
   const router = useRouter();
-  const user = useAuthStore((s) => s.user);
+  const user = useEffectiveUser();
   const modules = getVisibleModules(user);
   const activeModuleLabel = modules.find((m) => m.key === activeModule)?.label || "Menu";
 
   function logout() {
     authService.logout();
-    router.replace("/login");
+    router.replace(user?.role === "super_admin" ? "/superadmin" : "/login");
   }
 
   return (

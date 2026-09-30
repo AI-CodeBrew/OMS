@@ -6,7 +6,7 @@ import Button from "../../../components/shared/Button";
 import PasswordInput from "../../../components/shared/PasswordInput";
 import { STAFF_MODULE_OPTIONS } from "../../../components/layout/moduleNav";
 import teamService from "../../../services/teamService";
-import useAuthStore from "../../../store/authStore";
+import { useEffectiveUser } from "../../../store/authStore";
 
 function AccountTab({ user }) {
   const [email, setEmail] = useState("");
@@ -466,7 +466,7 @@ function RoleAccessTab() {
 }
 
 export default function SettingsPage() {
-  const user = useAuthStore((s) => s.user);
+  const user = useEffectiveUser();
   const isOrgAdmin =
     user?.role === "org_admin" || user?.isOrgAdmin === true;
   const [tab, setTab] = useState("account");

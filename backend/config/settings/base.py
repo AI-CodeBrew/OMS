@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+from corsheaders.defaults import default_headers as default_cors_headers
 from dotenv import load_dotenv
 
 # backend/config/settings/base.py -> backend/
@@ -214,6 +215,7 @@ REST_FRAMEWORK = {
 
 _cors_origins = env("CORS_ORIGINS", default="http://localhost:3001")
 CORS_ALLOWED_ORIGINS = [o.strip() for o in _cors_origins.split(",") if o.strip()]
+CORS_ALLOW_HEADERS = (*default_cors_headers, "x-act-as-organization")
 
 
 # --- Integrations ---------------------------------------------------------

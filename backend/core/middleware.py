@@ -1,11 +1,32 @@
+import logging
+import uuid
+
 from django.conf import settings
-from django.http import HttpResponseForbidden
+from django.http import HttpResponseForbidden, JsonResponse
 
 from .context import current_is_super_admin, current_organization_id, current_user_id
 from .jwt_utils import InvalidSupabaseToken, decode_supabase_jwt
 
+logger = logging.getLogger(__name__)
+
 # Paths that require an allowlisted client IP (super-admin APIs).
 ADMIN_API_PREFIXES = ("/api/core/admin/",)
+
+ACT_AS_HEADER = "HTTP_X_ACT_AS_ORGANIZATION"
+MUTATING_METHODS = ("POST", "PUT", "PATCH", "DELETE")
+
+
+def resolve_active_org_id(raw):
+    """Returns the org id as a string if `raw` names an active organization, else None."""
+    from .models import Organization
+
+    try:
+        org_id = uuid.UUID(str(raw).strip())
+    except (ValueError, TypeError):
+        return None
+    if not Organization.objects.filter(id=org_id, is_active=True).exists():
+        return None
+    return str(org_id)
 
 
 def get_client_ip(request):
@@ -61,6 +82,7 @@ class TenantMiddleware:
         request.modules = []
         request.auth_claims = None
         request.auth_email = None
+        request.acting_as_org = False
 
         auth_header = request.META.get("HTTP_AUTHORIZATION", "")
         if auth_header.startswith("Bearer "):
@@ -90,12 +112,50 @@ class TenantMiddleware:
                     request.modules = enabled_modules_for_org(request.organization_id)
                 request.auth_claims = claims
 
+        act_as = request.META.get(ACT_AS_HEADER)
+        is_admin_api = request.path.startswith(ADMIN_API_PREFIXES)
+        if act_as and request.is_super_admin and not is_admin_api:
+            org_id = resolve_active_org_id(act_as)
+            if not org_id:
+                return JsonResponse(
+                    {"detail": "Store not found or inactive."}, status=403
+                )
+            from .rbac import enabled_modules_for_org
+
+            request.organization_id = org_id
+            request.acting_as_org = True
+            request.is_org_admin = True
+            request.modules = enabled_modules_for_org(org_id)
+
+        # While acting as a store, the ORM must scope to that store only -
+        # TenantManager returns every org's rows when is_super_admin is set.
         org_token = current_organization_id.set(request.organization_id)
         user_token = current_user_id.set(request.user_id)
-        admin_token = current_is_super_admin.set(request.is_super_admin)
+        admin_token = current_is_super_admin.set(
+            request.is_super_admin and not request.acting_as_org
+        )
         try:
-            return self.get_response(request)
+            response = self.get_response(request)
+            if request.acting_as_org and request.method in MUTATING_METHODS:
+                self._audit_acting_request(request, response)
+            return response
         finally:
             current_organization_id.reset(org_token)
             current_user_id.reset(user_token)
             current_is_super_admin.reset(admin_token)
+
+    @staticmethod
+    def _audit_acting_request(request, response):
+        from .rbac import write_audit_log
+
+        try:
+            write_audit_log(
+                organization_id=request.organization_id,
+                action="super_admin_action",
+                summary=f"Super admin: {request.method} {request.path}",
+                actor_user_id=request.user_id,
+                actor_email=request.auth_email,
+                metadata={"status": getattr(response, "status_code", None)},
+            )
+        except Exception:
+            logger.exception("Failed to write super-admin audit log")

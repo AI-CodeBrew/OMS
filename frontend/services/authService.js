@@ -22,13 +22,16 @@ function buildUser(session) {
 
 class AuthService {
   getAuthHeaders() {
-    const token = useAuthStore.getState().accessToken;
+    const { accessToken: token, user, actingStore } = useAuthStore.getState();
     const headers = {
       "Content-Type": "application/json",
       Accept: "application/json",
     };
     if (token) {
       headers.Authorization = `Bearer ${token}`;
+    }
+    if (user?.role === "super_admin" && actingStore?.id) {
+      headers["X-Act-As-Organization"] = actingStore.id;
     }
     return headers;
   }
