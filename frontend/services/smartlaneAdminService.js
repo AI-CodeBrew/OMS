@@ -51,10 +51,19 @@ class SmartlaneAdminService {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneStores}${qs}`);
   }
 
-  approveStoreLink(id) {
-    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneStoreApprove(id)}`, {
+  sendStoreLinkToSmartlane(id) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneStoreSend(id)}`, {
       method: "POST",
       body: JSON.stringify({}),
+    });
+  }
+
+  // Resolves with {link, webhook_registered, webhook_error} - a webhook
+  // that couldn't be registered doesn't fail the approval.
+  activateStoreLink(id, { api_key, store_warehouse_code }) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneStoreActivate(id)}`, {
+      method: "POST",
+      body: JSON.stringify({ api_key, store_warehouse_code }),
     });
   }
 

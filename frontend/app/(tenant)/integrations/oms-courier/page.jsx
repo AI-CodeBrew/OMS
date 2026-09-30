@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import Button from "../../../../components/shared/Button";
 import integrationsService from "../../../../services/integrationsService";
@@ -8,6 +8,7 @@ import integrationsService from "../../../../services/integrationsService";
 // Mirrors Smartlane's real KYC request shape (from their Postman
 // collection, not the doc's prose field list - the doc omitted city,
 // state and CNIC entirely, and used different field names/order).
+// Nothing on this page names Smartlane - to the org this is OMS Courier.
 const KYC_FIELDS = [
   { key: "name", label: "Name", required: true },
   { key: "logo_url", label: "Logo Url", type: "url", placeholder: "https://…" },
@@ -41,32 +42,44 @@ const STATUS_TONE = {
   pending_approval: "bg-amber-50 text-amber-700",
   in_review: "bg-blue-50 text-blue-700",
   active: "bg-emerald-50 text-emerald-700",
-  approved: "bg-emerald-50 text-emerald-700",
   rejected: "bg-red-50 text-red-700",
   in_active: "bg-slate-100 text-slate-600",
   draft: "bg-slate-100 text-slate-600",
 };
 
-const SHIP_ACTIONS = [
-  { value: "consignment_create", label: "Create consignment" },
-  { value: "consignment_track", label: "Track consignment" },
-  { value: "consignment_cancel", label: "Cancel consignment" },
-  { value: "airway_bill", label: "Airway bill" },
-  { value: "load_sheet", label: "Load sheet" },
-  { value: "shipper_advice_get", label: "Shipper advice (get)" },
-  { value: "shipper_advice_update", label: "Shipper advice (update)" },
-];
+// Our own labels rather than the backend's status_display, which names
+// Smartlane ("In review with Smartlane").
+const STATUS_LABEL = {
+  pending_approval: "Pending approval",
+  in_review: "In review",
+  active: "Active",
+  rejected: "Rejected",
+  in_active: "Inactive",
+  draft: "Draft",
+};
 
 const STATUS_BLURB = {
   pending_approval: "Submitted. Waiting for the platform team to review it.",
-  in_review: "Approved here and sent to Smartlane, who are running their own review.",
-  active: "Live. The platform team has activated your Smartlane store.",
+  in_review: "Your details are being reviewed. The platform team will activate your account once it clears.",
+  active: "Live. Orders you book from the Orders page ship through OMS Courier.",
   rejected: "Not approved. See the reason below, fix it and submit again.",
-  in_active: "Smartlane has this store marked inactive. Contact the platform team.",
+  in_active: "This account is currently inactive. Contact the platform team.",
 };
+
+// Same convention as the Shopify integration page's sync job polling.
+const ACTIVE_JOB_STATUSES = new Set(["pending", "running"]);
 
 const inputClass =
   "w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500";
+
+function StatRow({ label, children }) {
+  return (
+    <div className="flex justify-between gap-4">
+      <span className="text-slate-500">{label}</span>
+      <span className="text-right font-medium text-slate-900">{children}</span>
+    </div>
+  );
+}
 
 export default function OmsCourierPage() {
   const [data, setData] = useState(null);
@@ -75,31 +88,9 @@ export default function OmsCourierPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-
-  // Webhook / warehouse-edit / finance requests - all loaded together,
-  // split by request_type when rendered.
-  const [requests, setRequests] = useState([]);
-  const [requestsLoading, setRequestsLoading] = useState(false);
-  const [requestBusy, setRequestBusy] = useState(false);
-
-  const [webhookForm, setWebhookForm] = useState({ url: "", type: "" });
-
-  const [warehouses, setWarehouses] = useState([]);
-  const [warehousesLoading, setWarehousesLoading] = useState(false);
-  const [warehouseEditId, setWarehouseEditId] = useState(null);
-  const [warehouseForm, setWarehouseForm] = useState({});
-
-  const [financeProducts, setFinanceProducts] = useState(null);
-  const [financeLoading, setFinanceLoading] = useState(false);
-  const [financeCode, setFinanceCode] = useState("");
-
-  const [shipAction, setShipAction] = useState("consignment_track");
-  const [shipStoreOrderIds, setShipStoreOrderIds] = useState("");
-  const [shipStoreOrderId, setShipStoreOrderId] = useState("");
-  const [shipBody, setShipBody] = useState("");
-  const [shipExtra, setShipExtra] = useState({});
-  const [shipBusy, setShipBusy] = useState(false);
-  const [shipResult, setShipResult] = useState(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncJob, setSyncJob] = useState(null);
+  const pollRef = useRef(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -128,175 +119,82 @@ export default function OmsCourierPage() {
 
   const link = data?.link;
   const status = link?.status;
+  const live = Boolean(data?.live);
+  const courier = data?.courier;
+  // The courier side can mark the store active before the platform team
+  // has approved it here with credentials - to the org that's still in review.
+  const displayStatus = live ? "active" : status === "active" ? "in_review" : status;
   // Only these two states are the org's to act on; anything else is with a
   // reviewer and the form is read-only.
   const editable = !status || status === "draft" || status === "rejected";
-  const isLive = status === "active";
 
-  const loadRequests = useCallback(async () => {
-    setRequestsLoading(true);
-    try {
-      const result = await integrationsService.getOmsCourierRequests();
-      setRequests(result.requests || []);
-    } catch (err) {
-      setError(err.message || "Failed to load requests");
-    } finally {
-      setRequestsLoading(false);
+  function stopPolling() {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
     }
-  }, []);
-
-  const loadWarehouses = useCallback(async () => {
-    setWarehousesLoading(true);
-    try {
-      const result = await integrationsService.getOmsCourierWarehouses();
-      setWarehouses(result.warehouses || []);
-    } catch (err) {
-      setError(err.message || "Failed to load warehouses");
-    } finally {
-      setWarehousesLoading(false);
-    }
-  }, []);
-
-  const loadFinanceProducts = useCallback(async () => {
-    setFinanceLoading(true);
-    try {
-      const result = await integrationsService.getOmsCourierFinance();
-      setFinanceProducts(result.products);
-    } catch (err) {
-      setError(err.message || "Failed to load finance products");
-    } finally {
-      setFinanceLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!isLive) return;
-    loadRequests();
-    loadWarehouses();
-    loadFinanceProducts();
-  }, [isLive, loadRequests, loadWarehouses, loadFinanceProducts]);
-
-  async function onSubmitWebhook(e) {
-    e.preventDefault();
-    if (!webhookForm.url.trim() || !webhookForm.type.trim()) {
-      setError("Webhook URL and type are both required.");
-      return;
-    }
-    setRequestBusy(true);
-    setError("");
-    setNotice("");
-    try {
-      await integrationsService.submitOmsCourierRequest("webhook", {
-        url: webhookForm.url.trim(),
-        type: webhookForm.type.trim(),
-      });
-      setNotice("Webhook request submitted. The platform team will review it.");
-      setWebhookForm({ url: "", type: "" });
-      await loadRequests();
-    } catch (err) {
-      setError(err.message || "Failed to submit webhook request");
-    } finally {
-      setRequestBusy(false);
-    }
+    setSyncing(false);
   }
 
-  function onStartWarehouseEdit(wh) {
-    setWarehouseEditId(wh.id);
-    setWarehouseForm({
-      name: wh.name || "",
-      shipper_name: "",
-      email: "",
-      phone: "",
-      address: "",
-      city: "",
-      area: "",
-      zip_code: "",
-      service_type: "",
-      auto_booking: true,
-    });
-  }
-
-  async function onSubmitWarehouseEdit(action) {
-    setRequestBusy(true);
-    setError("");
-    setNotice("");
-    try {
-      await integrationsService.submitOmsCourierRequest("warehouse_edit", {
-        warehouse_id: warehouseEditId,
-        action,
-        ...warehouseForm,
-      });
-      setNotice(action === "revoke" ? "Revoke request submitted." : "Edit request submitted.");
-      setWarehouseEditId(null);
-      await loadRequests();
-    } catch (err) {
-      setError(err.message || "Failed to submit warehouse request");
-    } finally {
-      setRequestBusy(false);
-    }
-  }
-
-  async function onApplyFinance() {
-    if (!financeCode.trim()) {
-      setError("Enter the finance product code to apply for.");
-      return;
-    }
-    setRequestBusy(true);
-    setError("");
-    setNotice("");
-    try {
-      await integrationsService.submitOmsCourierRequest("finance", { product_code: financeCode.trim() });
-      setNotice("Finance application submitted. The platform team will review it.");
-      setFinanceCode("");
-      await loadRequests();
-    } catch (err) {
-      setError(err.message || "Failed to submit finance application");
-    } finally {
-      setRequestBusy(false);
-    }
-  }
-
-  async function onRunShipmentAction() {
-    let params = {};
-    try {
-      if (shipAction === "consignment_create") {
-        params = { body: shipBody.trim() ? JSON.parse(shipBody) : {} };
-      } else if (shipAction === "consignment_track") {
-        params = { store_order_ids: shipStoreOrderIds.split(",").map((s) => s.trim()).filter(Boolean) };
-      } else if (shipAction === "consignment_cancel") {
-        params = { store_order_id: shipStoreOrderId.trim() };
-      } else if (shipAction === "airway_bill") {
-        params = {
-          store_order_ids: shipStoreOrderIds.split(",").map((s) => s.trim()).filter(Boolean),
-          no_of_prints: Number(shipExtra.no_of_prints) || 1,
-        };
-      } else if (shipAction === "load_sheet") {
-        params = {
-          courier: shipExtra.courier || undefined,
-          store_order_ids: shipStoreOrderIds.trim()
-            ? shipStoreOrderIds.split(",").map((s) => s.trim()).filter(Boolean)
-            : undefined,
-          start_date: shipExtra.start_date || undefined,
-          end_date: shipExtra.end_date || undefined,
-        };
-      } else if (shipAction === "shipper_advice_update") {
-        params = { body: shipBody.trim() ? JSON.parse(shipBody) : {} };
+  // Same 2-second polling pattern as the Shopify integration page.
+  function startPolling() {
+    if (pollRef.current) return;
+    setSyncing(true);
+    pollRef.current = setInterval(async () => {
+      try {
+        const job = await integrationsService.getSmartlaneSyncJobStatus();
+        setSyncJob(job);
+        if (!ACTIVE_JOB_STATUSES.has(job.status)) {
+          stopPolling();
+          if (job.status === "completed") {
+            setNotice(`Sync finished: checked ${job.checked_count}, updated ${job.updated_count}.`);
+            await load();
+          } else if (job.status === "failed") {
+            setError(job.error_message || "Sync failed");
+          } else if (job.status === "cancelled") {
+            setNotice(`Sync cancelled — ${job.checked_count} order(s) checked before stopping.`);
+          }
+        }
+      } catch {
+        // Transient poll failure - just try again on the next tick.
       }
-    } catch {
-      setError("Body must be valid JSON.");
-      return;
-    }
+    }, 2000);
+  }
 
-    setShipBusy(true);
+  // Resume polling if a sync was already running (e.g. page refresh mid-sync).
+  useEffect(() => {
+    if (!live) return undefined;
+    integrationsService
+      .getSmartlaneSyncJobStatus()
+      .then((job) => {
+        setSyncJob(job);
+        if (job && ACTIVE_JOB_STATUSES.has(job.status)) startPolling();
+      })
+      .catch(() => {});
+    return () => stopPolling();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live]);
+
+  async function onSyncNow() {
     setError("");
-    setShipResult(null);
+    setNotice("");
     try {
-      const data = await integrationsService.runOmsCourierShipmentAction(shipAction, params);
-      setShipResult(data.result);
+      const job = await integrationsService.syncSmartlane();
+      setSyncJob(job);
+      startPolling();
     } catch (err) {
-      setError(err.message || "Request failed");
-    } finally {
-      setShipBusy(false);
+      setError(err.message || "Failed to start sync");
+    }
+  }
+
+  async function onCancelSync() {
+    try {
+      const job = await integrationsService.cancelSmartlaneSync();
+      setSyncJob(job);
+      stopPolling();
+      setNotice(`Sync cancelled — ${job.checked_count} order(s) checked before stopping.`);
+    } catch (err) {
+      setError(err.message || "Failed to cancel sync");
     }
   }
 
@@ -328,8 +226,8 @@ export default function OmsCourierPage() {
       <div className="mt-3">
         <h1 className="text-[28px] font-semibold leading-8 text-slate-900">OMS Courier</h1>
         <p className="mt-1 text-sm text-slate-500">
-          Book through the platform&apos;s own Smartlane account — no Smartlane signup of your
-          own. Send your business details and the platform team reviews the request.
+          Book shipments through the platform&apos;s own courier account — no separate courier
+          signup needed. Send your business details and the platform team reviews the request.
         </p>
       </div>
 
@@ -346,34 +244,88 @@ export default function OmsCourierPage() {
         <div className="mt-6 rounded-lg border border-surface-border bg-white p-6">
           <p className="text-sm font-medium text-slate-800">Not available yet</p>
           <p className="mt-1 text-sm text-slate-500">
-            The platform hasn&apos;t finished setting up its Smartlane business account. Check
-            back later, or ask the platform team.
+            The platform hasn&apos;t finished setting up OMS Courier. Check back later, or ask
+            the platform team.
           </p>
         </div>
       ) : (
         <>
-          {status ? (
+          {displayStatus ? (
             <div className="mt-6 rounded-lg border border-surface-border bg-white p-5">
-              <div className="flex flex-wrap items-center gap-2">
-                <span
-                  className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                    STATUS_TONE[status] || "bg-slate-100 text-slate-600"
-                  }`}
-                >
-                  {link.status_display}
-                </span>
-                {link.smartlane_store_id ? (
-                  <span className="text-xs text-slate-500">
-                    Store ID <span className="font-mono">{link.smartlane_store_id}</span>
-                  </span>
-                ) : null}
-              </div>
-              <p className="mt-2 text-sm text-slate-600">{STATUS_BLURB[status]}</p>
+              <span
+                className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                  STATUS_TONE[displayStatus] || "bg-slate-100 text-slate-600"
+                }`}
+              >
+                {STATUS_LABEL[displayStatus] || displayStatus}
+              </span>
+              <p className="mt-2 text-sm text-slate-600">{STATUS_BLURB[displayStatus]}</p>
               {status === "rejected" && link.review_note ? (
                 <p className="mt-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
                   <span className="font-medium">Reason:</span> {link.review_note}
                 </p>
               ) : null}
+            </div>
+          ) : null}
+
+          {live && courier ? (
+            <div className="mt-4 rounded-lg border border-surface-border bg-white p-5">
+              <h2 className="text-sm font-semibold text-slate-900">Connection</h2>
+              <div className="mt-3 space-y-2 text-sm">
+                <StatRow label="Warehouse code">
+                  <span className="font-mono">{courier.store_warehouse_code || "—"}</span>
+                </StatRow>
+                <StatRow label="Live tracking updates">
+                  {courier.webhooks_active ? "Active" : "Waiting for the first update"}
+                </StatRow>
+                <StatRow label="Updates received">{courier.events_received_count ?? 0}</StatRow>
+                <StatRow label="Last update">
+                  {courier.last_event_at ? new Date(courier.last_event_at).toLocaleString() : "Never"}
+                </StatRow>
+              </div>
+
+              <div className="mt-4 border-t border-surface-border pt-4">
+                <Button variant="secondary" onClick={onSyncNow} loading={syncing}>
+                  Sync statuses now
+                </Button>
+                <span className="mt-1 block text-xs text-slate-400">
+                  Checks every order still in progress and applies what comes back - tracking
+                  numbers for Booking Pending orders, and delivered / returned outcomes.
+                </span>
+
+                {syncing && syncJob ? (
+                  <div className="mt-2 space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs text-slate-500">
+                        Syncing… {syncJob.checked_count}
+                        {syncJob.total_available != null ? ` of ${syncJob.total_available}` : ""}{" "}
+                        order{syncJob.checked_count === 1 ? "" : "s"} checked
+                        {syncJob.updated_count ? `, ${syncJob.updated_count} updated` : ""}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={onCancelSync}
+                        className="shrink-0 text-xs font-medium text-red-600 hover:underline"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                    {syncJob.total_available ? (
+                      <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+                        <div
+                          className="h-full rounded-full bg-brand-500 transition-all"
+                          style={{
+                            width: `${Math.min(
+                              (syncJob.checked_count / syncJob.total_available) * 100,
+                              100,
+                            )}%`,
+                          }}
+                        />
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
             </div>
           ) : null}
 
@@ -383,7 +335,7 @@ export default function OmsCourierPage() {
                 <div>
                   <h2 className="text-sm font-semibold text-slate-900">Business details</h2>
                   <p className="mt-1 text-xs text-slate-500">
-                    Smartlane needs these to open a store for you.
+                    We need these to set up your courier account.
                   </p>
                 </div>
                 <span className="-rotate-90 shrink-0 text-slate-400 transition-transform group-open:rotate-0">▾</span>
@@ -433,306 +385,6 @@ export default function OmsCourierPage() {
               </div>
             ) : null}
           </form>
-
-          {isLive ? (
-            <>
-              <div className="mt-6 rounded-lg border border-surface-border bg-white p-5">
-                <h2 className="text-sm font-semibold text-slate-900">Webhook</h2>
-                <p className="mt-1 text-xs text-slate-500">
-                  Register or update the webhook Smartlane calls for this store. Submitting sends
-                  it to the platform team for review — nothing reaches Smartlane until approved.
-                </p>
-                <form onSubmit={onSubmitWebhook} className="mt-3 grid gap-3 sm:grid-cols-[1fr_180px_auto] sm:items-end">
-                  <label className="block text-sm">
-                    <span className="mb-1 block text-xs font-medium text-slate-700">Webhook URL</span>
-                    <input
-                      value={webhookForm.url}
-                      onChange={(e) => setWebhookForm({ ...webhookForm, url: e.target.value })}
-                      placeholder="https://…"
-                      className={inputClass}
-                    />
-                  </label>
-                  <label className="block text-sm">
-                    <span className="mb-1 block text-xs font-medium text-slate-700">Type</span>
-                    <input
-                      value={webhookForm.type}
-                      onChange={(e) => setWebhookForm({ ...webhookForm, type: e.target.value })}
-                      placeholder="e.g. status_update"
-                      className={inputClass}
-                    />
-                  </label>
-                  <Button type="submit" loading={requestBusy}>
-                    Submit
-                  </Button>
-                </form>
-                {requests.filter((r) => r.request_type === "webhook").length > 0 ? (
-                  <ul className="mt-4 space-y-2">
-                    {requests
-                      .filter((r) => r.request_type === "webhook")
-                      .map((r) => (
-                        <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                          <span className="text-slate-600">
-                            {r.payload?.type} · {r.payload?.url}
-                          </span>
-                          <span className={`rounded-full px-2 py-0.5 font-medium ${STATUS_TONE[r.status] || "bg-slate-100 text-slate-600"}`}>
-                            {r.status_display}
-                          </span>
-                        </li>
-                      ))}
-                  </ul>
-                ) : null}
-              </div>
-
-              <div className="mt-4 rounded-lg border border-surface-border bg-white p-5">
-                <h2 className="text-sm font-semibold text-slate-900">Warehouses</h2>
-                <p className="mt-1 text-xs text-slate-500">
-                  Request a change or revoke for an already-provisioned warehouse. Also needs
-                  platform-team approval before it reaches Smartlane.
-                </p>
-                {warehousesLoading ? (
-                  <p className="mt-3 text-xs text-slate-500">Loading…</p>
-                ) : warehouses.length === 0 ? (
-                  <p className="mt-3 text-xs text-slate-500">None provisioned yet.</p>
-                ) : (
-                  <ul className="mt-3 space-y-3">
-                    {warehouses.map((wh) => (
-                      <li key={wh.id} className="rounded-md border border-surface-border p-3">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <span className="text-sm text-slate-800">
-                            {wh.name || wh.offering_label}
-                            {wh.smartlane_warehouse_code ? (
-                              <span className="ml-1.5 font-mono text-xs text-slate-500">{wh.smartlane_warehouse_code}</span>
-                            ) : null}
-                          </span>
-                          <div className="flex items-center gap-2">
-                            <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_TONE[wh.status] || "bg-slate-100 text-slate-600"}`}>
-                              {wh.status}
-                            </span>
-                            <Button variant="secondary" onClick={() => onStartWarehouseEdit(wh)}>
-                              Edit
-                            </Button>
-                          </div>
-                        </div>
-
-                        {warehouseEditId === wh.id ? (
-                          <div className="mt-3 space-y-2 border-t border-surface-border pt-3">
-                            <div className="grid gap-2 sm:grid-cols-2">
-                              {[
-                                ["name", "Name"],
-                                ["shipper_name", "Shipper name"],
-                                ["email", "Email"],
-                                ["phone", "Phone"],
-                                ["address", "Address"],
-                                ["city", "City"],
-                                ["area", "Area"],
-                                ["zip_code", "Zip code"],
-                                ["service_type", "Service type (overnight/overland)"],
-                              ].map(([key, label]) => (
-                                <label key={key} className="block text-xs">
-                                  <span className="mb-1 block text-slate-600">{label}</span>
-                                  <input
-                                    value={warehouseForm[key] || ""}
-                                    onChange={(e) => setWarehouseForm({ ...warehouseForm, [key]: e.target.value })}
-                                    className={`${inputClass} text-xs`}
-                                  />
-                                </label>
-                              ))}
-                            </div>
-                            <div className="flex justify-end gap-2">
-                              <Button variant="secondary" onClick={() => setWarehouseEditId(null)}>
-                                Cancel
-                              </Button>
-                              <Button
-                                variant="secondary"
-                                onClick={() => onSubmitWarehouseEdit("revoke")}
-                                loading={requestBusy}
-                              >
-                                Request revoke
-                              </Button>
-                              <Button onClick={() => onSubmitWarehouseEdit("edit")} loading={requestBusy}>
-                                Request edit
-                              </Button>
-                            </div>
-                          </div>
-                        ) : null}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                {requests.filter((r) => r.request_type === "warehouse_edit").length > 0 ? (
-                  <ul className="mt-3 space-y-1">
-                    {requests
-                      .filter((r) => r.request_type === "warehouse_edit")
-                      .map((r) => (
-                        <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                          <span className="text-slate-600">
-                            {r.payload?.action} request
-                            {r.review_note ? <span className="text-red-600"> — {r.review_note}</span> : null}
-                          </span>
-                          <span className={`rounded-full px-2 py-0.5 font-medium ${STATUS_TONE[r.status] || "bg-slate-100 text-slate-600"}`}>
-                            {r.status_display}
-                          </span>
-                        </li>
-                      ))}
-                  </ul>
-                ) : null}
-              </div>
-
-              <div className="mt-4 rounded-lg border border-surface-border bg-white p-5">
-                <h2 className="text-sm font-semibold text-slate-900">Financing</h2>
-                <p className="mt-1 text-xs text-slate-500">
-                  Available finance products for your store. Applying needs platform-team
-                  approval before it reaches Smartlane.
-                </p>
-                {financeLoading ? (
-                  <p className="mt-3 text-xs text-slate-500">Loading…</p>
-                ) : financeProducts ? (
-                  <pre className="mt-3 overflow-x-auto rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-700">
-                    {JSON.stringify(financeProducts, null, 2)}
-                  </pre>
-                ) : null}
-                <div className="mt-3 flex flex-wrap items-end gap-2">
-                  <label className="block text-xs">
-                    <span className="mb-1 block text-slate-600">Product code</span>
-                    <input
-                      value={financeCode}
-                      onChange={(e) => setFinanceCode(e.target.value)}
-                      className={`${inputClass} text-xs`}
-                    />
-                  </label>
-                  <Button onClick={onApplyFinance} loading={requestBusy}>
-                    Apply
-                  </Button>
-                </div>
-                {requests.filter((r) => r.request_type === "finance").length > 0 ? (
-                  <ul className="mt-3 space-y-1">
-                    {requests
-                      .filter((r) => r.request_type === "finance")
-                      .map((r) => (
-                        <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                          <span className="text-slate-600">{r.payload?.product_code}</span>
-                          <span className={`rounded-full px-2 py-0.5 font-medium ${STATUS_TONE[r.status] || "bg-slate-100 text-slate-600"}`}>
-                            {r.status_display}
-                          </span>
-                        </li>
-                      ))}
-                  </ul>
-                ) : null}
-              </div>
-
-              <div className="mt-4 rounded-lg border border-surface-border bg-white p-5">
-                <h2 className="text-sm font-semibold text-slate-900">Shipments</h2>
-                <p className="mt-1 text-xs text-slate-500">
-                  Create, track and cancel consignments, and pull Airway Bill / Load Sheet /
-                  Shipper Advise for this store. Direct — no review step.
-                </p>
-                <div className="mt-3 grid gap-3 sm:grid-cols-[220px_1fr]">
-                  <label className="block text-xs">
-                    <span className="mb-1 block text-slate-600">Action</span>
-                    <select
-                      value={shipAction}
-                      onChange={(e) => {
-                        setShipAction(e.target.value);
-                        setShipResult(null);
-                      }}
-                      className={`${inputClass} text-xs`}
-                    >
-                      {SHIP_ACTIONS.map((a) => (
-                        <option key={a.value} value={a.value}>
-                          {a.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <div className="flex flex-wrap items-end gap-2">
-                    {["consignment_track", "airway_bill", "load_sheet"].includes(shipAction) ? (
-                      <label className="block text-xs">
-                        <span className="mb-1 block text-slate-600">Store order IDs (comma-separated)</span>
-                        <input
-                          value={shipStoreOrderIds}
-                          onChange={(e) => setShipStoreOrderIds(e.target.value)}
-                          placeholder="SLTEST001, SLTEST002"
-                          className={`${inputClass} w-64 text-xs`}
-                        />
-                      </label>
-                    ) : null}
-                    {shipAction === "consignment_cancel" ? (
-                      <label className="block text-xs">
-                        <span className="mb-1 block text-slate-600">Store order ID</span>
-                        <input
-                          value={shipStoreOrderId}
-                          onChange={(e) => setShipStoreOrderId(e.target.value)}
-                          className={`${inputClass} w-48 text-xs`}
-                        />
-                      </label>
-                    ) : null}
-                    {shipAction === "airway_bill" ? (
-                      <label className="block text-xs">
-                        <span className="mb-1 block text-slate-600"># of prints</span>
-                        <input
-                          value={shipExtra.no_of_prints || ""}
-                          onChange={(e) => setShipExtra({ ...shipExtra, no_of_prints: e.target.value })}
-                          className={`${inputClass} w-24 text-xs`}
-                        />
-                      </label>
-                    ) : null}
-                    {shipAction === "load_sheet" ? (
-                      <>
-                        <label className="block text-xs">
-                          <span className="mb-1 block text-slate-600">Courier</span>
-                          <input
-                            value={shipExtra.courier || ""}
-                            onChange={(e) => setShipExtra({ ...shipExtra, courier: e.target.value })}
-                            className={`${inputClass} w-32 text-xs`}
-                          />
-                        </label>
-                        <label className="block text-xs">
-                          <span className="mb-1 block text-slate-600">Start date</span>
-                          <input
-                            type="date"
-                            value={shipExtra.start_date || ""}
-                            onChange={(e) => setShipExtra({ ...shipExtra, start_date: e.target.value })}
-                            className={`${inputClass} text-xs`}
-                          />
-                        </label>
-                        <label className="block text-xs">
-                          <span className="mb-1 block text-slate-600">End date</span>
-                          <input
-                            type="date"
-                            value={shipExtra.end_date || ""}
-                            onChange={(e) => setShipExtra({ ...shipExtra, end_date: e.target.value })}
-                            className={`${inputClass} text-xs`}
-                          />
-                        </label>
-                      </>
-                    ) : null}
-                    {["consignment_create", "shipper_advice_update"].includes(shipAction) ? (
-                      <label className="block w-full text-xs">
-                        <span className="mb-1 block text-slate-600">Body (JSON)</span>
-                        <textarea
-                          rows={3}
-                          value={shipBody}
-                          onChange={(e) => setShipBody(e.target.value)}
-                          placeholder="{}"
-                          className={`${inputClass} w-full font-mono text-xs`}
-                        />
-                      </label>
-                    ) : null}
-                    <Button onClick={onRunShipmentAction} loading={shipBusy}>
-                      Send
-                    </Button>
-                  </div>
-                </div>
-
-                {shipResult ? (
-                  <pre className="mt-3 overflow-x-auto rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-700">
-                    {JSON.stringify(shipResult, null, 2)}
-                  </pre>
-                ) : null}
-              </div>
-            </>
-          ) : null}
         </>
       )}
     </div>

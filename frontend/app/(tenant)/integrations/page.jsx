@@ -39,6 +39,19 @@ function SmartlaneLogo({ className }) {
   );
 }
 
+// Generic on purpose - OMS Courier is the platform's own service, so it
+// doesn't wear the logo of the courier account behind it.
+function OmsCourierLogo({ className }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+      <path d="M2 7h11v9H2z" stroke="#111827" strokeWidth="1.5" strokeLinejoin="round" />
+      <path d="M13 10h4l4 3v3h-8z" stroke="#111827" strokeWidth="1.5" strokeLinejoin="round" />
+      <circle cx="6.5" cy="18" r="1.8" stroke="#111827" strokeWidth="1.5" />
+      <circle cx="17.5" cy="18" r="1.8" stroke="#111827" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
 // Stacked on two lines so the 10-char name still fits inside the 48px tile.
 function BarqRaftarWordmark({ className }) {
   return (
@@ -132,14 +145,14 @@ const INTEGRATIONS = [
   {
     key: "oms_courier",
     name: "OMS Courier",
-    tagline: "Ship through the platform's own Smartlane account - no Smartlane signup needed.",
-    logo: SmartlaneLogo,
+    tagline: "Ship through the platform's own courier account - no separate signup needed.",
+    logo: OmsCourierLogo,
     href: "/integrations/oms-courier",
     live: true,
     features: [
       { label: "Platform-managed Onboarding", done: true },
-      { label: "Create Bookings", done: false },
-      { label: "Real-time Tracking", done: false },
+      { label: "Create Bookings", done: true },
+      { label: "Real-time Tracking", done: true },
     ],
   },
   {
@@ -258,7 +271,17 @@ export default function IntegrationsOverviewPage() {
       .getStatus()
       .then((d) => setConnectedMap((m) => ({ ...m, barq_raftar: Boolean(d.connected) })))
       .catch(() => {});
+    integrationsService
+      .getOmsCourierOnboarding()
+      .then((d) => setConnectedMap((m) => ({ ...m, oms_courier: Boolean(d.live) })))
+      .catch(() => {});
   }, []);
+
+  // An org on OMS Courier is managed by the platform team; the Smartlane
+  // card would expose the courier account behind it.
+  const visibleIntegrations = INTEGRATIONS.filter(
+    (i) => !(i.key === "smartlane" && connectedMap.oms_courier)
+  );
 
   return (
     <div>
@@ -283,7 +306,7 @@ export default function IntegrationsOverviewPage() {
       <h2 className="mb-3 mt-0 text-sm font-semibold text-slate-700">Available Integrations</h2>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {INTEGRATIONS.map((integration) => (
+        {visibleIntegrations.map((integration) => (
           <IntegrationCard
             key={integration.key}
             integration={integration}

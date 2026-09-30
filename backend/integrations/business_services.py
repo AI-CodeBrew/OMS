@@ -17,6 +17,7 @@ from core.rbac import write_audit_log
 
 from .models import (
     SmartlaneBusinessConfig,
+    SmartlaneConnection,
     SmartlaneCourierOffering,
     SmartlaneRequest,
     SmartlaneStoreLink,
@@ -319,7 +320,31 @@ def build_kyc_payload(link):
     return payload
 
 
-def _serialize_link(link, *, include_org=False):
+def _is_live(link, connection):
+    """What OMS Courier means by live: approved here with the API key and
+    warehouse code that booking actually runs on. Smartlane marking the
+    store active is not enough on its own - nothing books without those."""
+    return bool(
+        link and link.status == "active" and connection and connection.is_connected
+    )
+
+
+def _serialize_courier_connection(connection, build_absolute_uri=None):
+    """Super-admin view of the org's courier credentials - the API key is
+    never echoed back, only whether one is stored."""
+    if connection is None:
+        return None
+    path = connection.webhook_path
+    return {
+        "connected": connection.is_connected,
+        "has_api_key": bool(connection.api_key),
+        "store_warehouse_code": connection.store_warehouse_code,
+        "webhook_url": build_absolute_uri(path) if build_absolute_uri else path,
+        "webhooks_active": bool(connection.events_received_count),
+    }
+
+
+def _serialize_link(link, *, include_org=False, connection=None, build_absolute_uri=None):
     data = {
         "id": str(link.id),
         "status": link.status,
@@ -336,13 +361,18 @@ def _serialize_link(link, *, include_org=False):
     if include_org:
         data["organization_id"] = str(link.organization_id)
         data["organization_name"] = link.organization.name
+        data["live"] = _is_live(link, connection)
+        data["courier"] = _serialize_courier_connection(connection, build_absolute_uri)
     return data
 
 
 def get_org_onboarding(organization_id):
-    """What the tenant-facing page renders: their request (if any) plus the
-    catalog they can pick from."""
+    """What the tenant-facing page renders: their request (if any), the
+    catalog they can pick from, and - once live - the connection's status.
+    Nothing here names Smartlane; to the org this is OMS Courier."""
     link = SmartlaneStoreLink.all_objects.filter(organization_id=organization_id).first()
+    connection = SmartlaneConnection.all_objects.filter(organization_id=organization_id).first()
+    live = _is_live(link, connection)
     return {
         "link": _serialize_link(link) if link else None,
         "couriers": [
@@ -351,8 +381,15 @@ def get_org_onboarding(organization_id):
         ],
         # Without a configured business account there is nothing to onboard
         # onto, and the page should say so rather than take a request that
-        # can never be approved.
-        "available": SmartlaneBusinessConfig.load().is_configured,
+        # can never be approved. An org already live keeps working either way.
+        "available": live or SmartlaneBusinessConfig.load().is_configured,
+        "live": live,
+        "courier": {
+            "store_warehouse_code": connection.store_warehouse_code,
+            "webhooks_active": bool(connection.events_received_count),
+            "events_received_count": connection.events_received_count,
+            "last_event_at": connection.last_event_at,
+        } if live else None,
     }
 
 
@@ -426,13 +463,28 @@ def submit_org_onboarding(organization_id, body, *, actor_user_id=None):
     return _serialize_link(link)
 
 
-def list_store_links(status=None):
+def list_store_links(status=None, *, build_absolute_uri=None):
     qs = SmartlaneStoreLink.all_objects.select_related("organization").order_by(
         "-requested_at", "-created_at"
     )
     if status:
         qs = qs.filter(status=status)
-    return [_serialize_link(link, include_org=True) for link in qs]
+    links = list(qs)
+    connections = {
+        c.organization_id: c
+        for c in SmartlaneConnection.all_objects.filter(
+            organization_id__in=[link.organization_id for link in links]
+        )
+    }
+    return [
+        _serialize_link(
+            link,
+            include_org=True,
+            connection=connections.get(link.organization_id),
+            build_absolute_uri=build_absolute_uri,
+        )
+        for link in links
+    ]
 
 
 def _get_link(link_id):
@@ -446,24 +498,24 @@ def _get_link(link_id):
     return link
 
 
-def approve_store_link(link_id, *, actor_email=""):
-    """Send an approved request on to Smartlane's own KYC review.
+def send_store_link_to_smartlane(link_id, *, actor_email=""):
+    """Send a request on to Smartlane's own KYC review.
 
-    Two reviews, so approving here does not make the org live - it moves
-    them to in_review and Smartlane decides. If their call fails the record
-    stays in pending_approval so it can be retried, rather than stranding
-    it in a state that implies it was sent.
+    This does not make the org live - it moves them to in_review and
+    Smartlane decides; activate_store_link is what turns OMS Courier on.
+    If their call fails the record stays in pending_approval so it can be
+    retried, rather than stranding it in a state that implies it was sent.
     """
     link = _get_link(link_id)
     if link.status != "pending_approval":
         raise SmartlaneBusinessError(
-            f"Only requests awaiting approval can be approved (this one is {link.status}).", 409
+            f"Only requests awaiting approval can be sent (this one is {link.status}).", 409
         )
 
     config = SmartlaneBusinessConfig.load()
     if not config.is_configured:
         raise SmartlaneBusinessError(
-            "Configure the Smartlane business account before approving requests."
+            "Configure the Smartlane business account before sending requests."
         )
 
     try:
@@ -487,11 +539,109 @@ def approve_store_link(link_id, *, actor_email=""):
 
     _audit(
         link,
-        "integrations.smartlane.store_approved",
-        f"Approved Smartlane onboarding for {link.organization.name}",
+        "integrations.smartlane.store_sent",
+        f"Sent {link.organization.name}'s KYC to Smartlane",
         actor_email,
     )
     return _serialize_link(link, include_org=True)
+
+
+# Anything past the org's own editing and not turned down. "active" is
+# allowed too - approving again is how the credentials are changed later.
+_ACTIVATABLE_STATUSES = ("pending_approval", "in_review", "in_active", "active")
+
+# Smartlane's portal has two webhooks, "Consignment Status" and "Shipper
+# Advice", both pointed at the same URL (see views.smartlane_shipment_webhook,
+# which tells them apart by payload). These are the API's names for them as
+# best known - Smartlane hasn't confirmed them ("consignment_status" is the
+# activity log's confirmed type), so a rejection here is expected until they
+# do, and the admin page then shows the URL to paste in by hand.
+_WEBHOOK_TYPES = ("consignment_status", "shipper_advice")
+
+
+def _register_store_webhooks(link, url):
+    """Points the store's Smartlane webhooks at `url`. Returns "" when
+    registered, otherwise why not - never raises, since a missing webhook
+    must not undo an approval (the poller keeps statuses moving anyway)."""
+    if not link.smartlane_store_id:
+        return "No Smartlane store ID yet - send the request to Smartlane and sync first."
+    config = SmartlaneBusinessConfig.load()
+    if not config.is_configured:
+        return "The Smartlane business account isn't configured."
+    for webhook_type in _WEBHOOK_TYPES:
+        try:
+            business_client.register_webhook(config, link.smartlane_store_id, webhook_type, url)
+        except SmartlaneAPIError as exc:
+            return f"Smartlane rejected the {webhook_type} webhook: {exc}"
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            logger.warning("smartlane webhook register failed for %s", link.id, exc_info=True)
+            return f"Could not reach Smartlane to register the {webhook_type} webhook: {exc}"
+    return ""
+
+
+def activate_store_link(
+    link_id, *, api_key="", warehouse_code="", build_absolute_uri=None, actor_email=""
+):
+    """Approve an org for OMS Courier.
+
+    Stores the API key and warehouse code the platform team got from
+    Smartlane in the org's SmartlaneConnection - the same record the
+    per-org Smartlane page fills in, so booking, tracking and printing all
+    work unchanged - then points the store's webhooks at it.
+
+    Independent of the KYC hand-off: the store may have been opened on
+    Smartlane's portal directly. Blank fields keep what is already stored,
+    which is also how credentials are changed on an org that is live.
+    """
+    link = _get_link(link_id)
+    if link.status not in _ACTIVATABLE_STATUSES:
+        raise SmartlaneBusinessError(
+            f"This request can't be approved (it is {link.status}).", 409
+        )
+
+    api_key = (api_key or "").strip()
+    warehouse_code = (warehouse_code or "").strip()
+    connection = SmartlaneConnection.all_objects.filter(
+        organization_id=link.organization_id
+    ).first()
+    if not api_key and not (connection and connection.api_key):
+        raise SmartlaneBusinessError("API key is required.")
+    if not warehouse_code and not (connection and connection.store_warehouse_code):
+        raise SmartlaneBusinessError("Warehouse code is required.")
+
+    if connection is None:
+        connection = SmartlaneConnection(organization_id=link.organization_id)
+    if api_key:
+        connection.api_key = api_key
+    if warehouse_code:
+        connection.store_warehouse_code = warehouse_code
+    connection.is_connected = True
+    connection.save()
+
+    link.status = "active"
+    link.reviewed_by_email = actor_email or ""
+    link.reviewed_at = timezone.now()
+    link.review_note = ""
+    link.save()
+
+    path = connection.webhook_path
+    webhook_error = _register_store_webhooks(
+        link, build_absolute_uri(path) if build_absolute_uri else path
+    )
+
+    _audit(
+        link,
+        "integrations.smartlane.store_activated",
+        f"Approved OMS Courier for {link.organization.name}",
+        actor_email,
+    )
+    return {
+        "link": _serialize_link(
+            link, include_org=True, connection=connection, build_absolute_uri=build_absolute_uri
+        ),
+        "webhook_registered": not webhook_error,
+        "webhook_error": webhook_error,
+    }
 
 
 def reject_store_link(link_id, *, note="", actor_email=""):
@@ -601,6 +751,10 @@ def sync_store_links():
         if store_id and link.smartlane_store_id != store_id:
             link.smartlane_store_id = store_id
             changed = True
+        # An org approved here with credentials may go live before Smartlane
+        # finishes its own review - don't pull it back to in_review for that.
+        if link.status == "active" and status == "in_review":
+            status = link.status
         if link.status != status:
             link.status = status
             changed = True
@@ -1014,7 +1168,7 @@ _REQUEST_HANDLERS = {
 
 def approve_request(request_id, *, actor_email=""):
     """Fires the one Smartlane call this request represents. Same failure
-    handling as approve_store_link: a rejected call leaves the row in
+    handling as send_store_link_to_smartlane: a rejected call leaves the row in
     pending_approval so it can be retried, rather than a state implying it
     was sent."""
     req = _get_request(request_id)

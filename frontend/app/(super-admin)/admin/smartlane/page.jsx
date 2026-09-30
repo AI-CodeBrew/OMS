@@ -36,6 +36,10 @@ const API_ACTIONS = [
   { value: "webhook_register", label: "Webhook register" },
 ];
 
+// Mirrors business_services._ACTIVATABLE_STATUSES.
+const ACTIVATABLE_STATUSES = new Set(["pending_approval", "in_review", "in_active", "active"]);
+const EMPTY_ACTIVATE_FORM = { api_key: "", store_warehouse_code: "" };
+
 const LINK_STATUS_TONE = {
   pending_approval: "bg-amber-50 text-amber-700",
   in_review: "bg-blue-50 text-blue-700",
@@ -72,6 +76,13 @@ export default function SmartlaneBusinessPage() {
   const [links, setLinks] = useState([]);
   const [busyLinkId, setBusyLinkId] = useState(null);
   const [syncing, setSyncing] = useState(false);
+  // Approve's inline credentials form - one open at a time.
+  const [activateLinkId, setActivateLinkId] = useState(null);
+  const [activateForm, setActivateForm] = useState(EMPTY_ACTIVATE_FORM);
+  // Last approve result per link, so a webhook that couldn't be registered
+  // stays explained next to its URL after the list reloads.
+  const [activateResults, setActivateResults] = useState({});
+  const [copiedLinkId, setCopiedLinkId] = useState(null);
   // Warehouses aren't part of the store link list response - fetched
   // lazily per link (keyed by link.id) the first time its panel is
   // opened, rather than for every link up front.
@@ -152,11 +163,10 @@ export default function SmartlaneBusinessPage() {
     }
   }
 
-  async function onApproveLink(link) {
+  async function onSendLink(link) {
     if (
       !window.confirm(
-        `Approve ${link.organization_name}? This sends their KYC to Smartlane, who then ` +
-          `run their own review.`,
+        `Send ${link.organization_name}'s KYC to Smartlane? They then run their own review.`,
       )
     ) {
       return;
@@ -165,13 +175,53 @@ export default function SmartlaneBusinessPage() {
     setError("");
     setSuccess("");
     try {
-      await smartlaneAdminService.approveStoreLink(link.id);
+      await smartlaneAdminService.sendStoreLinkToSmartlane(link.id);
       setSuccess(`Sent ${link.organization_name} to Smartlane for review.`);
+      await load();
+    } catch (err) {
+      setError(err.message || "Failed to send to Smartlane");
+    } finally {
+      setBusyLinkId(null);
+    }
+  }
+
+  function onOpenActivate(link) {
+    setActivateLinkId(link.id);
+    setActivateForm({
+      api_key: "",
+      store_warehouse_code: link.courier?.store_warehouse_code || "",
+    });
+  }
+
+  async function onActivateLink(e, link) {
+    e.preventDefault();
+    setBusyLinkId(link.id);
+    setError("");
+    setSuccess("");
+    try {
+      const result = await smartlaneAdminService.activateStoreLink(link.id, {
+        api_key: activateForm.api_key.trim(),
+        store_warehouse_code: activateForm.store_warehouse_code.trim(),
+      });
+      setActivateResults((r) => ({ ...r, [link.id]: result }));
+      setActivateLinkId(null);
+      setActivateForm(EMPTY_ACTIVATE_FORM);
+      setSuccess(`${link.organization_name} is live on OMS Courier.`);
       await load();
     } catch (err) {
       setError(err.message || "Failed to approve");
     } finally {
       setBusyLinkId(null);
+    }
+  }
+
+  async function onCopyWebhookUrl(link) {
+    try {
+      await navigator.clipboard.writeText(link.courier?.webhook_url || "");
+      setCopiedLinkId(link.id);
+      setTimeout(() => setCopiedLinkId(null), 2000);
+    } catch {
+      setError("Couldn't copy - select the URL and copy it manually.");
     }
   }
 
@@ -722,8 +772,9 @@ export default function SmartlaneBusinessPage() {
               <div>
                 <h2 className="text-sm font-semibold text-slate-800">Onboarding requests</h2>
                 <p className="mt-0.5 text-xs text-slate-500">
-                  Approving sends the organization&apos;s KYC to Smartlane, who then run their
-                  own review before the store goes live.
+                  Send to Smartlane submits the organization&apos;s KYC for Smartlane&apos;s own
+                  review. Approve turns on OMS Courier for them with the API key and warehouse
+                  code you enter.
                 </p>
               </div>
               <Button variant="secondary" onClick={onSyncStores} loading={syncing}>
@@ -772,24 +823,136 @@ export default function SmartlaneBusinessPage() {
                         ) : null}
                       </div>
 
-                      {link.status === "pending_approval" ? (
-                        <div className="flex shrink-0 items-center gap-2">
+                      <div className="flex shrink-0 flex-wrap items-center gap-2">
+                        {link.status === "pending_approval" ? (
+                          <>
+                            <Button
+                              variant="secondary"
+                              onClick={() => onRejectLink(link)}
+                              disabled={busyLinkId === link.id}
+                            >
+                              Reject
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              onClick={() => onSendLink(link)}
+                              disabled={busyLinkId === link.id}
+                            >
+                              Send to Smartlane
+                            </Button>
+                          </>
+                        ) : null}
+                        {ACTIVATABLE_STATUSES.has(link.status) && activateLinkId !== link.id ? (
                           <Button
-                            variant="secondary"
-                            onClick={() => onRejectLink(link)}
+                            variant={link.live ? "secondary" : "primary"}
+                            onClick={() => onOpenActivate(link)}
                             disabled={busyLinkId === link.id}
                           >
-                            Reject
+                            {link.live ? "Update credentials" : "Approve"}
                           </Button>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    {activateLinkId === link.id ? (
+                      <form
+                        onSubmit={(e) => onActivateLink(e, link)}
+                        className="mt-3 rounded-lg border border-surface-border bg-slate-50/60 p-3"
+                      >
+                        <p className="text-xs text-slate-500">
+                          The API key and warehouse code Smartlane issued for this store. Saving
+                          turns on OMS Courier for {link.organization_name} and registers the
+                          webhook.
+                        </p>
+                        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                          <label className="block text-xs">
+                            <span className="mb-1 block font-medium text-slate-700">API key</span>
+                            <PasswordInput
+                              required={!link.courier?.has_api_key}
+                              placeholder={
+                                link.courier?.has_api_key
+                                  ? "Leave blank to keep the current key"
+                                  : "smln_..."
+                              }
+                              value={activateForm.api_key}
+                              onChange={(e) =>
+                                setActivateForm((f) => ({ ...f, api_key: e.target.value }))
+                              }
+                            />
+                          </label>
+                          <label className="block text-xs">
+                            <span className="mb-1 block font-medium text-slate-700">
+                              Warehouse code
+                            </span>
+                            <input
+                              required
+                              value={activateForm.store_warehouse_code}
+                              onChange={(e) =>
+                                setActivateForm((f) => ({
+                                  ...f,
+                                  store_warehouse_code: e.target.value,
+                                }))
+                              }
+                              className={`${inputClass} text-sm`}
+                            />
+                          </label>
+                        </div>
+                        <div className="mt-3 flex justify-end gap-2">
                           <Button
-                            onClick={() => onApproveLink(link)}
-                            loading={busyLinkId === link.id}
+                            variant="secondary"
+                            onClick={() => setActivateLinkId(null)}
+                            disabled={busyLinkId === link.id}
                           >
-                            Approve
+                            Cancel
+                          </Button>
+                          <Button type="submit" loading={busyLinkId === link.id}>
+                            {link.live ? "Save" : "Approve"}
                           </Button>
                         </div>
-                      ) : null}
-                    </div>
+                      </form>
+                    ) : null}
+
+                    {link.live && link.courier ? (
+                      <div className="mt-2 space-y-1.5 text-xs">
+                        <p className="text-slate-500">
+                          Warehouse{" "}
+                          <span className="font-mono text-slate-700">
+                            {link.courier.store_warehouse_code || "—"}
+                          </span>{" "}
+                          · Webhook{" "}
+                          {link.courier.webhooks_active ? (
+                            <span className="font-medium text-emerald-700">receiving updates</span>
+                          ) : (
+                            "not confirmed yet"
+                          )}
+                        </p>
+                        {activateResults[link.id]?.webhook_registered ? (
+                          <p className="text-emerald-700">Webhook registered with Smartlane.</p>
+                        ) : activateResults[link.id] ? (
+                          <p className="text-amber-700">
+                            Webhook wasn&apos;t registered automatically:{" "}
+                            {activateResults[link.id].webhook_error} Paste the URL below into this
+                            store&apos;s Consignment Status and Shipper Advice webhooks on the
+                            Smartlane portal.
+                          </p>
+                        ) : null}
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            readOnly
+                            value={link.courier.webhook_url || ""}
+                            onFocus={(e) => e.target.select()}
+                            className="w-full truncate rounded-md border border-surface-border bg-white px-2 py-1.5 text-xs text-slate-600 outline-none"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => onCopyWebhookUrl(link)}
+                            className="shrink-0 rounded-md border border-surface-border bg-white px-2 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                          >
+                            {copiedLinkId === link.id ? "Copied" : "Copy"}
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
 
                     <details className="mt-2">
                       <summary className="cursor-pointer text-xs text-slate-400 hover:text-slate-600">

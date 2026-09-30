@@ -124,11 +124,13 @@ class SmartlaneStoreLink(TenantScopedModel):
     """One organization's onboarding onto the platform's Smartlane business
     account, and the store it becomes.
 
-    Two review gates in sequence, which is why there are more statuses than
-    feels necessary. First the super admin approves the request internally
-    (pending_approval -> in_review or rejected); only then is the KYC sent
-    to Smartlane, who run their own review before the store goes live
-    (in_review -> active). Nothing here books anything until active.
+    Two review gates, which is why there are more statuses than feels
+    necessary. The super admin can send the KYC on to Smartlane, who run
+    their own review (pending_approval -> in_review), or reject it. The org
+    goes active when the super admin approves it with the API key and
+    warehouse code booking runs on (see business_services.
+    activate_store_link) - with or without that Smartlane step. Nothing
+    here books anything until active.
 
     Tenant-scoped so an org sees only its own request. The catalog it
     references (SmartlaneCourierOffering) is platform-level, hence keys in
@@ -384,6 +386,10 @@ class SmartlaneConnection(TenantScopedModel):
 
     def __str__(self):
         return f"Smartlane ({self.organization_id})"
+
+    @property
+    def webhook_path(self):
+        return f"/api/integrations/smartlane/webhook/{self.webhook_token}/"
 
 
 class SmartlaneSyncJob(TenantScopedModel):

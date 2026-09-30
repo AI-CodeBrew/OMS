@@ -48,7 +48,7 @@ class SmartlaneConnectionSerializer(serializers.ModelSerializer):
 
     def get_webhook_url(self, connection):
         request = self.context.get("request")
-        path = f"/api/integrations/smartlane/webhook/{connection.webhook_token}/"
+        path = connection.webhook_path
         return request.build_absolute_uri(path) if request else path
 
     def get_webhooks_active(self, connection):
