@@ -267,11 +267,11 @@ class SmartlaneConnectionView(APIView):
 
     def post(self, request):
         api_key = (request.data.get("api_key") or "").strip()
-        webhook_secret = (request.data.get("webhook_secret") or "").strip()
         warehouse_code = (request.data.get("store_warehouse_code") or "").strip()
-        if not webhook_secret:
+        existing = SmartlaneConnection.objects.filter(organization_id=request.organization_id).first()
+        if not api_key and not (existing and existing.api_key):
             return Response(
-                {"detail": "webhook_secret is required"}, status=http_status.HTTP_400_BAD_REQUEST
+                {"detail": "api_key is required"}, status=http_status.HTTP_400_BAD_REQUEST
             )
 
         connection, _ = SmartlaneConnection.objects.update_or_create(
@@ -283,10 +283,9 @@ class SmartlaneConnectionView(APIView):
                 # "erase it". Without this, re-saving the form to change the
                 # warehouse code silently wiped the API key.
                 **({"api_key": api_key} if api_key else {}),
-                "webhook_secret": webhook_secret,
                 # Only overwrite if a value was actually sent, so re-saving
-                # the api_key/webhook_secret from the connect form doesn't
-                # blank out a warehouse code set earlier via patch().
+                # the api_key from the connect form doesn't blank out a
+                # warehouse code set earlier via patch().
                 **({"store_warehouse_code": warehouse_code} if warehouse_code else {}),
                 "is_connected": True,
             },
@@ -455,31 +454,17 @@ class SmartlaneCityListView(APIView):
         return Response(data)
 
 
-def _verify_smartlane_signature(raw_body, secret, header_value):
-    """True if the signature is present AND correct. Absence is handled
-    by the caller, not here - Smartlane's own webhook builder (confirmed
-    from a real screenshot of it) has no field to configure a custom
-    signature header at all, so requiring one would reject every request
-    Smartlane is actually capable of sending."""
-    if not secret or not header_value:
-        return False
-    computed = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(computed, header_value)
-
-
 @csrf_exempt
 @require_POST
 def smartlane_shipment_webhook(request, token):
     """`token` (from the URL, see SmartlaneConnectionSerializer.
-    get_webhook_url) is the primary authentication here: it's an
+    get_webhook_url) is the only authentication here: it's an
     unguessable per-org UUID embedded in the callback URL itself, which
     is what actually stands in for "this request came from our Smartlane
     account" - the same shape Stripe/GitHub-style HMAC signatures serve,
     just carried in the URL instead of a header because Smartlane's own
-    webhook builder has no field to attach a custom header/signature.
-    webhook_secret is honoured if Smartlane ever does send a signature
-    (kept for that case, and for manual/test posts that set one), but
-    isn't required - only rejected if it's present and WRONG."""
+    webhook builder (confirmed from a real screenshot of it) has no field
+    to attach a custom header/signature."""
     logger.info("smartlane webhook received: token=%s bytes=%s from=%s",
                 token, len(request.body or b""), get_client_ip(request) or "?")
     logger.debug("smartlane webhook raw body: %s", (request.body or b"")[:2000])
@@ -489,12 +474,6 @@ def smartlane_shipment_webhook(request, token):
     except SmartlaneConnection.DoesNotExist:
         logger.warning("smartlane webhook REJECTED: no connected account for token %s", token)
         return JsonResponse({"detail": "Unknown or disconnected account"}, status=404)
-
-    signature = request.META.get("HTTP_X_SMARTLANE_SIGNATURE")
-    if signature and not _verify_smartlane_signature(request.body, connection.webhook_secret, signature):
-        logger.warning("smartlane webhook REJECTED for org %s: bad signature",
-                       connection.organization_id)
-        return JsonResponse({"detail": "Invalid signature"}, status=401)
 
     try:
         payload = json.loads(request.body)

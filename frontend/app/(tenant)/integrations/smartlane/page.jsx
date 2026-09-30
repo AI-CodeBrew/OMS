@@ -6,7 +6,7 @@ import integrationsService from "../../../../services/integrationsService";
 import Button from "../../../../components/shared/Button";
 import PasswordInput from "../../../../components/shared/PasswordInput";
 
-const EMPTY_FORM = { api_key: "", webhook_secret: "", store_warehouse_code: "" };
+const EMPTY_FORM = { api_key: "", store_warehouse_code: "" };
 // Same convention as the Shopify integration page's sync job polling.
 const ACTIVE_JOB_STATUSES = new Set(["pending", "running"]);
 
@@ -495,9 +495,8 @@ export default function SmartlaneIntegrationPage() {
             {connected ? "Update Smartlane Credentials" : "Connect Smartlane"}
           </h2>
           <p className="mt-1 text-sm text-slate-500">
-            Smartlane pushes shipment status updates (picked, dispatched, delivered, returned) to
-            this system in real time via webhook — orders update automatically without any manual
-            syncing.
+            Your Smartlane API key and warehouse code are all that&apos;s needed to book shipments,
+            fetch tracking, and print documents.
           </p>
 
           <form onSubmit={onConnect} className="mt-4 space-y-4">
@@ -527,21 +526,6 @@ export default function SmartlaneIntegrationPage() {
               />
               <span className="mt-1 block text-xs text-slate-400">
                 From Smartlane&apos;s Store &gt; Warehouse section - required before any booking.
-              </span>
-            </label>
-
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium text-slate-700">
-                Webhook Secret <span className="text-red-500">*</span>
-              </span>
-              <PasswordInput
-                required
-                value={form.webhook_secret}
-                onChange={(e) => setForm((f) => ({ ...f, webhook_secret: e.target.value }))}
-              />
-              <span className="mt-1 block text-xs text-slate-400">
-                Used to verify that incoming webhook calls really came from Smartlane. Set the same
-                secret on both sides.
               </span>
             </label>
 

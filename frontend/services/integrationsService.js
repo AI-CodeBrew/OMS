@@ -163,11 +163,11 @@ class IntegrationsService {
     return data;
   }
 
-  async connectSmartlane({ api_key, webhook_secret, store_warehouse_code }) {
+  async connectSmartlane({ api_key, store_warehouse_code }) {
     const response = await fetch(`${apiConfig.baseUrl}${SMARTLANE_BASE}/`, {
       method: "POST",
       headers: authService.getAuthHeaders(),
-      body: JSON.stringify({ api_key, webhook_secret, store_warehouse_code }),
+      body: JSON.stringify({ api_key, store_warehouse_code }),
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.detail || "Failed to connect Smartlane");
