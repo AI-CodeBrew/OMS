@@ -6,7 +6,6 @@ import barqraftarService from "../_lib/barqraftarService";
 
 export default function SettingsCard({ status, onChanged, onError, onNotice }) {
   const [form, setForm] = useState({
-    create_pickup_request: true,
     default_weight_grams: 500,
     label_format: "a4",
   });
@@ -14,11 +13,10 @@ export default function SettingsCard({ status, onChanged, onError, onNotice }) {
 
   useEffect(() => {
     setForm({
-      create_pickup_request: Boolean(status.create_pickup_request),
       default_weight_grams: status.default_weight_grams ?? 500,
       label_format: status.label_format || "a4",
     });
-  }, [status.create_pickup_request, status.default_weight_grams, status.label_format]);
+  }, [status.default_weight_grams, status.label_format]);
 
   async function onSave(e) {
     e.preventDefault();
@@ -40,7 +38,7 @@ export default function SettingsCard({ status, onChanged, onError, onNotice }) {
       <h2 className="text-sm font-semibold text-slate-900">Booking Settings</h2>
 
       <div>
-        <div className="mb-1 text-xs font-medium text-slate-600">Default pickup address</div>
+        <div className="mb-1 text-xs font-medium text-slate-600">Active pickup address</div>
         {status.pickup_address_label || status.pickup_address_id ? (
           <p className="text-sm text-slate-800">
             {status.pickup_address_label || `Address #${status.pickup_address_id}`}
@@ -50,20 +48,14 @@ export default function SettingsCard({ status, onChanged, onError, onNotice }) {
           </p>
         ) : (
           <p className="text-sm text-amber-600">
-            Not set - required before booking. Pick one from the Pickup Addresses tab.
+            Not set - required before booking. Set one as active on the Pickup Addresses tab.
           </p>
         )}
+        <p className="mt-1 text-xs text-slate-500">
+          Every booking goes out from this address, with one BarqRaftar pickup request per booking
+          (up to 25 orders each).
+        </p>
       </div>
-
-      <label className="flex items-center justify-between text-sm">
-        <span className="text-slate-700">Create a pickup request when booking</span>
-        <input
-          type="checkbox"
-          checked={form.create_pickup_request}
-          onChange={(e) => setForm((f) => ({ ...f, create_pickup_request: e.target.checked }))}
-          className="h-4 w-4 rounded border-surface-border"
-        />
-      </label>
 
       <label className="block">
         <span className="mb-1 block text-xs font-medium text-slate-600">Default weight (grams)</span>

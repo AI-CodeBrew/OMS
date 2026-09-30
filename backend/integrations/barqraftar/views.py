@@ -91,7 +91,7 @@ class BarqRaftarConnectionView(APIView):
             return Response({"detail": "BarqRaftar is not connected"}, status=http_status.HTTP_404_NOT_FOUND)
 
         fields = []
-        for key in ("create_pickup_request", "default_weight_grams", "label_format"):
+        for key in ("default_weight_grams", "label_format"):
             if key in request.data:
                 setattr(connection, key, request.data[key])
                 fields.append(key)
@@ -146,9 +146,7 @@ class BarqRaftarStatusView(APIView):
             organization_id=request.organization_id, is_connected=True
         ).first()
         connected = bool(connection)
-        ready_to_book = bool(
-            connected and (not connection.create_pickup_request or connection.pickup_address_id)
-        )
+        ready_to_book = bool(connected and connection.pickup_address_id and connection.from_city_id)
         return Response(
             BarqRaftarStatusSerializer({"connected": connected, "ready_to_book": ready_to_book}).data
         )
@@ -249,7 +247,7 @@ class BarqRaftarPickupAddressesView(APIView):
             addresses = client.list_pickup_addresses(connection.api_key, connection.api_secret)
         except BarqRaftarAPIError as exc:
             return Response({"detail": str(exc)}, status=http_status.HTTP_502_BAD_GATEWAY)
-        return Response({"addresses": addresses, "default_id": connection.pickup_address_id})
+        return Response({"addresses": addresses, "active_id": connection.pickup_address_id})
 
     def post(self, request):
         connection = BarqRaftarConnection.objects.filter(

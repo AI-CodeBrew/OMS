@@ -710,6 +710,15 @@ class OrderViewSet(viewsets.ModelViewSet):
             )
             return Response({"results": results})
 
+        # Same idea: one BarqRaftar status-change call for all selected
+        # orders (Pending -> Awaiting Pickup on BarqRaftar's side only; the
+        # OMS status itself doesn't change), same per-order result shape.
+        if action_name == "barqraftar_ready_for_pickup":
+            from integrations.barqraftar import services as barqraftar_services
+
+            results = barqraftar_services.mark_ready_for_pickup(request.organization_id, order_ids)
+            return Response({"results": results})
+
         handler = BULK_ACTIONS.get(action_name)
         if not handler:
             return Response(

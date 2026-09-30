@@ -24,7 +24,7 @@ export default function PickupAddressesTab({ status, onChanged, onError, onNotic
   const [form, setForm] = useState(EMPTY_FORM);
   const [showForm, setShowForm] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [settingDefaultId, setSettingDefaultId] = useState(null);
+  const [settingActiveId, setSettingActiveId] = useState(null);
 
   async function load() {
     setLoading(true);
@@ -59,7 +59,7 @@ export default function PickupAddressesTab({ status, onChanged, onError, onNotic
     onError("");
     try {
       await barqraftarService.savePickupAddress({ ...form, city_name: cityName(form.city_id) });
-      onNotice(form.set_default ? "Pickup address added and set as default." : "Pickup address added.");
+      onNotice(form.set_default ? "Pickup address added and set as active." : "Pickup address added.");
       setForm(EMPTY_FORM);
       setShowForm(false);
       await load();
@@ -71,24 +71,24 @@ export default function PickupAddressesTab({ status, onChanged, onError, onNotic
     }
   }
 
-  async function onSetDefault(row) {
-    setSettingDefaultId(row.id);
+  async function onSetActive(row) {
+    setSettingActiveId(row.id);
     onError("");
     try {
       // The origin city (from_city_id) every booking needs comes from the
-      // default pickup address - so it's saved in the same breath.
+      // active pickup address - so it's saved in the same breath.
       await barqraftarService.updateSettings({
         pickup_address_id: String(row.id),
         pickup_address_label: row.name || row.address || "",
         from_city_id: String(row.city_id ?? row.city?.id ?? ""),
         from_city_name: row.city?.name || cityName(row.city_id),
       });
-      onNotice("Default pickup address updated.");
+      onNotice("Active pickup address updated - new bookings go out from here.");
       onChanged();
     } catch (err) {
-      onError(err.message || "Failed to set default pickup address");
+      onError(err.message || "Failed to set active pickup address");
     } finally {
-      setSettingDefaultId(null);
+      setSettingActiveId(null);
     }
   }
 
@@ -168,7 +168,7 @@ export default function PickupAddressesTab({ status, onChanged, onError, onNotic
               onChange={(e) => setForm((f) => ({ ...f, set_default: e.target.checked }))}
               className="h-4 w-4 rounded border-surface-border"
             />
-            Make this the default pickup address
+            Make this the active pickup address
           </label>
           <Button type="submit" loading={saving}>
             Save Address
@@ -183,7 +183,7 @@ export default function PickupAddressesTab({ status, onChanged, onError, onNotic
       ) : (
         <ul className="divide-y divide-surface-border">
           {addresses.map((row) => {
-            const isDefault = String(row.id) === String(status.pickup_address_id);
+            const isActive = String(row.id) === String(status.pickup_address_id);
             return (
               <li key={row.id} className="flex items-center justify-between gap-3 py-3">
                 <div>
@@ -201,17 +201,17 @@ export default function PickupAddressesTab({ status, onChanged, onError, onNotic
                     </div>
                   ) : null}
                 </div>
-                {isDefault ? (
+                {isActive ? (
                   <span className="rounded-full bg-green-100 px-2 py-0.5 text-[11px] font-medium text-green-700">
-                    Default
+                    Active
                   </span>
                 ) : (
                   <Button
                     variant="secondary"
-                    loading={settingDefaultId === row.id}
-                    onClick={() => onSetDefault(row)}
+                    loading={settingActiveId === row.id}
+                    onClick={() => onSetActive(row)}
                   >
-                    Set as default
+                    Set as active
                   </Button>
                 )}
               </li>

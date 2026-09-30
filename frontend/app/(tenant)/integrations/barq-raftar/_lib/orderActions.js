@@ -1,3 +1,14 @@
+// Tells BarqRaftar the parcels are packed and ready to collect (their
+// status Pending -> Awaiting Pickup). Needs no params and goes through the
+// normal bulk-action endpoint (oms/views.py special-cases it), so the
+// orders page / order detail panel need no extra handling for it - errors
+// show up in the usual failed-orders banner.
+const READY_FOR_PICKUP = {
+  key: "barqraftar_ready_for_pickup",
+  action: "barqraftar_ready_for_pickup",
+  label: "Ready for BarqRaftar pickup",
+};
+
 // BarqRaftar's own per-status action entries, kept separate from
 // components/orders/statusConfig.js's ACTIONS_BY_STATUS (which stays
 // untouched) so a missed call site fails closed: any component that isn't
@@ -14,7 +25,9 @@ export const BARQRAFTAR_ACTIONS_BY_STATUS = {
   // ever shows the first four - stays exactly as it is today.
   ready_to_print: [
     { key: "print_barqraftar_labels", action: "print_barqraftar_labels", label: "Print BarqRaftar Labels" },
+    READY_FOR_PICKUP,
   ],
+  ready_to_pick: [READY_FOR_PICKUP],
 };
 
 // Every place that renders ACTIONS_BY_STATUS[status] should wrap it with

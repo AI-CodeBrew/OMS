@@ -378,8 +378,10 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False):
     instead of going through BULK_ACTIONS/the per-order loop there).
 
     Batches the actual BarqRaftar API call (25 orders per bulk_store
-    request) specifically so selecting many orders with "create a pickup
-    request" on creates ONE pickup request per batch, not one per order.
+    request, each with a pickup request at the active pickup address), so
+    one click creates ONE pickup request for up to 25 orders - not one per
+    order. Both booked orders in a batch share its pickup_request_id
+    (confirmed live).
 
     Returns a list of {"order_id", "order_number", "success", "error"?,
     "error_code"?, "shortages"?} dicts - exactly the shape oms/views.py's
@@ -403,13 +405,16 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False):
             for oid in order_ids
         ]
 
-    # from_city_id is required on every BarqRaftar order, pickup request or
-    # not - it's taken from the default pickup address (see the Pickup
-    # Addresses tab's "Set as default"), so both need that set first.
-    if not connection.from_city_id or (connection.create_pickup_request and not connection.pickup_address_id):
+    # Every booking goes out from the ACTIVE pickup address (Pickup
+    # Addresses tab -> "Set as active"), with a pickup request - the only way
+    # BarqRaftar attaches an order to a specific pickup address at all:
+    # pickup_address_id sent without create_pickup_request is silently
+    # ignored and the parcel falls back to the account's registered address
+    # (confirmed live, 2026-09-30). from_city_id comes from the same address.
+    if not connection.pickup_address_id or not connection.from_city_id:
         return [
             {"order_id": str(oid), "success": False,
-             "error": "Set a default pickup address on the BarqRaftar integration page first."}
+             "error": "Set an active pickup address on the BarqRaftar integration page first."}
             for oid in order_ids
         ]
 
@@ -490,10 +495,12 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False):
         payloads = [b["payload"] for b in chunk]
 
         try:
+            # Always with a pickup request at the active address - see the
+            # precondition above for why there's no "without" option.
             response = client.bulk_store(
                 connection.api_key, connection.api_secret, payloads,
-                create_pickup_request=connection.create_pickup_request,
-                pickup_address_id=connection.pickup_address_id or None,
+                create_pickup_request=True,
+                pickup_address_id=connection.pickup_address_id,
             )
         except BarqRaftarAPIError as exc:
             for b in chunk:
@@ -605,7 +612,7 @@ def _finalize_booking(order, *, reference_id, tracking_number, courier, connecti
         reference_id=reference_id,
         tracking_number=tracking_number,
         is_active=True,
-        pickup_requested=connection.create_pickup_request,
+        pickup_requested=True,
     )
     with transaction.atomic():
         order = oms_services.book_with_courier(
@@ -671,6 +678,92 @@ def cancel_on_barqraftar(order):
         f"BarqRaftar reports this shipment is already {status_label or status_code} "
         "- it can no longer be cancelled."
     )
+
+
+def mark_ready_for_pickup(organization_id, order_ids):
+    """Tells BarqRaftar the selected orders' parcels are packed and ready to
+    collect - bulk_change_status -> "awaiting_pickup" (BarqRaftar status 2,
+    "Ready for collection"). Confirmed live: a booked order goes Pending (1)
+    -> Awaiting Pickup (2), and can still be cancelled from there. Only
+    legal from BarqRaftar's own Pending status; any refusal comes back
+    per-order and is reported as-is.
+
+    The handler behind the orders page's "Ready for BarqRaftar pickup"
+    action (see oms/views.py's bulk_action). Returns the same per-order
+    result shape as the generic bulk-action loop. Doesn't change the OMS
+    order's own status - Ready to Print/Ready to Pick stay as they are
+    until BarqRaftar reports a pickup (status 3), via the poller/webhook."""
+    from oms.models import Order
+
+    orders_by_id = {
+        str(o.id): o for o in Order.all_objects.filter(organization_id=organization_id, id__in=order_ids)
+    }
+    connection = BarqRaftarConnection.all_objects.filter(
+        organization_id=organization_id, is_connected=True
+    ).first()
+    if not connection:
+        return [
+            {"order_id": str(oid), "success": False,
+             "error": "Connect BarqRaftar from the Integrations page first."}
+            for oid in order_ids
+        ]
+
+    shipments = {
+        str(s.order_id): s
+        for s in BarqRaftarShipment.all_objects.filter(
+            organization_id=organization_id, order_id__in=order_ids, is_active=True,
+        ).exclude(tracking_number="")
+    }
+
+    results = []
+    to_mark = []
+    for oid in order_ids:
+        order = orders_by_id.get(str(oid))
+        if not order:
+            results.append({"order_id": str(oid), "success": False, "error": "Not found"})
+            continue
+        shipment = shipments.get(str(oid))
+        if not shipment:
+            results.append({
+                "order_id": str(oid), "order_number": order.order_number, "success": False,
+                "error": f"Order {order.order_number} isn't booked with BarqRaftar.",
+            })
+            continue
+        to_mark.append((str(oid), order, shipment))
+
+    for start in range(0, len(to_mark), 50):
+        chunk = to_mark[start:start + 50]
+        try:
+            response = client.change_status(
+                connection.api_key, connection.api_secret,
+                [{"tracking_number": s.tracking_number, "status": "awaiting_pickup"} for _, _, s in chunk],
+            )
+        except BarqRaftarAPIError as exc:
+            for oid, order, _ in chunk:
+                results.append({
+                    "order_id": oid, "order_number": order.order_number, "success": False, "error": str(exc),
+                })
+            continue
+
+        # {"orders_result": [{"success", "tracking_number", "status", "message"}]}
+        # - a refusal ("Invalid order status change.") is still HTTP 200.
+        by_tracking = {
+            str(row.get("tracking_number")): row
+            for row in (response.get("orders_result") or []) if isinstance(row, dict)
+        }
+        for oid, order, shipment in chunk:
+            row = by_tracking.get(shipment.tracking_number) or {}
+            if row.get("success"):
+                shipment.status_code = 2
+                shipment.status_label = _CODE_TO_LABEL[2]
+                shipment.save(update_fields=["status_code", "status_label", "updated_at"])
+                results.append({"order_id": oid, "order_number": order.order_number, "success": True})
+            else:
+                results.append({
+                    "order_id": oid, "order_number": order.order_number, "success": False,
+                    "error": f"BarqRaftar: {row.get('message') or 'did not confirm the change.'}",
+                })
+    return results
 
 
 def release_shipment_stock_and_deactivate(order, *, actor_user_id=None):

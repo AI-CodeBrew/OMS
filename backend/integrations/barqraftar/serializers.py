@@ -23,7 +23,6 @@ class BarqRaftarConnectionSerializer(serializers.ModelSerializer):
             "pickup_address_label",
             "from_city_id",
             "from_city_name",
-            "create_pickup_request",
             "default_weight_grams",
             "label_format",
             "city_aliases",

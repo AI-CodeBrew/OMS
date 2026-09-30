@@ -29,16 +29,20 @@ class BarqRaftarConnection(TenantScopedModel):
     last_event_at = models.DateTimeField(null=True, blank=True)
     events_received_count = models.PositiveIntegerField(default=0)
 
-    # Default pickup address (from BarqRaftar's Get Pickup Addresses /
-    # Create Pickup Address APIs) - set from the Pickup Addresses tab, used
-    # on every booking unless a future UI lets it vary per order.
+    # The ACTIVE pickup address (one of the addresses saved on BarqRaftar,
+    # picked with "Set as active" on the Pickup Addresses tab). Every booking
+    # goes out from it, with a pickup request - see services.book_orders.
+    # from_city_id/from_city_name are that address's city.
     pickup_address_id = models.CharField(max_length=100, blank=True, default="")
     pickup_address_label = models.CharField(max_length=255, blank=True, default="")
     from_city_id = models.CharField(max_length=50, blank=True, default="")
     from_city_name = models.CharField(max_length=150, blank=True, default="")
 
-    # Booking options, editable from the Settings card.
+    # No longer read anywhere - bookings now always create a pickup request
+    # at the active address (the only way BarqRaftar ties an order to a
+    # pickup address). Kept only so migration 0017 stays unchanged.
     create_pickup_request = models.BooleanField(default=True)
+    # Booking options, editable from the Settings card.
     default_weight_grams = models.PositiveIntegerField(default=500)
     label_format = models.CharField(max_length=10, default="a4")  # "a4" | "6x4"
 
