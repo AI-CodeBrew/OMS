@@ -209,23 +209,28 @@ def bulk_store(api_key, api_secret, orders, *, create_pickup_request=False,
                 pickup_address_id=None, pickup_address=None):
     """POST /orders/bulk_store. `orders` is a list of BarqRaftar order dicts
     already built by barqraftar/services.py's payload builder. Returns the
-    raw response dict - per BarqRaftar's docs:
-    {"failed_orders_count", "success_orders_count", "orders_result": [
-      {"success": true, "reference_id", "tracking_number", "message"} |
-      {"success": false, "reference_id", "message": "Order already exist in BarqRaftar"}]}.
+    raw response dict (confirmed live):
+    {"failed_orders_count", "success_orders_count", "pickup_request_created",
+     "orders_result": [
+      {"success": true, "reference_id", "tracking_number", "message": "Order added to BarqRaftar"} |
+      {"success": false, "reference_id", "message": "invalid to_city_id" | ...}]}.
+    One bad order doesn't fail the others - each has its own row.
 
-    create_pickup_request is sent as the strings "true"/"false" exactly as
-    the collection's own (working) requests do, even though the docs call
-    it a boolean."""
+    create_pickup_request is only sent at all when a pickup IS wanted, as
+    "true". Sending "false" crashed BarqRaftar with HTTP 500 "Server
+    Error" on every attempt (confirmed live, 2026-09-29) - their PHP side
+    evidently treats the non-empty string "false" as true and then fails
+    for lack of a pickup address - while the same body with the key left
+    out books normally."""
     _require_credentials(api_key, api_secret)
     if not orders:
         return {"orders_result": []}
     body = {
         "total_orders": len(orders),
         "orders": orders,
-        "create_pickup_request": "true" if create_pickup_request else "false",
     }
     if create_pickup_request:
+        body["create_pickup_request"] = "true"
         if pickup_address_id:
             body["pickup_address_id"] = (
                 int(pickup_address_id) if str(pickup_address_id).isdigit() else pickup_address_id
