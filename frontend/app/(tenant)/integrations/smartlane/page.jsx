@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import integrationsService from "../../../../services/integrationsService";
 import Button from "../../../../components/shared/Button";
 import PasswordInput from "../../../../components/shared/PasswordInput";
@@ -23,7 +22,6 @@ function TruckIcon({ className }) {
 }
 
 export default function SmartlaneIntegrationPage() {
-  const router = useRouter();
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [connecting, setConnecting] = useState(false);
@@ -90,18 +88,6 @@ export default function SmartlaneIntegrationPage() {
       }
     }, 2000);
   }
-
-  // An org on OMS Courier is managed by the platform team - this page would
-  // expose the courier account behind it (the Integrations page hides its
-  // card for the same reason), so send them to OMS Courier instead.
-  useEffect(() => {
-    integrationsService
-      .getOmsCourierOnboarding()
-      .then((d) => {
-        if (d.live) router.replace("/integrations/oms-courier");
-      })
-      .catch(() => {});
-  }, [router]);
 
   useEffect(() => {
     loadStatus();

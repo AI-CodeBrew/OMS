@@ -277,12 +277,6 @@ export default function IntegrationsOverviewPage() {
       .catch(() => {});
   }, []);
 
-  // An org on OMS Courier is managed by the platform team; the Smartlane
-  // card would expose the courier account behind it.
-  const visibleIntegrations = INTEGRATIONS.filter(
-    (i) => !(i.key === "smartlane" && connectedMap.oms_courier)
-  );
-
   return (
     <div>
       <nav className="mb-6 flex items-center gap-1.5 text-sm text-slate-500">
@@ -306,7 +300,7 @@ export default function IntegrationsOverviewPage() {
       <h2 className="mb-3 mt-0 text-sm font-semibold text-slate-700">Available Integrations</h2>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {visibleIntegrations.map((integration) => (
+        {INTEGRATIONS.map((integration) => (
           <IntegrationCard
             key={integration.key}
             integration={integration}
