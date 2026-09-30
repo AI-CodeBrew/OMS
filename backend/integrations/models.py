@@ -354,11 +354,26 @@ class ShopifyConnection(TenantScopedModel):
 
 
 class SmartlaneConnection(TenantScopedModel):
-    """One Smartlane courier account per organization. api_key books
-    consignments and fetches tracking/documents (outbound); separately,
-    Smartlane can also call our webhook to report shipment status changes -
-    that side is push, this side is pull, they don't depend on each other."""
+    """A Smartlane courier account an organization books through - up to
+    one of each kind: the org's own (connected from the Smartlane page) and
+    OMS Courier (API key set by the platform team, see business_services.
+    activate_store_link). api_key books consignments and fetches tracking/
+    documents (outbound); separately, Smartlane can also call our webhook
+    to report shipment status changes - that side is push, this side is
+    pull, they don't depend on each other."""
 
+    KIND_OWN = "own"
+    KIND_OMS = "oms"
+    KIND_CHOICES = [
+        (KIND_OWN, "Organization's own account"),
+        (KIND_OMS, "OMS Courier"),
+    ]
+    # The Courier row an order booked through each account carries - which
+    # is also how an order remembers the account to track, print and cancel
+    # it through, without a column of its own on Order.
+    COURIER_NAMES = {KIND_OWN: "Smartlane", KIND_OMS: "OMS Courier"}
+
+    kind = models.CharField(max_length=10, choices=KIND_CHOICES, default=KIND_OWN)
     api_key = models.CharField(max_length=255, blank=True, default="")
     # From Smartlane's Store > Warehouse section (or the warehouse/list
     # api) - required on every booking call, consignments must belong to
@@ -380,16 +395,36 @@ class SmartlaneConnection(TenantScopedModel):
         db_table = '"integrations"."smartlane_connections"'
         constraints = [
             models.UniqueConstraint(
-                fields=["organization"], name="integrations_one_smartlane_connection_per_org"
+                fields=["organization", "kind"],
+                name="integrations_one_smartlane_connection_per_kind",
             )
         ]
 
     def __str__(self):
-        return f"Smartlane ({self.organization_id})"
+        return f"Smartlane {self.kind} ({self.organization_id})"
 
     @property
     def webhook_path(self):
         return f"/api/integrations/smartlane/webhook/{self.webhook_token}/"
+
+    @property
+    def courier_name(self):
+        return self.COURIER_NAMES[self.kind]
+
+    @classmethod
+    def for_order(cls, order):
+        """The connected account to track, print or cancel `order` through:
+        the one it was booked with, going by its courier. An order booked
+        through neither (no courier yet, or another courier) falls back to
+        whichever account the org has connected, its own first."""
+        connected = cls.all_objects.filter(
+            organization_id=order.organization_id, is_connected=True
+        )
+        name = order.courier.name if order.courier_id else ""
+        for kind, courier_name in cls.COURIER_NAMES.items():
+            if name == courier_name:
+                return connected.filter(kind=kind).first()
+        return connected.filter(kind=cls.KIND_OWN).first() or connected.first()
 
 
 class SmartlaneSyncJob(TenantScopedModel):

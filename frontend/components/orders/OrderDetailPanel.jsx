@@ -10,7 +10,12 @@ import OrderItemsEditor from "./OrderItemsEditor";
 import OrderActionModal from "./OrderActionModal";
 import VerifyDispatchModal from "./VerifyDispatchModal";
 import StockShortageModal from "./StockShortageModal";
-import { ACTIONS_NEEDING_PARAMS, SMARTLANE_LOAD_SHEET_COURIERS } from "./statusConfig";
+import {
+  ACTIONS_NEEDING_PARAMS,
+  BOOKING_ACCOUNTS,
+  SMARTLANE_LOAD_SHEET_COURIERS,
+  isBookingAccountCourier,
+} from "./statusConfig";
 import barqraftarService from "../../app/(tenant)/integrations/barq-raftar/_lib/barqraftarService";
 
 const EDITABLE_FIELDS = [
@@ -53,7 +58,9 @@ function buildDraft(order) {
   return draft;
 }
 
-export default function OrderDetailPanel({ orderId, couriers, smartlaneConnected, onClose, onOrderChanged }) {
+// bookingAccounts: the connected entries of statusConfig's BOOKING_ACCOUNTS
+// (see connectedBookingAccounts), resolved once by the orders page.
+export default function OrderDetailPanel({ orderId, couriers, bookingAccounts = [], onClose, onOrderChanged }) {
   const [order, setOrder] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -175,12 +182,14 @@ export default function OrderDetailPanel({ orderId, couriers, smartlaneConnected
     setWorking(true);
     setError("");
     try {
-      // "Smartlane" is a synthetic entry in the courier picker (see the
-      // couriers prop below), not a real Courier row - selecting it pushes
-      // a booking to Smartlane instead of a plain manual courier assignment.
-      const isSmartlane = action === "assign_courier" && params.courier_id === "smartlane";
-      const resolvedAction = isSmartlane ? "push_to_smartlane" : action;
-      const resolvedParams = isSmartlane ? {} : params;
+      // "OMS Courier" / "Smartlane" are synthetic entries in the courier
+      // picker (see the couriers prop below), not real Courier rows -
+      // selecting one pushes a booking through that Smartlane account
+      // instead of a plain manual courier assignment.
+      const bookingAccount =
+        action === "assign_courier" && BOOKING_ACCOUNTS.find((a) => a.id === params.courier_id);
+      const resolvedAction = bookingAccount ? "push_to_smartlane" : action;
+      const resolvedParams = bookingAccount ? { account: bookingAccount.account } : params;
 
       const { results } = await ordersService.bulkAction({
         action: resolvedAction,
@@ -276,11 +285,14 @@ export default function OrderDetailPanel({ orderId, couriers, smartlaneConnected
         action={pendingAction}
         count={1}
         couriers={
-          pendingAction === "assign_courier" && smartlaneConnected
-            ? // Smartlane stays first/default; real courier rows are
-              // offered alongside it for a deliberate manual bypass - see
+          pendingAction === "assign_courier" && bookingAccounts.length
+            ? // Booking accounts stay first/default; real courier rows are
+              // offered alongside them for a deliberate manual bypass - see
               // the same merge/reasoning on the orders page.
-              [{ id: "smartlane", name: "Smartlane" }, ...couriers]
+              [
+                ...bookingAccounts.map(({ id, name }) => ({ id, name })),
+                ...couriers.filter((c) => !isBookingAccountCourier(c)),
+              ]
             : couriers
         }
         submitting={working}

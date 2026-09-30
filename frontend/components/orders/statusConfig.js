@@ -64,6 +64,29 @@ export const SMARTLANE_LOAD_SHEET_COURIERS = [
   { value: "postex", label: "PostEx (Coming Soon)", disabled: true },
 ];
 
+// Synthetic entries in the "Assign courier" picker that book through a
+// Smartlane account (push_to_smartlane) rather than assign a Courier row by
+// hand. `account` is the backend's SmartlaneConnection kind; `name` is also
+// the Courier row such a booking creates (SmartlaneConnection.COURIER_NAMES),
+// so rows with these names are kept out of the manual list.
+export const BOOKING_ACCOUNTS = [
+  { id: "smartlane", name: "Smartlane", account: "own" },
+  { id: "oms_courier", name: "OMS Courier", account: "oms" },
+];
+
+const BOOKING_ACCOUNT_NAMES = new Set(BOOKING_ACCOUNTS.map((a) => a.name.toLowerCase()));
+
+export function isBookingAccountCourier(courier) {
+  return BOOKING_ACCOUNT_NAMES.has((courier?.name || "").trim().toLowerCase());
+}
+
+// The booking accounts this org can actually book through right now.
+export function connectedBookingAccounts({ smartlaneConnected, omsCourierConnected }) {
+  return BOOKING_ACCOUNTS.filter((a) =>
+    a.account === "oms" ? omsCourierConnected : smartlaneConnected
+  );
+}
+
 // Per-status, which bulk/row actions make sense - keeps OrderRowMenu and the
 // Actions dropdown from offering transitions the backend would reject.
 export const ACTIONS_BY_STATUS = {

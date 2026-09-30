@@ -30,8 +30,11 @@ import DateRangeFilter from "../../../components/orders/DateRangeFilter";
 import {
   ACTIONS_BY_STATUS,
   ACTIONS_NEEDING_PARAMS,
+  BOOKING_ACCOUNTS,
   SMARTLANE_LOAD_SHEET_COURIERS,
   STATUS_TABS,
+  connectedBookingAccounts,
+  isBookingAccountCourier,
 } from "../../../components/orders/statusConfig";
 // BarqRaftar's own service/status-store/action-list - kept inside its own
 // feature folder rather than the shared services/ files above; see that
@@ -143,6 +146,7 @@ export default function OrdersPage() {
   const [counts, setCounts] = useState(() => getCachedCounts());
   const [couriers, setCouriers] = useState([]);
   const [smartlaneConnected, setSmartlaneConnected] = useState(false);
+  const [omsCourierConnected, setOmsCourierConnected] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [selectedIds, setSelectedIds] = useState(new Set());
@@ -388,6 +392,10 @@ export default function OrdersPage() {
       .getSmartlaneStatus()
       .then((d) => setSmartlaneConnected(Boolean(d.connected)))
       .catch(() => {});
+    integrationsService
+      .getOmsCourierOnboarding()
+      .then((d) => setOmsCourierConnected(Boolean(d.live)))
+      .catch(() => {});
     barqraftarService
       .getStatus()
       .then((d) => useBarqRaftarStatusStore.getState().setStatus(d))
@@ -459,6 +467,12 @@ export default function OrdersPage() {
   );
 
   const barqraftarConnected = useBarqRaftarStatusStore((s) => s.connected);
+
+  // Memoized so OrderDetailPanel gets a stable prop between renders.
+  const bookingAccounts = useMemo(
+    () => connectedBookingAccounts({ smartlaneConnected, omsCourierConnected }),
+    [smartlaneConnected, omsCourierConnected]
+  );
 
   const availableActions = useMemo(() => {
     if (selectedOrders.length === 0) return [];
@@ -554,12 +568,14 @@ export default function OrdersPage() {
     setApplyingAction(true);
     if (bulk) beginLoading(`Applying to ${orderIds.length} orders`);
     try {
-      // "Smartlane" is a synthetic entry in the courier picker (see
-      // OrderActionModal), not a real Courier row - selecting it pushes a
-      // booking to Smartlane instead of a plain manual courier assignment.
-      const isSmartlane = action === "assign_courier" && params.courier_id === "smartlane";
-      const resolvedAction = isSmartlane ? "push_to_smartlane" : action;
-      const resolvedParams = isSmartlane ? {} : params;
+      // "OMS Courier" / "Smartlane" are synthetic entries in the courier
+      // picker (see BOOKING_ACCOUNTS), not real Courier rows - selecting one
+      // pushes a booking through that Smartlane account instead of a plain
+      // manual courier assignment.
+      const bookingAccount =
+        action === "assign_courier" && BOOKING_ACCOUNTS.find((a) => a.id === params.courier_id);
+      const resolvedAction = bookingAccount ? "push_to_smartlane" : action;
+      const resolvedParams = bookingAccount ? { account: bookingAccount.account } : params;
 
       const data = await ordersService.bulkAction({
         action: resolvedAction,
@@ -786,17 +802,17 @@ export default function OrdersPage() {
         action={pendingAction?.action}
         count={pendingAction?.orderIds?.length || 0}
         couriers={
-          pendingAction?.action === "assign_courier" && smartlaneConnected
-            ? // Only the synthetic "smartlane" entry actually books
-              // anything right now (see isSmartlane/resolvedAction below) -
-              // real courier rows (Trax, TCS, Leopards, ...), including any
-              // "Smartlane" row Smartlane itself created as a plain Courier
-              // FK, are shown greyed out as coming soon instead of offered
-              // as a working manual-assign path.
+          pendingAction?.action === "assign_courier" && bookingAccounts.length
+            ? // Only the synthetic booking-account entries actually book
+              // anything right now (see bookingAccount/resolvedAction above) -
+              // real courier rows (Trax, TCS, Leopards, ...), minus the
+              // "Smartlane"/"OMS Courier" rows those bookings create as
+              // plain Courier FKs, are shown greyed out as coming soon
+              // instead of offered as a working manual-assign path.
               [
-                { id: "smartlane", name: "Smartlane" },
+                ...bookingAccounts.map(({ id, name }) => ({ id, name })),
                 ...couriers
-                  .filter((c) => (c.name || "").trim().toLowerCase() !== "smartlane")
+                  .filter((c) => !isBookingAccountCourier(c))
                   .map((c) => ({ ...c, name: `${c.name} (Coming Soon)`, disabled: true })),
               ]
             : couriers
@@ -818,7 +834,7 @@ export default function OrdersPage() {
       <OrderDetailPanel
         orderId={detailOrderId}
         couriers={couriers}
-        smartlaneConnected={smartlaneConnected}
+        bookingAccounts={bookingAccounts}
         onClose={() => setDetailOrderId(null)}
         onOrderChanged={reloadAfterChange}
       />

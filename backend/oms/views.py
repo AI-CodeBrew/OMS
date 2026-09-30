@@ -102,7 +102,8 @@ BULK_ACTIONS = {
         order, actor_user_id=actor
     ),
     "push_to_smartlane": lambda order, params, actor: services.push_order_to_smartlane(
-        order, actor_user_id=actor, force=bool(params.get("force"))
+        order, actor_user_id=actor, force=bool(params.get("force")),
+        account=params.get("account") or "own",
     ),
     "abandon_booking": lambda order, params, actor: services.abandon_smartlane_booking(
         order, actor_user_id=actor
@@ -877,18 +878,29 @@ class OrderViewSet(viewsets.ModelViewSet):
         order = self.get_object()
         return HttpResponse(self._print_document_html(order, "Airway Bill"), content_type="text/html")
 
-    def _smartlane_connection_or_error(self, organization_id):
+    def _smartlane_connection_or_error(self, orders):
+        """The one account these orders were booked through - Smartlane only
+        prints an account's own consignments, so orders split across the
+        org's own Smartlane and OMS Courier have to be printed separately."""
         from integrations.models import SmartlaneConnection
 
-        connection = SmartlaneConnection.objects.filter(
-            organization_id=organization_id, is_connected=True
-        ).first()
-        if not connection:
+        connections = {}
+        for order in orders:
+            connection = SmartlaneConnection.for_order(order)
+            if connection:
+                connections[connection.id] = connection
+        if not connections:
             return None, Response(
                 {"detail": "Connect Smartlane from the Integrations page first."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        return connection, None
+        if len(connections) > 1:
+            names = " and ".join(sorted(c.courier_name for c in connections.values()))
+            return None, Response(
+                {"detail": f"These orders were booked through {names} - print each one separately."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return next(iter(connections.values())), None
 
     def _save_print_batch(self, *, organization_id, kind, courier, order_numbers, content, content_type, actor_user_id):
         """Keeps a permanent copy of exactly what was generated, so the
@@ -953,17 +965,17 @@ class OrderViewSet(viewsets.ModelViewSet):
         if not order_ids:
             return Response({"detail": "order_ids is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        connection, error = self._smartlane_connection_or_error(request.organization_id)
+        orders = list(
+            Order.objects.filter(organization_id=request.organization_id, id__in=order_ids)
+            .select_related("courier")
+        )
+        if not orders:
+            return Response({"detail": "No matching orders"}, status=status.HTTP_404_NOT_FOUND)
+        order_numbers = [o.order_number for o in orders]
+
+        connection, error = self._smartlane_connection_or_error(orders)
         if error:
             return error
-
-        order_numbers = list(
-            Order.objects.filter(organization_id=request.organization_id, id__in=order_ids).values_list(
-                "order_number", flat=True
-            )
-        )
-        if not order_numbers:
-            return Response({"detail": "No matching orders"}, status=status.HTTP_404_NOT_FOUND)
 
         try:
             pdf_bytes = smartlane_client.render_airway_bill_pdf(connection.api_key, order_numbers)
@@ -1002,17 +1014,33 @@ class OrderViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        connection, error = self._smartlane_connection_or_error(request.organization_id)
-        if error:
-            return error
-
         order_numbers = None
         if order_ids:
-            order_numbers = list(
-                Order.objects.filter(
-                    organization_id=request.organization_id, id__in=order_ids
-                ).values_list("order_number", flat=True)
+            orders = list(
+                Order.objects.filter(organization_id=request.organization_id, id__in=order_ids)
+                .select_related("courier")
             )
+            if not orders:
+                return Response({"detail": "No matching orders"}, status=status.HTTP_404_NOT_FOUND)
+            order_numbers = [o.order_number for o in orders]
+            connection, error = self._smartlane_connection_or_error(orders)
+        else:
+            # A date range names no orders to go by - use the org's own
+            # account, or OMS Courier when that's the only one.
+            from integrations.models import SmartlaneConnection
+
+            connected = SmartlaneConnection.objects.filter(
+                organization_id=request.organization_id, is_connected=True
+            )
+            connection = (
+                connected.filter(kind=SmartlaneConnection.KIND_OWN).first() or connected.first()
+            )
+            error = None if connection else Response(
+                {"detail": "Connect Smartlane from the Integrations page first."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if error:
+            return error
 
         try:
             pdf_bytes = smartlane_client.render_load_sheet_pdf(

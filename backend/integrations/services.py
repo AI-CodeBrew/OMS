@@ -629,7 +629,9 @@ _ABSORBABLE_STATUSES = {
 }
 
 
-def absorb_untracked_smartlane_order(order, *, raw_status, row, actor_user_id=None):
+def absorb_untracked_smartlane_order(
+    order, *, raw_status, row, actor_user_id=None, courier_name="Smartlane"
+):
     """Order Smartlane recognises (a /track row or webhook event arrived for
     it) whose local status shows it was never pushed through
     oms.services.push_order_to_smartlane - most commonly, booked directly on
@@ -647,6 +649,10 @@ def absorb_untracked_smartlane_order(order, *, raw_status, row, actor_user_id=No
     Deliberately does NOT check for a conflicting local courier assignment -
     Smartlane's report wins regardless, per instruction.
 
+    `courier_name` is the SmartlaneConnection.courier_name of the account
+    that reported it, so the order is tracked through that account from
+    here on.
+
     Returns True if it changed the order."""
     from oms import services as oms_services
 
@@ -662,7 +668,9 @@ def absorb_untracked_smartlane_order(order, *, raw_status, row, actor_user_id=No
         )
         return True
 
-    oms_services.absorb_smartlane_booking(order, actor_user_id=actor_user_id)
+    oms_services.absorb_smartlane_booking(
+        order, actor_user_id=actor_user_id, courier_name=courier_name
+    )
     return True
 
 
@@ -698,11 +706,14 @@ def poll_smartlane_statuses(organization_id, *, batch_size=50, limit=500, job=No
     from oms import services as oms_services
     from .models import SmartlaneConnection
 
-    try:
-        connection = SmartlaneConnection.all_objects.get(
+    # Every connected account - the org's own Smartlane and OMS Courier are
+    # separate accounts, each only knowing about its own bookings.
+    connections = list(
+        SmartlaneConnection.all_objects.filter(
             organization_id=organization_id, is_connected=True
-        )
-    except SmartlaneConnection.DoesNotExist:
+        ).order_by("kind")
+    )
+    if not connections:
         logger.warning("smartlane poll skipped for org %s: not connected", organization_id)
         return {"checked": 0, "updated": 0, "detail": "Smartlane is not connected"}
 
@@ -710,40 +721,64 @@ def poll_smartlane_statuses(organization_id, *, batch_size=50, limit=500, job=No
     # management command / poller thread without this.
     _org_token = current_organization_id.set(organization_id)
     try:
-        return _poll_smartlane_statuses_body(
-            organization_id, connection, oms_services, batch_size=batch_size, limit=limit, job=job,
-        )
+        totals = {"checked": 0, "updated": 0}
+        for connection in connections:
+            result = _poll_smartlane_statuses_body(
+                organization_id, connection, oms_services,
+                batch_size=batch_size, limit=limit, job=job, done=totals,
+            )
+            totals["checked"] += result["checked"]
+            totals["updated"] += result["updated"]
+            if result.get("cancelled"):
+                return {**totals, "cancelled": True}
+        return totals
     finally:
         current_organization_id.reset(_org_token)
 
 
-def _poll_smartlane_statuses_body(organization_id, connection, oms_services, *, batch_size, limit, job=None):
-    # Deliberately NOT filtered by courier="Smartlane" - that field is only
-    # ever set by push_order_to_smartlane/absorb_smartlane_booking, so an
-    # order booked directly on Smartlane's own portal (this app's actual,
-    # dominant workflow - see absorb_untracked_smartlane_order) would never
-    # have it set and would be invisible to this poll forever. Asking
-    # Smartlane about every non-final order and trusting its "unknown to us"
-    # 422 handling (smartlane_client.track_consignments) to filter out the
-    # rest is simpler and correct, at the cost of some wasted lookups.
+def _poll_smartlane_statuses_body(
+    organization_id, connection, oms_services, *, batch_size, limit, job=None, done=None
+):
+    """One account's share of poll_smartlane_statuses. `done` is what the
+    accounts polled before this one already counted, so a job's progress
+    keeps climbing across accounts instead of restarting at zero."""
+    base_checked = (done or {}).get("checked", 0)
+    base_updated = (done or {}).get("updated", 0)
+
+    # Deliberately NOT filtered to this account's own courier - that field
+    # is only ever set by push_order_to_smartlane/absorb_smartlane_booking,
+    # so an order booked directly on Smartlane's own portal (this app's
+    # actual, dominant workflow - see absorb_untracked_smartlane_order)
+    # would never have it set and would be invisible to this poll forever.
+    # Asking Smartlane about every non-final order and trusting its "unknown
+    # to us" 422 handling (smartlane_client.track_consignments) to filter
+    # out the rest is simpler and correct, at the cost of some wasted
+    # lookups. Only orders already booked through the org's OTHER account
+    # are left out - this one can't know them.
     # smartlane_checked_at, nulls first, rotates the never/least-recently-
     # checked orders to the front each cycle instead of only ever checking
     # the same newest ones.
+    other_couriers = [
+        name for kind, name in connection.COURIER_NAMES.items() if kind != connection.kind
+    ]
     orders = list(
         Order.all_objects.filter(organization_id=organization_id)
         .exclude(status__in=TERMINAL_STATUSES)
+        .exclude(courier__name__in=other_couriers)
         .order_by(F("smartlane_checked_at").asc(nulls_first=True), "id")[:limit]
     )
     if not orders:
-        logger.info("smartlane poll for org %s: no non-final orders", organization_id)
-        if job is not None:
+        logger.info("smartlane poll for org %s (%s): no non-final orders",
+                    organization_id, connection.kind)
+        if job is not None and not base_checked:
             job.total_available = 0
             _save_progress(job, ["total_available", "updated_at"])
         return {"checked": 0, "updated": 0}
 
-    logger.info("smartlane poll for org %s: checking %s order(s)", organization_id, len(orders))
+    logger.info("smartlane poll for org %s (%s): checking %s order(s)",
+                organization_id, connection.kind, len(orders))
     if job is not None:
-        job.total_available = len(orders)
+        job.total_available = base_checked + len(orders)
         _save_progress(job, ["total_available", "updated_at"])
 
     # Keyed by both spellings of the order number - Smartlane does not
@@ -814,7 +849,10 @@ def _poll_smartlane_statuses_body(organization_id, connection, oms_services, *, 
 
             try:
                 if order.status in _ABSORBABLE_STATUSES:
-                    if absorb_untracked_smartlane_order(order, raw_status=raw_status, row=row):
+                    if absorb_untracked_smartlane_order(
+                        order, raw_status=raw_status, row=row,
+                        courier_name=connection.courier_name,
+                    ):
                         updated += 1
                     continue
 
@@ -862,8 +900,8 @@ def _poll_smartlane_statuses_body(organization_id, connection, oms_services, *, 
                 continue
 
         if job is not None:
-            job.checked_count = checked
-            job.updated_count = updated
+            job.checked_count = base_checked + checked
+            job.updated_count = base_updated + updated
             _save_progress(job, ["checked_count", "updated_count", "updated_at"])
             # Cooperative cancellation - same convention as run_shopify_sync.
             # Only these two fields, so this doesn't clobber the counters
@@ -876,8 +914,8 @@ def _poll_smartlane_statuses_body(organization_id, connection, oms_services, *, 
 
     connection.last_event_at = timezone.now()
     connection.save(update_fields=["last_event_at"])
-    logger.info("smartlane poll for org %s finished: checked %s, updated %s",
-                organization_id, checked, updated)
+    logger.info("smartlane poll for org %s (%s) finished: checked %s, updated %s",
+                organization_id, connection.kind, checked, updated)
     return {"checked": checked, "updated": updated}
 
 

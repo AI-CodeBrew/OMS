@@ -43,8 +43,10 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING("No connected Smartlane accounts."))
             return
 
-        for connection in connections:
-            org_id = connection.organization_id
+        # Once per org - poll_smartlane_statuses covers every connected
+        # account an org has (its own Smartlane and OMS Courier).
+        org_ids = connections.values_list("organization_id", flat=True).distinct()
+        for org_id in org_ids:
             try:
                 result = poll_smartlane_statuses(org_id, limit=options["limit"])
             except SmartlaneAPIError as exc:

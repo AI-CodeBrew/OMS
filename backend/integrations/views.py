@@ -252,13 +252,20 @@ class ShopifyTestConnectionView(APIView):
         )
 
 
+def _own_smartlane(organization_id):
+    """The org's own Smartlane account - the one the Smartlane page manages.
+    OMS Courier's platform-managed account is a separate row (kind "oms")
+    that nothing on that page may touch."""
+    return SmartlaneConnection.objects.filter(
+        organization_id=organization_id, kind=SmartlaneConnection.KIND_OWN
+    )
+
+
 class SmartlaneConnectionView(APIView):
     permission_classes = [IsOrgAdmin]
 
     def get(self, request):
-        connection = SmartlaneConnection.objects.filter(
-            organization_id=request.organization_id, is_connected=True
-        ).first()
+        connection = _own_smartlane(request.organization_id).filter(is_connected=True).first()
         if not connection:
             return Response({"connected": False})
         data = SmartlaneConnectionSerializer(connection, context={"request": request}).data
@@ -268,7 +275,7 @@ class SmartlaneConnectionView(APIView):
     def post(self, request):
         api_key = (request.data.get("api_key") or "").strip()
         warehouse_code = (request.data.get("store_warehouse_code") or "").strip()
-        existing = SmartlaneConnection.objects.filter(organization_id=request.organization_id).first()
+        existing = _own_smartlane(request.organization_id).first()
         if not api_key and not (existing and existing.api_key):
             return Response(
                 {"detail": "api_key is required"}, status=http_status.HTTP_400_BAD_REQUEST
@@ -276,6 +283,7 @@ class SmartlaneConnectionView(APIView):
 
         connection, _ = SmartlaneConnection.objects.update_or_create(
             organization_id=request.organization_id,
+            kind=SmartlaneConnection.KIND_OWN,
             defaults={
                 # Same fill-only rule as store_warehouse_code below: the form
                 # never echoes the stored key back (it's write-only on the
@@ -305,9 +313,7 @@ class SmartlaneConnectionView(APIView):
         return Response(data, status=http_status.HTTP_201_CREATED)
 
     def patch(self, request):
-        connection = SmartlaneConnection.objects.filter(
-            organization_id=request.organization_id, is_connected=True
-        ).first()
+        connection = _own_smartlane(request.organization_id).filter(is_connected=True).first()
         if not connection:
             return Response({"detail": "Smartlane is not connected"}, status=http_status.HTTP_404_NOT_FOUND)
         if "store_warehouse_code" in request.data:
@@ -318,7 +324,7 @@ class SmartlaneConnectionView(APIView):
         return Response(data)
 
     def delete(self, request):
-        connection = SmartlaneConnection.objects.filter(organization_id=request.organization_id).first()
+        connection = _own_smartlane(request.organization_id).first()
         if connection:
             connection.is_connected = False
             connection.webhooks_active = False
@@ -344,9 +350,7 @@ class SmartlaneWarehouseListView(APIView):
     permission_classes = [IsOrgAdmin]
 
     def get(self, request):
-        connection = SmartlaneConnection.objects.filter(
-            organization_id=request.organization_id, is_connected=True
-        ).first()
+        connection = _own_smartlane(request.organization_id).filter(is_connected=True).first()
         if not connection:
             return Response({"detail": "Smartlane is not connected"}, status=http_status.HTTP_404_NOT_FOUND)
         try:
@@ -411,10 +415,12 @@ class SmartlaneSyncView(APIView):
         return Response(SmartlaneSyncJobSerializer(job).data)
 
     def post(self, request):
-        connection = SmartlaneConnection.objects.filter(
+        # Either account will do - one sync covers every connected account
+        # (see services.poll_smartlane_statuses), so the Smartlane and OMS
+        # Courier pages' buttons start the same job.
+        if not SmartlaneConnection.objects.filter(
             organization_id=request.organization_id, is_connected=True
-        ).first()
-        if not connection:
+        ).exists():
             return Response({"detail": "Smartlane is not connected"}, status=http_status.HTTP_404_NOT_FOUND)
 
         existing = SmartlaneSyncJob.objects.filter(
@@ -442,9 +448,11 @@ class SmartlaneCityListView(APIView):
     permission_classes = [IsOrgAdmin]
 
     def get(self, request):
-        connection = SmartlaneConnection.objects.filter(
+        # Smartlane's city list is the same whichever account asks.
+        connected = SmartlaneConnection.objects.filter(
             organization_id=request.organization_id, is_connected=True
-        ).first()
+        )
+        connection = connected.filter(kind=SmartlaneConnection.KIND_OWN).first() or connected.first()
         if not connection:
             return Response({"detail": "Smartlane is not connected"}, status=http_status.HTTP_404_NOT_FOUND)
         try:
@@ -558,7 +566,8 @@ def smartlane_shipment_webhook(request, token):
                     # services.absorb_untracked_smartlane_order.
                     try:
                         services.absorb_untracked_smartlane_order(
-                            order, raw_status=smartlane_status, row=payload
+                            order, raw_status=smartlane_status, row=payload,
+                            courier_name=connection.courier_name,
                         )
                     except Exception:
                         logger.exception(

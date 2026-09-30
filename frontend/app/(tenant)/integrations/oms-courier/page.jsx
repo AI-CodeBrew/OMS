@@ -61,7 +61,7 @@ const STATUS_LABEL = {
 const STATUS_BLURB = {
   pending_approval: "Submitted. Waiting for the platform team to review it.",
   in_review: "Your details are being reviewed. The platform team will activate your account once it clears.",
-  active: "Live. Orders you book from the Orders page ship through OMS Courier.",
+  active: "Live. On the Orders page, pick OMS Courier when assigning a courier to book through it.",
   rejected: "Not approved. See the reason below, fix it and submit again.",
   in_active: "This account is currently inactive. Contact the platform team.",
 };

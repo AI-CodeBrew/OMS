@@ -371,7 +371,9 @@ def get_org_onboarding(organization_id):
     catalog they can pick from, and - once live - the connection's status.
     Nothing here names Smartlane; to the org this is OMS Courier."""
     link = SmartlaneStoreLink.all_objects.filter(organization_id=organization_id).first()
-    connection = SmartlaneConnection.all_objects.filter(organization_id=organization_id).first()
+    connection = SmartlaneConnection.all_objects.filter(
+        organization_id=organization_id, kind=SmartlaneConnection.KIND_OMS
+    ).first()
     live = _is_live(link, connection)
     return {
         "link": _serialize_link(link) if link else None,
@@ -473,7 +475,8 @@ def list_store_links(status=None, *, build_absolute_uri=None):
     connections = {
         c.organization_id: c
         for c in SmartlaneConnection.all_objects.filter(
-            organization_id__in=[link.organization_id for link in links]
+            organization_id__in=[link.organization_id for link in links],
+            kind=SmartlaneConnection.KIND_OMS,
         )
     }
     return [
@@ -585,9 +588,9 @@ def activate_store_link(
     """Approve an org for OMS Courier.
 
     Stores the API key and warehouse code the platform team got from
-    Smartlane in the org's SmartlaneConnection - the same record the
-    per-org Smartlane page fills in, so booking, tracking and printing all
-    work unchanged - then points the store's webhooks at it.
+    Smartlane in the org's OMS Courier SmartlaneConnection - separate from
+    any Smartlane account the org connected itself, so either can be used
+    for booking - then points the store's webhooks at it.
 
     Independent of the KYC hand-off: the store may have been opened on
     Smartlane's portal directly. Blank fields keep what is already stored,
@@ -602,7 +605,7 @@ def activate_store_link(
     api_key = (api_key or "").strip()
     warehouse_code = (warehouse_code or "").strip()
     connection = SmartlaneConnection.all_objects.filter(
-        organization_id=link.organization_id
+        organization_id=link.organization_id, kind=SmartlaneConnection.KIND_OMS
     ).first()
     if not api_key and not (connection and connection.api_key):
         raise SmartlaneBusinessError("API key is required.")
@@ -610,7 +613,9 @@ def activate_store_link(
         raise SmartlaneBusinessError("Warehouse code is required.")
 
     if connection is None:
-        connection = SmartlaneConnection(organization_id=link.organization_id)
+        connection = SmartlaneConnection(
+            organization_id=link.organization_id, kind=SmartlaneConnection.KIND_OMS
+        )
     if api_key:
         connection.api_key = api_key
     if warehouse_code:

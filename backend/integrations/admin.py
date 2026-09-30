@@ -12,8 +12,8 @@ class ShopifyConnectionAdmin(admin.ModelAdmin):
 
 @admin.register(SmartlaneConnection)
 class SmartlaneConnectionAdmin(admin.ModelAdmin):
-    list_display = ("organization", "is_connected", "webhooks_active", "events_received_count", "last_event_at")
-    list_filter = ("is_connected", "webhooks_active")
+    list_display = ("organization", "kind", "is_connected", "webhooks_active", "events_received_count", "last_event_at")
+    list_filter = ("kind", "is_connected", "webhooks_active")
 
 
 @admin.register(ShopifySyncJob)

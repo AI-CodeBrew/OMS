@@ -47,22 +47,24 @@ def _poll_loop():
             # cycle, which is what usually recycles connections - without
             # this, connections accumulate/go stale over a long-lived loop.
             close_old_connections()
-            connections = list(SmartlaneConnection.all_objects.filter(is_connected=True))
-            for connection in connections:
+            # Once per org - poll_smartlane_statuses covers every connected
+            # account an org has (its own Smartlane and OMS Courier).
+            org_ids = list(
+                SmartlaneConnection.all_objects.filter(is_connected=True)
+                .values_list("organization_id", flat=True)
+                .distinct()
+            )
+            for org_id in org_ids:
                 try:
-                    result = poll_smartlane_statuses(connection.organization_id)
+                    result = poll_smartlane_statuses(org_id)
                     logger.info(
                         "smartlane auto-poll org=%s checked=%s updated=%s",
-                        connection.organization_id, result.get("checked"), result.get("updated"),
+                        org_id, result.get("checked"), result.get("updated"),
                     )
                 except SmartlaneAPIError:
-                    logger.exception(
-                        "smartlane auto-poll failed for org %s", connection.organization_id
-                    )
+                    logger.exception("smartlane auto-poll failed for org %s", org_id)
                 except Exception:
-                    logger.exception(
-                        "smartlane auto-poll unexpected error for org %s", connection.organization_id
-                    )
+                    logger.exception("smartlane auto-poll unexpected error for org %s", org_id)
         except Exception:
             logger.exception("smartlane auto-poll loop iteration failed")
         time.sleep(interval)

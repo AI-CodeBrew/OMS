@@ -312,22 +312,23 @@ def cancel_order(order, *, reason="", actor_user_id=None, propagate_to_courier=T
     # the courier would still show up expecting to collect it. Best-effort:
     # a Smartlane-side failure (already picked up, API hiccup) must not
     # block the local cancellation, which is the actually-authoritative one.
-    if order.courier_id and order.courier.name == "Smartlane":
+    # "Smartlane" or "OMS Courier" - the org's own account or the platform's
+    # (see SmartlaneConnection.COURIER_NAMES); for_order picks the one the
+    # order was booked with.
+    if order.courier_id and order.courier.name in _smartlane_courier_names():
         from wms import services as wms_services
 
         try:
             from integrations import smartlane_client
             from integrations.models import SmartlaneConnection
 
-            connection = SmartlaneConnection.objects.get(
-                organization_id=order.organization_id, is_connected=True
-            )
+            connection = SmartlaneConnection.for_order(order)
             smartlane_client.cancel_consignment(connection.api_key, order.order_number)
         except Exception:
             pass
         # consume_for_order only ever runs for a Smartlane courier (push_
-        # order_to_smartlane/absorb_smartlane_booking, both set courier to
-        # "Smartlane" in the same breath as consuming), so this is exactly
+        # order_to_smartlane/absorb_smartlane_booking, both set that courier
+        # in the same breath as consuming), so this is exactly
         # the population that has stock to put back. Idempotent per order
         # (release_order_stock checks for its own prior reversal), so this
         # is safe even if abandon_smartlane_booking already released it.
@@ -402,11 +403,22 @@ def book_with_courier(order, *, courier_id, tracking_number, actor_user_id=None)
     return order
 
 
-def push_order_to_smartlane(order, *, actor_user_id=None, force=False):
+def _smartlane_courier_names():
+    from integrations.models import SmartlaneConnection
+
+    return set(SmartlaneConnection.COURIER_NAMES.values())
+
+
+def push_order_to_smartlane(order, *, actor_user_id=None, force=False, account="own"):
     """Submits this order to Smartlane and moves it to Booking Pending -
     the Smartlane-assigned equivalent of the manual Approve/Dispatch path,
     triggered from the "Assign courier" modal when the user picks
-    Smartlane instead of a real Courier row.
+    Smartlane or OMS Courier instead of a real Courier row.
+
+    `account` is the SmartlaneConnection kind to book through - "own" (the
+    org's own Smartlane) or "oms" (OMS Courier). The order gets that
+    account's courier, which is how it's tracked/printed/cancelled through
+    the same account afterwards.
 
     Smartlane's /create call is fire-and-forget: it confirms the booking
     was accepted but does not hand back a consignment number, so this
@@ -452,14 +464,18 @@ def push_order_to_smartlane(order, *, actor_user_id=None, force=False):
         logger.warning("smartlane push proceeding for %s DESPITE shortages on %s (force=True)",
                        order.order_number, [s["sku"] for s in shortages])
 
+    if account not in SmartlaneConnection.COURIER_NAMES:
+        raise SmartlaneBookingError(f"Unknown booking account {account!r}.")
     try:
         connection = SmartlaneConnection.objects.get(
-            organization_id=order.organization_id, is_connected=True
+            organization_id=order.organization_id, kind=account, is_connected=True
         )
     except SmartlaneConnection.DoesNotExist:
-        logger.error("smartlane push failed for %s: no connected SmartlaneConnection for org %s",
-                     order.order_number, order.organization_id)
-        raise SmartlaneBookingError("Connect Smartlane from the Integrations page first.")
+        logger.error("smartlane push failed for %s: no connected %s SmartlaneConnection for org %s",
+                     order.order_number, account, order.organization_id)
+        raise SmartlaneBookingError(
+            f"Connect {SmartlaneConnection.COURIER_NAMES[account]} from the Integrations page first."
+        )
 
     try:
         smartlane_client.create_booking(order, connection.api_key, connection.store_warehouse_code)
@@ -468,7 +484,9 @@ def push_order_to_smartlane(order, *, actor_user_id=None, force=False):
         raise SmartlaneBookingError(str(exc)) from exc
 
     courier, _ = Courier.objects.get_or_create(
-        organization_id=order.organization_id, name="Smartlane", defaults={"is_active": True}
+        organization_id=order.organization_id,
+        name=connection.courier_name,
+        defaults={"is_active": True},
     )
     with transaction.atomic():
         order = _transition(
@@ -488,7 +506,7 @@ def push_order_to_smartlane(order, *, actor_user_id=None, force=False):
     return order
 
 
-def absorb_smartlane_booking(order, *, actor_user_id=None):
+def absorb_smartlane_booking(order, *, actor_user_id=None, courier_name="Smartlane"):
     """Lands an order at Booking Pending for a booking Smartlane already
     has, made outside this app entirely (booked directly on Smartlane's own
     portal, e.g. by file import) rather than through push_order_to_smartlane.
@@ -498,13 +516,15 @@ def absorb_smartlane_booking(order, *, actor_user_id=None):
     double-book it. Mirrors push_order_to_smartlane's booking_pending +
     stock-consumption pair exactly, minus the outbound booking call, via
     _force_transition since the order may be sitting anywhere pre-booking
-    (new, pending_cc, awaiting_approval, ...) - not just awaiting_assigning."""
+    (new, pending_cc, awaiting_approval, ...) - not just awaiting_assigning.
+    `courier_name` is the reporting account's courier ("Smartlane" or "OMS
+    Courier"), see SmartlaneConnection.COURIER_NAMES."""
     from wms import services as wms_services
 
     # all_objects: the poller has no HTTP tenant context, so
     # Courier.objects is empty and get_or_create inserts a duplicate.
     courier, _ = Courier.all_objects.get_or_create(
-        organization_id=order.organization_id, name="Smartlane", defaults={"is_active": True}
+        organization_id=order.organization_id, name=courier_name, defaults={"is_active": True}
     )
     with transaction.atomic():
         order = _force_transition(
@@ -540,9 +560,7 @@ def abandon_smartlane_booking(order, *, actor_user_id=None):
             f"Order {order.order_number} is {order.get_status_display()}, not Booking Pending."
         )
 
-    connection = SmartlaneConnection.objects.filter(
-        organization_id=order.organization_id, is_connected=True
-    ).first()
+    connection = SmartlaneConnection.for_order(order)
     if not connection:
         raise SmartlaneBookingError("Connect Smartlane from the Integrations page first.")
 
