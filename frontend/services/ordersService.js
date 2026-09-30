@@ -223,6 +223,25 @@ class OrdersService {
     );
   }
 
+  // "All" in the courier picker: Smartlane builds a load sheet for one
+  // courier at a time and we don't know which courier it booked each order
+  // with, so ask for every courier and keep whichever come back. A courier
+  // that has none of these orders is rejected by Smartlane - expected here,
+  // so it's only an error when no courier produced a load sheet at all.
+  async printSmartlaneLoadSheetForCouriers(orderIds, couriers) {
+    let printed = 0;
+    let firstError = null;
+    for (const courier of couriers) {
+      try {
+        await this.printSmartlaneLoadSheet(orderIds, courier);
+        printed += 1;
+      } catch (err) {
+        firstError = firstError || err;
+      }
+    }
+    if (printed === 0 && firstError) throw firstError;
+  }
+
   async exportCsv(params = {}) {
     const response = await fetch(
       `${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderExport}${buildQuery(params)}`,

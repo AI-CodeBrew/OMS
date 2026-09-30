@@ -528,7 +528,8 @@ export default function OrdersPage() {
     // order - that lives only in Smartlane's own system - so "All" fetches
     // one load sheet per enabled courier instead: each request sends every
     // selected order, and Smartlane's own PDF only includes the ones that
-    // actually belong to that courier.
+    // actually belong to that courier. Couriers with none of the orders
+    // fail quietly - see printSmartlaneLoadSheetForCouriers.
     if (action === "print_loadsheet") {
       const courier = params.courier;
       const couriersToPrint =
@@ -538,9 +539,7 @@ export default function OrdersPage() {
       setApplyingAction(true);
       if (bulk) beginLoading(`Printing ${orderIds.length} load sheets`);
       try {
-        for (const c of couriersToPrint) {
-          await ordersService.printSmartlaneLoadSheet(orderIds, c);
-        }
+        await ordersService.printSmartlaneLoadSheetForCouriers(orderIds, couriersToPrint);
         setPendingAction(null);
         await reloadAfterChange();
       } catch (err) {

@@ -153,19 +153,15 @@ export default function OrderDetailPanel({ orderId, couriers, smartlaneConnected
     // interception the orders page does, needed here too since Smartlane
     // only generates a load sheet for one courier at a time.
     if (action === "print_loadsheet") {
-      let courier = params.courier;
-      if (courier === "all") {
-        const enabled = SMARTLANE_LOAD_SHEET_COURIERS.filter((c) => !c.disabled && c.value !== "all");
-        if (enabled.length !== 1) {
-          setError("More than one courier is enabled - pick a specific courier instead of All.");
-          return;
-        }
-        courier = enabled[0].value;
-      }
+      const courier = params.courier;
+      const couriersToPrint =
+        courier === "all"
+          ? SMARTLANE_LOAD_SHEET_COURIERS.filter((c) => !c.disabled && c.value !== "all").map((c) => c.value)
+          : [courier];
       setWorking(true);
       setError("");
       try {
-        await ordersService.printSmartlaneLoadSheet([orderId], courier);
+        await ordersService.printSmartlaneLoadSheetForCouriers([orderId], couriersToPrint);
         setPendingAction(null);
         await refreshAfterChange();
       } catch (err) {
