@@ -3,7 +3,7 @@
 import Badge from "../shared/Badge";
 import Button from "../shared/Button";
 import EditableField from "../shared/EditableField";
-import { STATUS_LABELS } from "./statusConfig";
+import { EDITABLE_STATUSES, STATUS_LABELS } from "./statusConfig";
 
 export default function OrderDetailHeader({ order, draft, editing, onChange, onToggleEdit, onSave, saving }) {
   return (
@@ -62,7 +62,7 @@ export default function OrderDetailHeader({ order, draft, editing, onChange, onT
               Save
             </Button>
           </div>
-        ) : order.status === "new" ? (
+        ) : EDITABLE_STATUSES.has(order.status) ? (
           <button
             type="button"
             onClick={onToggleEdit}

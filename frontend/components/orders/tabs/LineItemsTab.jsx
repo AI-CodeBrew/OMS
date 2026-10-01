@@ -4,6 +4,7 @@ import { useState } from "react";
 import Button from "../../shared/Button";
 import EditableField from "../../shared/EditableField";
 import ordersService from "../../../services/ordersService";
+import { EDITABLE_STATUSES } from "../statusConfig";
 
 const ITEM_FIELDS = [
   ["product_name", "Product", "text"],
@@ -127,7 +128,7 @@ export default function LineItemsTab({ order, onOrderChanged }) {
                     {(item.quantity * item.unit_price - (item.discount_amount || 0)).toFixed(2)}
                   </div>
                 </div>
-                {order.status === "new" ? (
+                {EDITABLE_STATUSES.has(order.status) ? (
                   <Button variant="secondary" onClick={() => startEdit(item)}>
                     Edit
                   </Button>

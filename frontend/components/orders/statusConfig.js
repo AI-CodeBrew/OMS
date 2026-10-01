@@ -87,6 +87,18 @@ export function connectedBookingAccounts({ smartlaneConnected, omsCourierConnect
   );
 }
 
+// New through Awaiting Assigning - no courier on the order yet, so its
+// details and line items can still be edited. Stock isn't deducted until
+// the order is pushed to a courier (wms.services.consume_for_order), so
+// changing items here doesn't leave the ledger out of step.
+export const EDITABLE_STATUSES = new Set([
+  "new",
+  "pending_cc",
+  "pending_cod",
+  "city_issue",
+  "awaiting_assigning",
+]);
+
 // Per-status, which bulk/row actions make sense - keeps OrderRowMenu and the
 // Actions dropdown from offering transitions the backend would reject.
 export const ACTIONS_BY_STATUS = {
