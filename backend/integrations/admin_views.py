@@ -73,6 +73,16 @@ def store_links(request):
     return Response({"success": True, "links": links})
 
 
+@api_view(["DELETE"])
+@permission_classes([IsSuperAdmin])
+def store_link_detail(request, link_id):
+    try:
+        service.delete_store_link(link_id, actor_email=getattr(request, "auth_email", "") or "")
+    except SmartlaneBusinessError as exc:
+        return _error(exc)
+    return Response({"success": True})
+
+
 @api_view(["POST"])
 @permission_classes([IsSuperAdmin])
 def store_link_send(request, link_id):

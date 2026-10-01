@@ -17,6 +17,11 @@ urlpatterns = [
     path("stores/", admin_views.store_links, name="admin-smartlane-stores"),
     path("stores/sync/", admin_views.store_links_sync, name="admin-smartlane-stores-sync"),
     path(
+        "stores/<uuid:link_id>/",
+        admin_views.store_link_detail,
+        name="admin-smartlane-store-detail",
+    ),
+    path(
         "stores/<uuid:link_id>/send/",
         admin_views.store_link_send,
         name="admin-smartlane-store-send",

@@ -51,6 +51,13 @@ class SmartlaneAdminService {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneStores}${qs}`);
   }
 
+  // Rejected requests only - the backend refuses anything else.
+  deleteStoreLink(id) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneStore(id)}`, {
+      method: "DELETE",
+    });
+  }
+
   sendStoreLinkToSmartlane(id) {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneStoreSend(id)}`, {
       method: "POST",

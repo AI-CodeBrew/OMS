@@ -641,6 +641,25 @@ def reject_store_link(link_id, *, note="", actor_email=""):
     return _serialize_link(link, include_org=True)
 
 
+def delete_store_link(link_id, *, actor_email=""):
+    """Removes a rejected request for good - the org then starts over with a
+    fresh one on its OMS Courier page. Only rejected requests: anything else
+    is either still being reviewed or already live."""
+    link = _get_link(link_id)
+    if link.status != "rejected":
+        raise SmartlaneBusinessError(
+            f"Only rejected requests can be deleted (this one is {link.status}).", 409
+        )
+    # Logged first - the entry belongs to the org, so it outlives the link.
+    _audit(
+        link,
+        "integrations.smartlane.store_request_deleted",
+        f"Deleted rejected OMS Courier request for {link.organization.name}",
+        actor_email,
+    )
+    link.delete()
+
+
 def _extract_store_id(payload):
     """Smartlane's response shape isn't documented beyond "success code and
     message", so look where a store id plausibly lives rather than assuming."""

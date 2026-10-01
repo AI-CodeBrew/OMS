@@ -182,6 +182,29 @@ export default function SmartlaneBusinessPage() {
     }
   }
 
+  async function onDeleteLink(link) {
+    if (
+      !window.confirm(
+        `Delete ${link.organization_name}'s rejected request? They can send a new one from ` +
+          `their OMS Courier page.`,
+      )
+    ) {
+      return;
+    }
+    setBusyLinkId(link.id);
+    setError("");
+    setSuccess("");
+    try {
+      await smartlaneAdminService.deleteStoreLink(link.id);
+      setSuccess(`Deleted ${link.organization_name}'s rejected request.`);
+      await load();
+    } catch (err) {
+      setError(err.message || "Failed to delete request");
+    } finally {
+      setBusyLinkId(null);
+    }
+  }
+
   function onOpenActivate(link) {
     setActivateLinkId(link.id);
     setActivateForm({
@@ -839,6 +862,15 @@ export default function SmartlaneBusinessPage() {
                               Send to Smartlane
                             </Button>
                           </>
+                        ) : null}
+                        {link.status === "rejected" ? (
+                          <Button
+                            variant="danger"
+                            onClick={() => onDeleteLink(link)}
+                            loading={busyLinkId === link.id}
+                          >
+                            Delete
+                          </Button>
                         ) : null}
                         {ACTIVATABLE_STATUSES.has(link.status) && activateLinkId !== link.id ? (
                           <Button
