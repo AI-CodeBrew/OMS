@@ -50,8 +50,9 @@ class OrgOrdersConsumer(AsyncJsonWebsocketConsumer):
                         unquote(params.get("org", ""))
                     )
                 else:
-                    organization_id = app_meta.get("organization_id") or user_meta.get(
-                        "organization_id"
+                    # Same suspended/removed-org gate as TenantMiddleware.
+                    organization_id = await sync_to_async(resolve_active_org_id)(
+                        app_meta.get("organization_id") or user_meta.get("organization_id")
                     )
 
         if not organization_id:

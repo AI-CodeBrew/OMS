@@ -19,6 +19,8 @@ export default function OrganizationsPage() {
   const [organizations, setOrganizations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+  const [busyId, setBusyId] = useState(null);
   const [creating, setCreating] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState(EMPTY_CREATE);
@@ -67,6 +69,61 @@ export default function OrganizationsPage() {
     }
   }
 
+  async function onToggleSuspend(org) {
+    const suspending = org.is_active;
+    if (
+      suspending &&
+      !window.confirm(
+        `Suspend ${org.name}? Its users won't be able to sign in or use the app until you ` +
+          `reactivate it.`,
+      )
+    ) {
+      return;
+    }
+    setBusyId(org.id);
+    setError("");
+    setSuccess("");
+    try {
+      await tenantsService.setOrganizationActive(org.id, !suspending);
+      setSuccess(suspending ? `${org.name} is suspended.` : `${org.name} is active again.`);
+      await load();
+    } catch (err) {
+      setError(err.message || "Failed to update organization");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function onRemove(org) {
+    const typed = window.prompt(
+      `This permanently deletes ${org.name} with all its orders, products, integrations ` +
+        `and user logins. It can't be undone.\n\nType the organization name to confirm:`,
+    );
+    if (typed === null) return;
+    if (typed.trim() !== org.name) {
+      setError("The name didn't match - nothing was removed.");
+      return;
+    }
+    setBusyId(org.id);
+    setError("");
+    setSuccess("");
+    try {
+      const result = await tenantsService.deleteOrganization(org.id, typed.trim());
+      const failed = result.user_errors?.length || 0;
+      setSuccess(
+        `${result.name} was removed.` +
+          (failed
+            ? ` ${failed} user login(s) couldn't be deleted from Supabase - remove them there by hand.`
+            : ""),
+      );
+      await load();
+    } catch (err) {
+      setError(err.message || "Failed to remove organization");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -83,6 +140,9 @@ export default function OrganizationsPage() {
 
       {error ? (
         <p className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>
+      ) : null}
+      {success ? (
+        <p className="rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{success}</p>
       ) : null}
 
       {showCreate ? (
@@ -168,35 +228,49 @@ export default function OrganizationsPage() {
               const modules = (org.modules || [])
                 .filter((m) => m.is_enabled)
                 .map((m) => m.module);
+              const busy = busyId === org.id;
               return (
-                <li key={org.id}>
-                  <Link
-                    href={`/admin/organizations/${org.id}`}
-                    className="flex flex-wrap items-center justify-between gap-3 px-5 py-4 transition hover:bg-slate-50"
-                  >
-                    <div className="min-w-0">
-                      <p className="truncate font-medium text-slate-900">{org.name}</p>
-                      <p className="mt-0.5 text-xs text-slate-500">
-                        {org.slug} · {org.plan}
-                        {modules.length ? ` · ${modules.join(", ")}` : ""}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <span
-                        className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                          org.is_active
-                            ? "bg-emerald-50 text-emerald-700"
-                            : "bg-slate-100 text-slate-600"
-                        }`}
-                      >
-                        {org.is_active ? "Active" : "Inactive"}
-                      </span>
-                      <span className="text-xs text-slate-500">
-                        {memberCount} {memberCount === 1 ? "user" : "users"}
-                      </span>
-                      <span className="text-sm text-brand-600">View →</span>
-                    </div>
+                <li
+                  key={org.id}
+                  className="flex flex-wrap items-center justify-between gap-3 px-5 py-4 transition hover:bg-slate-50"
+                >
+                  <Link href={`/admin/organizations/${org.id}`} className="min-w-0">
+                    <p className="truncate font-medium text-slate-900">{org.name}</p>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      {org.slug} · {org.plan}
+                      {modules.length ? ` · ${modules.join(", ")}` : ""}
+                    </p>
                   </Link>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span
+                      className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                        org.is_active
+                          ? "bg-emerald-50 text-emerald-700"
+                          : "bg-red-50 text-red-700"
+                      }`}
+                    >
+                      {org.is_active ? "Active" : "Suspended"}
+                    </span>
+                    <span className="text-xs text-slate-500">
+                      {memberCount} {memberCount === 1 ? "user" : "users"}
+                    </span>
+                    <Button
+                      variant="secondary"
+                      onClick={() => onToggleSuspend(org)}
+                      loading={busy}
+                    >
+                      {org.is_active ? "Suspend" : "Reactivate"}
+                    </Button>
+                    <Button variant="danger" onClick={() => onRemove(org)} disabled={busy}>
+                      Remove
+                    </Button>
+                    <Link
+                      href={`/admin/organizations/${org.id}`}
+                      className="text-sm text-brand-600 hover:underline"
+                    >
+                      View →
+                    </Link>
+                  </div>
                 </li>
               );
             })}

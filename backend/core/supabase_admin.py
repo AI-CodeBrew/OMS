@@ -77,6 +77,18 @@ def get_user(user_id):
     return response.json()
 
 
+def delete_user(user_id):
+    """Deletes the Auth user. Already gone (404) counts as done."""
+    response = requests.delete(_url(f"users/{user_id}"), headers=_headers(), timeout=20)
+    if response.status_code == 404:
+        return
+    if not response.ok:
+        raise SupabaseAdminError(
+            _extract_error(response) or "Failed to delete user",
+            status_code=response.status_code,
+        )
+
+
 def find_user_by_email(email):
     """Best-effort lookup. Pages through admin users until a match is found."""
     email = (email or "").strip().lower()

@@ -1,9 +1,15 @@
-from django.db import transaction
+import logging
+
+from django.db import IntegrityError, transaction
+from django.db.models import ProtectedError
 from django.utils.text import slugify
 
 from . import supabase_admin
 from .models import Membership, Organization, OrganizationModule
+from .rbac import write_audit_log
 from .supabase_admin import SupabaseAdminError
+
+logger = logging.getLogger(__name__)
 
 
 class OrganizationAdminError(Exception):
@@ -175,6 +181,82 @@ def create_organization_with_admin(
     )
 
     return get_organization(organization.id)
+
+
+def set_organization_active(organization_id, *, is_active, actor_user_id=None, actor_email=""):
+    """Suspends (is_active=False) or reactivates an organization. A suspended
+    org's users are turned away by TenantMiddleware on every request -
+    including the check the login page makes right after signing in - so
+    nothing in Supabase Auth needs changing."""
+    try:
+        org = Organization.objects.get(id=organization_id)
+    except Organization.DoesNotExist as exc:
+        raise OrganizationAdminError("Organization not found", 404) from exc
+
+    is_active = bool(is_active)
+    if org.is_active != is_active:
+        org.is_active = is_active
+        org.save(update_fields=["is_active", "updated_at"])
+        write_audit_log(
+            organization_id=org.id,
+            action="organization.reactivated" if is_active else "organization.suspended",
+            summary=f"{'Reactivated' if is_active else 'Suspended'} by super admin",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            entity_type="organization",
+            entity_id=str(org.id),
+        )
+    return get_organization(org.id)
+
+
+def delete_organization(organization_id, *, confirm_name, actor_email=""):
+    """Permanently removes an organization and everything it owns - every
+    tenant table cascades from Organization - then deletes its users'
+    Supabase logins. `confirm_name` must match the org's name exactly, so a
+    stray request can't wipe a tenant.
+
+    Logins are deleted only after the database delete commits, and only for
+    users with no membership left elsewhere. A login that fails to delete
+    is reported back rather than failing the removal: with its org gone,
+    TenantMiddleware already turns that user away."""
+    try:
+        org = Organization.objects.get(id=organization_id)
+    except Organization.DoesNotExist as exc:
+        raise OrganizationAdminError("Organization not found", 404) from exc
+
+    if (confirm_name or "").strip() != org.name:
+        raise OrganizationAdminError("Type the organization's exact name to confirm removal.")
+
+    name = org.name
+    user_ids = [str(uid) for uid in org.memberships.values_list("user_id", flat=True)]
+    try:
+        with transaction.atomic():
+            org.delete()
+    except (IntegrityError, ProtectedError) as exc:
+        logger.exception("removing organization %s failed", organization_id)
+        raise OrganizationAdminError(f"Couldn't remove {name}: {exc}", 409) from exc
+
+    still_member = {
+        str(uid)
+        for uid in Membership.objects.filter(user_id__in=user_ids).values_list("user_id", flat=True)
+    }
+    users_removed = 0
+    user_errors = []
+    for uid in user_ids:
+        if uid in still_member:
+            continue
+        try:
+            supabase_admin.delete_user(uid)
+            users_removed += 1
+        except SupabaseAdminError as exc:
+            user_errors.append({"user_id": uid, "error": exc.message})
+
+    # The org's own audit log went with it, so this is the lasting record.
+    logger.warning(
+        "organization %s (%s) removed by %s - %s login(s) deleted, %s failed",
+        name, organization_id, actor_email or "unknown", users_removed, len(user_errors),
+    )
+    return {"name": name, "users_removed": users_removed, "user_errors": user_errors}
 
 
 def update_member_credentials(user_id, *, email=None, password=None):

@@ -1,10 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Button from "../../../components/shared/Button";
 import PasswordInput from "../../../components/shared/PasswordInput";
-import authService from "../../../services/authService";
+import authService, { ORG_SUSPENDED_CODE, takeLoginNotice } from "../../../services/authService";
 import healthService from "../../../services/healthService";
 
 export default function LoginPage() {
@@ -14,6 +14,13 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [healthHint, setHealthHint] = useState(null);
+
+  // Left by the tenant layout when it signs out a user whose organization
+  // was suspended mid-session.
+  useEffect(() => {
+    const notice = takeLoginNotice();
+    if (notice) setError(notice);
+  }, []);
 
   async function onSubmit(e) {
     e.preventDefault();
@@ -26,10 +33,14 @@ export default function LoginPage() {
         setError("Use the super admin portal to sign in.");
         return;
       }
-      // Prove JWT works: protected health call before navigating
+      // Prove JWT works: protected health call before navigating. Also where
+      // a suspended organization is caught - Supabase still signs them in.
       await healthService.getProtectedHealth();
       router.replace("/dashboard");
     } catch (err) {
+      if (err.code === ORG_SUSPENDED_CODE) {
+        await authService.logout();
+      }
       setError(err.message || "Login failed");
     } finally {
       setLoading(false);

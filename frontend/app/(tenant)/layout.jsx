@@ -13,6 +13,12 @@ import {
   getDefaultModuleHref,
 } from "../../components/layout/moduleNav";
 import useAuthStore, { useEffectiveUser } from "../../store/authStore";
+import authService, {
+  ORG_SUSPENDED_CODE,
+  ORG_SUSPENDED_MESSAGE,
+  setLoginNotice,
+} from "../../services/authService";
+import healthService from "../../services/healthService";
 
 function TenantShell({ children }) {
   const pathname = usePathname();
@@ -33,6 +39,25 @@ function TenantShell({ children }) {
       router.replace(getDefaultModuleHref(user));
     }
   }, [user, pathname, router, superAdminWithoutStore]);
+
+  // The backend refuses every request from a suspended (or removed)
+  // organization; checked on each navigation so a user already signed in
+  // when it happened is signed out with the reason, rather than left on
+  // pages that all fail.
+  const signedInAsTenant = Boolean(user) && user.role !== "super_admin";
+  useEffect(() => {
+    if (!signedInAsTenant) return undefined;
+    let cancelled = false;
+    healthService.getProtectedHealth().catch(async (err) => {
+      if (cancelled || err.code !== ORG_SUSPENDED_CODE) return;
+      setLoginNotice(ORG_SUSPENDED_MESSAGE);
+      await authService.logout();
+      router.replace("/login");
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [pathname, signedInAsTenant, router]);
 
   if (superAdminWithoutStore) return null;
 

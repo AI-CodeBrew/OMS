@@ -168,10 +168,10 @@ export default function OrganizationDetailPage() {
             className={`rounded-full px-3 py-1 text-xs font-medium ${
               org.is_active
                 ? "bg-emerald-50 text-emerald-700"
-                : "bg-slate-100 text-slate-600"
+                : "bg-red-50 text-red-700"
             }`}
           >
-            {org.is_active ? "Active" : "Inactive"}
+            {org.is_active ? "Active" : "Suspended"}
           </span>
         </div>
       </div>

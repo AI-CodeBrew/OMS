@@ -2,6 +2,35 @@ import { getSupabaseBrowserClient } from "../lib/supabaseClient";
 import useAuthStore from "../store/authStore";
 import useTenantStore from "../store/tenantStore";
 
+// Mirrors backend core/middleware.py: every API call from a user whose
+// organization is suspended (or removed) fails with this code and message.
+export const ORG_SUSPENDED_CODE = "organization_suspended";
+export const ORG_SUSPENDED_MESSAGE =
+  "Your organization's account has been suspended. Please contact the FynkTech team.";
+
+// A message for the login page to show after a forced sign-out. Kept in
+// sessionStorage rather than the URL because ProtectedRoute also redirects
+// to /login the moment the session clears, and either redirect may land.
+const LOGIN_NOTICE_KEY = "oms_login_notice";
+
+export function setLoginNotice(message) {
+  try {
+    window.sessionStorage.setItem(LOGIN_NOTICE_KEY, message);
+  } catch {
+    // Storage unavailable - the user just won't see why.
+  }
+}
+
+export function takeLoginNotice() {
+  try {
+    const message = window.sessionStorage.getItem(LOGIN_NOTICE_KEY);
+    window.sessionStorage.removeItem(LOGIN_NOTICE_KEY);
+    return message;
+  } catch {
+    return null;
+  }
+}
+
 function buildUser(session) {
   if (!session?.user) return null;
   const appMeta = session.user.app_metadata || {};

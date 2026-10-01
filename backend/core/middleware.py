@@ -15,6 +15,11 @@ ADMIN_API_PREFIXES = ("/api/core/admin/",)
 ACT_AS_HEADER = "HTTP_X_ACT_AS_ORGANIZATION"
 MUTATING_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 
+ORG_SUSPENDED_CODE = "organization_suspended"
+ORG_SUSPENDED_MESSAGE = (
+    "Your organization's account has been suspended. Please contact the FynkTech team."
+)
+
 
 def resolve_active_org_id(raw):
     """Returns the org id as a string if `raw` names an active organization, else None."""
@@ -111,6 +116,26 @@ class TenantMiddleware:
 
                     request.modules = enabled_modules_for_org(request.organization_id)
                 request.auth_claims = claims
+
+        # A suspended org (Organization.is_active=False, set from the super
+        # admin's Organizations page) - or one that has been removed - turns
+        # its users away on every request. Supabase still lets them sign in,
+        # so this is also what the login page's post-sign-in check hits.
+        # Both message keys, since frontend helpers read one or the other.
+        if (
+            request.organization_id
+            and not request.is_super_admin
+            and resolve_active_org_id(request.organization_id) is None
+        ):
+            return JsonResponse(
+                {
+                    "success": False,
+                    "detail": ORG_SUSPENDED_MESSAGE,
+                    "error": ORG_SUSPENDED_MESSAGE,
+                    "code": ORG_SUSPENDED_CODE,
+                },
+                status=403,
+            )
 
         act_as = request.META.get(ACT_AS_HEADER)
         is_admin_api = request.path.startswith(ADMIN_API_PREFIXES)

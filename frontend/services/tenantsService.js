@@ -37,6 +37,24 @@ class TenantsService {
     });
   }
 
+  // false suspends the org (its users are turned away at login and on
+  // every request), true reactivates it.
+  setOrganizationActive(id, isActive) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.organization(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ is_active: isActive }),
+    });
+  }
+
+  // Permanent. confirmName must be the org's exact name. Resolves with
+  // {name, users_removed, user_errors}.
+  deleteOrganization(id, confirmName) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.organization(id)}`, {
+      method: "DELETE",
+      body: JSON.stringify({ confirm_name: confirmName }),
+    });
+  }
+
   updateMember(userId, { email, password }) {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.user(userId)}`, {
       method: "PATCH",

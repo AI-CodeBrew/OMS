@@ -42,11 +42,30 @@ def organizations(request):
     return Response({"success": True, "organization": org}, status=201)
 
 
-@api_view(["GET"])
+@api_view(["GET", "PATCH", "DELETE"])
 @permission_classes([IsSuperAdmin])
 def organization_detail(request, organization_id):
+    """GET the org; PATCH {"is_active": bool} suspends or reactivates it;
+    DELETE {"confirm_name": "<exact org name>"} removes it permanently."""
+    body = request.data or {}
+    actor_email = getattr(request, "auth_email", "") or ""
     try:
-        org = service.get_organization(organization_id)
+        if request.method == "DELETE":
+            result = service.delete_organization(
+                organization_id, confirm_name=body.get("confirm_name"), actor_email=actor_email
+            )
+            return Response({"success": True, **result})
+        if request.method == "PATCH":
+            if "is_active" not in body:
+                raise OrganizationAdminError("Nothing to update - send is_active.")
+            org = service.set_organization_active(
+                organization_id,
+                is_active=body.get("is_active"),
+                actor_user_id=request.user_id,
+                actor_email=actor_email,
+            )
+        else:
+            org = service.get_organization(organization_id)
     except OrganizationAdminError as exc:
         return Response(
             {"success": False, "error": exc.message, "code": "organization_admin_error"},

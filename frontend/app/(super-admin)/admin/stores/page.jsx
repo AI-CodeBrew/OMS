@@ -117,16 +117,16 @@ export default function StoresPage() {
                       className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
                         org.is_active
                           ? "bg-emerald-50 text-emerald-700"
-                          : "bg-slate-100 text-slate-600"
+                          : "bg-red-50 text-red-700"
                       }`}
                     >
-                      {org.is_active ? "Active" : "Inactive"}
+                      {org.is_active ? "Active" : "Suspended"}
                     </span>
                     <button
                       type="button"
                       disabled={!org.is_active}
                       onClick={() => openStore(org)}
-                      title={org.is_active ? undefined : "Inactive stores can't be opened"}
+                      title={org.is_active ? undefined : "Suspended stores can't be opened"}
                       className="rounded-lg bg-brand-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300"
                     >
                       Open store →
