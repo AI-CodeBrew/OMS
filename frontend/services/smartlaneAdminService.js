@@ -65,13 +65,27 @@ class SmartlaneAdminService {
     });
   }
 
-  // Resolves with {link}. Nothing is registered with Smartlane - the
-  // super admin adds link.courier.webhook_url on Smartlane's portal.
+  // Resolves with {link}. Nothing is registered with Smartlane - that's
+  // registerStoreWebhook, or the super admin adds link.courier.webhook_url
+  // on Smartlane's portal.
   activateStoreLink(id, { api_key, store_warehouse_code }) {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneStoreActivate(id)}`, {
       method: "POST",
       body: JSON.stringify({ api_key, store_warehouse_code }),
     });
+  }
+
+  // Registers link.courier.webhook_url with Smartlane as the store's
+  // consignment_status and shipper_advice webhooks. Resolves with
+  // {link, registered, webhook_url}; a rejected type throws.
+  registerStoreWebhook(id) {
+    return request(
+      `${apiConfig.baseUrl}${API_ENDPOINTS.admin.smartlaneStoreWebhookRegister(id)}`,
+      {
+        method: "POST",
+        body: JSON.stringify({}),
+      },
+    );
   }
 
   rejectStoreLink(id, note) {

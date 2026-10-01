@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import Button from "../../../../components/shared/Button";
+import Button, { Spinner } from "../../../../components/shared/Button";
 import PasswordInput from "../../../../components/shared/PasswordInput";
 import smartlaneAdminService from "../../../../services/smartlaneAdminService";
 
@@ -80,6 +80,7 @@ export default function SmartlaneBusinessPage() {
   const [activateLinkId, setActivateLinkId] = useState(null);
   const [activateForm, setActivateForm] = useState(EMPTY_ACTIVATE_FORM);
   const [copiedLinkId, setCopiedLinkId] = useState(null);
+  const [registeringLinkId, setRegisteringLinkId] = useState(null);
   // Warehouses aren't part of the store link list response - fetched
   // lazily per link (keyed by link.id) the first time its panel is
   // opened, rather than for every link up front.
@@ -226,7 +227,7 @@ export default function SmartlaneBusinessPage() {
       setActivateLinkId(null);
       setActivateForm(EMPTY_ACTIVATE_FORM);
       setSuccess(
-        `${link.organization_name} is live on OMS Courier. Add its webhook URL on the Smartlane portal.`,
+        `${link.organization_name} is live on OMS Courier. Register its webhook URL with Smartlane.`,
       );
       await load();
     } catch (err) {
@@ -243,6 +244,29 @@ export default function SmartlaneBusinessPage() {
       setTimeout(() => setCopiedLinkId(null), 2000);
     } catch {
       setError("Couldn't copy - select the URL and copy it manually.");
+    }
+  }
+
+  async function onRegisterWebhook(link) {
+    if (
+      !window.confirm(
+        `Register this URL with Smartlane as ${link.organization_name}'s Consignment Status ` +
+          `and Shipper Advice webhooks (store ${link.smartlane_store_id})?\n\n` +
+          link.courier.webhook_url,
+      )
+    ) {
+      return;
+    }
+    setRegisteringLinkId(link.id);
+    setError("");
+    setSuccess("");
+    try {
+      await smartlaneAdminService.registerStoreWebhook(link.id);
+      setSuccess(`Registered ${link.organization_name}'s webhook with Smartlane.`);
+    } catch (err) {
+      setError(err.message || "Failed to register webhook");
+    } finally {
+      setRegisteringLinkId(null);
     }
   }
 
@@ -957,8 +981,8 @@ export default function SmartlaneBusinessPage() {
                         </p>
                         {!link.courier.webhooks_active ? (
                           <p className="text-amber-700">
-                            Add this URL as the store&apos;s Consignment Status and Shipper Advice
-                            webhooks on the Smartlane portal.
+                            Register this URL with Smartlane, or add it as the store&apos;s
+                            Consignment Status and Shipper Advice webhooks on the Smartlane portal.
                           </p>
                         ) : null}
                         <div className="flex items-center gap-1.5">
@@ -974,6 +998,20 @@ export default function SmartlaneBusinessPage() {
                             className="shrink-0 rounded-md border border-surface-border bg-white px-2 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
                           >
                             {copiedLinkId === link.id ? "Copied" : "Copy"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onRegisterWebhook(link)}
+                            disabled={!link.smartlane_store_id || registeringLinkId === link.id}
+                            title={
+                              link.smartlane_store_id
+                                ? "Register this URL with Smartlane"
+                                : "No Smartlane store ID yet - sync from Smartlane first"
+                            }
+                            className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-brand-800 px-2 py-1.5 text-xs font-medium text-white hover:bg-brand-900 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {registeringLinkId === link.id ? <Spinner /> : null}
+                            Register
                           </button>
                         </div>
                       </div>

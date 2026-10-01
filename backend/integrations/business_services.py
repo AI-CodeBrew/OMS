@@ -563,8 +563,8 @@ def activate_store_link(
     Smartlane in the org's OMS Courier SmartlaneConnection - separate from
     any Smartlane account the org connected itself, so either can be used
     for booking. The webhook is not registered from here: the admin page
-    shows the connection's webhook URL for the super admin to add on
-    Smartlane's portal.
+    shows the connection's webhook URL, which the super admin registers
+    with register_store_webhooks or adds on Smartlane's portal.
 
     Independent of the KYC hand-off: the store may have been opened on
     Smartlane's portal directly. Blank fields keep what is already stored,
@@ -613,6 +613,79 @@ def activate_store_link(
         "link": _serialize_link(
             link, include_org=True, connection=connection, build_absolute_uri=build_absolute_uri
         ),
+    }
+
+
+# Smartlane's portal has two webhooks, "Consignment Status" and "Shipper
+# Advice", both pointed at the connection's one URL (views.
+# smartlane_shipment_webhook tells them apart by payload). "shipper_advice"
+# is the type in Smartlane's Postman collection; "consignment_status" is
+# the activity log's confirmed type for the other.
+_WEBHOOK_TYPES = ("consignment_status", "shipper_advice")
+
+
+def register_store_webhooks(link_id, *, build_absolute_uri=None, actor_email=""):
+    """Points a live store's Smartlane webhooks at its OMS Courier URL.
+
+    The same POST /web/hook as the API Explorer's "Webhook register", once
+    per type. Registering a store_id/type again updates it, so this is
+    safe to repeat. Every type is tried even if one is rejected, so one
+    bad type doesn't keep the other from being registered.
+    """
+    link = _get_link(link_id)
+    connection = SmartlaneConnection.all_objects.filter(
+        organization_id=link.organization_id, kind=SmartlaneConnection.KIND_OMS
+    ).first()
+    if not _is_live(link, connection):
+        raise SmartlaneBusinessError("Approve this store before registering its webhook.", 409)
+    if not link.smartlane_store_id:
+        raise SmartlaneBusinessError(
+            "This store has no Smartlane store ID yet - sync from Smartlane first.", 409
+        )
+    config = SmartlaneBusinessConfig.load()
+    if not config.is_configured:
+        raise SmartlaneBusinessError(
+            "Configure the Smartlane business account before registering webhooks."
+        )
+
+    path = connection.webhook_path
+    url = build_absolute_uri(path) if build_absolute_uri else path
+    # Postman sends store_id as a number, not a string.
+    store_id = link.smartlane_store_id
+    if store_id.isdigit():
+        store_id = int(store_id)
+
+    registered, failures, debug = [], [], None
+    for webhook_type in _WEBHOOK_TYPES:
+        try:
+            business_client.register_webhook(config, store_id, webhook_type, url)
+        except SmartlaneAPIError as exc:
+            failures.append(f"{webhook_type}: {exc}")
+            debug = debug or getattr(exc, "debug", None)
+        else:
+            registered.append(webhook_type)
+
+    if registered:
+        _audit(
+            link,
+            "integrations.smartlane.webhook_registered",
+            f"Registered {', '.join(registered)} webhook for {link.organization.name}",
+            actor_email,
+        )
+    if failures:
+        message = "Smartlane rejected the webhook - " + "; ".join(failures)
+        if registered:
+            message += f" ({', '.join(registered)} was registered)"
+        err = SmartlaneBusinessError(message, 502)
+        err.debug = debug
+        raise err
+
+    return {
+        "link": _serialize_link(
+            link, include_org=True, connection=connection, build_absolute_uri=build_absolute_uri
+        ),
+        "registered": registered,
+        "webhook_url": url,
     }
 
 

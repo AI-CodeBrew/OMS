@@ -114,6 +114,20 @@ def store_link_activate(request, link_id):
 
 @api_view(["POST"])
 @permission_classes([IsSuperAdmin])
+def store_link_webhook_register(request, link_id):
+    try:
+        result = service.register_store_webhooks(
+            link_id,
+            build_absolute_uri=request.build_absolute_uri,
+            actor_email=getattr(request, "auth_email", "") or "",
+        )
+    except SmartlaneBusinessError as exc:
+        return _error(exc)
+    return Response({"success": True, **result})
+
+
+@api_view(["POST"])
+@permission_classes([IsSuperAdmin])
 def store_link_reject(request, link_id):
     try:
         link = service.reject_store_link(

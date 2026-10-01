@@ -32,6 +32,11 @@ urlpatterns = [
         name="admin-smartlane-store-activate",
     ),
     path(
+        "stores/<uuid:link_id>/webhook/register/",
+        admin_views.store_link_webhook_register,
+        name="admin-smartlane-store-webhook-register",
+    ),
+    path(
         "stores/<uuid:link_id>/reject/",
         admin_views.store_link_reject,
         name="admin-smartlane-store-reject",
