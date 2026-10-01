@@ -4,12 +4,14 @@ import { useEffect, useState } from "react";
 import useLoadingStore from "../../store/loadingStore";
 
 // Small delay before showing, and a minimum time once shown, so a fast
-// operation (a couple hundred ms) doesn't flash the overlay on and off -
-// only genuinely slow things (page loads, bulk actions, CSV export/
-// import, Shopify/Smartlane sync) end up actually displaying it.
+// operation (a couple hundred ms) doesn't flash the indicator on and off -
+// only genuinely slow things (bulk actions, CSV import, Shopify sync)
+// end up actually displaying it.
 const SHOW_DELAY_MS = 200;
 const MIN_VISIBLE_MS = 400;
 
+// A corner pill, not a full-screen cover: pointer-events-none and no
+// backdrop, so the rest of the app stays usable while an operation runs.
 export default function LoadingOverlay() {
   const count = useLoadingStore((s) => s.count);
   const label = useLoadingStore((s) => s.label);
@@ -35,7 +37,7 @@ export default function LoadingOverlay() {
     <div
       role="status"
       aria-live="polite"
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-white/50 backdrop-blur-[2px]"
+      className="pointer-events-none fixed bottom-4 right-4 z-[100] flex items-center gap-3 rounded-lg bg-white px-4 py-3 shadow-lg ring-1 ring-black/5"
     >
       <style>{`
         @keyframes loading-overlay-slide {
@@ -47,12 +49,10 @@ export default function LoadingOverlay() {
           animation: loading-overlay-slide 1.3s cubic-bezier(0.4, 0, 0.2, 1) infinite;
         }
       `}</style>
-      <div className="flex flex-col items-center gap-3 rounded-lg bg-white px-8 py-6 shadow-lg ring-1 ring-black/5">
-        <div className="relative h-1 w-36 overflow-hidden rounded-full bg-slate-100">
-          <div className="loading-overlay-bar absolute inset-y-0 rounded-full bg-brand-700" />
-        </div>
-        <p className="text-xs font-medium text-slate-500">{label}…</p>
+      <div className="relative h-1 w-16 overflow-hidden rounded-full bg-slate-100">
+        <div className="loading-overlay-bar absolute inset-y-0 rounded-full bg-brand-700" />
       </div>
+      <p className="text-xs font-medium text-slate-600">{label}…</p>
     </div>
   );
 }

@@ -11,7 +11,6 @@ import OrderActionModal from "./OrderActionModal";
 import VerifyDispatchModal from "./VerifyDispatchModal";
 import StockShortageModal from "./StockShortageModal";
 import {
-  ACTIONS_NEEDING_PARAMS,
   BOOKING_ACCOUNTS,
   SMARTLANE_LOAD_SHEET_COURIERS,
   isBookingAccountCourier,
@@ -72,8 +71,10 @@ export default function OrderDetailPanel({ orderId, couriers, bookingAccounts = 
   const [working, setWorking] = useState(false);
   const [scanOpen, setScanOpen] = useState(false);
 
-  async function load() {
-    setLoading(true);
+  // quiet: refresh the order in place (after an action or edit) instead
+  // of swapping the whole panel for "Loading…".
+  async function load({ quiet = false } = {}) {
+    if (!quiet) setLoading(true);
     setError("");
     try {
       const data = await ordersService.get(orderId);
@@ -117,7 +118,7 @@ export default function OrderDetailPanel({ orderId, couriers, bookingAccounts = 
   }
 
   async function refreshAfterChange() {
-    await load();
+    await load({ quiet: true });
     onOrderChanged?.();
   }
 
@@ -148,11 +149,17 @@ export default function OrderDetailPanel({ orderId, couriers, bookingAccounts = 
       return;
     }
 
-    if (ACTIONS_NEEDING_PARAMS.has(action)) {
-      setPendingAction(action);
-    } else {
-      runAction(action, {});
-    }
+    // Everything else opens OrderActionModal first - to collect its params
+    // (its FIELD_BY_ACTION), or just to confirm.
+    setPendingAction(action);
+  }
+
+  function onSubmitPendingAction(params) {
+    // Close the popup right away; the action buttons' spinner (`working`)
+    // shows progress and nothing else is blocked meanwhile.
+    const action = pendingAction;
+    setPendingAction(null);
+    runAction(action, params);
   }
 
   async function runAction(action, params) {
@@ -169,7 +176,6 @@ export default function OrderDetailPanel({ orderId, couriers, bookingAccounts = 
       setError("");
       try {
         await ordersService.printSmartlaneLoadSheetForCouriers([orderId], couriersToPrint);
-        setPendingAction(null);
         await refreshAfterChange();
       } catch (err) {
         setError(err.message || "Print failed");
@@ -198,13 +204,11 @@ export default function OrderDetailPanel({ orderId, couriers, bookingAccounts = 
       });
       const result = results?.[0];
       if (result && result.error_code === "insufficient_stock") {
-        setPendingAction(null);
         setStockShortfall({ rows: [result], action: resolvedAction, params: resolvedParams });
         await refreshAfterChange();
       } else if (result && !result.success) {
         setError(result.error || "Action failed");
       } else {
-        setPendingAction(null);
         await refreshAfterChange();
       }
     } catch (err) {
@@ -216,14 +220,16 @@ export default function OrderDetailPanel({ orderId, couriers, bookingAccounts = 
 
   async function onProceedDespiteShortage() {
     if (!stockShortfall) return;
+    // Same as onSubmitPendingAction: close first, then run.
+    const { action, params } = stockShortfall;
+    setStockShortfall(null);
     setWorking(true);
     try {
       await ordersService.bulkAction({
-        action: stockShortfall.action,
+        action,
         orderIds: [orderId],
-        params: { ...stockShortfall.params, force: true },
+        params: { ...params, force: true },
       });
-      setStockShortfall(null);
       await refreshAfterChange();
     } catch (err) {
       setError(err.message || "Action failed");
@@ -295,14 +301,12 @@ export default function OrderDetailPanel({ orderId, couriers, bookingAccounts = 
               ]
             : couriers
         }
-        submitting={working}
         onClose={() => setPendingAction(null)}
-        onSubmit={(params) => runAction(pendingAction, params)}
+        onSubmit={onSubmitPendingAction}
       />
 
       <StockShortageModal
         shortfalls={stockShortfall?.rows}
-        submitting={working}
         onProceed={onProceedDespiteShortage}
         onClose={() => setStockShortfall(null)}
       />

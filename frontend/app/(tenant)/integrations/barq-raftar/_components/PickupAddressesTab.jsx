@@ -72,6 +72,9 @@ export default function PickupAddressesTab({ status, onChanged, onError, onNotic
   }
 
   async function onSetActive(row) {
+    if (!window.confirm(`Make "${row.name || row.address}" the active pickup address? New bookings go out from here.`)) {
+      return;
+    }
     setSettingActiveId(row.id);
     onError("");
     try {

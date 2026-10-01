@@ -29,7 +29,6 @@ import CsvExportButton from "../../../components/orders/CsvExportButton";
 import DateRangeFilter from "../../../components/orders/DateRangeFilter";
 import {
   ACTIONS_BY_STATUS,
-  ACTIONS_NEEDING_PARAMS,
   BOOKING_ACCOUNTS,
   SMARTLANE_LOAD_SHEET_COURIERS,
   STATUS_TABS,
@@ -161,7 +160,6 @@ export default function OrdersPage() {
   // Set when a push-to-Smartlane was rejected for lack of stock - holds the
   // per-order shortage detail plus the ids to retry with force=true.
   const [stockShortfall, setStockShortfall] = useState(null);
-  const [applyingAction, setApplyingAction] = useState(false);
   const [detailOrderId, setDetailOrderId] = useState(null);
   const [ticketOrder, setTicketOrder] = useState(null);
   const reloadTimer = useRef(null);
@@ -497,13 +495,13 @@ export default function OrdersPage() {
         setAirwayBillFilterOrders(orders.filter((o) => orderIds.includes(o.id)));
         return;
       }
-      setApplyingAction(true);
+      beginLoading("Preparing airway bill");
       try {
         await ordersService.printSmartlaneAirwayBill(orderIds);
       } catch (err) {
         setError(err.message || "Print failed");
       } finally {
-        setApplyingAction(false);
+        endLoading();
       }
       return;
     }
@@ -511,29 +509,33 @@ export default function OrdersPage() {
     // Same shape as print_airway_bill above - BarqRaftar's own labels
     // endpoint returns a document directly, not a bulk-action mutation.
     if (action === "print_barqraftar_labels") {
-      setApplyingAction(true);
+      beginLoading("Preparing labels");
       try {
         await barqraftarService.printLabels(orderIds);
       } catch (err) {
         setError(err.message || "Print failed");
       } finally {
-        setApplyingAction(false);
+        endLoading();
       }
       return;
     }
 
-    if (ACTIONS_NEEDING_PARAMS.has(action)) {
-      setPendingAction({ action, orderIds });
-    } else {
-      runAction(action, orderIds, {});
-    }
+    // Everything else opens OrderActionModal first - to collect its params
+    // (its FIELD_BY_ACTION), or just to confirm.
+    setPendingAction({ action, orderIds });
+  }
+
+  function onSubmitPendingAction(params) {
+    // Close the popup right away and run in the background - the corner
+    // progress pill (LoadingOverlay) shows it's working, and the rest of
+    // the page stays usable meanwhile.
+    const { action, orderIds } = pendingAction;
+    setPendingAction(null);
+    runAction(action, orderIds, params);
   }
 
   async function runAction(action, orderIds, params) {
-    // The centered overlay is reserved for genuinely bulk actions - a
-    // single order already gets adequate feedback from the modal's own
-    // button spinner.
-    const bulk = orderIds.length > 1;
+    const ordersLabel = `${orderIds.length} order${orderIds.length === 1 ? "" : "s"}`;
 
     // Load sheet returns a document instead of mutating state, so it
     // bypasses the bulk-action endpoint entirely - Smartlane generates it
@@ -550,23 +552,19 @@ export default function OrdersPage() {
         courier === "all"
           ? SMARTLANE_LOAD_SHEET_COURIERS.filter((c) => !c.disabled && c.value !== "all").map((c) => c.value)
           : [courier];
-      setApplyingAction(true);
-      if (bulk) beginLoading(`Printing ${orderIds.length} load sheets`);
+      beginLoading(`Printing load sheet for ${ordersLabel}`);
       try {
         await ordersService.printSmartlaneLoadSheetForCouriers(orderIds, couriersToPrint);
-        setPendingAction(null);
         await reloadAfterChange();
       } catch (err) {
         setError(err.message || "Print failed");
       } finally {
-        setApplyingAction(false);
-        if (bulk) endLoading();
+        endLoading();
       }
       return;
     }
 
-    setApplyingAction(true);
-    if (bulk) beginLoading(`Applying to ${orderIds.length} orders`);
+    beginLoading(`Updating ${ordersLabel}`);
     try {
       // "OMS Courier" / "Smartlane" are synthetic entries in the courier
       // picker (see BOOKING_ACCOUNTS), not real Courier rows - selecting one
@@ -588,7 +586,6 @@ export default function OrdersPage() {
       // the override prompt instead of a generic failure.
       const blocked = (data?.results || []).filter((r) => r.error_code === "insufficient_stock");
       if (blocked.length > 0) {
-        setPendingAction(null);
         setStockShortfall({
           rows: blocked,
           action: resolvedAction,
@@ -605,38 +602,35 @@ export default function OrdersPage() {
       // looked exactly like a successful one.
       const failed = (data?.results || []).filter((r) => !r.success);
 
-      setPendingAction(null);
       // After reloadAfterChange(), which clears the error banner on the way in.
       await reloadAfterChange();
       if (failed.length > 0) setError(describeFailures(failed));
     } catch (err) {
       setError(err.message || "Action failed");
     } finally {
-      setApplyingAction(false);
-      if (bulk) endLoading();
+      endLoading();
     }
   }
 
   async function onProceedDespiteShortage() {
     if (!stockShortfall) return;
-    const bulk = stockShortfall.orderIds.length > 1;
-    setApplyingAction(true);
-    if (bulk) beginLoading(`Applying to ${stockShortfall.orderIds.length} orders`);
+    // Same as onSubmitPendingAction: close first, run in the background.
+    const { action, orderIds, params } = stockShortfall;
+    setStockShortfall(null);
+    beginLoading(`Updating ${orderIds.length} order${orderIds.length === 1 ? "" : "s"}`);
     try {
       const data = await ordersService.bulkAction({
-        action: stockShortfall.action,
-        orderIds: stockShortfall.orderIds,
-        params: { ...stockShortfall.params, force: true },
+        action,
+        orderIds,
+        params: { ...params, force: true },
       });
       const failed = (data?.results || []).filter((r) => !r.success);
-      setStockShortfall(null);
       await reloadAfterChange();
       if (failed.length > 0) setError(describeFailures(failed));
     } catch (err) {
       setError(err.message || "Action failed");
     } finally {
-      setApplyingAction(false);
-      if (bulk) endLoading();
+      endLoading();
     }
   }
 
@@ -817,13 +811,11 @@ export default function OrdersPage() {
               ]
             : couriers
         }
-        submitting={applyingAction}
         onClose={() => setPendingAction(null)}
-        onSubmit={(params) => runAction(pendingAction.action, pendingAction.orderIds, params)}
+        onSubmit={onSubmitPendingAction}
       />
       <StockShortageModal
         shortfalls={stockShortfall?.rows}
-        submitting={applyingAction}
         onProceed={onProceedDespiteShortage}
         onClose={() => setStockShortfall(null)}
       />

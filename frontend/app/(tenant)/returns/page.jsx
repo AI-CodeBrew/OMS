@@ -97,7 +97,8 @@ export default function ReturnsPage() {
 
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [confirmCondition, setConfirmCondition] = useState(null); // set to "good" | "bad" to open the dialog
-  const [bulkBusy, setBulkBusy] = useState(false);
+  // The condition ("good"/"bad") of the bulk receive in flight, or null.
+  const [bulkBusy, setBulkBusy] = useState(null);
   const [rowBusyId, setRowBusyId] = useState(null);
   const [notice, setNotice] = useState("");
 
@@ -170,6 +171,11 @@ export default function ReturnsPage() {
   }
 
   async function receiveOne(orderNumber, condition) {
+    const confirmText =
+      condition === "bad"
+        ? `Mark ${orderNumber} as damaged? It's marked received but its stock is not restored.`
+        : `Receive ${orderNumber} as good? Its units go back into stock.`;
+    if (!window.confirm(confirmText)) return;
     setRowBusyId(orderNumber);
     setError("");
     setNotice("");
@@ -189,8 +195,11 @@ export default function ReturnsPage() {
   }
 
   async function runBulkReceive() {
+    // Close the confirm popup right away - the Mark buttons' spinner shows
+    // progress, and nothing else on the page is blocked meanwhile.
     const condition = confirmCondition;
-    setBulkBusy(true);
+    setConfirmCondition(null);
+    setBulkBusy(condition);
     setError("");
     setNotice("");
     try {
@@ -206,12 +215,11 @@ export default function ReturnsPage() {
             ? ` Skipped: ${failed.map((f) => `${f.order_number} (${f.reason})`).join(", ")}`
             : "")
       );
-      setConfirmCondition(null);
       await load();
     } catch (err) {
       setError(err.message || "Bulk receive failed");
     } finally {
-      setBulkBusy(false);
+      setBulkBusy(null);
     }
   }
 
@@ -376,13 +384,18 @@ export default function ReturnsPage() {
               <span className="text-sm font-medium text-brand-900">
                 {selectedRows.length} selected
               </span>
-              <Button onClick={() => setConfirmCondition("good")} disabled={bulkBusy}>
+              <Button
+                onClick={() => setConfirmCondition("good")}
+                disabled={Boolean(bulkBusy)}
+                loading={bulkBusy === "good"}
+              >
                 Mark Good
               </Button>
               <Button
                 variant="secondary"
                 onClick={() => setConfirmCondition("bad")}
-                disabled={bulkBusy}
+                disabled={Boolean(bulkBusy)}
+                loading={bulkBusy === "bad"}
                 className="border-red-200 text-red-700 hover:bg-red-50"
               >
                 Mark Damaged
@@ -548,10 +561,10 @@ export default function ReturnsPage() {
               Already-received parcels are skipped rather than counted twice.
             </p>
             <div className="mt-4 flex justify-end gap-2">
-              <Button variant="secondary" onClick={() => setConfirmCondition(null)} disabled={bulkBusy}>
+              <Button variant="secondary" onClick={() => setConfirmCondition(null)}>
                 Cancel
               </Button>
-              <Button onClick={runBulkReceive} loading={bulkBusy}>
+              <Button onClick={runBulkReceive}>
                 {confirmCondition === "bad" ? "Mark Damaged" : "Mark Good"}
               </Button>
             </div>

@@ -141,6 +141,7 @@ export default function SmartlaneIntegrationPage() {
   // unlike the old version which blocked everything behind the global
   // loading overlay for the whole duration.
   async function onSyncNow() {
+    if (!window.confirm("Sync order statuses from Smartlane now?")) return;
     setError("");
     setNotice("");
     try {
@@ -153,6 +154,7 @@ export default function SmartlaneIntegrationPage() {
   }
 
   async function onCancelSync() {
+    if (!window.confirm("Stop the sync? Orders already updated are kept.")) return;
     try {
       const job = await integrationsService.cancelSmartlaneSync();
       setSyncJob(job);

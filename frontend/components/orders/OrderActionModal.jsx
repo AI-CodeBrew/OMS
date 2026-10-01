@@ -21,6 +21,53 @@ const ACTION_TITLES = {
   print_loadsheet: "Print Load Sheet",
 };
 
+// Actions that need no input still get this popup, as a confirm step:
+// `result` finishes "N orders will ...". Anything not listed falls back
+// to a generic message, so a new action is never run unconfirmed.
+const CONFIRM_BY_ACTION = {
+  acknowledge: {
+    title: "Start processing",
+    button: "Start Processing",
+    result: "move to Pending CC or Pending COD, by payment method",
+  },
+  confirm: { title: "Confirm order(s)", button: "Confirm", result: "move to Awaiting Assigning" },
+  approve: { title: "Approve order(s)", button: "Approve", result: "move to Approved" },
+  dispatch: { title: "Dispatch order(s)", button: "Dispatch", result: "be marked Dispatched" },
+  cancel_fulfillment: {
+    title: "Cancel fulfillment",
+    button: "Cancel Fulfillment",
+    result: "be marked unfulfilled - the order status doesn't change",
+  },
+  abandon_booking: {
+    title: "Not booked - retry",
+    button: "Retry",
+    result:
+      "be checked with Smartlane, and go back to Awaiting Assigning if the booking doesn't exist there",
+  },
+  mark_ready_to_pick: { title: "Ready to Pick", button: "Ready to Pick", result: "move to Ready to Pick" },
+  queue_for_dispatch: {
+    title: "Awaiting Dispatching",
+    button: "Move",
+    result: "move to Awaiting Dispatched",
+  },
+  retry_dispatch: {
+    title: "Retry dispatch",
+    button: "Retry",
+    result: "move back to Awaiting Dispatched",
+  },
+  mark_delivered: { title: "Mark delivered", button: "Mark Delivered", result: "be marked Delivered" },
+  push_to_barqraftar: {
+    title: "Book with BarqRaftar",
+    button: "Book",
+    result: "be booked with BarqRaftar",
+  },
+  barqraftar_ready_for_pickup: {
+    title: "Ready for BarqRaftar pickup",
+    button: "Confirm",
+    result: "be marked ready for BarqRaftar to collect",
+  },
+};
+
 export default function OrderActionModal({ action, couriers, count, onSubmit, onClose, submitting }) {
   const field = action ? FIELD_BY_ACTION[action] : null;
   const [value, setValue] = useState("");
@@ -29,15 +76,38 @@ export default function OrderActionModal({ action, couriers, count, onSubmit, on
     setValue("");
   }, [action]);
 
-  if (!action || !field) return null;
+  if (!action) return null;
+
+  const orders = `${count} order${count === 1 ? "" : "s"}`;
+
+  if (!field) {
+    const confirm = CONFIRM_BY_ACTION[action] || {
+      title: action.replace(/_/g, " "),
+      button: "Confirm",
+      result: "be updated",
+    };
+    return (
+      <Modal open title={confirm.title} onClose={onClose}>
+        <p className="text-sm text-slate-700">
+          {orders} will {confirm.result}. Continue?
+        </p>
+        <div className="mt-4 flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button loading={submitting} onClick={() => onSubmit({})}>
+            {confirm.button}
+          </Button>
+        </div>
+      </Modal>
+    );
+  }
 
   const canSubmit = field.optional || value.trim().length > 0;
 
   return (
     <Modal open title={ACTION_TITLES[action] || action} onClose={onClose}>
-      <p className="mb-3 text-sm text-slate-500">
-        Applying to {count} order{count === 1 ? "" : "s"}.
-      </p>
+      <p className="mb-3 text-sm text-slate-500">Applying to {orders}.</p>
       <label className="block">
         <span className="mb-1 block text-xs font-medium text-slate-700">{field.label}</span>
         {field.type === "courier-select" ? (

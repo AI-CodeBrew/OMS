@@ -288,6 +288,14 @@ export default function IntegrationsPage() {
   }
 
   async function onSync({ full = false, dateFrom: from, dateTo: to, ranges } = {}) {
+    const confirmText = ranges
+      ? `Sync the ${ranges.length} date range${ranges.length === 1 ? "" : "s"} with missing orders from Shopify?`
+      : from || to
+        ? `Sync orders from ${from || "the start"} to ${to || "today"} from Shopify?`
+        : full || !status?.last_synced_at
+          ? "Pull every order from Shopify? This can take a while."
+          : "Sync new orders from Shopify?";
+    if (!window.confirm(confirmText)) return;
     setError("");
     setNotice("");
     try {
@@ -330,6 +338,7 @@ export default function IntegrationsPage() {
   }
 
   async function onCancelSync() {
+    if (!window.confirm("Stop the Shopify sync? Orders already pulled are kept.")) return;
     try {
       const job = await integrationsService.cancelSync();
       setSyncJob(job);
@@ -348,6 +357,7 @@ export default function IntegrationsPage() {
   }
 
   async function onToggleAutoSync(enabled) {
+    if (!window.confirm(`Turn ${enabled ? "on" : "off"} order syncing from Shopify?`)) return;
     setError("");
     try {
       const data = await integrationsService.setAutoSyncOrders(enabled);
@@ -358,6 +368,7 @@ export default function IntegrationsPage() {
   }
 
   async function onTogglePushStatus(enabled) {
+    if (!window.confirm(`Turn ${enabled ? "on" : "off"} status push to Shopify?`)) return;
     setError("");
     try {
       const data = await integrationsService.setPushStatusToShopify(enabled);
@@ -368,6 +379,7 @@ export default function IntegrationsPage() {
   }
 
   async function onToggleWebhooks(enabled) {
+    if (!window.confirm(`Turn ${enabled ? "on" : "off"} real-time Shopify webhooks?`)) return;
     setError("");
     setTogglingWebhooks(true);
     try {

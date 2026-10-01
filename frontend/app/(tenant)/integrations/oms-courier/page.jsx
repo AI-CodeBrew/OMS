@@ -176,6 +176,7 @@ export default function OmsCourierPage() {
   }, [live]);
 
   async function onSyncNow() {
+    if (!window.confirm("Sync order statuses from OMS Courier now?")) return;
     setError("");
     setNotice("");
     try {
@@ -188,6 +189,7 @@ export default function OmsCourierPage() {
   }
 
   async function onCancelSync() {
+    if (!window.confirm("Stop the sync? Orders already updated are kept.")) return;
     try {
       const job = await integrationsService.cancelSmartlaneSync();
       setSyncJob(job);

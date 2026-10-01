@@ -35,19 +35,6 @@ export const SEARCH_FIELDS = [
   { value: "product_name", label: "Product Name" },
 ];
 
-// Actions that need a param OrderActionModal must collect first - the
-// bulk-action endpoint returns 200 with a per-order {success:false} rather
-// than an HTTP error, so calling these with no params wouldn't throw, it
-// would just silently no-op. Shared between the orders page toolbar/row
-// menu and the order detail panel's own action row.
-export const ACTIONS_NEEDING_PARAMS = new Set([
-  "assign_courier",
-  "resolve_city_issue",
-  "mark_dispatch_issue",
-  "cancel",
-  "print_loadsheet",
-]);
-
 // Smartlane generates a load sheet for one courier at a time - these are
 // the picker options; "coming soon" entries mirror the CSV export
 // template's existing pattern for couriers not yet enabled. Leopards and
@@ -148,7 +135,7 @@ export const ACTIONS_BY_STATUS = {
   // startAction/runAction) by fetching a printable document - Smartlane's
   // own real documents, not a plain bulk action, since they need to
   // return a document rather than mutate state. print_loadsheet needs a
-  // courier param (ACTIONS_NEEDING_PARAMS) because Smartlane's load sheet
+  // courier param (OrderActionModal's FIELD_BY_ACTION) because Smartlane's load sheet
   // api is one courier per call; print_airway_bill needs none.
   // Manual Dispatch/Ready to Pick are both fallbacks for when Smartlane's
   // webhook/poller hasn't reported real progress yet - the order

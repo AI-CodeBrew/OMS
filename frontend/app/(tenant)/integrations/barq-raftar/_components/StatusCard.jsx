@@ -60,6 +60,7 @@ export default function StatusCard({ status, onChanged, onDisconnect, onError, o
   }, []);
 
   async function onSyncNow() {
+    if (!window.confirm("Sync shipment statuses from BarqRaftar now?")) return;
     onError("");
     onNotice("");
     try {
@@ -72,6 +73,7 @@ export default function StatusCard({ status, onChanged, onDisconnect, onError, o
   }
 
   async function onCancelSync() {
+    if (!window.confirm("Stop the sync? Shipments already updated are kept.")) return;
     try {
       const job = await barqraftarService.cancelSync();
       setSyncJob(job);

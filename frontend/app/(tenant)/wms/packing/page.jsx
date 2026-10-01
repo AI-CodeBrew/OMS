@@ -85,6 +85,7 @@ export default function PackingPage() {
   }
 
   async function packOne(orderNumber) {
+    if (!window.confirm(`Mark ${orderNumber} as packed? It moves to Awaiting Dispatched.`)) return;
     setError("");
     setNotice("");
     try {
@@ -101,6 +102,10 @@ export default function PackingPage() {
   }
 
   async function runBulkPack() {
+    const n = selectedRows.length;
+    if (!window.confirm(`Mark ${n} order${n === 1 ? "" : "s"} as packed? They move to Awaiting Dispatched.`)) {
+      return;
+    }
     setBulkBusy(true);
     setError("");
     setNotice("");

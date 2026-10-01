@@ -81,6 +81,9 @@ export default function WmsPage() {
   }, [page, pageSize, appliedSearch, stockFilter]);
 
   async function onImportSkus() {
+    if (!window.confirm("Import every SKU from your orders that isn't listed yet? New SKUs start at zero quantity.")) {
+      return;
+    }
     setImporting(true);
     setError("");
     setNotice("");
@@ -100,6 +103,9 @@ export default function WmsPage() {
   }
 
   async function onSyncShopify() {
+    if (!window.confirm("Sync stock from Shopify? Quantities here are replaced with Shopify's on-hand counts.")) {
+      return;
+    }
     setSyncing(true);
     setError("");
     setNotice("");

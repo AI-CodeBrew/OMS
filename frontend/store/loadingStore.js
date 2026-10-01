@@ -1,9 +1,9 @@
 import { create } from "zustand";
 
-// Global switch for the centered LoadingOverlay - a page-level component
-// (Orders list load, bulk actions, CSV export/import, Shopify/Smartlane
-// sync, ...) calls begin()/end() around a slow operation instead of each
-// one managing its own full-screen overlay. Reference-counted via
+// Global switch for LoadingOverlay's corner progress pill - a page-level
+// component (order actions, CSV import, Shopify sync, ...) calls
+// begin()/end() around a slow operation instead of each one managing its
+// own indicator. The pill never blocks the screen. Reference-counted via
 // `count` so two overlapping slow operations don't have the second one's
 // end() hide the overlay while the first is still running.
 export const useLoadingStore = create((set, get) => ({
