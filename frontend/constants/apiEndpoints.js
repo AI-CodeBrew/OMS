@@ -87,7 +87,9 @@ export const API_ENDPOINTS = {
     packingScan: "/api/wms/packing/scan/",
     packingBulkPack: "/api/wms/packing/bulk-pack/",
   },
-  // Added as modules land: finance
+  finance: {
+    bankDetails: "/api/finance/bank-details/",
+  },
 };
 
 export default API_ENDPOINTS;

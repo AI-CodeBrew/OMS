@@ -2,9 +2,12 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import integrationsService from "../../../services/integrationsService";
 import barqraftarService from "./barq-raftar/_lib/barqraftarService";
 import GreenTick from "../../../components/shared/GreenTick";
+import { useBankDetailsGate } from "../../../lib/useBankDetailsGate";
+import BankDetailsModal from "../../../components/billing/BankDetailsModal";
 
 function ShopifyLogo({ className }) {
   return (
@@ -185,7 +188,7 @@ const INTEGRATIONS = [
   },
 ];
 
-function IntegrationCard({ integration, connected }) {
+function IntegrationCard({ integration, connected, onConnect }) {
   return (
     <div
       className={`flex flex-col rounded-xl border border-surface-border bg-white p-5 ${
@@ -218,13 +221,21 @@ function IntegrationCard({ integration, connected }) {
         )}
       </ul>
 
-      {integration.live ? (
+      {integration.live && connected ? (
         <Link
           href={integration.href}
           className="mt-5 inline-flex items-center justify-center rounded-md border border-brand-600 px-4 py-2 text-sm font-medium text-brand-700 transition hover:bg-brand-50"
         >
-          {connected ? `Manage ${integration.name}` : `Connect ${integration.name}`}
+          Manage {integration.name}
         </Link>
+      ) : integration.live ? (
+        <button
+          type="button"
+          onClick={() => onConnect(integration.href)}
+          className="mt-5 inline-flex items-center justify-center rounded-md border border-brand-600 px-4 py-2 text-sm font-medium text-brand-700 transition hover:bg-brand-50"
+        >
+          Connect {integration.name}
+        </button>
       ) : (
         <button
           type="button"
@@ -254,7 +265,13 @@ function HeroGraphic() {
 }
 
 export default function IntegrationsOverviewPage() {
+  const router = useRouter();
   const [connectedMap, setConnectedMap] = useState({});
+  const { requireBankDetails, modalProps } = useBankDetailsGate();
+
+  function onConnect(href) {
+    requireBankDetails(() => router.push(href));
+  }
 
   useEffect(() => {
     integrationsService
@@ -303,9 +320,12 @@ export default function IntegrationsOverviewPage() {
             key={integration.key}
             integration={integration}
             connected={Boolean(connectedMap[integration.key])}
+            onConnect={onConnect}
           />
         ))}
       </div>
+
+      <BankDetailsModal {...modalProps} />
     </div>
   );
 }

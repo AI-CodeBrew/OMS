@@ -49,6 +49,16 @@ export const INTEGRATIONS_ITEM = {
   icon: IntegrationsIcon,
 };
 
+// Invoices FynkTech issues for dispatching this store's orders, plus the
+// bank details FynkTech remits COD to - distinct from the disabled
+// "Invoices" stub under the (not-yet-built) Financify module above.
+export const BILLING_ITEM = {
+  key: "billing",
+  label: "Invoices",
+  href: "/billing",
+  icon: WalletIcon,
+};
+
 export const LOGS_ITEM = {
   key: "logs",
   label: "Logs",
@@ -87,6 +97,7 @@ const MODULE_PATH_PREFIXES = {
   wms: ["/wms", "/returns"],
   finance: ["/finance"],
   integrations: ["/integrations"],
+  billing: ["/billing"],
   logs: ["/logs"],
   reports: ["/reports"],
   batch: ["/batch"],
@@ -140,6 +151,7 @@ export function canAccessPath(user, pathname) {
 
   if (pathname === "/logs" || pathname.startsWith("/logs/")) return isAdmin;
   if (pathname === "/integrations" || pathname.startsWith("/integrations/")) return isAdmin;
+  if (pathname === "/billing" || pathname.startsWith("/billing/")) return isAdmin;
   if (pathname === "/returns" || pathname.startsWith("/returns/")) {
     return hasProduct("oms") || hasProduct("wms");
   }
@@ -185,6 +197,7 @@ export const SIDEBAR_ITEMS = {
     { label: "Reports", disabled: true, icon: BarChartIcon },
   ],
   integrations: [],
+  billing: [],
   logs: [],
   reports: [],
   batch: [],

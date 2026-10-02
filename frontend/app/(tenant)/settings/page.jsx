@@ -11,6 +11,8 @@ import teamService from "../../../services/teamService";
 import storesService from "../../../services/storesService";
 import { invalidateViewCache } from "../../../lib/viewCache";
 import { useEffectiveUser } from "../../../store/authStore";
+import { useBankDetailsGate } from "../../../lib/useBankDetailsGate";
+import BankDetailsModal from "../../../components/billing/BankDetailsModal";
 
 function AccountTab({ user }) {
   const [email, setEmail] = useState("");
@@ -478,6 +480,7 @@ function StoresTab() {
   const [manualName, setManualName] = useState("");
   const [shopifyName, setShopifyName] = useState("");
   const [switchingId, setSwitchingId] = useState("");
+  const { requireBankDetails, modalProps } = useBankDetailsGate();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -509,8 +512,7 @@ function StoresTab() {
     }
   }
 
-  async function onCreateManual(e) {
-    e.preventDefault();
+  async function doCreateManual() {
     setError("");
     setCreating("manual");
     try {
@@ -525,8 +527,7 @@ function StoresTab() {
     }
   }
 
-  async function onCreateShopify(e) {
-    e.preventDefault();
+  async function doCreateShopify() {
     setError("");
     setCreating("shopify");
     try {
@@ -539,6 +540,16 @@ function StoresTab() {
       setError(err.message || "Could not create the store");
       setCreating("");
     }
+  }
+
+  function onCreateManual(e) {
+    e.preventDefault();
+    requireBankDetails(doCreateManual);
+  }
+
+  function onCreateShopify(e) {
+    e.preventDefault();
+    requireBankDetails(doCreateShopify);
   }
 
   return (
@@ -633,6 +644,8 @@ function StoresTab() {
           </Button>
         </div>
       </form>
+
+      <BankDetailsModal {...modalProps} />
     </div>
   );
 }

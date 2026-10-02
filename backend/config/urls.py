@@ -12,5 +12,5 @@ urlpatterns = [
     path("api/oms/", include("oms.urls")),
     path("api/wms/", include("wms.urls")),
     path("api/integrations/", include("integrations.urls")),
-    # finance/ is added here once its urls.py exists.
+    path("api/finance/", include("finance.urls")),
 ]

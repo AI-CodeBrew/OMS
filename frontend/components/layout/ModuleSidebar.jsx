@@ -8,6 +8,7 @@ import {
   SETTINGS_ITEM,
   LOGS_ITEM,
   INTEGRATIONS_ITEM,
+  BILLING_ITEM,
   REPORT_ITEM,
   BATCH_ITEM,
   TICKETS_ITEM,
@@ -189,6 +190,12 @@ export default function ModuleSidebar({ activeModule, expanded, onToggle }) {
               active={
                 pathname === INTEGRATIONS_ITEM.href ||
                 pathname.startsWith(`${INTEGRATIONS_ITEM.href}/`)
+              }
+            />
+            <ItemComponent
+              item={BILLING_ITEM}
+              active={
+                pathname === BILLING_ITEM.href || pathname.startsWith(`${BILLING_ITEM.href}/`)
               }
             />
             <ItemComponent
