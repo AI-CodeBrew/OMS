@@ -492,10 +492,18 @@ export default function OrdersPage() {
 
   const barqraftarConnected = useBarqRaftarStatusStore((s) => s.connected);
 
-  // Memoized so OrderDetailPanel gets a stable prop between renders.
+  // Memoized so OrderDetailPanel gets a stable prop between renders. The
+  // per-org "is X connected" checks these come from don't mean anything
+  // for the Dispatch Hub (no single org to check) - booking there always
+  // offers both and lets the per-order push fail with a clear reason for
+  // whichever store hasn't actually connected that account (see
+  // push_order_to_smartlane).
   const bookingAccounts = useMemo(
-    () => connectedBookingAccounts({ smartlaneConnected, omsCourierConnected }),
-    [smartlaneConnected, omsCourierConnected]
+    () =>
+      user?.isDispatchHub
+        ? connectedBookingAccounts({ smartlaneConnected: true, omsCourierConnected: true })
+        : connectedBookingAccounts({ smartlaneConnected, omsCourierConnected }),
+    [user?.isDispatchHub, smartlaneConnected, omsCourierConnected]
   );
 
   const availableActions = useMemo(() => {
