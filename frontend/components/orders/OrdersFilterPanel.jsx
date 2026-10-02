@@ -2,13 +2,30 @@
 
 import Button from "../shared/Button";
 
-export default function OrdersFilterPanel({ filters, onChange, onApply, onClear, couriers }) {
+export default function OrdersFilterPanel({ filters, onChange, onApply, onClear, couriers, stores }) {
   function update(field) {
     return (e) => onChange({ ...filters, [field]: e.target.value });
   }
 
   return (
     <div className="mb-3 grid grid-cols-2 gap-3 rounded-lg border border-surface-border bg-white p-4 sm:grid-cols-3">
+      {stores ? (
+        <label className="block">
+          <span className="mb-1 block text-xs font-medium text-slate-700">Store</span>
+          <select
+            value={filters.store}
+            onChange={update("store")}
+            className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
+          >
+            <option value="">All Dispatch Hub stores</option>
+            {stores.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
       <label className="block">
         <span className="mb-1 block text-xs font-medium text-slate-700">City</span>
         <input

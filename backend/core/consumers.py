@@ -36,7 +36,7 @@ class OrgOrdersConsumer(AsyncJsonWebsocketConsumer):
         params = dict(pair.split("=", 1) for pair in query.split("&") if "=" in pair)
         token = params.get("token")
 
-        organization_id = None
+        organization_ids = []
         if token:
             try:
                 claims = await sync_to_async(decode_supabase_jwt)(token)
@@ -46,28 +46,38 @@ class OrgOrdersConsumer(AsyncJsonWebsocketConsumer):
                 app_meta = claims.get("app_metadata") or {}
                 user_meta = claims.get("user_metadata") or {}
                 if app_meta.get("role") == "super_admin":
-                    organization_id = await sync_to_async(resolve_active_org_id)(
-                        unquote(params.get("org", ""))
-                    )
+                    if unquote(params.get("hub", "")) == "1":
+                        from .dispatch_hub_service import active_hub_organization_ids
+
+                        organization_ids = await sync_to_async(active_hub_organization_ids)()
+                    else:
+                        organization_id = await sync_to_async(resolve_active_org_id)(
+                            unquote(params.get("org", ""))
+                        )
+                        organization_ids = [organization_id] if organization_id else []
                 else:
                     # Same suspended/removed-org gate as TenantMiddleware.
                     organization_id = await sync_to_async(resolve_active_org_id)(
                         app_meta.get("organization_id") or user_meta.get("organization_id")
                     )
+                    organization_ids = [organization_id] if organization_id else []
 
-        if not organization_id:
+        if not organization_ids:
             # 4401: unauthorized, mirrors the HTTP 401 this would get on a
             # normal API call with a missing/invalid/expired token.
             await self.close(code=4401)
             return
 
-        self.group_name = f"org_{organization_id}_orders"
-        await self.channel_layer.group_add(self.group_name, self.channel_name)
+        # Several groups in Hub mode, exactly one otherwise - order_update
+        # below doesn't care which group a message arrived through.
+        self.group_names = [f"org_{org_id}_orders" for org_id in organization_ids]
+        for group_name in self.group_names:
+            await self.channel_layer.group_add(group_name, self.channel_name)
         await self.accept()
 
     async def disconnect(self, close_code):
-        if getattr(self, "group_name", None):
-            await self.channel_layer.group_discard(self.group_name, self.channel_name)
+        for group_name in getattr(self, "group_names", None) or []:
+            await self.channel_layer.group_discard(group_name, self.channel_name)
 
     # Dispatched for every channel_layer.group_send({"type": "order.update",
     # ...}) call in core/realtime.py - Channels maps the "type" string to

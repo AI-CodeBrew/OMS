@@ -3,8 +3,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import tenantsService from "../../../../services/tenantsService";
+import dispatchHubAdminService from "../../../../services/dispatchHubAdminService";
 import useAuthStore from "../../../../store/authStore";
 import { invalidateViewCache } from "../../../../lib/viewCache";
+import GreenTick from "../../../../components/shared/GreenTick";
 
 function enabledModules(org) {
   return (org.modules || []).filter((m) => m.is_enabled).map((m) => m.module);
@@ -17,6 +19,7 @@ export default function StoresPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
+  const [hubBusyId, setHubBusyId] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -37,14 +40,35 @@ export default function StoresPage() {
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return stores;
-    return stores.filter(
-      (s) =>
-        s.name?.toLowerCase().includes(q) ||
-        s.slug?.toLowerCase().includes(q) ||
-        s.shopify?.shop_domain?.toLowerCase().includes(q)
-    );
+    const filtered = q
+      ? stores.filter(
+          (s) =>
+            s.name?.toLowerCase().includes(q) ||
+            s.slug?.toLowerCase().includes(q) ||
+            s.shopify?.shop_domain?.toLowerCase().includes(q)
+        )
+      : stores;
+    // Dispatch Hub stores float to the top (green tick), same convention
+    // as the store switcher's current-store tick.
+    return [...filtered].sort((a, b) => Number(b.in_dispatch_hub) - Number(a.in_dispatch_hub));
   }, [stores, search]);
+
+  async function toggleHub(org) {
+    setHubBusyId(org.id);
+    setError("");
+    try {
+      if (org.in_dispatch_hub) {
+        await dispatchHubAdminService.removeStore(org.id);
+      } else {
+        await dispatchHubAdminService.addStore(org.id, 0);
+      }
+      await load();
+    } catch (err) {
+      setError(err.message || "Could not update the Dispatch Hub");
+    } finally {
+      setHubBusyId("");
+    }
+  }
 
   function openStore(org) {
     const modules = enabledModules(org);
@@ -93,15 +117,30 @@ export default function StoresPage() {
                   key={org.id}
                   className="flex flex-wrap items-center justify-between gap-3 px-5 py-4"
                 >
-                  <div className="min-w-0">
-                    <p className="truncate font-medium text-slate-900">{org.name}</p>
-                    <p className="mt-0.5 text-xs text-slate-500">
-                      {org.plan}
-                      {modules.length ? ` · ${modules.join(", ")}` : ""}
-                      {shopify?.shop_domain ? ` · ${shopify.shop_domain}` : ""}
-                    </p>
+                  <div className="flex min-w-0 items-center gap-2">
+                    {org.in_dispatch_hub ? <GreenTick /> : <span className="h-4 w-4 shrink-0" />}
+                    <div className="min-w-0">
+                      <p className="truncate font-medium text-slate-900">{org.name}</p>
+                      <p className="mt-0.5 text-xs text-slate-500">
+                        {org.plan}
+                        {modules.length ? ` · ${modules.join(", ")}` : ""}
+                        {shopify?.shop_domain ? ` · ${shopify.shop_domain}` : ""}
+                      </p>
+                    </div>
                   </div>
                   <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      disabled={hubBusyId === org.id}
+                      onClick={() => toggleHub(org)}
+                      className={`rounded-full px-2.5 py-0.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                        org.in_dispatch_hub
+                          ? "bg-brand-50 text-brand-700 hover:bg-brand-100"
+                          : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                      }`}
+                    >
+                      {org.in_dispatch_hub ? "Remove from Hub" : "Add to Hub"}
+                    </button>
                     {shopify ? (
                       <span
                         className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${

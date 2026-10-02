@@ -15,11 +15,16 @@ from .models import (
 
 class PrintBatchSerializer(serializers.ModelSerializer):
     download_url = serializers.SerializerMethodField()
+    # Only meaningful in the super admin's Dispatch Hub, same as
+    # OrderSerializer.store_name above.
+    store_name = serializers.CharField(source="organization.name", read_only=True, default="")
 
     class Meta:
         model = PrintBatch
         fields = [
             "id",
+            "organization_id",
+            "store_name",
             "kind",
             "courier",
             "order_count",
@@ -161,6 +166,10 @@ class OrderTransactionSerializer(serializers.ModelSerializer):
 class OrderSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True)
     courier_name = serializers.CharField(source="courier.name", read_only=True, default="")
+    # Only meaningful when several stores are in view at once (the super
+    # admin's Dispatch Hub) - harmless, if redundant, on every ordinary
+    # single-store page, which already knows its own one store.
+    store_name = serializers.CharField(source="organization.name", read_only=True, default="")
     cancelled_pct = serializers.SerializerMethodField()
     returned_pct = serializers.SerializerMethodField()
     delivered_pct = serializers.SerializerMethodField()
@@ -177,6 +186,8 @@ class OrderSerializer(serializers.ModelSerializer):
         model = Order
         fields = [
             "id",
+            "organization_id",
+            "store_name",
             "supabase_order_no",
             "order_number",
             "customer_name",

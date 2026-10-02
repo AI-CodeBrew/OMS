@@ -13,9 +13,11 @@ export default function OrdersTable({
   onRowAction,
   onOpenDetail,
   onRaiseTicket,
+  showStoreColumn = false,
 }) {
   const allSelected = orders.length > 0 && orders.every((o) => selectedIds.has(o.id));
   const someSelected = orders.some((o) => selectedIds.has(o.id));
+  const columnCount = showStoreColumn ? 19 : 18;
 
   return (
     <div className="max-h-[70vh] overflow-auto rounded-lg border border-surface-border bg-white">
@@ -29,6 +31,7 @@ export default function OrdersTable({
                 onChange={() => onToggleSelectAll(orders)}
               />
             </th>
+            {showStoreColumn ? <th className="w-28 px-3 py-2">Store</th> : null}
             <th className="w-16 px-3 py-2">OMS Order ID</th>
             <th className="w-20 px-3 py-2">Store Order ID</th>
             <th className="w-40 px-3 py-2">Customer Name</th>
@@ -51,13 +54,13 @@ export default function OrdersTable({
         <tbody className="text-sm">
           {loading && orders.length === 0 ? (
             <tr>
-              <td colSpan={18} className="px-4 py-6 text-center text-slate-500">
+              <td colSpan={columnCount} className="px-4 py-6 text-center text-slate-500">
                 Loading…
               </td>
             </tr>
           ) : orders.length === 0 ? (
             <tr>
-              <td colSpan={18} className="px-4 py-6 text-center text-slate-500">
+              <td colSpan={columnCount} className="px-4 py-6 text-center text-slate-500">
                 No orders in this view.
               </td>
             </tr>
@@ -67,6 +70,13 @@ export default function OrdersTable({
                 <td className="px-3 py-1.5">
                   <Checkbox checked={selectedIds.has(order.id)} onChange={() => onToggleSelect(order.id)} />
                 </td>
+                {showStoreColumn ? (
+                  <td className="px-3 py-1.5 text-slate-700">
+                    <div className="truncate" title={order.store_name}>
+                      {order.store_name || "—"}
+                    </div>
+                  </td>
+                ) : null}
                 <td className="px-3 py-1.5 text-slate-700">{order.supabase_order_no ?? "—"}</td>
                 <td className="px-3 py-1.5">
                   <div className="truncate font-semibold text-slate-900" title={order.order_number}>

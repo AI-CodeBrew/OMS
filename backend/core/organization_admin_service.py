@@ -71,6 +71,12 @@ def _members_payload(memberships, email_map=None):
     return members
 
 
+def _hub_organization_ids():
+    from .models import DispatchHubStore
+
+    return {str(i) for i in DispatchHubStore.objects.values_list("organization_id", flat=True)}
+
+
 def list_organizations(*, include_emails=False):
     """List orgs from Postgres. Emails are optional (extra Auth Admin calls).
 
@@ -89,13 +95,17 @@ def list_organizations(*, include_emails=False):
         ]
         email_map = _emails_for_user_ids(user_ids)
 
+    # One query for the whole Hub roster rather than one per org below -
+    # see _serialize_org's hub_ids param.
+    hub_ids = _hub_organization_ids()
+
     results = []
     for org in orgs:
         memberships = list(org.memberships.all())
         members = _members_payload(
             memberships, email_map if include_emails else None
         )
-        results.append(_serialize_org(org, members))
+        results.append(_serialize_org(org, members, hub_ids=hub_ids))
     return results
 
 
@@ -295,7 +305,7 @@ def update_member_credentials(user_id, *, email=None, password=None):
     }
 
 
-def _serialize_org(org, members):
+def _serialize_org(org, members, hub_ids=None):
     shopify = None
     try:
         from integrations.models import ShopifyConnection
@@ -324,6 +334,9 @@ def _serialize_org(org, members):
         "plan": org.plan,
         "is_active": org.is_active,
         "is_manual_store": org.is_manual_store,
+        "in_dispatch_hub": (
+            str(org.id) in hub_ids if hub_ids is not None else hasattr(org, "dispatch_hub_entry")
+        ),
         "created_at": org.created_at.isoformat(),
         "modules": [
             {"module": m.module, "is_enabled": m.is_enabled} for m in org.modules.all()

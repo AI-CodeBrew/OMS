@@ -4,7 +4,12 @@ import uuid
 from django.conf import settings
 from django.http import HttpResponseForbidden, JsonResponse
 
-from .context import current_is_super_admin, current_organization_id, current_user_id
+from .context import (
+    current_is_super_admin,
+    current_organization_id,
+    current_organization_ids,
+    current_user_id,
+)
 from .jwt_utils import InvalidSupabaseToken, decode_supabase_jwt
 
 logger = logging.getLogger(__name__)
@@ -17,6 +22,10 @@ ADMIN_API_PREFIXES = ("/api/core/admin/",)
 STORE_SWITCH_PREFIXES = ("/api/core/stores/",)
 
 ACT_AS_HEADER = "HTTP_X_ACT_AS_ORGANIZATION"
+# Operate every store in the Dispatch Hub at once instead of a single
+# "act as" store - mutually exclusive with ACT_AS_HEADER (the frontend
+# only ever sends one or the other).
+HUB_HEADER = "HTTP_X_DISPATCH_HUB"
 MUTATING_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 
 ORG_SUSPENDED_CODE = "organization_suspended"
@@ -86,6 +95,7 @@ class TenantMiddleware:
     def __call__(self, request):
         request.user_id = None
         request.organization_id = None
+        request.organization_ids = None
         request.is_super_admin = False
         request.is_org_admin = False
         request.modules = []
@@ -143,6 +153,7 @@ class TenantMiddleware:
             )
 
         act_as = request.META.get(ACT_AS_HEADER)
+        hub = request.META.get(HUB_HEADER)
         is_admin_api = request.path.startswith(ADMIN_API_PREFIXES)
         if act_as and request.is_super_admin and not is_admin_api:
             org_id = resolve_active_org_id(act_as)
@@ -156,10 +167,27 @@ class TenantMiddleware:
             request.acting_as_org = True
             request.is_org_admin = True
             request.modules = enabled_modules_for_org(org_id)
+        elif hub and request.is_super_admin and not is_admin_api:
+            from .dispatch_hub_service import active_hub_organization_ids
 
-        # While acting as a store, the ORM must scope to that store only -
-        # TenantManager returns every org's rows when is_super_admin is set.
+            org_ids = [str(i) for i in active_hub_organization_ids()]
+            if not org_ids:
+                return JsonResponse(
+                    {"detail": "No stores in the Dispatch Hub."}, status=403
+                )
+            request.organization_ids = org_ids
+            request.acting_as_org = True
+            request.is_org_admin = True
+            # Hub stores vary in which modules they themselves have enabled,
+            # but FynkTech dispatches regardless of that - Orders/Batch/
+            # Returns/Reports (oms+wms) are always available from here.
+            request.modules = ["oms", "wms"]
+
+        # While acting as a store (or several, in the Hub), the ORM must
+        # scope to those stores only - TenantManager returns every org's
+        # rows when is_super_admin is set.
         org_token = current_organization_id.set(request.organization_id)
+        orgs_token = current_organization_ids.set(request.organization_ids)
         user_token = current_user_id.set(request.user_id)
         admin_token = current_is_super_admin.set(
             request.is_super_admin and not request.acting_as_org
@@ -171,6 +199,7 @@ class TenantMiddleware:
             return response
         finally:
             current_organization_id.reset(org_token)
+            current_organization_ids.reset(orgs_token)
             current_user_id.reset(user_token)
             current_is_super_admin.reset(admin_token)
 
@@ -178,14 +207,18 @@ class TenantMiddleware:
     def _audit_acting_request(request, response):
         from .rbac import write_audit_log
 
-        try:
-            write_audit_log(
-                organization_id=request.organization_id,
-                action="super_admin_action",
-                summary=f"Super admin: {request.method} {request.path}",
-                actor_user_id=request.user_id,
-                actor_email=request.auth_email,
-                metadata={"status": getattr(response, "status_code", None)},
-            )
-        except Exception:
-            logger.exception("Failed to write super-admin audit log")
+        org_ids = request.organization_ids or (
+            [request.organization_id] if request.organization_id else []
+        )
+        for org_id in org_ids:
+            try:
+                write_audit_log(
+                    organization_id=org_id,
+                    action="super_admin_action",
+                    summary=f"Super admin: {request.method} {request.path}",
+                    actor_user_id=request.user_id,
+                    actor_email=request.auth_email,
+                    metadata={"status": getattr(response, "status_code", None)},
+                )
+            except Exception:
+                logger.exception("Failed to write super-admin audit log")

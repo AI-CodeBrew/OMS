@@ -112,9 +112,18 @@ export function getActiveModule(pathname) {
   return match ? match[0] : null;
 }
 
+// Operating the Dispatch Hub spans several stores at once, so the usual
+// module-tab model (OMS/WMS/Financify, each its own store-shaped world)
+// doesn't apply - one fixed set of pages instead, none of them WMS
+// inventory/Settings/Integrations/Billing (all genuinely single-store).
+const HUB_ALLOWED_PREFIXES = ["/dashboard", "/orders", "/returns", "/reports", "/batch", "/tickets"];
+
 /** Header tabs visible for the current user (JWT modules + org-admin gates). */
 export function getVisibleModules(user) {
   if (!user) return [];
+  if (user.isDispatchHub) {
+    return [{ key: "oms", label: "Dispatch Hub", href: "/dashboard" }];
+  }
   const isAdmin = user.role === "org_admin" || user.isOrgAdmin || user.role === "super_admin";
   const modules = Array.isArray(user.modules) ? user.modules : [];
   const hasProduct = (key) => {
@@ -139,6 +148,9 @@ export function getDefaultModuleHref(user) {
 
 export function canAccessPath(user, pathname) {
   if (!user) return false;
+  if (user.isDispatchHub) {
+    return HUB_ALLOWED_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+  }
   if (pathname === "/settings" || pathname.startsWith("/settings/")) return true;
   if (pathname === "/tickets" || pathname.startsWith("/tickets/")) return true;
 
@@ -204,3 +216,13 @@ export const SIDEBAR_ITEMS = {
   settings: [],
   tickets: [],
 };
+
+// The Dispatch Hub's own sidebar - same pages as the oms/wms ones above,
+// minus anything genuinely single-store (WMS inventory/packing, the
+// disabled Financify stubs). Used instead of SIDEBAR_ITEMS[activeModule]
+// whenever user.isDispatchHub (see ModuleSidebar).
+export const HUB_SIDEBAR_ITEMS = [
+  { label: "Dashboard", href: "/dashboard", icon: DashboardIcon },
+  { label: "All Orders", href: "/orders", icon: GridIcon },
+  { label: "Returns Desk", href: "/returns", icon: UndoIcon },
+];

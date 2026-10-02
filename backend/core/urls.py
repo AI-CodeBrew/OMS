@@ -21,6 +21,16 @@ urlpatterns = [
         admin_views.update_member,
         name="admin-update-member",
     ),
+    path(
+        "admin/dispatch-hub/",
+        admin_views.dispatch_hub_stores,
+        name="admin-dispatch-hub-stores",
+    ),
+    path(
+        "admin/dispatch-hub/<uuid:organization_id>/",
+        admin_views.dispatch_hub_store_detail,
+        name="admin-dispatch-hub-store-detail",
+    ),
     # Lives in the integrations app but is mounted here on purpose: the
     # /api/core/admin/ prefix is what AdminIPAllowlistMiddleware matches.
     path("admin/smartlane/", include("integrations.admin_urls")),

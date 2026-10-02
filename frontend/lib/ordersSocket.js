@@ -9,6 +9,9 @@ function buildSocketUrl() {
   if (!token) return null;
   const wsBase = apiConfig.baseUrl.replace(/^http/, "ws");
   const url = `${wsBase}/ws/orders/?token=${encodeURIComponent(token)}`;
+  if (user?.role === "super_admin" && actingStore?.hub) {
+    return `${url}&hub=1`;
+  }
   if (user?.role === "super_admin" && actingStore?.id) {
     return `${url}&org=${encodeURIComponent(actingStore.id)}`;
   }

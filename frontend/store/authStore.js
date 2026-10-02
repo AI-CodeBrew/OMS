@@ -58,7 +58,9 @@ export const useAuthStore = create((set, get) => ({
   refreshToken: null,
   user: null,
   hydrated: false,
-  // { id, name, modules } of the store a super admin is currently operating.
+  // { id, name, modules, is_manual_store } of the store a super admin is
+  // operating, or { hub: true, name, modules, storeCount } while operating
+  // the Dispatch Hub (several stores at once - see useEffectiveUser below).
   actingStore: null,
 
   hydrateFromStorage: () => {
@@ -112,7 +114,10 @@ export const useAuthStore = create((set, get) => ({
   },
 }));
 
-/** The user as tenant screens should see them: a super admin operating a store acts as its org admin. */
+/** The user as tenant screens should see them: a super admin operating a
+ * store acts as its org admin; operating the Dispatch Hub acts as an org
+ * admin of no single store (isDispatchHub: true - components that need to
+ * know, e.g. ModuleSidebar, OrdersTable's Store column, check that flag). */
 export function useEffectiveUser() {
   const user = useAuthStore((s) => s.user);
   const actingStore = useAuthStore((s) => s.actingStore);
@@ -120,11 +125,12 @@ export function useEffectiveUser() {
     if (!user || user.role !== "super_admin" || !actingStore) return user;
     return {
       ...user,
-      organization_id: actingStore.id,
+      organization_id: actingStore.id || null,
       organization_name: actingStore.name,
       modules: actingStore.modules || [],
       is_manual_store: Boolean(actingStore.is_manual_store),
       isOrgAdmin: true,
+      isDispatchHub: Boolean(actingStore.hub),
     };
   }, [user, actingStore]);
 }

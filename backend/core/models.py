@@ -2,7 +2,7 @@ import uuid
 
 from django.db import models
 
-from .context import current_is_super_admin, current_organization_id
+from .context import current_is_super_admin, current_organization_id, current_organization_ids
 
 
 class TenantManager(models.Manager):
@@ -16,6 +16,9 @@ class TenantManager(models.Manager):
         qs = super().get_queryset()
         if current_is_super_admin.get():
             return qs
+        organization_ids = current_organization_ids.get()
+        if organization_ids:
+            return qs.filter(organization_id__in=organization_ids)
         organization_id = current_organization_id.get()
         if organization_id is None:
             return qs.none()
@@ -147,3 +150,30 @@ class OrganizationAuditLog(TenantScopedModel):
 
     def __str__(self):
         return f"{self.action} @ {self.organization_id}"
+
+
+class DispatchHubStore(models.Model):
+    """Stores the super admin has pulled into the Dispatch Hub - operated
+    together as one multi-store Orders/Batch/Dashboard/Returns/Reports view
+    (see middleware.py's X-Dispatch-Hub handling). Platform-level config
+    about which orgs are in the Hub, not tenant business data - plain
+    Manager, never filtered by TenantManager, same reasoning as
+    Organization/Membership above."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.OneToOneField(
+        Organization, on_delete=models.CASCADE, related_name="dispatch_hub_entry"
+    )
+    # What FynkTech bills this store per dispatched order - the default an
+    # invoice draft starts from (see finance.Invoice in a later phase),
+    # editable per invoice afterwards.
+    per_order_rate = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    added_by = models.UUIDField(null=True, blank=True)
+    added_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = '"core"."dispatch_hub_stores"'
+        ordering = ["organization__name"]
+
+    def __str__(self):
+        return f"Dispatch Hub: {self.organization_id}"

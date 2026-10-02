@@ -60,7 +60,9 @@ class AuthService {
     if (token) {
       headers.Authorization = `Bearer ${token}`;
     }
-    if (user?.role === "super_admin" && actingStore?.id) {
+    if (user?.role === "super_admin" && actingStore?.hub) {
+      headers["X-Dispatch-Hub"] = "1";
+    } else if (user?.role === "super_admin" && actingStore?.id) {
       headers["X-Act-As-Organization"] = actingStore.id;
     }
     return headers;

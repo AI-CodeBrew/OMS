@@ -233,6 +233,21 @@ def resolve_city_issue(order, *, new_city, actor_user_id=None):
 
 
 def assign_courier(order, *, courier_id, actor_user_id=None):
+    # Courier rows are per-org (see Courier's unique-together) - this only
+    # ever matters when the picker could possibly list another store's
+    # courier alongside this order's own, i.e. a super admin's Dispatch
+    # Hub (several stores' Courier rows all in one dropdown). A plain
+    # single-store request can't trigger this: its own courier list never
+    # contains another org's id to begin with.
+    try:
+        courier = Courier.all_objects.get(id=courier_id)
+    except Courier.DoesNotExist as exc:
+        raise InvalidTransition(f"Courier {courier_id} not found") from exc
+    if str(courier.organization_id) != str(order.organization_id):
+        raise InvalidTransition(
+            f"Courier {courier.name!r} belongs to a different store than order "
+            f"{order.order_number} - pick that store's own courier instead."
+        )
     return _transition(
         order,
         "awaiting_approval",
@@ -692,17 +707,22 @@ def scan_return(*, organization_id, order_number, reason="", actor_user_id=None)
 
 # --- Read helpers ------------------------------------------------------
 
-def get_probability_map(*, organization_id, phone_numbers):
+def get_probability_map(*, organization_filter, phone_numbers):
     """Historical cancelled/returned/delivered percentages per customer
     phone number, computed once per list-request for only the phone
     numbers on the current page (not a per-row query, not stored on
-    Order - avoids a stale-cache/write-fanout problem)."""
+    Order - avoids a stale-cache/write-fanout problem).
+
+    `organization_filter` is core.scoping.org_filter(request)'s dict -
+    {"organization_id": id} normally, {"organization_id__in": ids} for a
+    super admin operating the Dispatch Hub - so a phone number is never
+    compared across stores that don't actually share it."""
     phone_numbers = [p for p in set(phone_numbers) if p]
     if not phone_numbers:
         return {}
 
     rows = (
-        Order.objects.filter(organization_id=organization_id, customer_phone__in=phone_numbers)
+        Order.objects.filter(customer_phone__in=phone_numbers, **organization_filter)
         .values("customer_phone")
         .annotate(
             total=Count("id"),

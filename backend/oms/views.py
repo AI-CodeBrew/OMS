@@ -1,4 +1,5 @@
 import csv
+import io
 import logging
 from datetime import timedelta
 
@@ -13,6 +14,7 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.context import tenant_context
 from core.permissions import RequireAnyModule, RequireModule
 from core.redis_client import (
     acquire_rebuild_lock,
@@ -27,6 +29,7 @@ from core.redis_client import (
     set_cached_list,
     wait_for_rebuild,
 )
+from core.scoping import is_hub_request, org_filter
 from integrations.barqraftar.exceptions import BarqRaftarBookingError
 from wms.services import InsufficientStock
 
@@ -55,6 +58,15 @@ from .serializers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _with_tenant_context(organization_id, fn):
+    """Runs fn() with the ORM narrowed to one org - for writes made while
+    operating the Dispatch Hub, whose ambient context is scoped to every
+    Hub store at once (see core/context.py's tenant_context)."""
+    with tenant_context(organization_id):
+        return fn()
+
 
 SEARCHABLE_FIELDS = {
     "order_number": "order_number__icontains",
@@ -138,12 +150,15 @@ class OrderViewSet(viewsets.ModelViewSet):
         return super().get_permissions()
 
     def get_queryset(self):
-        # Order.objects already scopes to the caller's organization via
+        # Order.objects already scopes to the caller's organization(s) via
         # TenantScopedModel's manager; filtering explicitly here too keeps
-        # the query readable without relying on that being remembered.
+        # the query readable without relying on that being remembered. This
+        # queryset backs get_object() too, so every detail action (notes,
+        # transactions, log, split, loadsheet, ...) is Dispatch-Hub-aware
+        # for free.
         qs = (
-            Order.objects.filter(organization_id=self.request.organization_id)
-            .select_related("courier", "parent_order")
+            Order.objects.filter(**org_filter(self.request))
+            .select_related("courier", "parent_order", "organization")
             .prefetch_related("items")
         )
         return self._apply_filters(qs, self.request.query_params)
@@ -151,7 +166,11 @@ class OrderViewSet(viewsets.ModelViewSet):
     def _list_cache_parts(self, request):
         """Return (status, page, page_size) when this list request is the
         unfiltered tab-switch path, else None. Search/date/city/etc. must
-        not share a key with the plain tab view."""
+        not share a key with the plain tab view. The Dispatch Hub never
+        uses this cache at all - it's keyed per single org, and a hub
+        request has none (see core/redis_client.py)."""
+        if is_hub_request(request):
+            return None
         extra = [
             v
             for k, v in request.query_params.items()
@@ -168,7 +187,7 @@ class OrderViewSet(viewsets.ModelViewSet):
     def _base_order_qs(self, organization_id):
         return (
             Order.objects.filter(organization_id=organization_id)
-            .select_related("courier", "parent_order")
+            .select_related("courier", "parent_order", "organization")
             .prefetch_related("items")
         )
 
@@ -222,7 +241,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         total = qs.count()
         rows = list(qs[:page_size])
         probability_map = services.get_probability_map(
-            organization_id=organization_id,
+            organization_filter={"organization_id": organization_id},
             phone_numbers=[o.customer_phone for o in rows],
         )
         serializer = self.get_serializer(
@@ -303,7 +322,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         rows = page if page is not None else queryset
         phone_numbers = [o.customer_phone for o in rows]
         probability_map = services.get_probability_map(
-            organization_id=request.organization_id, phone_numbers=phone_numbers
+            organization_filter=org_filter(request), phone_numbers=phone_numbers
         )
         serializer = self.get_serializer(
             rows, many=True, context={**self.get_serializer_context(), "probability_map": probability_map}
@@ -356,6 +375,13 @@ class OrderViewSet(viewsets.ModelViewSet):
                 qs = qs.filter(condition)
                 if search_field == "product_name":
                     qs = qs.distinct()
+
+        # Dispatch Hub only (meaningless, and never sent, otherwise - a
+        # single-store page already implies exactly one store) - narrows
+        # the combined view down to one of its stores.
+        store = params.get("store")
+        if store:
+            qs = qs.filter(organization_id=store)
 
         city = params.get("city")
         if city:
@@ -413,24 +439,53 @@ class OrderViewSet(viewsets.ModelViewSet):
         if not q:
             return Response({"results": []})
         names = (
-            OrderItem.objects.filter(
-                order__organization_id=request.organization_id, product_name__icontains=q
-            )
+            OrderItem.objects.filter(product_name__icontains=q, **org_filter(request))
             .order_by("product_name")
             .values_list("product_name", flat=True)
             .distinct()[:10]
         )
         return Response({"results": list(names)})
 
+    def _resolve_target_org(self, request):
+        """The org a write with no order-id context (create, CSV import)
+        should land in: request.organization_id normally, or an explicit
+        `organization_id` from the request naming one of the Dispatch Hub's
+        own stores when operating the Hub (it has no single org of its
+        own). Returns (organization_id, error_response | None)."""
+        if not is_hub_request(request):
+            return request.organization_id, None
+        target = request.data.get("organization_id")
+        if not target or str(target) not in request.organization_ids:
+            return None, Response(
+                {"detail": "organization_id is required and must be one of the Dispatch Hub's stores."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return str(target), None
+
     def create(self, request, *args, **kwargs):
+        organization_id, error = self._resolve_target_org(request)
+        if error:
+            return error
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        order = services.create_order(
-            organization_id=request.organization_id,
-            order_number=serializer.validated_data["order_number"],
-            customer_name=serializer.validated_data["customer_name"],
-            customer_phone=serializer.validated_data.get("customer_phone", ""),
-            items=serializer.validated_data["items"],
+
+        def _do_create():
+            return services.create_order(
+                organization_id=organization_id,
+                order_number=serializer.validated_data["order_number"],
+                customer_name=serializer.validated_data["customer_name"],
+                customer_phone=serializer.validated_data.get("customer_phone", ""),
+                items=serializer.validated_data["items"],
+            )
+
+        # In Hub mode the ambient context is scoped to every Hub store, not
+        # this one specific org - narrow it for the write itself so
+        # TenantScopedModel writes (and anything _apply_transition-style
+        # that reads `.objects` right back) land correctly.
+        order = (
+            _do_create()
+            if not is_hub_request(request)
+            else _with_tenant_context(organization_id, _do_create)
         )
         output = self.get_serializer(order)
         return Response(output.data, status=status.HTTP_201_CREATED)
@@ -438,7 +493,7 @@ class OrderViewSet(viewsets.ModelViewSet):
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
         probability_map = services.get_probability_map(
-            organization_id=request.organization_id, phone_numbers=[instance.customer_phone]
+            organization_filter=org_filter(request), phone_numbers=[instance.customer_phone]
         )
         serializer = self.get_serializer(
             instance, context={**self.get_serializer_context(), "probability_map": probability_map}
@@ -472,13 +527,17 @@ class OrderViewSet(viewsets.ModelViewSet):
         # this with no other params) so it's the only one worth caching -
         # see core/redis_client.py. A request carrying search/date/city/etc
         # filters bypasses the cache entirely rather than risk serving one
-        # filter combination's counts under another's key.
-        cacheable = not any(v for v in params_without_status.values())
+        # filter combination's counts under another's key. The Dispatch
+        # Hub spans several orgs, which that single-org cache was never
+        # keyed for, so it always takes this uncached path too.
+        cacheable = not any(v for v in params_without_status.values()) and not is_hub_request(
+            request
+        )
         if cacheable:
             return Response(self._counts_payload(request.organization_id))
 
         qs = self._apply_filters(
-            Order.objects.filter(organization_id=request.organization_id), params_without_status
+            Order.objects.filter(**org_filter(request)), params_without_status
         )
         rows = qs.values("status").annotate(count=Count("id"))
         counts = {value: 0 for value, _label in Order.STATUS_CHOICES}
@@ -492,7 +551,14 @@ class OrderViewSet(viewsets.ModelViewSet):
         """Load every Orders status tab (page 1) plus requested Dashboard
         ranges in one request. One DB connection, Redis filled, so the
         first paint is complete and a later tab click does not hit
-        Postgres. Called again after a WebSocket invalidation."""
+        Postgres. Called again after a WebSocket invalidation.
+
+        No-op in the Dispatch Hub: every cache this fills is keyed per
+        single org (core/redis_client.py), and list()/counts()/dashboard()
+        already compute directly - with nothing missing - whenever
+        is_hub_request() is true, so there's nothing useful to pre-warm."""
+        if is_hub_request(request):
+            return Response({"counts": None, "lists": {}, "dashboards": {}})
         try:
             page_size = int(request.query_params.get("page_size") or OrderPagination.page_size)
         except (TypeError, ValueError):
@@ -536,6 +602,11 @@ class OrderViewSet(viewsets.ModelViewSet):
         Defaults to a dry run - the caller must pass dry_run=false to
         actually write, so the UI can show what would change first.
         """
+        if is_hub_request(request):
+            return Response(
+                {"detail": "Open the specific store to import a courier sheet for it."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         upload = request.FILES.get("file")
         if not upload:
             return Response(
@@ -579,6 +650,11 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         Defaults to a dry run - the caller must pass apply=true to write.
         """
+        if is_hub_request(request):
+            return Response(
+                {"detail": "Open the specific store to import orders for it."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         upload = request.FILES.get("file")
         if not upload:
             return Response(
@@ -622,7 +698,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         if params.get("export") == "csv":
             return self._returns_csv(request, params)
         qs = self._apply_filters(
-            Order.objects.filter(organization_id=request.organization_id, status="returned"),
+            Order.objects.filter(status="returned", **org_filter(request)),
             params,
         )
         total = qs.count()
@@ -633,7 +709,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         # reached status="returned" yet, so they're outside `qs` entirely.
         in_progress_qs = self._apply_filters(
             Order.objects.filter(
-                organization_id=request.organization_id, return_in_progress_at__isnull=False
+                return_in_progress_at__isnull=False, **org_filter(request)
             ).exclude(status="returned"),
             params,
         )
@@ -654,7 +730,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         so they're tallied separately by return_in_progress_at and merged
         into the same date rows."""
         qs = self._apply_filters(
-            Order.objects.filter(organization_id=request.organization_id, status="returned"),
+            Order.objects.filter(status="returned", **org_filter(request)),
             params,
         ).annotate(_date=Coalesce(TruncDate("returned_at"), TruncDate("created_at")))
         by_day = qs.values("_date").annotate(
@@ -665,7 +741,7 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         in_progress_qs = self._apply_filters(
             Order.objects.filter(
-                organization_id=request.organization_id, return_in_progress_at__isnull=False
+                return_in_progress_at__isnull=False, **org_filter(request)
             ).exclude(status="returned"),
             params,
         ).annotate(_date=Coalesce(TruncDate("return_in_progress_at"), TruncDate("created_at")))
@@ -720,7 +796,9 @@ class OrderViewSet(viewsets.ModelViewSet):
             for k, v in request.query_params.items()
             if k not in ("date_from", "date_to") and v
         ]
-        cacheable = not extra
+        # Dashboard caching is keyed per single org - a Hub request always
+        # computes directly, same as counts()/list() above.
+        cacheable = not extra and not is_hub_request(request)
         date_from = request.query_params.get("date_from") or ""
         date_to = request.query_params.get("date_to") or ""
         if cacheable:
@@ -729,12 +807,23 @@ class OrderViewSet(viewsets.ModelViewSet):
                 return Response(cached)
 
         queryset = self._apply_filters(
-            Order.objects.filter(organization_id=request.organization_id), request.query_params
+            Order.objects.filter(**org_filter(request)), request.query_params
         )
         payload = self._dashboard_payload(queryset)
         if cacheable:
             set_cached_dashboard(request.organization_id, date_from, date_to, payload)
         return Response(payload)
+
+    def _order_orgs_in_hub(self, request, order_ids):
+        """{order_id: organization_id} for exactly the selected ids that
+        belong to one of the Hub's own stores - used to split a batch
+        BarqRaftar call (which only takes one org at a time) into one call
+        per store, without trusting ids the client sent but doesn't
+        actually have Hub access to."""
+        rows = Order.objects.filter(id__in=order_ids, **org_filter(request)).values_list(
+            "id", "organization_id"
+        )
+        return {str(oid): str(org_id) for oid, org_id in rows}
 
     @action(detail=False, methods=["post"], url_path="bulk-action")
     def bulk_action(self, request):
@@ -748,23 +837,46 @@ class OrderViewSet(viewsets.ModelViewSet):
         # integrations.barqraftar.services.book_orders, whose result shape
         # matches BULK_ACTIONS' own loop exactly (including
         # error_code="insufficient_stock"), so the stock-shortage modal and
-        # its force-retry need no frontend changes.
-        if action_name == "push_to_barqraftar":
+        # its force-retry need no frontend changes. book_orders() takes one
+        # org at a time, so a Dispatch Hub selection spanning several
+        # stores is split into one batch call per store and the per-order
+        # results merged back into a single list, same shape either way.
+        if action_name in ("push_to_barqraftar", "barqraftar_ready_for_pickup"):
             from integrations.barqraftar import services as barqraftar_services
 
-            results = barqraftar_services.book_orders(
-                request.organization_id, order_ids,
-                actor_user_id=request.user_id, force=bool(params.get("force")),
+            org_by_order = (
+                self._order_orgs_in_hub(request, order_ids)
+                if is_hub_request(request)
+                else {str(oid): request.organization_id for oid in order_ids}
             )
-            return Response({"results": results})
+            by_org = {}
+            for order_id in order_ids:
+                org_id = org_by_order.get(str(order_id))
+                if org_id:
+                    by_org.setdefault(org_id, []).append(order_id)
 
-        # Same idea: one BarqRaftar status-change call for all selected
-        # orders (Pending -> Awaiting Pickup on BarqRaftar's side only; the
-        # OMS status itself doesn't change), same per-order result shape.
-        if action_name == "barqraftar_ready_for_pickup":
-            from integrations.barqraftar import services as barqraftar_services
-
-            results = barqraftar_services.mark_ready_for_pickup(request.organization_id, order_ids)
+            results = []
+            for org_id, ids in by_org.items():
+                if action_name == "push_to_barqraftar":
+                    results += _with_tenant_context(
+                        org_id,
+                        lambda ids=ids, org_id=org_id: barqraftar_services.book_orders(
+                            org_id, ids, actor_user_id=request.user_id,
+                            force=bool(params.get("force")),
+                        ),
+                    )
+                else:
+                    results += _with_tenant_context(
+                        org_id,
+                        lambda ids=ids, org_id=org_id: barqraftar_services.mark_ready_for_pickup(
+                            org_id, ids
+                        ),
+                    )
+            missing = set(str(oid) for oid in order_ids) - set(org_by_order)
+            results += [
+                {"order_id": order_id, "success": False, "error": "Not found"}
+                for order_id in missing
+            ]
             return Response({"results": results})
 
         handler = BULK_ACTIONS.get(action_name)
@@ -777,9 +889,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         results = []
         orders_by_id = {
             str(order.id): order
-            for order in Order.objects.filter(
-                organization_id=request.organization_id, id__in=order_ids
-            )
+            for order in Order.objects.filter(id__in=order_ids, **org_filter(request))
         }
         for order_id in order_ids:
             order = orders_by_id.get(str(order_id))
@@ -787,7 +897,11 @@ class OrderViewSet(viewsets.ModelViewSet):
                 results.append({"order_id": order_id, "success": False, "error": "Not found"})
                 continue
             try:
-                handler(order, params, actor)
+                # Narrows the ORM to this order's own store for the
+                # handler's duration - a no-op outside the Dispatch Hub
+                # (already the same single org), required inside it (the
+                # ambient context there spans every Hub store at once).
+                _with_tenant_context(order.organization_id, lambda: handler(order, params, actor))
                 results.append({"order_id": order_id, "success": True})
             except InsufficientStock as exc:
                 # Structured rather than a flat message: the UI needs the
@@ -849,16 +963,45 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         return Response({"results": results})
 
+    def _resolve_scan_org(self, request, order_number):
+        """Which store `order_number` belongs to - request.organization_id
+        normally, or (order_number being unique per store, not globally)
+        whichever one Hub store actually has it when operating the
+        Dispatch Hub. Returns (organization_id, result_dict | None)."""
+        if not is_hub_request(request):
+            return request.organization_id, None
+        matches = list(
+            Order.objects.filter(order_number=order_number, **org_filter(request))
+            .values_list("organization_id", flat=True)
+            .distinct()
+        )
+        if not matches:
+            return None, {"success": False, "reason": "not_found", "order_number": order_number}
+        if len(matches) > 1:
+            return None, {
+                "success": False,
+                "reason": "That order number exists in more than one Hub store - open the "
+                "specific store to scan it.",
+                "order_number": order_number,
+            }
+        return str(matches[0]), None
+
     @action(detail=False, methods=["post"], url_path="scan-dispatch")
     def scan_dispatch(self, request):
         order_number = (request.data.get("order_number") or "").strip()
         if not order_number:
             return Response({"detail": "order_number is required"}, status=status.HTTP_400_BAD_REQUEST)
-        result = services.scan_dispatch(
-            organization_id=request.organization_id,
-            order_number=order_number,
-            tracking_number=(request.data.get("tracking_number") or "").strip(),
-            actor_user_id=request.user_id,
+        organization_id, error = self._resolve_scan_org(request, order_number)
+        if error:
+            return Response(error)
+        result = _with_tenant_context(
+            organization_id,
+            lambda: services.scan_dispatch(
+                organization_id=organization_id,
+                order_number=order_number,
+                tracking_number=(request.data.get("tracking_number") or "").strip(),
+                actor_user_id=request.user_id,
+            ),
         )
         return Response(result)
 
@@ -867,11 +1010,17 @@ class OrderViewSet(viewsets.ModelViewSet):
         order_number = (request.data.get("order_number") or "").strip()
         if not order_number:
             return Response({"detail": "order_number is required"}, status=status.HTTP_400_BAD_REQUEST)
-        result = services.scan_return(
-            organization_id=request.organization_id,
-            order_number=order_number,
-            reason=(request.data.get("reason") or "").strip(),
-            actor_user_id=request.user_id,
+        organization_id, error = self._resolve_scan_org(request, order_number)
+        if error:
+            return Response(error)
+        result = _with_tenant_context(
+            organization_id,
+            lambda: services.scan_return(
+                organization_id=organization_id,
+                order_number=order_number,
+                reason=(request.data.get("reason") or "").strip(),
+                actor_user_id=request.user_id,
+            ),
         )
         return Response(result)
 
@@ -949,6 +1098,34 @@ class OrderViewSet(viewsets.ModelViewSet):
             )
         return next(iter(connections.values())), None
 
+    @staticmethod
+    def _group_orders_by_org(orders):
+        """Preserves first-seen order so a single-store selection (the
+        overwhelming common case, including every non-Hub request) takes
+        exactly the same path it always did - one group, no merge."""
+        groups = {}
+        for order in orders:
+            groups.setdefault(str(order.organization_id), []).append(order)
+        return groups
+
+    @staticmethod
+    def _merge_pdfs(pdf_byte_list):
+        """One store's selection never reaches this - only a Dispatch Hub
+        print spanning several stores' own Smartlane accounts does, each
+        rendered separately (Smartlane has no multi-account batch call)
+        and stitched together here, same pypdf pattern BarqRaftar's label
+        merge already uses (integrations/barqraftar/views.py)."""
+        if len(pdf_byte_list) == 1:
+            return pdf_byte_list[0]
+        from pypdf import PdfWriter
+
+        writer = PdfWriter()
+        for pdf_bytes in pdf_byte_list:
+            writer.append(fileobj=io.BytesIO(pdf_bytes))
+        buffer = io.BytesIO()
+        writer.write(buffer)
+        return buffer.getvalue()
+
     def _save_print_batch(self, *, organization_id, kind, courier, order_numbers, content, content_type, actor_user_id):
         """Keeps a permanent copy of exactly what was generated, so the
         Batch page can offer it back later without re-hitting Smartlane -
@@ -1005,7 +1182,13 @@ class OrderViewSet(viewsets.ModelViewSet):
         """Real airway bill PDF for the given orders, rendered from
         Smartlane's own portal page (see smartlane_client.render_airway_
         bill_pdf) - matches whichever courier Smartlane actually booked
-        (Leopards, BarqRaftar, ...), not a local guess."""
+        (Leopards, BarqRaftar, ...), not a local guess.
+
+        A Dispatch Hub selection can span several stores, each printed
+        through its own Smartlane account - rendered one store at a time
+        and merged into one PDF (see _group_orders_by_org/_merge_pdfs); a
+        single-store selection (every non-Hub request) takes the same one
+        group, no-merge path it always did."""
         from integrations import smartlane_client
 
         order_ids = request.data.get("order_ids") or []
@@ -1013,32 +1196,35 @@ class OrderViewSet(viewsets.ModelViewSet):
             return Response({"detail": "order_ids is required"}, status=status.HTTP_400_BAD_REQUEST)
 
         orders = list(
-            Order.objects.filter(organization_id=request.organization_id, id__in=order_ids)
-            .select_related("courier")
+            Order.objects.filter(id__in=order_ids, **org_filter(request)).select_related("courier")
         )
         if not orders:
             return Response({"detail": "No matching orders"}, status=status.HTTP_404_NOT_FOUND)
-        order_numbers = [o.order_number for o in orders]
 
-        connection, error = self._smartlane_connection_or_error(orders)
-        if error:
-            return error
+        pdf_parts = []
+        for organization_id, org_orders in self._group_orders_by_org(orders).items():
+            connection, error = self._smartlane_connection_or_error(org_orders)
+            if error:
+                return error
+            org_order_numbers = [o.order_number for o in org_orders]
+            try:
+                pdf_bytes = smartlane_client.render_airway_bill_pdf(
+                    connection.api_key, org_order_numbers
+                )
+            except smartlane_client.SmartlaneAPIError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+            self._save_print_batch(
+                organization_id=organization_id,
+                kind="airway_bill",
+                courier="",
+                order_numbers=org_order_numbers,
+                content=pdf_bytes,
+                content_type="application/pdf",
+                actor_user_id=request.user_id,
+            )
+            pdf_parts.append(pdf_bytes)
 
-        try:
-            pdf_bytes = smartlane_client.render_airway_bill_pdf(connection.api_key, order_numbers)
-        except smartlane_client.SmartlaneAPIError as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
-
-        self._save_print_batch(
-            organization_id=request.organization_id,
-            kind="airway_bill",
-            courier="",
-            order_numbers=order_numbers,
-            content=pdf_bytes,
-            content_type="application/pdf",
-            actor_user_id=request.user_id,
-        )
-        return HttpResponse(pdf_bytes, content_type="application/pdf")
+        return HttpResponse(self._merge_pdfs(pdf_parts), content_type="application/pdf")
 
     @action(detail=False, methods=["post"], url_path="smartlane-load-sheet")
     def smartlane_load_sheet(self, request):
@@ -1061,19 +1247,16 @@ class OrderViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        order_numbers = None
-        if order_ids:
-            orders = list(
-                Order.objects.filter(organization_id=request.organization_id, id__in=order_ids)
-                .select_related("courier")
-            )
-            if not orders:
-                return Response({"detail": "No matching orders"}, status=status.HTTP_404_NOT_FOUND)
-            order_numbers = [o.order_number for o in orders]
-            connection, error = self._smartlane_connection_or_error(orders)
-        else:
-            # A date range names no orders to go by - use the org's own
-            # account, or OMS Courier when that's the only one.
+        if not order_ids:
+            # A date range names no orders to go by, so there's nothing to
+            # group by store - the Hub has to be told which store's account
+            # to use explicitly, same as create()/import-orders above.
+            if is_hub_request(request):
+                return Response(
+                    {"detail": "Select specific orders to print across Dispatch Hub stores, or "
+                               "open the specific store to print by date range."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             from integrations.models import SmartlaneConnection
 
             connected = SmartlaneConnection.objects.filter(
@@ -1082,38 +1265,64 @@ class OrderViewSet(viewsets.ModelViewSet):
             connection = (
                 connected.filter(kind=SmartlaneConnection.KIND_OWN).first() or connected.first()
             )
-            error = None if connection else Response(
-                {"detail": "Connect Smartlane from the Integrations page first."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if error:
-            return error
-
-        try:
-            pdf_bytes = smartlane_client.render_load_sheet_pdf(
-                connection.api_key,
+            if not connection:
+                return Response(
+                    {"detail": "Connect Smartlane from the Integrations page first."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            try:
+                pdf_bytes = smartlane_client.render_load_sheet_pdf(
+                    connection.api_key, courier=courier, store_order_ids=None,
+                    start_date=start_date, end_date=end_date,
+                )
+            except smartlane_client.SmartlaneAPIError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+            self._save_print_batch(
+                organization_id=request.organization_id,
+                kind="loadsheet",
                 courier=courier,
-                store_order_ids=order_numbers,
-                start_date=start_date,
-                end_date=end_date,
+                order_numbers=[],
+                content=pdf_bytes,
+                content_type="application/pdf",
+                actor_user_id=request.user_id,
             )
-        except smartlane_client.SmartlaneAPIError as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+            # Downloading no longer transitions the order - it stays
+            # visibly "Ready to Print" through as many downloads as
+            # needed, only a real dispatch signal moves it on. See
+            # ALLOWED_TRANSITIONS.
+            return HttpResponse(pdf_bytes, content_type="application/pdf")
 
-        self._save_print_batch(
-            organization_id=request.organization_id,
-            kind="loadsheet",
-            courier=courier,
-            order_numbers=order_numbers or [],
-            content=pdf_bytes,
-            content_type="application/pdf",
-            actor_user_id=request.user_id,
+        orders = list(
+            Order.objects.filter(id__in=order_ids, **org_filter(request)).select_related("courier")
         )
+        if not orders:
+            return Response({"detail": "No matching orders"}, status=status.HTTP_404_NOT_FOUND)
 
-        # Downloading no longer transitions the order - it stays visibly
-        # "Ready to Print" through as many downloads as needed, only a
-        # real dispatch signal moves it on. See ALLOWED_TRANSITIONS.
-        return HttpResponse(pdf_bytes, content_type="application/pdf")
+        pdf_parts = []
+        for organization_id, org_orders in self._group_orders_by_org(orders).items():
+            connection, error = self._smartlane_connection_or_error(org_orders)
+            if error:
+                return error
+            org_order_numbers = [o.order_number for o in org_orders]
+            try:
+                pdf_bytes = smartlane_client.render_load_sheet_pdf(
+                    connection.api_key, courier=courier, store_order_ids=org_order_numbers,
+                    start_date=start_date, end_date=end_date,
+                )
+            except smartlane_client.SmartlaneAPIError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+            self._save_print_batch(
+                organization_id=organization_id,
+                kind="loadsheet",
+                courier=courier,
+                order_numbers=org_order_numbers,
+                content=pdf_bytes,
+                content_type="application/pdf",
+                actor_user_id=request.user_id,
+            )
+            pdf_parts.append(pdf_bytes)
+
+        return HttpResponse(self._merge_pdfs(pdf_parts), content_type="application/pdf")
 
     @action(detail=True, methods=["get", "post"])
     def notes(self, request, pk=None):
@@ -1189,21 +1398,22 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get"])
     def export(self, request):
-        org_id = request.organization_id
-        queryset = self._apply_filters(
-            Order.objects.filter(organization_id=org_id), request.query_params
-        )
-        template = request.query_params.get("template", "all")
+        org_kwargs = org_filter(request)
         # StreamingHttpResponse doesn't actually run its generator until
         # after this view returns and the middleware chain has already
         # unwound - by then TenantMiddleware's contextvar has been reset,
-        # so any lazy `order.items.all()` call made inside the generator
-        # would silently see no tenant context and return nothing (not an
-        # error - the tenant-scoped manager just fails closed). Prefetching
-        # with an explicit `all_objects` queryset bakes the real org_id in
-        # now, while the context is still valid, so the cache it populates
-        # is correct regardless of when the generator actually iterates it.
-        items_prefetch = Prefetch("items", queryset=OrderItem.all_objects.filter(organization_id=org_id))
+        # so anything here that relied on ambient tenant context (rather
+        # than an explicit filter) would silently see none and return
+        # nothing (not an error - the tenant-scoped manager just fails
+        # closed). `all_objects` + the org_kwargs captured above now, while
+        # the context is still valid, removes that dependency entirely -
+        # both querysets are correct regardless of when the generator
+        # actually iterates them.
+        queryset = self._apply_filters(
+            Order.all_objects.filter(**org_kwargs), request.query_params
+        )
+        template = request.query_params.get("template", "all")
+        items_prefetch = Prefetch("items", queryset=OrderItem.all_objects.filter(**org_kwargs))
 
         class Echo:
             def write(self, value):
@@ -1371,11 +1581,25 @@ class CourierViewSet(viewsets.ModelViewSet):
     required_module = "oms"
 
     def get_queryset(self):
-        return Courier.objects.filter(organization_id=self.request.organization_id)
+        return Courier.objects.filter(**org_filter(self.request))
 
     def list(self, request, *args, **kwargs):
-        services.ensure_default_couriers(request.organization_id)
+        for organization_id in request.organization_ids or [request.organization_id]:
+            if organization_id:
+                services.ensure_default_couriers(organization_id)
         return super().list(request, *args, **kwargs)
+
+    def create(self, request, *args, **kwargs):
+        # A hand-added courier belongs to one specific store's account -
+        # the Dispatch Hub has no "current store" of its own to assume, so
+        # this is one of the few writes it simply doesn't offer (same as
+        # import-csv/import-orders above); add it from the store directly.
+        if is_hub_request(request):
+            return Response(
+                {"detail": "Open the specific store to add a courier for it."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return super().create(request, *args, **kwargs)
 
     def perform_create(self, serializer):
         serializer.save(organization_id=self.request.organization_id)
@@ -1394,7 +1618,7 @@ class PrintBatchViewSet(viewsets.ReadOnlyModelViewSet):
     pagination_class = OrderPagination
 
     def get_queryset(self):
-        qs = PrintBatch.objects.filter(organization_id=self.request.organization_id)
+        qs = PrintBatch.objects.filter(**org_filter(self.request)).select_related("organization")
         kind = self.request.query_params.get("kind")
         if kind:
             qs = qs.filter(kind=kind)
@@ -1438,9 +1662,11 @@ class DailyReadyToPrintView(APIView):
     required_module = "oms"
 
     def get(self, request):
-        events = OrderStatusEvent.objects.filter(
-            organization_id=request.organization_id, to_status="ready_to_print"
-        ).select_related("order", "order__courier").prefetch_related("order__items")
+        events = (
+            OrderStatusEvent.objects.filter(to_status="ready_to_print", **org_filter(request))
+            .select_related("order", "order__courier", "order__organization")
+            .prefetch_related("order__items")
+        )
 
         date_from = request.query_params.get("date_from")
         date_to = request.query_params.get("date_to")
@@ -1488,6 +1714,7 @@ class DailyReadyToPrintView(APIView):
                     {
                         "id": str(order.id),
                         "order_number": order.order_number,
+                        "store_name": order.organization.name,
                         "items": [
                             {"product_name": item.product_name}
                             for item in order.items.all()
@@ -1516,7 +1743,7 @@ class TicketViewSet(viewsets.ModelViewSet):
     pagination_class = OrderPagination
 
     def get_queryset(self):
-        qs = Ticket.objects.filter(organization_id=self.request.organization_id).select_related("order")
+        qs = Ticket.objects.filter(**org_filter(self.request)).select_related("order")
         if self.action == "list":
             order_id = self.request.query_params.get("order")
             if order_id:
@@ -1540,9 +1767,29 @@ class TicketViewSet(viewsets.ModelViewSet):
                 )
         return qs
 
+    def create(self, request, *args, **kwargs):
+        # A standalone ticket (no order) has nothing to infer a store from -
+        # the Dispatch Hub has no "current store" of its own, so it needs
+        # one named explicitly. A ticket raised from an order's own Tickets
+        # tab (the normal path) already carries one in its validated data
+        # (see perform_create), so this never blocks that.
+        if is_hub_request(request) and not request.data.get("order"):
+            target = request.data.get("organization_id")
+            if not target or str(target) not in request.organization_ids:
+                return Response(
+                    {"detail": "organization_id is required for a standalone ticket raised "
+                               "from the Dispatch Hub."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        return super().create(request, *args, **kwargs)
+
     def perform_create(self, serializer):
+        order = serializer.validated_data.get("order")
+        organization_id = (
+            str(order.organization_id) if order else self.request.data.get("organization_id")
+        ) or self.request.organization_id
         serializer.save(
-            organization_id=self.request.organization_id,
+            organization_id=organization_id,
             created_by_user_id=self.request.user_id,
             created_by_email=getattr(self.request, "auth_email", "") or "",
             status="open",
@@ -1585,7 +1832,7 @@ class ReportView(APIView):
     required_module = "oms"
 
     def _scoped_queryset(self, request):
-        qs = Order.objects.filter(organization_id=request.organization_id)
+        qs = Order.objects.filter(**org_filter(request))
         date_from = request.query_params.get("date_from")
         date_to = request.query_params.get("date_to")
         date_field = Coalesce("placed_at", "created_at")

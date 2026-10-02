@@ -18,6 +18,7 @@ import {
 import { warmupViewsInBackground } from "../../../lib/warmupViews";
 import couriersService from "../../../services/couriersService";
 import integrationsService from "../../../services/integrationsService";
+import dispatchHubAdminService from "../../../services/dispatchHubAdminService";
 import useLoadingStore from "../../../store/loadingStore";
 import { useEffectiveUser } from "../../../store/authStore";
 import Button from "../../../components/shared/Button";
@@ -79,11 +80,19 @@ const CreateTicketDialog = dynamic(() => import("../../../components/tickets/Cre
   ssr: false,
 });
 
-const EMPTY_FILTERS = { city: "", courier_id: "", gateway: "", date_from: "", date_to: "" };
+const EMPTY_FILTERS = { city: "", courier_id: "", gateway: "", date_from: "", date_to: "", store: "" };
 const TAB_STATUSES = STATUS_TABS.map((tab) => tab.value);
 
 function isPlainTabQuery(queryParams) {
-  return !queryParams.search && !queryParams.city && !queryParams.courier_id && !queryParams.gateway && !queryParams.date_from && !queryParams.date_to;
+  return (
+    !queryParams.search &&
+    !queryParams.city &&
+    !queryParams.courier_id &&
+    !queryParams.gateway &&
+    !queryParams.date_from &&
+    !queryParams.date_to &&
+    !queryParams.store
+  );
 }
 
 // Patches one order in/out of/within `list` - a pure function (no state
@@ -162,6 +171,7 @@ export default function OrdersPage() {
   const [returnOpen, setReturnOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [importOrdersOpen, setImportOrdersOpen] = useState(false);
+  const [hubStoreOptions, setHubStoreOptions] = useState(null);
   const [pendingAction, setPendingAction] = useState(null); // { action, orderIds }
   const [airwayBillFilterOrders, setAirwayBillFilterOrders] = useState(null);
   // Set when a push-to-Smartlane was rejected for lack of stock - holds the
@@ -390,6 +400,15 @@ export default function OrdersPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (!user?.isDispatchHub) return;
+    dispatchHubAdminService
+      .listStores()
+      .then((stores) => setHubStoreOptions(stores.map((s) => ({ id: s.id, name: s.name }))))
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.isDispatchHub]);
 
   useEffect(() => {
     couriersService.list().then(setCouriers).catch(() => {});
@@ -655,9 +674,15 @@ export default function OrdersPage() {
     <div>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h1 className="text-[28px] font-semibold leading-8 text-slate-900">Local Orders</h1>
+          <h1 className="text-[28px] font-semibold leading-8 text-slate-900">
+            {user?.isDispatchHub ? "Dispatch Hub Orders" : "Local Orders"}
+          </h1>
           <p className="mt-1 text-sm text-slate-500">
-            {counts == null ? "Loading orders…" : `${counts.all ?? 0} orders for your organization.`}
+            {counts == null
+              ? "Loading orders…"
+              : user?.isDispatchHub
+                ? `${counts.all ?? 0} orders across every Dispatch Hub store.`
+                : `${counts.all ?? 0} orders for your organization.`}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -673,11 +698,13 @@ export default function OrdersPage() {
               setAppliedFilters((f) => ({ ...f, date_from: "", date_to: "" }));
             }}
           />
-          <Button variant="secondary" onClick={() => setNewOrderOpen(true)}>
-            New Order
-          </Button>
+          {!user?.isDispatchHub ? (
+            <Button variant="secondary" onClick={() => setNewOrderOpen(true)}>
+              New Order
+            </Button>
+          ) : null}
           <CsvExportButton filterParams={queryParams} />
-          {user?.is_manual_store ? (
+          {user?.isDispatchHub ? null : user?.is_manual_store ? (
             <Button variant="secondary" onClick={() => setImportOrdersOpen(true)}>
               Import orders
             </Button>
@@ -743,6 +770,7 @@ export default function OrdersPage() {
             filters={filters}
             onChange={setFilters}
             couriers={couriers}
+            stores={user?.isDispatchHub ? hubStoreOptions || [] : null}
             onApply={() => setAppliedFilters(filters)}
             onClear={() => {
               setFilters(EMPTY_FILTERS);
@@ -783,6 +811,7 @@ export default function OrdersPage() {
           onRowAction={(action, order) => startAction(action, [order.id])}
           onOpenDetail={setDetailOrderId}
           onRaiseTicket={setTicketOrder}
+          showStoreColumn={Boolean(user?.isDispatchHub)}
         />
 
         <Pagination

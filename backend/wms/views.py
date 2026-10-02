@@ -10,6 +10,7 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 
 from core.permissions import RequireModule
+from core.scoping import org_filter
 from oms import services as oms_services
 from oms.models import Order
 
@@ -214,18 +215,23 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
         return qs
 
 
-def _orders_by_number(organization_id, order_numbers):
+def _orders_by_number(org_kwargs, order_numbers):
     """One query for a whole batch, keyed by order number - a bulk action
     over a page of selected rows shouldn't be a query per row. Used by the
     table's own bulk-select actions, which already know exactly which
-    orders they mean - unlike a scan, there's no barcode to resolve."""
-    orders = Order.objects.filter(
-        organization_id=organization_id, order_number__in=order_numbers
-    )
+    orders they mean - unlike a scan, there's no barcode to resolve.
+
+    `org_kwargs` is core.scoping.org_filter(request)'s dict - one store
+    normally, every Dispatch Hub store when a super admin is operating
+    several at once (safe here either way: every downstream service call
+    below derives its own org from the Order row, never from request/
+    ambient context, so an order from any matched store works unmodified).
+    """
+    orders = Order.objects.filter(order_number__in=order_numbers, **org_kwargs)
     return {order.order_number: order for order in orders}
 
 
-def _find_order(organization_id, request_data):
+def _find_order(org_kwargs, request_data):
     """Resolves the order a scan/manual-entry or a table action refers to.
 
     The physical label on a parcel carries the courier's tracking number
@@ -240,15 +246,11 @@ def _find_order(organization_id, request_data):
     """
     tracking_number = (request_data.get("tracking_number") or "").strip()
     if tracking_number:
-        order = Order.objects.filter(
-            organization_id=organization_id, tracking_number=tracking_number
-        ).first()
+        order = Order.objects.filter(tracking_number=tracking_number, **org_kwargs).first()
         return order, tracking_number
 
     order_number = (request_data.get("order_number") or "").strip()
-    order = Order.objects.filter(
-        organization_id=organization_id, order_number=order_number
-    ).first()
+    order = Order.objects.filter(order_number=order_number, **org_kwargs).first()
     return order, order_number
 
 
@@ -323,7 +325,7 @@ class ReturnRestockView(viewsets.ViewSet):
             return Response(
                 {"detail": "tracking_number is required"}, status=status.HTTP_400_BAD_REQUEST
             )
-        order, raw_identifier = _find_order(request.organization_id, request.data)
+        order, raw_identifier = _find_order(org_filter(request), request.data)
         return Response(_lookup_return(order, raw_identifier))
 
     @action(detail=False, methods=["post"], url_path="scan")
@@ -338,7 +340,7 @@ class ReturnRestockView(viewsets.ViewSet):
                 {"detail": "condition must be 'good' or 'bad'"}, status=status.HTTP_400_BAD_REQUEST
             )
 
-        order, raw_identifier = _find_order(request.organization_id, request.data)
+        order, raw_identifier = _find_order(org_filter(request), request.data)
         return Response(
             _receive_return(
                 order,
@@ -372,7 +374,7 @@ class ReturnRestockView(viewsets.ViewSet):
                 {"detail": "condition must be 'good' or 'bad'"}, status=status.HTTP_400_BAD_REQUEST
             )
 
-        found = _orders_by_number(request.organization_id, order_numbers)
+        found = _orders_by_number(org_filter(request), order_numbers)
         note = (request.data.get("note") or "")[:255]
         actor_email = getattr(request, "auth_email", "") or ""
         results = [
@@ -430,7 +432,7 @@ class PackingView(viewsets.ViewSet):
                 {"detail": "tracking_number is required"}, status=status.HTTP_400_BAD_REQUEST
             )
 
-        order, raw_identifier = _find_order(request.organization_id, request.data)
+        order, raw_identifier = _find_order(org_filter(request), request.data)
         return Response(
             _pack_order(
                 order,
@@ -450,7 +452,7 @@ class PackingView(viewsets.ViewSet):
                 {"detail": "order_numbers is required"}, status=status.HTTP_400_BAD_REQUEST
             )
 
-        found = _orders_by_number(request.organization_id, order_numbers)
+        found = _orders_by_number(org_filter(request), order_numbers)
         actor_email = getattr(request, "auth_email", "") or ""
         results = [
             _pack_order(

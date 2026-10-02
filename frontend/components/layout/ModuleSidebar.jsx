@@ -5,6 +5,7 @@ import { usePathname, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
   SIDEBAR_ITEMS,
+  HUB_SIDEBAR_ITEMS,
   SETTINGS_ITEM,
   LOGS_ITEM,
   INTEGRATIONS_ITEM,
@@ -147,7 +148,7 @@ export default function ModuleSidebar({ activeModule, expanded, onToggle }) {
   const user = useEffectiveUser();
   const isOrgAdmin =
     user?.role === "org_admin" || user?.isOrgAdmin === true || user?.role === "super_admin";
-  const items = SIDEBAR_ITEMS[activeModule] || [];
+  const items = user?.isDispatchHub ? HUB_SIDEBAR_ITEMS : SIDEBAR_ITEMS[activeModule] || [];
   const ItemComponent = expanded ? FullLink : RailIcon;
   const asideRef = useRef(null);
 
@@ -183,7 +184,7 @@ export default function ModuleSidebar({ activeModule, expanded, onToggle }) {
       </nav>
 
       <div className={`mt-2 space-y-1 border-t border-brand-900 pt-2 ${expanded ? "" : "w-full"}`}>
-        {isOrgAdmin ? (
+        {isOrgAdmin && !user?.isDispatchHub ? (
           <>
             <ItemComponent
               item={INTEGRATIONS_ITEM}
@@ -210,7 +211,9 @@ export default function ModuleSidebar({ activeModule, expanded, onToggle }) {
           item={TICKETS_ITEM}
           active={pathname === TICKETS_ITEM.href || pathname.startsWith(`${TICKETS_ITEM.href}/`)}
         />
-        <ItemComponent item={SETTINGS_ITEM} active={pathname === SETTINGS_ITEM.href} />
+        {!user?.isDispatchHub ? (
+          <ItemComponent item={SETTINGS_ITEM} active={pathname === SETTINGS_ITEM.href} />
+        ) : null}
       </div>
     </aside>
   );

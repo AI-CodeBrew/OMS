@@ -5,6 +5,8 @@ export const API_ENDPOINTS = {
     organizations: "/api/core/admin/organizations/",
     organization: (id) => `/api/core/admin/organizations/${id}/`,
     user: (id) => `/api/core/admin/users/${id}/`,
+    dispatchHub: "/api/core/admin/dispatch-hub/",
+    dispatchHubStore: (id) => `/api/core/admin/dispatch-hub/${id}/`,
     // Smartlane Business API. Under /api/core/admin/ so it inherits the
     // backend's IP allowlist, even though the code lives in the
     // integrations app.
