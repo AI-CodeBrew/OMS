@@ -37,4 +37,7 @@ urlpatterns = [
     # Same reason - lives in the oms app (Ticket FKs Order) but is mounted
     # here for the IP allowlist.
     path("admin/tickets/", include("oms.admin_urls")),
+    # Same reason - lives in the finance app but is mounted here for the
+    # IP allowlist.
+    path("admin/invoices/", include("finance.admin_urls")),
 ]

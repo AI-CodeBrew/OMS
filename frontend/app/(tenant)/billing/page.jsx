@@ -133,14 +133,13 @@ function InvoicesTab() {
               <td className="px-4 py-2 capitalize text-slate-600">{inv.status}</td>
               <td className="px-4 py-2 text-right font-medium text-slate-900">{inv.total}</td>
               <td className="px-4 py-2 text-right">
-                <a
-                  href={inv.print_url}
-                  target="_blank"
-                  rel="noreferrer"
+                <button
+                  type="button"
+                  onClick={() => financeService.openInvoicePrint(inv.id)}
                   className="text-xs font-medium text-brand-600 hover:underline"
                 >
                   View / Print
-                </a>
+                </button>
               </td>
             </tr>
           ))}

@@ -1,9 +1,13 @@
+from django.http import HttpResponse
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 
 from core.permissions import IsOrgAdmin
 
+from . import invoice_service
+from .invoice_service import InvoiceError
 from .models import BankDetails
+from .rendering import invoice_print_html
 
 IBAN_LENGTH = 24  # Pakistani IBAN: "PK" + 2 check digits + 20 alphanumerics
 
@@ -65,3 +69,47 @@ def bank_details(request):
         },
     )
     return Response({"success": True, "bank_details": _serialize(details)})
+
+
+@api_view(["GET"])
+@permission_classes([IsOrgAdmin])
+def invoices(request):
+    """Issued/paid only - a draft is FynkTech's own working document, not
+    something the store should see (see invoice_service.list_invoices_for_store)."""
+    return Response(
+        {
+            "success": True,
+            "invoices": invoice_service.list_invoices_for_store(request.organization_id),
+        }
+    )
+
+
+@api_view(["GET"])
+@permission_classes([IsOrgAdmin])
+def invoice_detail(request, invoice_id):
+    try:
+        invoice = invoice_service.get_invoice(
+            invoice_id,
+            organization_id=request.organization_id,
+            allowed_statuses=["issued", "paid"],
+        )
+    except InvoiceError as exc:
+        return Response(
+            {"success": False, "error": exc.message, "code": "invoice_error"},
+            status=exc.status_code,
+        )
+    return Response({"success": True, "invoice": invoice_service.serialize_invoice(invoice)})
+
+
+@api_view(["GET"])
+@permission_classes([IsOrgAdmin])
+def print_invoice(request, invoice_id):
+    try:
+        invoice = invoice_service.get_invoice(
+            invoice_id,
+            organization_id=request.organization_id,
+            allowed_statuses=["issued", "paid"],
+        )
+    except InvoiceError as exc:
+        return Response({"detail": exc.message}, status=exc.status_code)
+    return HttpResponse(invoice_print_html(invoice), content_type="text/html")

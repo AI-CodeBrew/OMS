@@ -7,6 +7,13 @@ export const API_ENDPOINTS = {
     user: (id) => `/api/core/admin/users/${id}/`,
     dispatchHub: "/api/core/admin/dispatch-hub/",
     dispatchHubStore: (id) => `/api/core/admin/dispatch-hub/${id}/`,
+    invoices: "/api/core/admin/invoices/",
+    invoiceGenerate: "/api/core/admin/invoices/generate/",
+    invoice: (id) => `/api/core/admin/invoices/${id}/`,
+    invoiceIssue: (id) => `/api/core/admin/invoices/${id}/issue/`,
+    invoicePaid: (id) => `/api/core/admin/invoices/${id}/paid/`,
+    invoiceVoid: (id) => `/api/core/admin/invoices/${id}/void/`,
+    invoicePrint: (id) => `/api/core/admin/invoices/${id}/print/`,
     // Smartlane Business API. Under /api/core/admin/ so it inherits the
     // backend's IP allowlist, even though the code lives in the
     // integrations app.
@@ -91,6 +98,9 @@ export const API_ENDPOINTS = {
   },
   finance: {
     bankDetails: "/api/finance/bank-details/",
+    invoices: "/api/finance/invoices/",
+    invoice: (id) => `/api/finance/invoices/${id}/`,
+    invoicePrint: (id) => `/api/finance/invoices/${id}/print/`,
   },
 };
 
