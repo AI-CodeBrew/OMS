@@ -12,6 +12,7 @@ urlpatterns = [
     path("shipments/track/", views.BarqRaftarShipmentTrackView.as_view(), name="barqraftar-shipment-track"),
     path("shipments/action/", views.BarqRaftarShipmentActionView.as_view(), name="barqraftar-shipment-action"),
     path("labels/", views.BarqRaftarLabelsView.as_view(), name="barqraftar-labels"),
+    path("loadsheet/", views.BarqRaftarLoadSheetView.as_view(), name="barqraftar-loadsheet"),
     path("payments/", views.BarqRaftarPaymentsView.as_view(), name="barqraftar-payments"),
     path(
         "payments/<str:payment_id>/",

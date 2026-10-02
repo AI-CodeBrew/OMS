@@ -101,32 +101,42 @@ const barqraftarService = {
   // Downloads a merged PDF of BarqRaftar labels for the given orders -
   // same blob-download shape as ordersService.js's printSmartlaneAirwayBill.
   async printLabels(orderIds) {
-    return this._downloadLabels({ order_ids: orderIds });
+    return this._downloadPdf("/labels/", { order_ids: orderIds }, "barqraftar-labels", "Failed to print labels");
   },
 
   // Same endpoint, keyed by tracking number instead - used by the
   // Shipments tab, whose rows come from BarqRaftar's own listing and
   // don't carry an OMS order id.
   async printLabelsByTracking(trackingNumbers) {
-    return this._downloadLabels({ tracking_numbers: trackingNumbers });
+    return this._downloadPdf(
+      "/labels/", { tracking_numbers: trackingNumbers }, "barqraftar-labels", "Failed to print labels"
+    );
   },
 
-  async _downloadLabels(body) {
-    const response = await fetch(`${apiConfig.baseUrl}${BASE}/labels/`, {
+  // Our own "Goods Load Sheet" PDF (BarqRaftar's API has none) - see
+  // backend/integrations/barqraftar/loadsheet.py.
+  async printLoadSheet(orderIds) {
+    return this._downloadPdf(
+      "/loadsheet/", { order_ids: orderIds }, "barqraftar-loadsheet", "Failed to generate load sheet"
+    );
+  },
+
+  async _downloadPdf(path, body, filePrefix, failMessage) {
+    const response = await fetch(`${apiConfig.baseUrl}${BASE}${path}`, {
       method: "POST",
       headers: authService.getAuthHeaders(),
       body: JSON.stringify(body),
     });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
-      throw new Error(data.detail || "Failed to print labels");
+      throw new Error(data.detail || failMessage);
     }
     const blob = await response.blob();
     const dateStamp = new Date().toISOString().slice(0, 10);
     const blobUrl = window.URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = blobUrl;
-    link.download = `barqraftar-labels-${dateStamp}.pdf`;
+    link.download = `${filePrefix}-${dateStamp}.pdf`;
     document.body.appendChild(link);
     link.click();
     link.remove();

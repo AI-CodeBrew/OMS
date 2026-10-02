@@ -25,6 +25,7 @@ class BarqRaftarConnectionSerializer(serializers.ModelSerializer):
             "from_city_name",
             "default_weight_grams",
             "label_format",
+            "account_number",
             "city_aliases",
             "last_event_at",
             "events_received_count",

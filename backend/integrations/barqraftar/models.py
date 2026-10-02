@@ -45,6 +45,10 @@ class BarqRaftarConnection(TenantScopedModel):
     # Booking options, editable from the Settings card.
     default_weight_grams = models.PositiveIntegerField(default=500)
     label_format = models.CharField(max_length=10, default="a4")  # "a4" | "6x4"
+    # "Barqraftar Express Account #" printed on our own Goods Load Sheet
+    # (e.g. "1S220") - BarqRaftar's API doesn't expose it anywhere, so it's
+    # typed in once on the Settings card. See barqraftar/loadsheet.py.
+    account_number = models.CharField(max_length=50, blank=True, default="")
 
     # Cached GET /cities response, refreshed at most once a day (see
     # services.resolve_city_id) - avoids one extra BarqRaftar call on every

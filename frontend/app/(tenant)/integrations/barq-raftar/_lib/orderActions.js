@@ -9,6 +9,16 @@ const READY_FOR_PICKUP = {
   label: "Ready for BarqRaftar pickup",
 };
 
+// Our own Goods Load Sheet PDF for the parcels handed to BarqRaftar's
+// rider (their API has no load sheet). Downloads a document rather than
+// mutating anything, so - like print_barqraftar_labels - the orders page
+// and order detail panel intercept it before the confirm modal.
+const PRINT_LOADSHEET = {
+  key: "print_barqraftar_loadsheet",
+  action: "print_barqraftar_loadsheet",
+  label: "Print BarqRaftar Load Sheet",
+};
+
 // BarqRaftar's own per-status action entries, kept separate from
 // components/orders/statusConfig.js's ACTIONS_BY_STATUS (which stays
 // untouched) so a missed call site fails closed: any component that isn't
@@ -25,9 +35,13 @@ export const BARQRAFTAR_ACTIONS_BY_STATUS = {
   // ever shows the first four - stays exactly as it is today.
   ready_to_print: [
     { key: "print_barqraftar_labels", action: "print_barqraftar_labels", label: "Print BarqRaftar Labels" },
+    PRINT_LOADSHEET,
     READY_FOR_PICKUP,
   ],
-  ready_to_pick: [READY_FOR_PICKUP],
+  ready_to_pick: [PRINT_LOADSHEET, READY_FOR_PICKUP],
+  // Packed and waiting for the rider - the usual moment to print the
+  // handover sheet.
+  awaiting_dispatched: [PRINT_LOADSHEET],
 };
 
 // Every place that renders ACTIONS_BY_STATUS[status] should wrap it with
