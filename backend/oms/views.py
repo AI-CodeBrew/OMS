@@ -30,7 +30,7 @@ from core.redis_client import (
 from integrations.barqraftar.exceptions import BarqRaftarBookingError
 from wms.services import InsufficientStock
 
-from . import importers, services
+from . import importers, order_importer, services
 from .models import (
     Courier,
     Order,
@@ -552,6 +552,53 @@ class OrderViewSet(viewsets.ModelViewSet):
                 dry_run=not _flag("apply"),
                 overwrite_final=_flag("overwrite_final"),
             )
+        except UnicodeDecodeError:
+            return Response(
+                {"detail": "Could not read the file - please upload a UTF-8 CSV."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(result)
+
+    @action(detail=False, methods=["get"], url_path="import-template")
+    def import_template(self, request):
+        """The blank CSV a manual store fills in and re-uploads to import-orders."""
+        response = HttpResponse(order_importer.template_csv(), content_type="text/csv")
+        response["Content-Disposition"] = 'attachment; filename="order_import_template.csv"'
+        return response
+
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="import-orders",
+        parser_classes=[MultiPartParser, FormParser],
+    )
+    def import_orders(self, request):
+        """Creates new orders from a spreadsheet (manual stores - no
+        Shopify/webhook feed). Unlike import-csv above, this one CREATES
+        rows rather than updating existing ones; see oms.order_importer.
+
+        Defaults to a dry run - the caller must pass apply=true to write.
+        """
+        upload = request.FILES.get("file")
+        if not upload:
+            return Response(
+                {"detail": "Attach a CSV file as 'file'"}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        apply = str(request.data.get("apply", "")).lower() in ("1", "true", "yes")
+        try:
+            if apply:
+                shop_label = (
+                    (getattr(request, "auth_claims", None) or {})
+                    .get("app_metadata", {})
+                    .get("organization_name")
+                    or "Manual"
+                )
+                result = order_importer.apply_import(
+                    request.organization_id, upload, shop_label=shop_label
+                )
+            else:
+                result = order_importer.preview_import(request.organization_id, upload)
         except UnicodeDecodeError:
             return Response(
                 {"detail": "Could not read the file - please upload a UTF-8 CSV."},

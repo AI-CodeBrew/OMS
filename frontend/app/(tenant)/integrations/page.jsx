@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import integrationsService from "../../../services/integrationsService";
 import barqraftarService from "./barq-raftar/_lib/barqraftarService";
+import GreenTick from "../../../components/shared/GreenTick";
 
 function ShopifyLogo({ className }) {
   return (
@@ -76,10 +77,7 @@ function PostExWordmark({ className }) {
 function CheckDot({ children }) {
   return (
     <li className="flex items-center gap-2 text-sm text-slate-600">
-      <svg viewBox="0 0 20 20" fill="none" className="h-4 w-4 shrink-0 text-green-500">
-        <circle cx="10" cy="10" r="9" fill="currentColor" opacity="0.15" />
-        <path d="M6.5 10.2 9 12.5l4.5-5.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
+      <GreenTick />
       {children}
     </li>
   );

@@ -1,11 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { getSupabaseBrowserClient } from "../../../lib/supabaseClient";
 import Button from "../../../components/shared/Button";
 import PasswordInput from "../../../components/shared/PasswordInput";
+import GreenTick from "../../../components/shared/GreenTick";
 import { STAFF_MODULE_OPTIONS } from "../../../components/layout/moduleNav";
 import teamService from "../../../services/teamService";
+import storesService from "../../../services/storesService";
+import { invalidateViewCache } from "../../../lib/viewCache";
 import { useEffectiveUser } from "../../../store/authStore";
 
 function AccountTab({ user }) {
@@ -465,11 +469,180 @@ function RoleAccessTab() {
   );
 }
 
+function StoresTab() {
+  const router = useRouter();
+  const [stores, setStores] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [creating, setCreating] = useState(""); // "" | "manual" | "shopify"
+  const [manualName, setManualName] = useState("");
+  const [shopifyName, setShopifyName] = useState("");
+  const [switchingId, setSwitchingId] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      setStores(await storesService.list());
+    } catch (err) {
+      setError(err.message || "Failed to load stores");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function enterStore(id) {
+    setSwitchingId(id);
+    setError("");
+    try {
+      await storesService.switchTo(id);
+      invalidateViewCache();
+      router.push("/dashboard");
+    } catch (err) {
+      setError(err.message || "Could not switch store");
+    } finally {
+      setSwitchingId("");
+    }
+  }
+
+  async function onCreateManual(e) {
+    e.preventDefault();
+    setError("");
+    setCreating("manual");
+    try {
+      const store = await storesService.create({ name: manualName, isManualStore: true });
+      setManualName("");
+      await storesService.switchTo(store.id);
+      invalidateViewCache();
+      router.push("/orders");
+    } catch (err) {
+      setError(err.message || "Could not create the store");
+      setCreating("");
+    }
+  }
+
+  async function onCreateShopify(e) {
+    e.preventDefault();
+    setError("");
+    setCreating("shopify");
+    try {
+      const store = await storesService.create({ name: shopifyName, isManualStore: false });
+      setShopifyName("");
+      await storesService.switchTo(store.id);
+      invalidateViewCache();
+      router.push("/integrations/shopify");
+    } catch (err) {
+      setError(err.message || "Could not create the store");
+      setCreating("");
+    }
+  }
+
+  return (
+    <div className="max-w-3xl space-y-6">
+      <p className="text-sm text-slate-500">
+        One login, several stores - switch between them from the header any time.
+      </p>
+
+      {error ? (
+        <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
+      ) : null}
+
+      <div className="overflow-hidden rounded-lg border border-surface-border bg-white">
+        <div className="border-b border-surface-border px-5 py-3">
+          <h2 className="text-sm font-semibold text-slate-800">Your stores</h2>
+        </div>
+        {loading ? (
+          <p className="px-5 py-6 text-sm text-slate-500">Loading…</p>
+        ) : (
+          <ul className="divide-y divide-surface-border">
+            {stores.map((store) => (
+              <li key={store.id} className="flex items-center justify-between gap-3 px-5 py-4">
+                <div className="flex items-center gap-2">
+                  {store.is_current ? <GreenTick /> : <span className="h-4 w-4 shrink-0" />}
+                  <div>
+                    <p className="font-medium text-slate-900">{store.name}</p>
+                    <p className="text-xs text-slate-500">
+                      {store.is_manual_store ? "Manual store (CSV import)" : "Shopify / integrations"}
+                      {!store.is_active ? " · Suspended" : ""}
+                    </p>
+                  </div>
+                </div>
+                {!store.is_current ? (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    loading={switchingId === store.id}
+                    disabled={!store.is_active}
+                    onClick={() => enterStore(store.id)}
+                  >
+                    Switch
+                  </Button>
+                ) : (
+                  <span className="text-xs font-medium text-brand-700">Current</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <form
+        onSubmit={onCreateShopify}
+        className="space-y-3 rounded-lg border border-surface-border bg-white p-6"
+      >
+        <h2 className="text-sm font-semibold text-slate-900">Connect another Shopify store</h2>
+        <p className="text-sm text-slate-500">
+          Creates a new store under this same login, then takes you to connect its Shopify.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <input
+            required
+            placeholder="Store name"
+            value={shopifyName}
+            onChange={(e) => setShopifyName(e.target.value)}
+            className="min-w-[14rem] flex-1 rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
+          />
+          <Button type="submit" loading={creating === "shopify"}>
+            Create &amp; connect Shopify
+          </Button>
+        </div>
+      </form>
+
+      <form
+        onSubmit={onCreateManual}
+        className="space-y-3 rounded-lg border border-surface-border bg-white p-6"
+      >
+        <h2 className="text-sm font-semibold text-slate-900">Create manual store</h2>
+        <p className="text-sm text-slate-500">
+          No Shopify needed - this store's orders come in by importing a CSV from its Orders page.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <input
+            required
+            placeholder="Store name"
+            value={manualName}
+            onChange={(e) => setManualName(e.target.value)}
+            className="min-w-[14rem] flex-1 rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
+          />
+          <Button type="submit" variant="secondary" loading={creating === "manual"}>
+            Create manual store
+          </Button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 export default function SettingsPage() {
   const user = useEffectiveUser();
   const isOrgAdmin =
     user?.role === "org_admin" || user?.isOrgAdmin === true;
-  const [tab, setTab] = useState("account");
+  const searchParams = useSearchParams();
+  const [tab, setTab] = useState(() => searchParams.get("tab") || "account");
 
   return (
     <div>
@@ -489,6 +662,19 @@ export default function SettingsPage() {
         {isOrgAdmin ? (
           <button
             type="button"
+            onClick={() => setTab("stores")}
+            className={`px-4 py-2 text-sm font-medium ${
+              tab === "stores"
+                ? "border-b-2 border-brand-600 text-brand-700"
+                : "text-slate-500 hover:text-slate-800"
+            }`}
+          >
+            Stores
+          </button>
+        ) : null}
+        {isOrgAdmin ? (
+          <button
+            type="button"
             onClick={() => setTab("rbac")}
             className={`px-4 py-2 text-sm font-medium ${
               tab === "rbac"
@@ -502,6 +688,7 @@ export default function SettingsPage() {
       </div>
       <div className="mt-6">
         {tab === "account" ? <AccountTab user={user} /> : null}
+        {tab === "stores" && isOrgAdmin ? <StoresTab /> : null}
         {tab === "rbac" && isOrgAdmin ? <RoleAccessTab /> : null}
       </div>
     </div>

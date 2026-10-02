@@ -123,6 +123,7 @@ export function useEffectiveUser() {
       organization_id: actingStore.id,
       organization_name: actingStore.name,
       modules: actingStore.modules || [],
+      is_manual_store: Boolean(actingStore.is_manual_store),
       isOrgAdmin: true,
     };
   }, [user, actingStore]);

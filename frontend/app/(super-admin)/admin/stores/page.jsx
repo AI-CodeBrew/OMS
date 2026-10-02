@@ -48,7 +48,7 @@ export default function StoresPage() {
 
   function openStore(org) {
     const modules = enabledModules(org);
-    enterStore({ id: org.id, name: org.name, modules });
+    enterStore({ id: org.id, name: org.name, modules, is_manual_store: org.is_manual_store });
     invalidateViewCache();
     router.push(modules.includes("oms") || modules.length === 0 ? "/orders" : "/dashboard");
   }

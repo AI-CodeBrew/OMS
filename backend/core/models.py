@@ -54,6 +54,12 @@ class Organization(models.Model):
     slug = models.SlugField(unique=True)
     plan = models.CharField(max_length=20, choices=PLAN_CHOICES, default="free")
     is_active = models.BooleanField(default=True)
+    # True for a store created from the tenant side purely to hold CSV-
+    # imported orders (Settings > Stores > "Create manual store") - no
+    # Shopify/courier connections expected, orders arrive via
+    # oms.order_importer instead. Lets the frontend decide which store
+    # switcher entries show "Import orders" vs the usual integration cards.
+    is_manual_store = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -323,6 +323,7 @@ def _serialize_org(org, members):
         "slug": org.slug,
         "plan": org.plan,
         "is_active": org.is_active,
+        "is_manual_store": org.is_manual_store,
         "created_at": org.created_at.isoformat(),
         "modules": [
             {"module": m.module, "is_enabled": m.is_enabled} for m in org.modules.all()

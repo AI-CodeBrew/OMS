@@ -31,7 +31,7 @@ export function takeLoginNotice() {
   }
 }
 
-function buildUser(session) {
+export function buildUser(session) {
   if (!session?.user) return null;
   const appMeta = session.user.app_metadata || {};
   const role = appMeta.role || "org_user";
@@ -44,6 +44,7 @@ function buildUser(session) {
     role,
     organization_id: appMeta.organization_id || null,
     organization_name: appMeta.organization_name || null,
+    is_manual_store: Boolean(appMeta.is_manual_store),
     modules,
     isOrgAdmin: role === "org_admin",
   };

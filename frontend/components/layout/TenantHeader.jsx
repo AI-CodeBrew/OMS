@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import Dropdown from "../shared/Dropdown";
+import StoreSwitcher from "./StoreSwitcher";
 import authService from "../../services/authService";
 import { useEffectiveUser } from "../../store/authStore";
 import { getVisibleModules } from "./moduleNav";
@@ -91,6 +92,8 @@ export default function TenantHeader({ activeModule }) {
         </div>
 
         <div className="flex shrink-0 items-center justify-end gap-1 sm:gap-4">
+          <StoreSwitcher />
+
           <button
             type="button"
             className="relative rounded-md p-2 text-brand-100 hover:bg-white/10 hover:text-white"

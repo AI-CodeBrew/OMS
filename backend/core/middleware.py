@@ -12,6 +12,10 @@ logger = logging.getLogger(__name__)
 # Paths that require an allowlisted client IP (super-admin APIs).
 ADMIN_API_PREFIXES = ("/api/core/admin/",)
 
+# A user whose CURRENT store got suspended must still be able to list their
+# other stores and switch into one - see the suspended-org gate below.
+STORE_SWITCH_PREFIXES = ("/api/core/stores/",)
+
 ACT_AS_HEADER = "HTTP_X_ACT_AS_ORGANIZATION"
 MUTATING_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 
@@ -125,6 +129,7 @@ class TenantMiddleware:
         if (
             request.organization_id
             and not request.is_super_admin
+            and not request.path.startswith(STORE_SWITCH_PREFIXES)
             and resolve_active_org_id(request.organization_id) is None
         ):
             return JsonResponse(

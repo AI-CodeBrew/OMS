@@ -34,6 +34,7 @@ def build_org_app_metadata(organization, *, role, modules):
         "organization_name": organization.name,
         "role": role,
         "modules": list(modules or []),
+        "is_manual_store": organization.is_manual_store,
     }
 
 

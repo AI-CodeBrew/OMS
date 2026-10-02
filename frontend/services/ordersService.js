@@ -278,6 +278,46 @@ class OrdersService {
     return data;
   }
 
+  // Creates orders from a manual store's spreadsheet (unlike importCsv
+  // above, which only ever updates orders that already exist). Same
+  // preview-first convention: pass apply=true to actually write.
+  async importOrders(file, { apply = false } = {}) {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("apply", apply ? "true" : "false");
+
+    const headers = { ...authService.getAuthHeaders() };
+    delete headers["Content-Type"];
+
+    const response = await fetch(`${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderImportOrders}`, {
+      method: "POST",
+      headers,
+      body: form,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.detail || "Import failed");
+    }
+    return data;
+  }
+
+  // Triggers a browser download of the blank CSV template for importOrders.
+  async downloadImportTemplate() {
+    const response = await fetch(`${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderImportTemplate}`, {
+      headers: authService.getAuthHeaders(),
+    });
+    if (!response.ok) throw new Error("Could not download the template");
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "order_import_template.csv";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+  }
+
   async get(id) {
     const response = await fetch(`${apiConfig.baseUrl}${API_ENDPOINTS.oms.order(id)}`, {
       headers: authService.getAuthHeaders(),

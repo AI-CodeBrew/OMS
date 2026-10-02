@@ -37,6 +37,8 @@ export const API_ENDPOINTS = {
   team: "/api/core/team/",
   teamMember: (userId) => `/api/core/team/${userId}/`,
   auditLogs: "/api/core/audit-logs/",
+  stores: "/api/core/stores/",
+  storesSwitch: "/api/core/stores/switch/",
   oms: {
     orders: "/api/oms/orders/",
     orderCounts: "/api/oms/orders/counts/",
@@ -49,6 +51,8 @@ export const API_ENDPOINTS = {
     orderExport: "/api/oms/orders/export/",
     orderProductNames: "/api/oms/orders/product-names/",
     orderImport: "/api/oms/orders/import-csv/",
+    orderImportOrders: "/api/oms/orders/import-orders/",
+    orderImportTemplate: "/api/oms/orders/import-template/",
     orderSmartlaneAirwayBill: "/api/oms/orders/smartlane-airway-bill/",
     orderSmartlaneLoadSheet: "/api/oms/orders/smartlane-load-sheet/",
     couriers: "/api/oms/couriers/",

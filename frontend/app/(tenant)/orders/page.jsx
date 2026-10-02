@@ -19,6 +19,7 @@ import { warmupViewsInBackground } from "../../../lib/warmupViews";
 import couriersService from "../../../services/couriersService";
 import integrationsService from "../../../services/integrationsService";
 import useLoadingStore from "../../../store/loadingStore";
+import { useEffectiveUser } from "../../../store/authStore";
 import Button from "../../../components/shared/Button";
 import Pagination from "../../../components/shared/Pagination";
 import OrderStatusTabs from "../../../components/orders/OrderStatusTabs";
@@ -67,6 +68,10 @@ const NewOrderModal = dynamic(() => import("../../../components/orders/NewOrderM
 const ImportOrdersModal = dynamic(() => import("../../../components/orders/ImportOrdersModal"), {
   ssr: false,
 });
+const ImportNewOrdersModal = dynamic(
+  () => import("../../../components/orders/ImportNewOrdersModal"),
+  { ssr: false }
+);
 const OrderDetailPanel = dynamic(() => import("../../../components/orders/OrderDetailPanel"), {
   ssr: false,
 });
@@ -129,6 +134,7 @@ export default function OrdersPage() {
   const searchParams = useSearchParams();
   const beginLoading = useLoadingStore((s) => s.begin);
   const endLoading = useLoadingStore((s) => s.end);
+  const user = useEffectiveUser();
 
   const [activeStatus, setActiveStatusState] = useState(() => searchParams.get("status") || "all");
   const [search, setSearch] = useState("");
@@ -155,6 +161,7 @@ export default function OrdersPage() {
   const [dispatchOpen, setDispatchOpen] = useState(false);
   const [returnOpen, setReturnOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [importOrdersOpen, setImportOrdersOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState(null); // { action, orderIds }
   const [airwayBillFilterOrders, setAirwayBillFilterOrders] = useState(null);
   // Set when a push-to-Smartlane was rejected for lack of stock - holds the
@@ -670,9 +677,15 @@ export default function OrdersPage() {
             New Order
           </Button>
           <CsvExportButton filterParams={queryParams} />
-          <Button variant="secondary" onClick={() => setImportOpen(true)}>
-            Import
-          </Button>
+          {user?.is_manual_store ? (
+            <Button variant="secondary" onClick={() => setImportOrdersOpen(true)}>
+              Import orders
+            </Button>
+          ) : (
+            <Button variant="secondary" onClick={() => setImportOpen(true)}>
+              Import
+            </Button>
+          )}
           <Button variant="secondary" onClick={() => setReturnOpen(true)}>
             Scan and Return
           </Button>
@@ -790,6 +803,11 @@ export default function OrdersPage() {
       <ImportOrdersModal
         open={importOpen}
         onClose={() => setImportOpen(false)}
+        onImported={reloadAfterChange}
+      />
+      <ImportNewOrdersModal
+        open={importOrdersOpen}
+        onClose={() => setImportOrdersOpen(false)}
         onImported={reloadAfterChange}
       />
       <OrderActionModal
