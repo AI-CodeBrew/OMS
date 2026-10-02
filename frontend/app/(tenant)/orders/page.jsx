@@ -506,12 +506,16 @@ export default function OrdersPage() {
       return;
     }
 
-    // Same shape as print_airway_bill above - BarqRaftar's own labels
-    // endpoint returns a document directly, not a bulk-action mutation.
-    if (action === "print_barqraftar_labels") {
-      beginLoading("Preparing labels");
+    // Same shape as print_airway_bill above - BarqRaftar's labels and our
+    // own BarqRaftar load sheet both return a document directly, not a
+    // bulk-action mutation.
+    if (action === "print_barqraftar_labels" || action === "print_barqraftar_loadsheet") {
+      const isLoadSheet = action === "print_barqraftar_loadsheet";
+      beginLoading(isLoadSheet ? "Preparing load sheet" : "Preparing labels");
       try {
-        await barqraftarService.printLabels(orderIds);
+        await (isLoadSheet
+          ? barqraftarService.printLoadSheet(orderIds)
+          : barqraftarService.printLabels(orderIds));
       } catch (err) {
         setError(err.message || "Print failed");
       } finally {

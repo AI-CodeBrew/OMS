@@ -8,6 +8,7 @@ export default function SettingsCard({ status, onChanged, onError, onNotice }) {
   const [form, setForm] = useState({
     default_weight_grams: 500,
     label_format: "a4",
+    account_number: "",
   });
   const [saving, setSaving] = useState(false);
 
@@ -15,8 +16,9 @@ export default function SettingsCard({ status, onChanged, onError, onNotice }) {
     setForm({
       default_weight_grams: status.default_weight_grams ?? 500,
       label_format: status.label_format || "a4",
+      account_number: status.account_number || "",
     });
-  }, [status.default_weight_grams, status.label_format]);
+  }, [status.default_weight_grams, status.label_format, status.account_number]);
 
   async function onSave(e) {
     e.preventDefault();
@@ -81,6 +83,20 @@ export default function SettingsCard({ status, onChanged, onError, onNotice }) {
           <option value="a4">A4</option>
           <option value="6x4">6 x 4 (thermal)</option>
         </select>
+      </label>
+
+      <label className="block">
+        <span className="mb-1 block text-xs font-medium text-slate-600">BarqRaftar account #</span>
+        <input
+          value={form.account_number}
+          onChange={(e) => setForm((f) => ({ ...f, account_number: e.target.value.trim() }))}
+          placeholder="e.g. 1S220"
+          className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
+        />
+        <span className="mt-1 block text-xs text-slate-500">
+          Printed on the Goods Load Sheet. BarqRaftar&apos;s API doesn&apos;t provide it - copy it from
+          their portal&apos;s load sheet.
+        </span>
       </label>
 
       <Button type="submit" variant="secondary" loading={saving} className="w-full">

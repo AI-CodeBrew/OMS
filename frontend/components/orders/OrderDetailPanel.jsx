@@ -137,13 +137,15 @@ export default function OrderDetailPanel({ orderId, couriers, bookingAccounts = 
       return;
     }
 
-    // Same shape as print_airway_bill above - BarqRaftar's own labels
-    // endpoint returns a document directly, not a bulk-action mutation.
-    if (action === "print_barqraftar_labels") {
+    // Same shape as print_airway_bill above - BarqRaftar's labels and our
+    // own BarqRaftar load sheet both return a document directly, not a
+    // bulk-action mutation.
+    if (action === "print_barqraftar_labels" || action === "print_barqraftar_loadsheet") {
       setWorking(true);
       setError("");
-      barqraftarService
-        .printLabels([orderId])
+      (action === "print_barqraftar_loadsheet"
+        ? barqraftarService.printLoadSheet([orderId])
+        : barqraftarService.printLabels([orderId]))
         .catch((err) => setError(err.message || "Print failed"))
         .finally(() => setWorking(false));
       return;

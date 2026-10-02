@@ -91,7 +91,7 @@ class BarqRaftarConnectionView(APIView):
             return Response({"detail": "BarqRaftar is not connected"}, status=http_status.HTTP_404_NOT_FOUND)
 
         fields = []
-        for key in ("default_weight_grams", "label_format"):
+        for key in ("default_weight_grams", "label_format", "account_number"):
             if key in request.data:
                 setattr(connection, key, request.data[key])
                 fields.append(key)
@@ -477,17 +477,18 @@ class BarqRaftarShipmentActionView(APIView):
         return Response({"detail": f"Unknown action {action_name!r}"}, status=http_status.HTTP_400_BAD_REQUEST)
 
 
-def _save_print_batch(*, organization_id, order_numbers, content, actor_user_id):
+def _save_print_batch(*, organization_id, order_numbers, content, actor_user_id, kind="airway_bill"):
     """Same reasoning/shape as oms/views.py OrderViewSet._save_print_batch -
     kept as its own small copy here rather than imported, since that method
-    is private to OrderViewSet. Best-effort: a storage hiccup must not
-    block the PDF the user is actively downloading."""
+    is private to OrderViewSet. `kind` is "airway_bill" (labels) or
+    "loadsheet" (our Goods Load Sheet). Best-effort: a storage hiccup must
+    not block the PDF the user is actively downloading."""
     from oms.models import PrintBatch
 
     try:
         sorted_numbers = sorted(str(n) for n in order_numbers)
         existing = PrintBatch.all_objects.filter(
-            organization_id=organization_id, kind="airway_bill", courier="barqraftar",
+            organization_id=organization_id, kind=kind, courier="barqraftar",
             order_numbers=sorted_numbers,
         ).first() if sorted_numbers else None
 
@@ -499,13 +500,70 @@ def _save_print_batch(*, organization_id, order_numbers, content, actor_user_id)
             batch.created_by_user_id = actor_user_id
         else:
             batch = PrintBatch.all_objects.create(
-                organization_id=organization_id, kind="airway_bill", courier="barqraftar",
+                organization_id=organization_id, kind=kind, courier="barqraftar",
                 order_count=len(sorted_numbers), order_numbers=sorted_numbers,
                 content_type="application/pdf", created_by_user_id=actor_user_id,
             )
-        batch.file.save("airway_bill.pdf", ContentFile(content), save=True)
+        batch.file.save(f"{kind}.pdf", ContentFile(content), save=True)
     except Exception:
         logger.exception("barqraftar: failed to save print batch")
+
+
+class BarqRaftarLoadSheetView(APIView):
+    """POST {order_ids} -> our own Goods Load Sheet PDF for the selected
+    orders' active BarqRaftar shipments, in the same layout as BarqRaftar's
+    portal sheet - see barqraftar/loadsheet.py for why we build it ourselves
+    (BarqRaftar's API has no load sheet). Values come from BarqRaftar's own
+    order data so they match their portal's."""
+
+    permission_classes = [RequireModule]
+    required_module = "oms"
+
+    def post(self, request):
+        from core.models import Organization
+
+        from . import loadsheet
+        from .models import BarqRaftarShipment
+
+        order_ids = request.data.get("order_ids") or []
+        if not order_ids:
+            return Response({"detail": "order_ids is required"}, status=http_status.HTTP_400_BAD_REQUEST)
+
+        connection = BarqRaftarConnection.objects.filter(
+            organization_id=request.organization_id, is_connected=True
+        ).first()
+        if not connection:
+            return Response({"detail": "BarqRaftar is not connected"}, status=http_status.HTTP_404_NOT_FOUND)
+
+        shipments = list(
+            BarqRaftarShipment.objects.filter(
+                organization_id=request.organization_id, order_id__in=order_ids, is_active=True,
+            ).exclude(tracking_number="").select_related("order").order_by("booked_at", "id")
+        )
+        if not shipments:
+            return Response(
+                {"detail": "None of the selected orders have an active BarqRaftar shipment."},
+                status=http_status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
+            rows, shipper_name = loadsheet.build_rows(connection, shipments)
+            org = Organization.objects.filter(id=request.organization_id).first()
+            html_doc = loadsheet.build_html(
+                customer_name=shipper_name or (org.name if org else ""),
+                account_number=connection.account_number,
+                rows=rows,
+            )
+            pdf_bytes = loadsheet.render_pdf(html_doc)
+        except BarqRaftarAPIError as exc:
+            return Response({"detail": str(exc)}, status=http_status.HTTP_502_BAD_GATEWAY)
+
+        _save_print_batch(
+            organization_id=request.organization_id,
+            order_numbers=[s.order.order_number for s in shipments],
+            content=pdf_bytes, actor_user_id=request.user_id, kind="loadsheet",
+        )
+        return HttpResponse(pdf_bytes, content_type="application/pdf")
 
 
 class BarqRaftarLabelsView(APIView):
