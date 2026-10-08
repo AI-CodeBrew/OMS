@@ -30,6 +30,11 @@ primary_region = "sin"
   # see the Dockerfile) - the poller queries a table that migration
   # creates.
   BARQRAFTAR_AUTO_POLL = "true"
+  # PostEx's poller (integrations/postex/poller.py) - the backup behind
+  # PostEx's status webhook. Same NOTE as above: apply migrations
+  # 0020_postex and 0021_postex_webhook to production before deploying with
+  # this on (until then each cycle just logs a missing-table error).
+  POSTEX_AUTO_POLL = "true"
   # Smartlane's LIVE Business API root. Deliberately without the business
   # code (bs178998760511) - the client appends /{business_code} itself, taken
   # from SmartlaneBusinessConfig. Local dev keeps the TEST default in

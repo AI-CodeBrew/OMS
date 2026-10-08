@@ -376,6 +376,18 @@ def cancel_order(order, *, reason="", actor_user_id=None, propagate_to_courier=T
         barqraftar_services.release_shipment_stock_and_deactivate(
             order, actor_user_id=actor_user_id
         )
+    # Additive, PostEx-only branch (integrations/postex/) - same shape and
+    # reasoning as the BarqRaftar branch just above: gated on the courier
+    # name first, PostEx is asked FIRST and its PostExBookingError (parcel
+    # already with PostEx) propagates so the local cancel doesn't happen
+    # under a courier that is still carrying it. propagate_to_courier=False
+    # is used when PostEx itself reported the cancel.
+    elif order.courier_id and (order.courier.name or "").strip().lower() == "postex":
+        from integrations.postex import services as postex_services
+
+        if propagate_to_courier:
+            postex_services.cancel_on_postex(order)
+        postex_services.release_shipment_stock_and_deactivate(order, actor_user_id=actor_user_id)
     return _transition(order, "cancelled", actor_user_id=actor_user_id, note=reason)
 
 

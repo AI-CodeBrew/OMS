@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import integrationsService from "../../../services/integrationsService";
 import barqraftarService from "./barq-raftar/_lib/barqraftarService";
+import postexService from "./postex/_lib/postexService";
 import GreenTick from "../../../components/shared/GreenTick";
 import { useBankDetailsGate } from "../../../lib/useBankDetailsGate";
 import BankDetailsModal from "../../../components/billing/BankDetailsModal";
@@ -177,13 +178,13 @@ const INTEGRATIONS = [
     tagline: "Integrate PostEx for efficient postal and courier deliveries.",
     logo: PostExWordmark,
     wordmark: true,
-    href: null,
-    live: false,
+    href: "/integrations/postex",
+    live: true,
     features: [
-      { label: "Create Shipments", done: false },
-      { label: "Print Labels", done: false },
-      { label: "Track Shipments", done: false },
-      { label: "Delivery Confirmation", done: false },
+      { label: "Create Shipments", done: true },
+      { label: "Airway Bills & Load Sheets", done: true },
+      { label: "Auto Status Updates", done: true },
+      { label: "COD Settlement Status", done: true },
     ],
   },
 ];
@@ -285,6 +286,10 @@ export default function IntegrationsOverviewPage() {
     barqraftarService
       .getStatus()
       .then((d) => setConnectedMap((m) => ({ ...m, barq_raftar: Boolean(d.connected) })))
+      .catch(() => {});
+    postexService
+      .getStatus()
+      .then((d) => setConnectedMap((m) => ({ ...m, postex: Boolean(d.connected) })))
       .catch(() => {});
     integrationsService
       .getOmsCourierOnboarding()

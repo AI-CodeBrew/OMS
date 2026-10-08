@@ -31,6 +31,7 @@ from core.redis_client import (
 )
 from core.scoping import is_hub_request, org_filter
 from integrations.barqraftar.exceptions import BarqRaftarBookingError
+from integrations.postex.exceptions import PostExBookingError
 from wms.services import InsufficientStock
 
 from . import importers, order_importer, services
@@ -841,8 +842,12 @@ class OrderViewSet(viewsets.ModelViewSet):
         # org at a time, so a Dispatch Hub selection spanning several
         # stores is split into one batch call per store and the per-order
         # results merged back into a single list, same shape either way.
-        if action_name in ("push_to_barqraftar", "barqraftar_ready_for_pickup"):
+        # "push_to_postex" (integrations.postex.services.book_orders) rides
+        # the same per-store split - same result shape, same one-org-at-a-
+        # time constraint.
+        if action_name in ("push_to_barqraftar", "barqraftar_ready_for_pickup", "push_to_postex"):
             from integrations.barqraftar import services as barqraftar_services
+            from integrations.postex import services as postex_services
 
             org_by_order = (
                 self._order_orgs_in_hub(request, order_ids)
@@ -857,7 +862,15 @@ class OrderViewSet(viewsets.ModelViewSet):
 
             results = []
             for org_id, ids in by_org.items():
-                if action_name == "push_to_barqraftar":
+                if action_name == "push_to_postex":
+                    results += _with_tenant_context(
+                        org_id,
+                        lambda ids=ids, org_id=org_id: postex_services.book_orders(
+                            org_id, ids, actor_user_id=request.user_id,
+                            force=bool(params.get("force")),
+                        ),
+                    )
+                elif action_name == "push_to_barqraftar":
                     results += _with_tenant_context(
                         org_id,
                         lambda ids=ids, org_id=org_id: barqraftar_services.book_orders(
@@ -924,7 +937,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             # itself never reaches this loop at all (see the special case
             # above).
             except (services.InvalidTransition, services.SmartlaneBookingError,
-                    BarqRaftarBookingError) as exc:
+                    BarqRaftarBookingError, PostExBookingError) as exc:
                 results.append(
                     {
                         "order_id": order_id,

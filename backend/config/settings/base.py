@@ -266,6 +266,16 @@ BARQRAFTAR_API_BASE_URL = env("BARQRAFTAR_API_BASE_URL", default="https://barqra
 BARQRAFTAR_AUTO_POLL = env("BARQRAFTAR_AUTO_POLL", default="false").lower() == "true"
 BARQRAFTAR_AUTO_POLL_INTERVAL_SECONDS = int(env("BARQRAFTAR_AUTO_POLL_INTERVAL_SECONDS", default="900"))
 
+# PostEx's Merchant (COD) API - its own direct integration
+# (integrations/postex/), unrelated to Smartlane or BarqRaftar. Its poller
+# backs up PostEx's status webhook (configured on PostEx's own portal). Same
+# off-by-default convention as the pollers above.
+POSTEX_API_BASE_URL = env(
+    "POSTEX_API_BASE_URL", default="https://api.postex.pk/services/integration/api/order"
+)
+POSTEX_AUTO_POLL = env("POSTEX_AUTO_POLL", default="false").lower() == "true"
+POSTEX_AUTO_POLL_INTERVAL_SECONDS = int(env("POSTEX_AUTO_POLL_INTERVAL_SECONDS", default="900"))
+
 # Comma-separated client IPs allowed to hit /api/core/admin/*
 ADMIN_IP_ALLOWLIST = env(
     "ADMIN_IP_ALLOWLIST",

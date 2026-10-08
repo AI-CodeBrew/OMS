@@ -43,6 +43,11 @@ import {
 import barqraftarService from "../integrations/barq-raftar/_lib/barqraftarService";
 import useBarqRaftarStatusStore from "../integrations/barq-raftar/_lib/barqraftarStatusStore";
 import { withBarqRaftarActions } from "../integrations/barq-raftar/_lib/orderActions";
+// PostEx's own service/status-store/action-list - same arrangement as
+// BarqRaftar's just above, kept inside integrations/postex/.
+import postexService from "../integrations/postex/_lib/postexService";
+import usePostExStatusStore from "../integrations/postex/_lib/postexStatusStore";
+import { withPostExActions } from "../integrations/postex/_lib/orderActions";
 
 // Modals/panels only ever render once opened (each returns null while
 // closed) - loading them on demand instead of bundling them into the
@@ -424,6 +429,10 @@ export default function OrdersPage() {
       .getStatus()
       .then((d) => useBarqRaftarStatusStore.getState().setStatus(d))
       .catch(() => {});
+    postexService
+      .getStatus()
+      .then((d) => usePostExStatusStore.getState().setStatus(d))
+      .catch(() => {});
   }, []);
 
   // Live updates: the backend pushes a message here the moment an order is
@@ -491,6 +500,7 @@ export default function OrdersPage() {
   );
 
   const barqraftarConnected = useBarqRaftarStatusStore((s) => s.connected);
+  const postexConnected = usePostExStatusStore((s) => s.connected);
 
   // Memoized so OrderDetailPanel gets a stable prop between renders. The
   // per-org "is X connected" checks these come from don't mean anything
@@ -511,8 +521,12 @@ export default function OrdersPage() {
     const statuses = new Set(selectedOrders.map((o) => o.status));
     if (statuses.size > 1) return [];
     const [status] = statuses;
-    return withBarqRaftarActions(status, ACTIONS_BY_STATUS[status] || [], barqraftarConnected);
-  }, [selectedOrders, barqraftarConnected]);
+    return withPostExActions(
+      status,
+      withBarqRaftarActions(status, ACTIONS_BY_STATUS[status] || [], barqraftarConnected),
+      postexConnected
+    );
+  }, [selectedOrders, barqraftarConnected, postexConnected]);
 
   async function startAction(action, orderIds) {
     // Airway bill needs no courier param (Smartlane returns whichever
@@ -550,6 +564,29 @@ export default function OrdersPage() {
         await (isLoadSheet
           ? barqraftarService.printLoadSheet(orderIds)
           : barqraftarService.printLabels(orderIds));
+      } catch (err) {
+        setError(err.message || "Print failed");
+      } finally {
+        endLoading();
+      }
+      return;
+    }
+
+    // PostEx's airway bills and load sheet are documents too. The load
+    // sheet is also PostEx's hand-over step (their Unbooked -> Booked), so
+    // it's confirmed first.
+    if (action === "print_postex_airway_bill" || action === "print_postex_loadsheet") {
+      const isLoadSheet = action === "print_postex_loadsheet";
+      const count = `${orderIds.length} order${orderIds.length === 1 ? "" : "s"}`;
+      if (
+        isLoadSheet &&
+        !window.confirm(`Generate the PostEx load sheet for ${count}? This hands the parcels over to PostEx for pickup.`)
+      ) {
+        return;
+      }
+      beginLoading(isLoadSheet ? "Preparing PostEx load sheet" : "Preparing PostEx airway bills");
+      try {
+        await (isLoadSheet ? postexService.printLoadSheet(orderIds) : postexService.printAirwayBills(orderIds));
       } catch (err) {
         setError(err.message || "Print failed");
       } finally {
