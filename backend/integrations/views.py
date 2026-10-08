@@ -959,6 +959,19 @@ class OmsCourierOnboardingView(APIView):
         return Response(link)
 
 
+class OmsCourierKycOptionsView(APIView):
+    """The OMS Courier form's dropdown lists - Smartlane's own industries
+    (the only values its KYC accepts), its cities as suggestions, and
+    Pakistan's provinces. Cached for a day server-side (see
+    business_services.kyc_options), so this doesn't hit Smartlane on every
+    page view."""
+
+    permission_classes = [IsOrgAdmin]
+
+    def get(self, request):
+        return Response(business_services.kyc_options())
+
+
 class SmartlaneRequestsView(APIView):
     """Tenant-facing webhook / warehouse-edit / finance-application
     requests. Same convention as OmsCourierOnboardingView: plain body,

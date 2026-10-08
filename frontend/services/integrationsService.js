@@ -246,6 +246,17 @@ class IntegrationsService {
     return data;
   }
 
+  // Dropdown lists for the business-details form: the courier's accepted
+  // industries, its city names (suggestions) and Pakistan's provinces.
+  async getOmsCourierKycOptions() {
+    const response = await fetch(`${apiConfig.baseUrl}/api/integrations/oms-courier/options/`, {
+      headers: authService.getAuthHeaders(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Failed to load form options");
+    return data;
+  }
+
   async submitOmsCourierOnboarding(payload) {
     const response = await fetch(`${apiConfig.baseUrl}/api/integrations/oms-courier/`, {
       method: "POST",
