@@ -1,3 +1,4 @@
+import secrets
 import uuid
 
 from django.db import models
@@ -10,6 +11,15 @@ from core.models import TenantScopedModel
 # migrations/0020_postex.py, which creates it. Table names inside it are
 # short since the schema already says which integration they belong to.
 SCHEMA = "postex_integrations"
+
+# The header name the merchant types into PostEx's portal (API Integration
+# Guide page -> Webhook Configuration -> "Header Key"); its value is the
+# connection's webhook_secret. PostEx then sends it on every status call.
+WEBHOOK_HEADER_KEY = "X-OMS-Webhook-Secret"
+
+
+def new_webhook_secret():
+    return secrets.token_urlsafe(32)
 
 
 class PostExConnection(TenantScopedModel):
@@ -46,9 +56,26 @@ class PostExConnection(TenantScopedModel):
     # built-in alias list in services.py.
     city_aliases = models.JSONField(default=dict, blank=True)
 
-    # PostEx has no webhooks, so statuses arrive only through the poller /
-    # "Sync now" - this is the last time either finished.
+    # Last time the poller / "Sync now" finished - the backup status feed
+    # behind the webhook below.
     last_synced_at = models.DateTimeField(null=True, blank=True)
+
+    # Status webhook, configured by the merchant on PostEx's own portal (it
+    # isn't in their API guide). webhook_token identifies the org in the
+    # callback URL; webhook_secret must arrive as the WEBHOOK_HEADER_KEY
+    # header or the call is rejected. Neither is regenerated on reconnect -
+    # only by an explicit "Regenerate secret" (see views.py).
+    webhook_token = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    webhook_secret = models.CharField(max_length=64, default=new_webhook_secret, editable=False)
+    last_event_at = models.DateTimeField(null=True, blank=True)
+    events_received_count = models.PositiveIntegerField(default=0)
+    # PostEx doesn't document the webhook body, so the last few accepted
+    # bodies are kept (newest first) to see its real shape.
+    recent_webhook_payloads = models.JSONField(default=list, blank=True)
+    # Why the latest call was turned away (missing/wrong header, not JSON),
+    # shown on the integration page so a misconfigured portal is obvious.
+    last_webhook_error = models.CharField(max_length=255, blank=True, default="")
+    last_webhook_error_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = f'"{SCHEMA}"."connections"'

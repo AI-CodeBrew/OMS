@@ -42,6 +42,12 @@ const postexService = {
     return getJson("/", { method: "PATCH", body: JSON.stringify(payload) });
   },
 
+  // The old secret stops working at once - PostEx's portal must be given
+  // the new one.
+  async regenerateWebhookSecret() {
+    return getJson("/", { method: "PATCH", body: JSON.stringify({ regenerate_webhook_secret: true }) });
+  },
+
   async disconnect() {
     const response = await fetch(`${apiConfig.baseUrl}${BASE}/`, {
       method: "DELETE",

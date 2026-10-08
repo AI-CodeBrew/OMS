@@ -267,8 +267,8 @@ BARQRAFTAR_AUTO_POLL = env("BARQRAFTAR_AUTO_POLL", default="false").lower() == "
 BARQRAFTAR_AUTO_POLL_INTERVAL_SECONDS = int(env("BARQRAFTAR_AUTO_POLL_INTERVAL_SECONDS", default="900"))
 
 # PostEx's Merchant (COD) API - its own direct integration
-# (integrations/postex/), unrelated to Smartlane or BarqRaftar. PostEx has
-# no webhooks, so its poller is the only automatic status feed. Same
+# (integrations/postex/), unrelated to Smartlane or BarqRaftar. Its poller
+# backs up PostEx's status webhook (configured on PostEx's own portal). Same
 # off-by-default convention as the pollers above.
 POSTEX_API_BASE_URL = env(
     "POSTEX_API_BASE_URL", default="https://api.postex.pk/services/integration/api/order"

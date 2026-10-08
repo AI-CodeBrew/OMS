@@ -10,9 +10,11 @@ small local copy. Everything goes through PUBLIC oms.services functions
 (book_with_courier, advance_booking_confirmed, mark_returned_by_courier,
 cancel_order, ...).
 
-PostEx has no webhooks, so "auto status update" is the background poller
-(postex/poller.py, gated by POSTEX_AUTO_POLL) plus the integration page's
-"Sync now" - both run poll_postex_statuses below.
+Statuses arrive two ways: PostEx's status webhook (configured by the
+merchant on PostEx's portal - not in their API guide - see
+handle_webhook_event below), and, as the backup for any call PostEx
+misses, the background poller (postex/poller.py, gated by POSTEX_AUTO_POLL)
+plus the integration page's "Sync now" - both run poll_postex_statuses.
 """
 
 import logging
@@ -663,6 +665,134 @@ def _apply_fetched_status(shipment, row):
 
     order.refresh_from_db(fields=["status"])
     return filled_tracking or (order.status != before_status)
+
+
+# --------------------------------------------------------------- Webhook --
+
+# Key names (lowercased, letters only) that may carry a tracking number in
+# PostEx's webhook body. PostEx doesn't document that body, so this looks
+# for the spellings their API itself uses ("trackingNumber") plus common
+# courier variants, anywhere in the payload.
+_WEBHOOK_TRACKING_KEYS = {
+    "trackingnumber", "trackingnumbers", "trackingno", "tracking",
+    "cn", "cnno", "cnnumber", "consignmentno", "consignmentnumber",
+}
+_WEBHOOK_MAX_NUMBERS = 100
+
+
+def extract_tracking_numbers(payload):
+    """Every tracking number found in a webhook body - a single event, a
+    list of events, nested objects, or comma-separated values all work."""
+    found = []
+
+    def add(value):
+        for part in str(value).split(","):
+            part = part.strip()
+            if part and part not in found and len(found) < _WEBHOOK_MAX_NUMBERS:
+                found.append(part)
+
+    def walk(node, depth):
+        if depth > 6 or len(found) >= _WEBHOOK_MAX_NUMBERS:
+            return
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if re.sub(r"[^a-z]", "", str(key).lower()) in _WEBHOOK_TRACKING_KEYS:
+                    for item in value if isinstance(value, list) else [value]:
+                        if isinstance(item, (str, int)) and not isinstance(item, bool):
+                            add(item)
+                else:
+                    walk(value, depth + 1)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, depth + 1)
+
+    walk(payload, 0)
+    return found
+
+
+def handle_webhook_event(connection, payload):
+    """Uses the webhook body only to learn WHICH parcels changed, then reads
+    their real status from PostEx's own API (bulk track) before applying
+    anything - the body's format is undocumented, so it's never trusted for
+    what status to apply. Returns how many orders visibly changed."""
+    from core.context import current_organization_id
+
+    tracking_numbers = extract_tracking_numbers(payload)
+    if not tracking_numbers:
+        logger.warning("postex webhook for org %s: no tracking number found in the body",
+                       connection.organization_id)
+        return 0
+
+    context_token = current_organization_id.set(connection.organization_id)
+    try:
+        shipments = {
+            s.tracking_number: s
+            for s in PostExShipment.all_objects.filter(
+                organization_id=connection.organization_id, is_active=True,
+                tracking_number__in=tracking_numbers,
+            )
+        }
+        if not shipments:
+            logger.info("postex webhook for org %s: none of %s were booked from OMS",
+                        connection.organization_id, tracking_numbers[:5])
+            return 0
+
+        try:
+            rows = client.track_bulk(connection.api_token, list(shipments))
+        except PostExAPIError:
+            logger.exception("postex webhook: re-fetch failed for org %s", connection.organization_id)
+            return 0
+
+        updated = 0
+        for tn, row in rows.items():
+            shipment = shipments.get(tn)
+            if not shipment:
+                continue
+            try:
+                if _apply_fetched_status(shipment, row):
+                    updated += 1
+            except Exception:  # noqa: BLE001 - one shipment's failure must not drop the rest
+                logger.exception("postex webhook: unexpected error handling shipment %s", tn)
+        return updated
+    finally:
+        current_organization_id.reset(context_token)
+
+
+_RECENT_PAYLOADS_KEPT = 5
+_PAYLOAD_MAX_CHARS = 20000
+
+
+def record_webhook_received(connection, payload):
+    """Counts an accepted call and keeps its body (newest first, last 5) so
+    PostEx's undocumented payload shape can be inspected."""
+    import json
+
+    text = json.dumps(payload, default=str)
+    kept = payload if len(text) <= _PAYLOAD_MAX_CHARS else {"_truncated": text[:_PAYLOAD_MAX_CHARS]}
+    entry = {"received_at": timezone.now().isoformat(), "body": kept}
+    connection.recent_webhook_payloads = [entry, *(connection.recent_webhook_payloads or [])][:_RECENT_PAYLOADS_KEPT]
+    connection.events_received_count = F("events_received_count") + 1
+    connection.last_event_at = timezone.now()
+    connection.last_webhook_error = ""
+    connection.save(update_fields=[
+        "recent_webhook_payloads", "events_received_count", "last_event_at", "last_webhook_error", "updated_at",
+    ])
+
+
+def record_webhook_rejected(connection, reason):
+    """Remembers why a call was turned away, for the integration page. At
+    most one write a minute for the same reason, so a burst of bad calls
+    can't turn into a burst of database writes."""
+    now = timezone.now()
+    if (
+        connection.last_webhook_error == reason
+        and connection.last_webhook_error_at
+        and (now - connection.last_webhook_error_at).total_seconds() < 60
+    ):
+        return
+    connection.last_webhook_error = reason[:255]
+    connection.last_webhook_error_at = now
+    connection.save(update_fields=["last_webhook_error", "last_webhook_error_at", "updated_at"])
 
 
 # ---------------------------------------------------------------- Poller --

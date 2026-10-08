@@ -1,21 +1,26 @@
+import hmac
 import io
+import json
 import logging
 import threading
 from datetime import date, timedelta
 
 from django.core.files.base import ContentFile
-from django.http import HttpResponse
+from django.http import HttpResponse, JsonResponse
 from django.utils import timezone
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_http_methods
 from rest_framework import status as http_status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.middleware import get_client_ip
 from core.permissions import IsOrgAdmin, RequireModule
 from core.rbac import write_audit_log
 
 from . import client, services
 from .exceptions import PostExAPIError, PostExBookingError
-from .models import PostExConnection, PostExShipment, PostExSyncJob
+from .models import WEBHOOK_HEADER_KEY, PostExConnection, PostExShipment, PostExSyncJob, new_webhook_secret
 from .serializers import PostExConnectionSerializer, PostExStatusSerializer, PostExSyncJobSerializer
 
 logger = logging.getLogger(__name__)
@@ -131,6 +136,22 @@ class PostExConnectionView(APIView):
                 if services._normalize_city_name(k) and str(v).strip()
             }
             fields.append("city_aliases")
+
+        if data.get("regenerate_webhook_secret"):
+            # The old value stops working at once - PostEx's portal must be
+            # updated with the new one (the page says so before asking).
+            connection.webhook_secret = new_webhook_secret()
+            fields.append("webhook_secret")
+            write_audit_log(
+                organization_id=request.organization_id,
+                action="integrations.postex.webhook_secret_regenerated",
+                summary="Regenerated the PostEx webhook secret",
+                actor_user_id=request.user_id,
+                actor_email=getattr(request, "auth_email", "") or "",
+                entity_type="postex_connection",
+                entity_id=str(connection.id),
+                metadata={},
+            )
 
         if fields:
             connection.save(update_fields=fields + ["updated_at"])
@@ -585,3 +606,60 @@ class PostExLoadSheetView(APIView):
             content=pdf_bytes, actor_user_id=request.user_id, kind="loadsheet",
         )
         return HttpResponse(pdf_bytes, content_type="application/pdf")
+
+
+# --------------------------------------------------------------- Webhook --
+
+@csrf_exempt
+@require_http_methods(["GET", "POST", "PUT"])
+def postex_webhook(request, token):
+    """PostEx's "Status Updates Webhook" (set by the merchant on PostEx's
+    portal). Public by necessity - PostEx can't log in - so two checks stand
+    in for auth: `token` (an unguessable per-org UUID in the URL) finds the
+    account, and the WEBHOOK_HEADER_KEY header must carry that account's
+    webhook_secret (PostEx's portal "Header Key" / "Header Value"). Even
+    then the body is only used to learn which parcels changed - their real
+    status is re-read from PostEx's API (see services.handle_webhook_event).
+
+    GET just answers 200 for a known URL, in case PostEx checks the URL when
+    the merchant clicks Save; it reveals nothing and changes nothing."""
+    logger.info(
+        "postex webhook %s: token=%s bytes=%s from=%s",
+        request.method, token, len(request.body or b""), get_client_ip(request) or "?",
+    )
+
+    connection = PostExConnection.all_objects.filter(webhook_token=token, is_connected=True).first()
+    if not connection:
+        logger.warning("postex webhook REJECTED: no connected account for token %s", token)
+        return JsonResponse({"detail": "Unknown or disconnected account"}, status=404)
+
+    if request.method == "GET":
+        return JsonResponse({"success": True})
+
+    supplied = request.headers.get(WEBHOOK_HEADER_KEY) or ""
+    if not supplied or not hmac.compare_digest(supplied.encode(), connection.webhook_secret.encode()):
+        reason = (
+            f"Call rejected: the {WEBHOOK_HEADER_KEY} header was missing."
+            if not supplied
+            else f"Call rejected: the {WEBHOOK_HEADER_KEY} header value didn't match."
+        )
+        logger.warning("postex webhook REJECTED for org %s: %s", connection.organization_id, reason)
+        services.record_webhook_rejected(connection, reason)
+        return JsonResponse({"detail": "Invalid webhook secret"}, status=401)
+
+    try:
+        payload = json.loads(request.body or b"{}")
+    except ValueError:
+        logger.warning("postex webhook REJECTED for org %s: body was not JSON", connection.organization_id)
+        services.record_webhook_rejected(connection, "Call rejected: the body wasn't JSON.")
+        return JsonResponse({"detail": "Invalid JSON"}, status=400)
+    logger.debug("postex webhook body for org %s: %s", connection.organization_id, (request.body or b"")[:2000])
+
+    try:
+        updated = services.handle_webhook_event(connection, payload)
+        logger.info("postex webhook for org %s: %s order(s) updated", connection.organization_id, updated)
+    except Exception:
+        logger.exception("postex webhook: handling failed for org %s", connection.organization_id)
+
+    services.record_webhook_received(connection, payload)
+    return JsonResponse({"success": True})

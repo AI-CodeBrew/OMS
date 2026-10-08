@@ -1,5 +1,6 @@
 """Background thread that periodically syncs PostEx shipment statuses - the
-only way statuses arrive automatically, since PostEx has no webhooks. Own
+backup behind PostEx's status webhook (views.postex_webhook), catching any
+call PostEx misses or a portal that isn't set up yet. Own
 module with its own start guard, so its lifecycle never interacts with the
 Smartlane or BarqRaftar pollers. Started from IntegrationsConfig.ready(),
 gated behind the POSTEX_AUTO_POLL setting (see config/settings/base.py)."""
