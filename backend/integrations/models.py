@@ -549,3 +549,11 @@ from .barqraftar.models import (  # noqa: E402,F401
     BarqRaftarShipment,
     BarqRaftarSyncJob,
 )
+
+# Same reason for PostEx (integrations/postex/, own "postex_integrations"
+# schema). Import only, never edit PostEx's models from here.
+from .postex.models import (  # noqa: E402,F401
+    PostExConnection,
+    PostExShipment,
+    PostExSyncJob,
+)

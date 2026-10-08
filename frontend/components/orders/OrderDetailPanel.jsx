@@ -16,6 +16,7 @@ import {
   isBookingAccountCourier,
 } from "./statusConfig";
 import barqraftarService from "../../app/(tenant)/integrations/barq-raftar/_lib/barqraftarService";
+import postexService from "../../app/(tenant)/integrations/postex/_lib/postexService";
 
 const EDITABLE_FIELDS = [
   "customer_name",
@@ -146,6 +147,25 @@ export default function OrderDetailPanel({ orderId, couriers, bookingAccounts = 
       (action === "print_barqraftar_loadsheet"
         ? barqraftarService.printLoadSheet([orderId])
         : barqraftarService.printLabels([orderId]))
+        .catch((err) => setError(err.message || "Print failed"))
+        .finally(() => setWorking(false));
+      return;
+    }
+
+    // PostEx's airway bill / load sheet - same interception as the orders
+    // page (the load sheet hands the parcel over to PostEx, so it's
+    // confirmed first).
+    if (action === "print_postex_airway_bill" || action === "print_postex_loadsheet") {
+      const isLoadSheet = action === "print_postex_loadsheet";
+      if (
+        isLoadSheet &&
+        !window.confirm("Generate the PostEx load sheet? This hands the parcel over to PostEx for pickup.")
+      ) {
+        return;
+      }
+      setWorking(true);
+      setError("");
+      (isLoadSheet ? postexService.printLoadSheet([orderId]) : postexService.printAirwayBills([orderId]))
         .catch((err) => setError(err.message || "Print failed"))
         .finally(() => setWorking(false));
       return;

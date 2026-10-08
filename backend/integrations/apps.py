@@ -33,3 +33,11 @@ class IntegrationsConfig(AppConfig):
             from .barqraftar import poller as barqraftar_poller
 
             barqraftar_poller.start_background_poller()
+
+        # PostEx's own poller (integrations/postex/poller.py) - independent
+        # flag/thread/module, same convention as the two above. PostEx has
+        # no webhooks, so this is how its statuses update on their own.
+        if settings.POSTEX_AUTO_POLL:
+            from .postex import poller as postex_poller
+
+            postex_poller.start_background_poller()

@@ -4,6 +4,8 @@ import Button from "../shared/Button";
 import { ACTIONS_BY_STATUS } from "./statusConfig";
 import useBarqRaftarStatusStore from "../../app/(tenant)/integrations/barq-raftar/_lib/barqraftarStatusStore";
 import { withBarqRaftarActions } from "../../app/(tenant)/integrations/barq-raftar/_lib/orderActions";
+import usePostExStatusStore from "../../app/(tenant)/integrations/postex/_lib/postexStatusStore";
+import { withPostExActions } from "../../app/(tenant)/integrations/postex/_lib/orderActions";
 
 const MONEY_FIELDS = [
   ["shipping_amount", "Shipping"],
@@ -26,7 +28,12 @@ function MoneyCell({ label, value }) {
 
 export default function OrderItemsEditor({ order, draft, editing, onChange, onAction, onScan, working }) {
   const barqraftarConnected = useBarqRaftarStatusStore((s) => s.connected);
-  const actions = withBarqRaftarActions(order.status, ACTIONS_BY_STATUS[order.status] || [], barqraftarConnected);
+  const postexConnected = usePostExStatusStore((s) => s.connected);
+  const actions = withPostExActions(
+    order.status,
+    withBarqRaftarActions(order.status, ACTIONS_BY_STATUS[order.status] || [], barqraftarConnected),
+    postexConnected
+  );
   const showDispatchTools = DISPATCH_STAGE_STATUSES.has(order.status);
 
   return (

@@ -66,6 +66,11 @@ const CONFIRM_BY_ACTION = {
     button: "Confirm",
     result: "be marked ready for BarqRaftar to collect",
   },
+  push_to_postex: {
+    title: "Book with PostEx",
+    button: "Book",
+    result: "be booked with PostEx",
+  },
 };
 
 export default function OrderActionModal({ action, couriers, count, onSubmit, onClose, submitting }) {
