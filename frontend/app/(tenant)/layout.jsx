@@ -7,6 +7,7 @@ import LoadingOverlay from "../../components/shared/LoadingOverlay";
 import TenantHeader from "../../components/layout/TenantHeader";
 import ModuleSidebar from "../../components/layout/ModuleSidebar";
 import ActingStoreBanner from "../../components/layout/ActingStoreBanner";
+import CriticalOrdersAlert from "../../components/orders/CriticalOrdersAlert";
 import {
   canAccessPath,
   getActiveModule,
@@ -64,6 +65,7 @@ function TenantShell({ children }) {
   return (
     <div className="min-h-screen bg-brand-800">
       <LoadingOverlay />
+      <CriticalOrdersAlert />
       <ActingStoreBanner />
       <TenantHeader activeModule={activeModule} />
       <div className="flex">

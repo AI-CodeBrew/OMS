@@ -42,10 +42,10 @@ def _next_supabase_order_no():
 class Order(TenantScopedModel):
     STATUS_CHOICES = [
         # Entry state for every synced/imported order - "nobody has looked
-        # at this yet". CS moves it into Pending CC/COD (see
+        # at this yet". CS moves it into Awaiting Assigning (see
         # services.acknowledge_order) once they start working it, which is
-        # what separates "untouched inbox" from "in progress with the
-        # customer".
+        # what separates "untouched inbox" from "in progress". Pending
+        # CC/COD below are legacy - nothing new enters them any more.
         ("new", "New"),
         ("pending_cc", "Pending CC"),
         ("pending_cod", "Pending COD"),
@@ -224,6 +224,13 @@ class Order(TenantScopedModel):
     order_source = models.CharField(max_length=50, blank=True, default="")
     shipping_type = models.CharField(max_length=50, blank=True, default="")
     agent_id = models.CharField(max_length=50, blank=True, default="")
+
+    # Set when a store that's in the Dispatch Hub marks this order as "please
+    # dispatch this one for us" (see services.request_dispatch) - the Hub
+    # flags it so the super admin knows FynkTech has to ship it, rather than
+    # the store handling it itself. Cleared on withdrawal; ignored once the
+    # order is booked (the Hub only shows it while the order is pre-booking).
+    dispatch_requested_at = models.DateTimeField(null=True, blank=True)
 
     # --- Money breakdown. Grand total / amount receivable / owed-to-customer
     # are computed (see serializers.py), not stored, to avoid drift with

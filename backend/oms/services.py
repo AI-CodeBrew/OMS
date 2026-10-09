@@ -1,7 +1,9 @@
 import logging
+from datetime import timedelta
 
 from django.db import transaction
-from django.db.models import Count, Q
+from django.db.models import Count, DateTimeField, OuterRef, Q, Subquery
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from core.events import publish_event
@@ -11,18 +13,26 @@ from .models import Courier, Order, OrderItem, OrderStatusEvent
 logger = logging.getLogger(__name__)
 
 
-def create_order(*, organization_id, order_number, customer_name, customer_phone, items):
+def create_order(*, organization_id, order_number, customer_name, customer_phone, items,
+                 extra_fields=None, note=""):
     """Business logic for order creation lives here, not in the view - keeps
     OrderViewSet thin and gives WMS/Finance one place (the order.created
-    event) to react to without importing oms's models directly."""
+    event) to react to without importing oms's models directly.
+
+    `extra_fields` are further Order columns from the Manual Order form
+    (address, city, email, payment method, shipping, ...); `note` becomes
+    the order's first note."""
+    from .models import OrderNote
+
     order = Order.objects.create(
         organization_id=organization_id,
         order_number=order_number,
         customer_name=customer_name,
         customer_phone=customer_phone or "",
-        status="pending_cod",
+        status="new",
         shop="Manual",
         order_source="Manual",
+        **(extra_fields or {}),
     )
 
     total = 0
@@ -32,11 +42,16 @@ def create_order(*, organization_id, order_number, customer_name, customer_phone
             product_name=item["product_name"],
             quantity=item["quantity"],
             unit_price=item["unit_price"],
+            barcode=item.get("barcode") or "",
+            weight_grams=item.get("weight_grams"),
         )
         total += order_item.quantity * order_item.unit_price
 
     order.total_amount = total
     order.save(update_fields=["total_amount"])
+
+    if note:
+        OrderNote.objects.create(organization_id=organization_id, order=order, kind="note", body=note)
 
     publish_event(
         "order.created",
@@ -52,17 +67,20 @@ def create_order(*, organization_id, order_number, customer_name, customer_phone
 
 # --- Status pipeline -------------------------------------------------------
 #
-# pending_cc / pending_cod -> city_issue -> awaiting_assigning ->
+# new -> awaiting_assigning (pending_cc / pending_cod are legacy: orders
+# already sitting there can still be confirmed, nothing new enters them) ->
 # awaiting_approval -> approved -> awaiting_dispatched -> dispatch_issue ->
 # dispatched -> delivered -> returned
 # (cancelled reachable from any pre-dispatch status)
 
 ALLOWED_TRANSITIONS = {
-    # Untouched inbox - CS picks it up into Pending CC/COD (whichever
-    # matches the payment gateway, see acknowledge_order) before working
-    # it. Cancel stays reachable so junk/test orders don't have to be
-    # walked through the whole pipeline first.
-    "new": {"pending_cc", "pending_cod", "cancelled"},
+    # Untouched inbox - CS picks it up straight into Awaiting Assigning
+    # (see acknowledge_order). Cancel stays reachable so junk/test orders
+    # don't have to be walked through the whole pipeline first.
+    # pending_cc/pending_cod stay listed so orders that were already in
+    # them keep their way forward (and a stray old transition still works),
+    # but acknowledge_order no longer routes anything there.
+    "new": {"awaiting_assigning", "pending_cc", "pending_cod", "cancelled"},
     "pending_cc": {"awaiting_assigning", "city_issue", "cancelled"},
     "pending_cod": {"awaiting_assigning", "city_issue", "cancelled"},
     "city_issue": {"awaiting_assigning", "cancelled"},
@@ -211,11 +229,10 @@ def _apply_transition(order, to_status, *, actor_user_id=None, note="", extra_fi
 
 
 def acknowledge_order(order, *, actor_user_id=None):
-    """New -> Pending CC/COD. The CS team taking an order out of the
-    untouched inbox and starting work on it; which Pending bucket it lands
-    in follows the order's own payment gateway rather than being chosen."""
-    to_status = "pending_cc" if order.payment_gateway == "cc" else "pending_cod"
-    return _transition(order, to_status, actor_user_id=actor_user_id)
+    """New -> Awaiting Assigning. The CS team taking an order out of the
+    untouched inbox and starting work on it. (This used to stop in Pending
+    CC/COD first, needing a separate Confirm - that step is gone.)"""
+    return _transition(order, "awaiting_assigning", actor_user_id=actor_user_id)
 
 
 def confirm_order(order, *, city_ok=True, actor_user_id=None):
@@ -652,6 +669,57 @@ def dispatch_order(order, *, tracking_number="", actor_user_id=None):
     return _transition(order, "dispatched", actor_user_id=actor_user_id, extra_fields=extra)
 
 
+# Statuses where FynkTech can still be asked to dispatch an order: nothing
+# has been booked with a courier yet.
+DISPATCH_REQUESTABLE_STATUSES = {
+    "new", "pending_cc", "pending_cod", "city_issue", "awaiting_assigning",
+    "awaiting_approval", "approved",
+}
+
+
+def request_dispatch(order, *, actor_user_id=None):
+    """A Dispatch Hub store flags this order as one FynkTech should ship
+    for them. Only stores on the Hub may do it - everyone else dispatches
+    their own orders - and only before a courier booking exists."""
+    from core.models import DispatchHubStore
+
+    if not DispatchHubStore.objects.filter(organization_id=order.organization_id).exists():
+        raise InvalidTransition("Dispatch requests are only available to Dispatch Hub stores.")
+    if order.status not in DISPATCH_REQUESTABLE_STATUSES:
+        raise InvalidTransition(
+            f"Order {order.order_number} is {order.get_status_display()} - it can no longer be "
+            "sent for dispatch."
+        )
+    if order.dispatch_requested_at:
+        return order
+    order.dispatch_requested_at = timezone.now()
+    order.save(update_fields=["dispatch_requested_at", "updated_at"])
+    OrderStatusEvent.objects.create(
+        organization_id=order.organization_id, order=order,
+        from_status=order.status, to_status=order.status,
+        note="Sent to FynkTech for dispatch", actor_user_id=actor_user_id,
+    )
+    return order
+
+
+def withdraw_dispatch_request(order, *, actor_user_id=None):
+    if not order.dispatch_requested_at:
+        return order
+    if order.status not in DISPATCH_REQUESTABLE_STATUSES:
+        raise InvalidTransition(
+            f"Order {order.order_number} is already {order.get_status_display()} - the dispatch "
+            "request can't be withdrawn."
+        )
+    order.dispatch_requested_at = None
+    order.save(update_fields=["dispatch_requested_at", "updated_at"])
+    OrderStatusEvent.objects.create(
+        organization_id=order.organization_id, order=order,
+        from_status=order.status, to_status=order.status,
+        note="Dispatch request withdrawn", actor_user_id=actor_user_id,
+    )
+    return order
+
+
 def mark_out_for_delivery(order, *, actor_user_id=None):
     """Smartlane-reported sub-stage of dispatched - see ALLOWED_TRANSITIONS.
     Only ever reached via integrations.services.apply_smartlane_status,
@@ -840,6 +908,55 @@ def split_order(order, *, item_splits, actor_user_id=None):
         actor_user_id=actor_user_id,
     )
     return child
+
+
+# --- Critical orders ---------------------------------------------------------
+#
+# Not a status of its own: "critical" is an order that has sat in the
+# couriers' "In Transit" stage for more than CRITICAL_TRANSIT_DAYS. That
+# stage is exactly what OMS's plain "dispatched" status means - Smartlane's
+# dispatch/in_transit, PostEx's en-route/warehouse/transferred and
+# BarqRaftar's picked up/in transit/received at FC all land there (see
+# integrations.services._SMARTLANE_DISPATCH_STATUSES, postex.services.
+# _STAGE_BY_STATUS, barqraftar.services._DISPATCH_CODES). Out for Delivery
+# and Delivery Attempt Failed have statuses of their own and are NOT
+# included - those orders stay in their own tabs only. It leaves the moment
+# the courier reports anything further, so nothing is stored - the Orders
+# "Critical Orders" tab and its alert are computed from this each time,
+# which is also why it stays out of every cache (the answer changes with
+# the clock, not only when an order changes).
+IN_TRANSIT_STATUSES = ("dispatched",)
+CRITICAL_TRANSIT_DAYS = 3
+
+
+def critical_transit_orders(qs):
+    """`qs` narrowed to orders In Transit longer than CRITICAL_TRANSIT_DAYS,
+    each annotated with `_in_transit_since` (not ordered - callers that want
+    the oldest first order_by it).
+
+    In transit since: when it was dispatched here, else when it first
+    reached Dispatched (orders Smartlane/the courier moved there on their
+    own don't always carry dispatched_at). An order with neither never went
+    through a courier here - typically one Shopify delivered already
+    fulfilled, with no tracking - so there is no moment to count from and
+    it is left out, rather than guessed at from when it was placed."""
+    first_dispatched = (
+        OrderStatusEvent.objects.filter(order=OuterRef("pk"), to_status="dispatched")
+        .order_by("created_at")
+        .values("created_at")[:1]
+    )
+    cutoff = timezone.now() - timedelta(days=CRITICAL_TRANSIT_DAYS)
+    return (
+        qs.filter(status__in=IN_TRANSIT_STATUSES)
+        .annotate(
+            _in_transit_since=Coalesce(
+                "dispatched_at",
+                Subquery(first_dispatched),
+                output_field=DateTimeField(),
+            )
+        )
+        .filter(_in_transit_since__lte=cutoff)
+    )
 
 
 def compute_order_counts(organization_id):

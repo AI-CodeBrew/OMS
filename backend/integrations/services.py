@@ -244,7 +244,7 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
         pipeline_status = "dispatched"
     else:
         # Everything unfulfilled enters the untouched "New" inbox. CS moves
-        # it into Pending CC/COD when they pick it up (see
+        # it into Awaiting Assigning when they pick it up (see
         # oms.services.acknowledge_order) - that hand-off is what makes
         # "nobody has looked at this" distinguishable from "in progress".
         pipeline_status = "new"

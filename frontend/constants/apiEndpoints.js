@@ -55,6 +55,7 @@ export const API_ENDPOINTS = {
     orderDashboard: "/api/oms/orders/dashboard/",
     orderReturnsSummary: "/api/oms/orders/returns-summary/",
     orderBulkAction: "/api/oms/orders/bulk-action/",
+    orderDispatchHubMembership: "/api/oms/orders/dispatch-hub-membership/",
     orderScanDispatch: "/api/oms/orders/scan-dispatch/",
     orderScanReturn: "/api/oms/orders/scan-return/",
     orderExport: "/api/oms/orders/export/",

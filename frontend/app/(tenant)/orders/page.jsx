@@ -48,6 +48,7 @@ import { withBarqRaftarActions } from "../integrations/barq-raftar/_lib/orderAct
 import postexService from "../integrations/postex/_lib/postexService";
 import usePostExStatusStore from "../integrations/postex/_lib/postexStatusStore";
 import { withPostExActions } from "../integrations/postex/_lib/orderActions";
+import { forOrdersBookingAccounts } from "../../../components/orders/orderBookingAccount";
 
 // Modals/panels only ever render once opened (each returns null while
 // closed) - loading them on demand instead of bundling them into the
@@ -60,12 +61,6 @@ const StockShortageModal = dynamic(() => import("../../../components/orders/Stoc
   ssr: false,
 });
 const AirwayBillFilterModal = dynamic(() => import("../../../components/orders/AirwayBillFilterModal"), {
-  ssr: false,
-});
-const VerifyDispatchModal = dynamic(() => import("../../../components/orders/VerifyDispatchModal"), {
-  ssr: false,
-});
-const ScanReturnModal = dynamic(() => import("../../../components/orders/ScanReturnModal"), {
   ssr: false,
 });
 const NewOrderModal = dynamic(() => import("../../../components/orders/NewOrderModal"), {
@@ -81,12 +76,20 @@ const ImportNewOrdersModal = dynamic(
 const OrderDetailPanel = dynamic(() => import("../../../components/orders/OrderDetailPanel"), {
   ssr: false,
 });
+const PrintByCourierModal = dynamic(() => import("../../../components/orders/PrintByCourierModal"), {
+  ssr: false,
+});
 const CreateTicketDialog = dynamic(() => import("../../../components/tickets/CreateTicketDialog"), {
   ssr: false,
 });
 
-const EMPTY_FILTERS = { city: "", courier_id: "", gateway: "", date_from: "", date_to: "", store: "" };
-const TAB_STATUSES = STATUS_TABS.map((tab) => tab.value);
+const EMPTY_FILTERS = { city: "", courier_id: "", gateway: "", date_from: "", date_to: "", store: "", dispatch_requested: "" };
+// "critical" is time-dependent rather than a status an order is moved into,
+// so the backend never caches it or includes it in the warmup - leave it
+// out of the "is every tab warm" check, and out of the list cache below.
+const CRITICAL_TAB = "critical";
+const TAB_STATUSES = STATUS_TABS.map((tab) => tab.value).filter((v) => v !== CRITICAL_TAB);
+const IN_TRANSIT_STATUSES = new Set(["dispatched"]);
 
 function isPlainTabQuery(queryParams) {
   return (
@@ -96,7 +99,8 @@ function isPlainTabQuery(queryParams) {
     !queryParams.gateway &&
     !queryParams.date_from &&
     !queryParams.date_to &&
-    !queryParams.store
+    !queryParams.store &&
+    !queryParams.dispatch_requested
   );
 }
 
@@ -105,7 +109,16 @@ function isPlainTabQuery(queryParams) {
 // `prev` inside a single setOrders updater, rather than each item risking
 // acting on a stale array if several land in the same flush.
 function applyPatchToList(list, freshOrder, view) {
-  const matchesTab = view.activeStatus === "all" || freshOrder.status === view.activeStatus;
+  const onCriticalTab = view.activeStatus === CRITICAL_TAB;
+  // The Critical tab holds Dispatched (In Transit) orders: one stays while
+  // it is still Dispatched, and leaves once the courier moves it on (Out for
+  // Delivery, Delivered, ...). A pushed row has no age (in_transit_days
+  // comes only with the tab's own list), so the row's existing one is kept,
+  // and nothing is ever inserted - whether a new arrival is 3 days old is
+  // for the next reload to say.
+  const matchesTab = onCriticalTab
+    ? IN_TRANSIT_STATUSES.has(freshOrder.status)
+    : view.activeStatus === "all" || freshOrder.status === view.activeStatus;
   const noOtherFilters =
     !view.appliedSearch && Object.values(view.appliedFilters).every((v) => !v);
   const idx = list.findIndex((o) => o.id === freshOrder.id);
@@ -113,7 +126,9 @@ function applyPatchToList(list, freshOrder, view) {
   if (idx !== -1) {
     if (matchesTab) {
       const next = list.slice();
-      next[idx] = freshOrder;
+      next[idx] = onCriticalTab
+        ? { ...freshOrder, in_transit_days: list[idx].in_transit_days }
+        : freshOrder;
       return { list: next, delta: 0 };
     }
     const next = list.slice();
@@ -126,7 +141,7 @@ function applyPatchToList(list, freshOrder, view) {
   // filter matching client-side just to decide, which isn't worth the risk
   // of drifting out of sync - it shows up on the next reload there instead,
   // same as before this existed.
-  if (matchesTab && view.page === 1 && noOtherFilters) {
+  if (matchesTab && !onCriticalTab && view.page === 1 && noOtherFilters) {
     return { list: [freshOrder, ...list].slice(0, view.pageSize), delta: 1 };
   }
   return { list, delta: 0 };
@@ -172,13 +187,16 @@ export default function OrdersPage() {
   const [sortBy, setSortBy] = useState("date"); // "date" | "oms_id" | "store_id"
 
   const [newOrderOpen, setNewOrderOpen] = useState(false);
-  const [dispatchOpen, setDispatchOpen] = useState(false);
-  const [returnOpen, setReturnOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [importOrdersOpen, setImportOrdersOpen] = useState(false);
   const [hubStoreOptions, setHubStoreOptions] = useState(null);
+  // This store is on the Dispatch Hub, so it may send orders to FynkTech to ship.
+  const [inDispatchHub, setInDispatchHub] = useState(false);
   const [pendingAction, setPendingAction] = useState(null); // { action, orderIds }
   const [airwayBillFilterOrders, setAirwayBillFilterOrders] = useState(null);
+  // { kind: "loadsheet" | "airway_bill", orders } - the bulk print buttons'
+  // "which courier?" picker.
+  const [printRequest, setPrintRequest] = useState(null);
   // Set when a push-to-Smartlane was rejected for lack of stock - holds the
   // per-order shortage detail plus the ids to retry with force=true.
   const [stockShortfall, setStockShortfall] = useState(null);
@@ -279,6 +297,7 @@ export default function OrdersPage() {
     const gen = ++loadGen.current;
     const force = opts.force === true;
     const plain = isPlainTabQuery(queryParams);
+    const cacheable = queryParams.status !== CRITICAL_TAB;
     const key = ordersListKey({
       status: queryParams.status,
       page,
@@ -289,7 +308,7 @@ export default function OrdersPage() {
 
     if (plain) {
       const alreadyWarm = unfilteredListsAreWarm(pageSize, TAB_STATUSES);
-      if (!force && alreadyWarm && getCachedOrdersList(key)) {
+      if (!force && alreadyWarm && cacheable && getCachedOrdersList(key)) {
         applyCachedTab();
         setLoading(false);
         return;
@@ -317,7 +336,7 @@ export default function OrdersPage() {
         setOrders(nextOrders);
         setOrderCount(nextCount);
         setCounts(countData);
-        setCachedOrdersList(key, { orders: nextOrders, orderCount: nextCount });
+        if (cacheable) setCachedOrdersList(key, { orders: nextOrders, orderCount: nextCount });
         setCachedCounts(countData);
         if (!force) setSelectedIds(new Set());
       } catch (err) {
@@ -338,7 +357,7 @@ export default function OrdersPage() {
     }
 
     if (!force) {
-      const cachedList = getCachedOrdersList(key);
+      const cachedList = cacheable ? getCachedOrdersList(key) : null;
       if (cachedList) {
         setOrders(cachedList.orders);
         setOrderCount(cachedList.orderCount);
@@ -361,7 +380,9 @@ export default function OrdersPage() {
       setOrderCount(orderData.count || 0);
       setCounts(countData);
       if (!force) setSelectedIds(new Set());
-      setCachedOrdersList(key, { orders: orderData.results || [], orderCount: orderData.count || 0 });
+      if (cacheable) {
+        setCachedOrdersList(key, { orders: orderData.results || [], orderCount: orderData.count || 0 });
+      }
       warmupViewsInBackground({ pageSize, dashKeys: dashboardPresetKeys() });
     } catch (err) {
       if (gen !== loadGen.current) return;
@@ -397,9 +418,18 @@ export default function OrdersPage() {
     }
   }, []);
 
+  // The backend's WebSocket push carries the per-status counts only - the
+  // Critical count changes with the clock, not with orders, so it is kept
+  // from the last fetch rather than wiped by each push.
   const applyCountsPatch = useCallback((counts) => {
-    setCounts(counts);
-    setCachedCounts(counts);
+    const critical = counts.critical ?? getCachedCounts()?.critical;
+    const merged = critical === undefined ? counts : { ...counts, critical };
+    setCounts((prev) =>
+      merged.critical === undefined && prev?.critical !== undefined
+        ? { ...merged, critical: prev.critical }
+        : merged
+    );
+    setCachedCounts(merged);
   }, []);
 
   useEffect(() => {
@@ -413,6 +443,11 @@ export default function OrdersPage() {
       .then((stores) => setHubStoreOptions(stores.map((s) => ({ id: s.id, name: s.name }))))
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.isDispatchHub]);
+
+  useEffect(() => {
+    if (user?.isDispatchHub) return;
+    ordersService.isInDispatchHub().then(setInDispatchHub).catch(() => {});
   }, [user?.isDispatchHub]);
 
   useEffect(() => {
@@ -521,14 +556,56 @@ export default function OrdersPage() {
     const statuses = new Set(selectedOrders.map((o) => o.status));
     if (statuses.size > 1) return [];
     const [status] = statuses;
-    return withPostExActions(
-      status,
-      withBarqRaftarActions(status, ACTIONS_BY_STATUS[status] || [], barqraftarConnected),
-      postexConnected
+    // Each courier's own actions are only offered when a selected order was
+    // booked with it. Where the plain Print Loadsheet / Print Airway Bill are
+    // on offer they already ask which courier (see PrintByCourierModal), so
+    // the couriers' own copies of those documents are left out as duplicates;
+    // in statuses without the plain ones (Ready to Pick, ...) they stay.
+    const actions = forOrdersBookingAccounts(
+      withPostExActions(
+        status,
+        withBarqRaftarActions(status, ACTIONS_BY_STATUS[status] || [], barqraftarConnected),
+        postexConnected
+      ),
+      selectedOrders,
+      ["print_loadsheet", "print_airway_bill"]
     );
+    const covered = new Set();
+    if (actions.some((a) => a.action === "print_airway_bill")) {
+      covered.add("print_barqraftar_labels").add("print_postex_airway_bill");
+    }
+    if (actions.some((a) => a.action === "print_loadsheet")) {
+      covered.add("print_barqraftar_loadsheet").add("print_postex_loadsheet");
+      // Ready to Print's bulk list stays at its five plain actions; a
+      // courier's pickup notice is still on each order's own menu.
+      covered.add("barqraftar_ready_for_pickup");
+    }
+    return actions.filter((a) => !covered.has(a.action));
   }, [selectedOrders, barqraftarConnected, postexConnected]);
 
-  async function startAction(action, orderIds) {
+  // The couriers the picker offers: whichever this org can print for.
+  const printAccounts = useMemo(
+    () => [
+      ...bookingAccounts.map((a) => a.id),
+      ...(barqraftarConnected ? ["barqraftar"] : []),
+      ...(postexConnected ? ["postex"] : []),
+    ],
+    [bookingAccounts, barqraftarConnected, postexConnected]
+  );
+
+  // fromBulk: the toolbar/selection bar (several orders, maybe several
+  // couriers) rather than one order's own menu.
+  async function startAction(action, orderIds, fromBulk = false) {
+    // Bulk loadsheet / airway bill: ask which courier's to download rather
+    // than always going to Smartlane.
+    if (fromBulk && (action === "print_loadsheet" || action === "print_airway_bill")) {
+      setPrintRequest({
+        kind: action === "print_loadsheet" ? "loadsheet" : "airway_bill",
+        orders: orders.filter((o) => orderIds.includes(o.id)),
+      });
+      return;
+    }
+
     // Airway bill needs no courier param (Smartlane returns whichever
     // courier actually booked it) - fetch the real document and open it,
     // bypassing the bulk-action endpoint entirely since this returns a
@@ -709,6 +786,27 @@ export default function OrdersPage() {
     }
   }
 
+  // Dispatch Hub stores only: flag the selected orders for FynkTech to
+  // dispatch (or take the flag back). Not a status change, so it bypasses
+  // the per-status action menus entirely.
+  async function sendForDispatch(withdraw = false) {
+    const orderIds = Array.from(selectedIds);
+    beginLoading(withdraw ? "Withdrawing dispatch request" : "Sending for dispatch");
+    try {
+      const data = await ordersService.bulkAction({
+        action: withdraw ? "withdraw_dispatch_request" : "request_dispatch",
+        orderIds,
+      });
+      const failed = (data?.results || []).filter((r) => !r.success);
+      await reloadAfterChange();
+      if (failed.length > 0) setError(describeFailures(failed));
+    } catch (err) {
+      setError(err.message || "Action failed");
+    } finally {
+      endLoading();
+    }
+  }
+
   function onSubmitSearch(e) {
     e.preventDefault();
     setAppliedSearch(search);
@@ -749,11 +847,15 @@ export default function OrdersPage() {
           />
           {!user?.isDispatchHub ? (
             <Button variant="secondary" onClick={() => setNewOrderOpen(true)}>
-              New Order
+              Manual Order
             </Button>
           ) : null}
           <CsvExportButton filterParams={queryParams} />
-          {user?.isDispatchHub ? null : user?.is_manual_store ? (
+          {user?.isDispatchHub ? (
+            <Button variant="secondary" onClick={() => setImportOpen(true)}>
+              Import
+            </Button>
+          ) : user?.is_manual_store ? (
             <Button variant="secondary" onClick={() => setImportOrdersOpen(true)}>
               Import orders
             </Button>
@@ -762,10 +864,6 @@ export default function OrdersPage() {
               Import
             </Button>
           )}
-          <Button variant="secondary" onClick={() => setReturnOpen(true)}>
-            Scan and Return
-          </Button>
-          <Button onClick={() => setDispatchOpen(true)}>Verify and Dispatch</Button>
         </div>
       </div>
 
@@ -786,7 +884,7 @@ export default function OrdersPage() {
           onToggleFilters={() => setFiltersOpen((o) => !o)}
           selectedCount={selectedIds.size}
           availableActions={availableActions}
-          onAction={(action) => startAction(action, Array.from(selectedIds))}
+          onAction={(action) => startAction(action, Array.from(selectedIds), true)}
           onRefresh={reloadAfterChange}
           refreshing={loading}
           sortBy={sortBy}
@@ -834,17 +932,26 @@ export default function OrdersPage() {
               {selectedIds.size} order{selectedIds.size === 1 ? "" : "s"} selected
             </span>
             <div className="flex flex-wrap gap-2">
+              {inDispatchHub && !user?.isDispatchHub ? (
+                selectedOrders.some((o) => o.dispatch_requested_at) ? (
+                  <Button variant="secondary" onClick={() => sendForDispatch(true)}>
+                    Withdraw dispatch request
+                  </Button>
+                ) : (
+                  <Button onClick={() => sendForDispatch(false)}>Send for dispatch</Button>
+                )
+              ) : null}
               {availableActions.slice(0, 4).map((a) => (
                 <Button
                   key={a.key || a.action}
                   variant="secondary"
                   disabled={a.disabled}
-                  onClick={() => startAction(a.action, Array.from(selectedIds))}
+                  onClick={() => startAction(a.action, Array.from(selectedIds), true)}
                 >
                   {a.label}
                 </Button>
               ))}
-              {availableActions.length === 0 ? (
+              {availableActions.length === 0 && !inDispatchHub ? (
                 <span className="text-xs text-brand-700">Mixed statuses - clear selection to act</span>
               ) : null}
             </div>
@@ -861,6 +968,7 @@ export default function OrdersPage() {
           onOpenDetail={setDetailOrderId}
           onRaiseTicket={setTicketOrder}
           showStoreColumn={Boolean(user?.isDispatchHub)}
+          showTransitColumn={activeStatus === CRITICAL_TAB}
         />
 
         <Pagination
@@ -876,9 +984,8 @@ export default function OrdersPage() {
       </div>
 
       <NewOrderModal open={newOrderOpen} onClose={() => setNewOrderOpen(false)} onCreated={reloadAfterChange} />
-      <VerifyDispatchModal open={dispatchOpen} onClose={() => setDispatchOpen(false)} onDispatched={reloadAfterChange} />
-      <ScanReturnModal open={returnOpen} onClose={() => setReturnOpen(false)} onReturned={reloadAfterChange} />
       <ImportOrdersModal
+        stores={user?.isDispatchHub ? hubStoreOptions || [] : null}
         open={importOpen}
         onClose={() => setImportOpen(false)}
         onImported={reloadAfterChange}
@@ -914,6 +1021,17 @@ export default function OrdersPage() {
         shortfalls={stockShortfall?.rows}
         onProceed={onProceedDespiteShortage}
         onClose={() => setStockShortfall(null)}
+      />
+      <PrintByCourierModal
+        request={printRequest}
+        accounts={printAccounts}
+        onClose={() => setPrintRequest(null)}
+        onPrinted={(kind, account) => {
+          // Same refresh the Smartlane load sheet always did after a download.
+          if (kind === "loadsheet" && (account === "smartlane" || account === "oms_courier")) {
+            reloadAfterChange();
+          }
+        }}
       />
       <AirwayBillFilterModal
         orders={airwayBillFilterOrders}

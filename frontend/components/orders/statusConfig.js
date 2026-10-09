@@ -5,8 +5,6 @@
 export const STATUS_TABS = [
   { value: "all", label: "All", tone: "neutral" },
   { value: "new", label: "New", tone: "blue" },
-  { value: "pending_cc", label: "Pending CC", tone: "blue" },
-  { value: "pending_cod", label: "Pending COD", tone: "blue" },
   { value: "city_issue", label: "City Issue", tone: "amber" },
   { value: "awaiting_assigning", label: "Awaiting Assigning", tone: "amber" },
   { value: "awaiting_approval", label: "Awaiting Approval", tone: "amber" },
@@ -16,6 +14,11 @@ export const STATUS_TABS = [
   { value: "ready_to_pick", label: "Ready to Pick", tone: "indigo" },
   { value: "awaiting_dispatched", label: "Awaiting Dispatched", tone: "indigo" },
   { value: "dispatched", label: "Dispatched", tone: "indigo" },
+  // Not a real status: Dispatched (courier "In Transit") orders that have
+  // been there for more than 3 days (backend: oms.services.
+  // critical_transit_orders) - they stay in Dispatched too. Computed fresh,
+  // so it is never cached - see orders/page.jsx.
+  { value: "critical", label: "Critical Orders", tone: "red" },
   { value: "out_for_delivery", label: "Out for Delivery", tone: "indigo" },
   { value: "attempt", label: "Delivery Attempt Failed", tone: "amber" },
   { value: "delivered", label: "Delivered", tone: "green" },
@@ -23,10 +26,16 @@ export const STATUS_TABS = [
   { value: "returned", label: "Returned", tone: "red" },
 ];
 
-export const STATUS_LABELS = STATUS_TABS.reduce((acc, tab) => {
-  acc[tab.value] = tab.label;
-  return acc;
-}, {});
+export const STATUS_LABELS = STATUS_TABS.reduce(
+  (acc, tab) => {
+    acc[tab.value] = tab.label;
+    return acc;
+  },
+  // No longer tabs - nothing new enters them (New goes straight to Awaiting
+  // Assigning) - but orders already there, and order logs that mention
+  // them, still need their names.
+  { pending_cc: "Pending CC", pending_cod: "Pending COD" }
+);
 
 export const SEARCH_FIELDS = [
   { value: "order_number", label: "Order Name" },

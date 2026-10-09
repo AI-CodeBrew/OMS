@@ -4,6 +4,12 @@ import Checkbox from "../shared/Checkbox";
 import OrderRowMenu from "./OrderRowMenu";
 import { formatPakPhone } from "../../lib/formatPhone";
 
+// Mirrors oms.services.DISPATCH_REQUESTABLE_STATUSES - the flag only means
+// something until a courier booking exists.
+const DISPATCH_REQUESTABLE = new Set([
+  "new", "pending_cc", "pending_cod", "city_issue", "awaiting_assigning", "awaiting_approval", "approved",
+]);
+
 export default function OrdersTable({
   orders,
   loading,
@@ -14,10 +20,11 @@ export default function OrdersTable({
   onOpenDetail,
   onRaiseTicket,
   showStoreColumn = false,
+  showTransitColumn = false,
 }) {
   const allSelected = orders.length > 0 && orders.every((o) => selectedIds.has(o.id));
   const someSelected = orders.some((o) => selectedIds.has(o.id));
-  const columnCount = showStoreColumn ? 19 : 18;
+  const columnCount = (showStoreColumn ? 19 : 18) + (showTransitColumn ? 1 : 0);
 
   return (
     <div className="max-h-[70vh] overflow-auto rounded-lg border border-surface-border bg-white">
@@ -33,7 +40,7 @@ export default function OrdersTable({
             </th>
             {showStoreColumn ? <th className="w-28 px-3 py-2">Store</th> : null}
             <th className="w-16 px-3 py-2">OMS Order ID</th>
-            <th className="w-20 px-3 py-2">Store Order ID</th>
+            <th className="w-28 px-3 py-2">Store Order ID</th>
             <th className="w-40 px-3 py-2">Customer Name</th>
             <th className="w-32 px-3 py-2">Contact</th>
             <th className="w-40 px-3 py-2">Date &amp; Time</th>
@@ -43,7 +50,8 @@ export default function OrdersTable({
             <th className="w-56 px-3 py-2 pl-6">Product Name</th>
             <th className="w-28 px-3 py-2">City</th>
             <th className="w-24 px-3 py-2">Courier</th>
-            <th className="w-32 px-3 py-2">Tracking ID</th>
+            {showTransitColumn ? <th className="w-24 px-3 py-2">In Transit</th> : null}
+            <th className="w-32 px-3 py-2">Tracking ID (CN)</th>
             <th className="w-28 px-3 py-2 text-right">Delivery Charges</th>
             <th className="w-20 px-3 py-2">Tag</th>
             <th className="w-24 px-3 py-2 text-right">Amount</th>
@@ -79,8 +87,23 @@ export default function OrdersTable({
                 ) : null}
                 <td className="px-3 py-1.5 text-slate-700">{order.supabase_order_no ?? "—"}</td>
                 <td className="px-3 py-1.5">
-                  <div className="truncate font-semibold text-slate-900" title={order.order_number}>
-                    {String(order.order_number ?? "").replace(/^#/, "")}
+                  <div className="flex items-center gap-1">
+                    <span className="truncate font-semibold text-slate-900" title={order.order_number}>
+                      {String(order.order_number ?? "").replace(/^#/, "")}
+                    </span>
+                    {order.dispatch_requested_at && DISPATCH_REQUESTABLE.has(order.status) ? (
+                      <span
+                        className="shrink-0 rounded bg-amber-100 px-1 text-xs text-amber-700"
+                        title={
+                          showStoreColumn
+                            ? "Store sent this order for FynkTech to dispatch"
+                            : "Sent to FynkTech for dispatch"
+                        }
+                        aria-label="Sent for dispatch"
+                      >
+                        🚚
+                      </span>
+                    ) : null}
                   </div>
                 </td>
                 <td className="px-3 py-1.5 text-slate-700">
@@ -115,6 +138,13 @@ export default function OrdersTable({
                 </td>
                 <td className="px-3 py-1.5 text-slate-700">{order.city || "—"}</td>
                 <td className="px-3 py-1.5 text-slate-700">{order.courier_name || "—"}</td>
+                {showTransitColumn ? (
+                  <td className="whitespace-nowrap px-3 py-1.5 font-medium text-red-600">
+                    {order.in_transit_days != null
+                      ? `${order.in_transit_days} day${order.in_transit_days === 1 ? "" : "s"}`
+                      : "—"}
+                  </td>
+                ) : null}
                 <td className="px-3 py-1.5 text-slate-500">{order.tracking_number || "—"}</td>
                 <td className="px-3 py-1.5 text-right text-slate-700">
                   {order.shipping_amount != null ? order.shipping_amount : "—"}

@@ -1,24 +1,21 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Button from "../shared/Button";
 import Modal from "../shared/Modal";
 import ordersService from "../../services/ordersService";
 import useLoadingStore from "../../store/loadingStore";
+import ImportDataEditorModal, { parseCsv, toCsv } from "./ImportDataEditorModal";
 
-const COLUMNS = [
-  "Order No",
+// Mirrors oms.order_importer.TEMPLATE_HEADERS / REQUIRED_COLUMNS.
+const REQUIRED_COLUMNS = ["Order No", "Customer Name", "Phone", "Address", "City", "Product", "Qty", "Unit Price"];
+const OPTIONAL_COLUMNS = [
   "Order Date",
-  "Customer Name",
-  "Phone",
-  "Address",
-  "City",
-  "Product",
+  "Email",
+  "Payment Method (COD / Prepaid)",
   "SKU",
-  "Qty",
-  "Unit Price",
-  "Shipping",
-  "COD Amount",
+  "Weight (grams)",
+  "Shipping Charges",
   "Notes",
 ];
 
@@ -39,9 +36,16 @@ function Stat({ label, value, tone = "slate" }) {
 
 /** For manual stores - creates new orders from a spreadsheet, unlike
  * ImportOrdersModal (which only ever updates orders that already exist). */
-export default function ImportNewOrdersModal({ open, onClose, onImported }) {
+// `initialFile`: a CSV already picked elsewhere (the Manual Order screen) -
+// opened straight in the editor as if it had been picked here.
+export default function ImportNewOrdersModal({ open, onClose, onImported, initialFile = null }) {
   const inputRef = useRef(null);
   const [file, setFile] = useState(null);
+  // The sheet as parsed rows, edited in ImportDataEditorModal; `file` is
+  // always rebuilt from it, so the edits are what gets imported.
+  const [sheet, setSheet] = useState(null);
+  const [fileName, setFileName] = useState("");
+  const [editorOpen, setEditorOpen] = useState(false);
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -54,6 +58,9 @@ export default function ImportNewOrdersModal({ open, onClose, onImported }) {
     setPreview(null);
     setError("");
     setApplied(null);
+    setSheet(null);
+    setFileName("");
+    setEditorOpen(false);
     if (inputRef.current) inputRef.current.value = "";
   }
 
@@ -76,11 +83,38 @@ export default function ImportNewOrdersModal({ open, onClose, onImported }) {
     }
   }
 
+  async function openInEditor(picked) {
+    setError("");
+    try {
+      const [head = [], ...body] = parseCsv(await picked.text());
+      if (head.length === 0) {
+        setError("The file is empty.");
+        return;
+      }
+      setFileName(picked.name);
+      setSheet({ header: head, rows: body });
+      setEditorOpen(true);
+    } catch {
+      setError("Could not read the file - please upload a UTF-8 CSV.");
+    }
+  }
+
   function onPick(event) {
     const picked = event.target.files?.[0];
-    if (!picked) return;
-    setFile(picked);
-    runPreview(picked);
+    if (picked) openInEditor(picked);
+  }
+
+  useEffect(() => {
+    if (open && initialFile) openInEditor(initialFile);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, initialFile]);
+
+  function onSaveEdits(header, rows) {
+    setSheet({ header, rows });
+    setEditorOpen(false);
+    const edited = new File([toCsv(header, rows)], fileName || "orders.csv", { type: "text/csv" });
+    setFile(edited);
+    runPreview(edited);
   }
 
   async function onApply() {
@@ -101,8 +135,20 @@ export default function ImportNewOrdersModal({ open, onClose, onImported }) {
   }
 
   return (
+    <>
+    <ImportDataEditorModal
+      open={open && editorOpen}
+      header={sheet?.header || []}
+      rows={sheet?.rows || []}
+      onCancel={() => {
+        setEditorOpen(false);
+        // Backing out before the first save leaves nothing picked.
+        if (!file) reset();
+      }}
+      onSave={onSaveEdits}
+    />
     <Modal
-      open={open}
+      open={open && !editorOpen}
       onClose={close}
       title="Import orders"
       width="max-w-2xl"
@@ -139,7 +185,10 @@ export default function ImportNewOrdersModal({ open, onClose, onImported }) {
               Download template
             </button>
           </div>
-          <div className="mt-1 text-xs text-slate-600">{COLUMNS.join(" · ")}</div>
+          <div className="mt-1 text-xs text-slate-600">
+            <span className="font-medium text-slate-700">Required:</span> {REQUIRED_COLUMNS.join(" · ")}
+          </div>
+          <div className="mt-1 text-[11px] text-slate-400">Optional: {OPTIONAL_COLUMNS.join(" · ")}</div>
         </div>
 
         <div>
@@ -150,7 +199,22 @@ export default function ImportNewOrdersModal({ open, onClose, onImported }) {
             onChange={onPick}
             className="block w-full text-sm text-slate-600 file:mr-3 file:rounded-md file:border-0 file:bg-brand-800 file:px-3 file:py-2 file:text-sm file:font-medium file:text-white hover:file:bg-brand-900"
           />
-          {file ? <div className="mt-1 text-xs text-slate-500">{file.name}</div> : null}
+          {sheet ? (
+            <div className="mt-1 flex items-center gap-3 text-xs text-slate-500">
+              <span>
+                {fileName} · {sheet.rows.length} row{sheet.rows.length === 1 ? "" : "s"}
+              </span>
+              {!applied ? (
+                <button
+                  type="button"
+                  onClick={() => setEditorOpen(true)}
+                  className="font-medium text-brand-600 hover:underline"
+                >
+                  View / edit data
+                </button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
 
         {error ? (
@@ -230,5 +294,6 @@ export default function ImportNewOrdersModal({ open, onClose, onImported }) {
         ) : null}
       </div>
     </Modal>
+    </>
   );
 }

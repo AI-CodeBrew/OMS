@@ -28,7 +28,7 @@ const CONFIRM_BY_ACTION = {
   acknowledge: {
     title: "Start processing",
     button: "Start Processing",
-    result: "move to Pending CC or Pending COD, by payment method",
+    result: "move to Awaiting Assigning",
   },
   confirm: { title: "Confirm order(s)", button: "Confirm", result: "move to Awaiting Assigning" },
   approve: { title: "Approve order(s)", button: "Approve", result: "move to Approved" },

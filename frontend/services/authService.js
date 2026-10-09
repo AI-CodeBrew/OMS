@@ -8,6 +8,11 @@ export const ORG_SUSPENDED_CODE = "organization_suspended";
 export const ORG_SUSPENDED_MESSAGE =
   "Your organization's account has been suspended. Please contact the FynkTech team.";
 
+// Shown on the login page when the token can no longer be renewed (see
+// lib/sessionGuard.js).
+export const SESSION_EXPIRED_MESSAGE =
+  "Your session has expired. Please sign in again to continue.";
+
 // A message for the login page to show after a forced sign-out. Kept in
 // sessionStorage rather than the URL because ProtectedRoute also redirects
 // to /login the moment the session clears, and either redirect may land.

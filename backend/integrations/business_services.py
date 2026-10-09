@@ -6,10 +6,13 @@ raise-a-typed-error-with-a-status-code convention).
 """
 
 import logging
+import re
+import string
 from decimal import Decimal, InvalidOperation
 
+from django.core.cache import cache
 from django.core.exceptions import ValidationError
-from django.core.validators import validate_slug
+from django.core.validators import URLValidator, validate_email, validate_slug
 from django.db import IntegrityError
 from django.utils import timezone
 
@@ -294,6 +297,223 @@ _INDUSTRY_ALIASES = {
     "electronics": "Electronics",
 }
 
+# Smartlane's GET /smartlane/industries as fetched live on 2026-10-08 - only
+# used when the live list can't be loaded (see kyc_options). Values are kept
+# EXACTLY as Smartlane returns them: "Books & Stationary\t" really does end
+# in a tab on their side, and their validation may compare the raw string.
+_FALLBACK_INDUSTRIES = [
+    "Agriculture", "Adventure & Travel", "Accessories-Fashion", "Building and Construction",
+    "Bags & Clutches", "Books & Stationary\t", "Cosmetics", "Construction", "Electronics",
+    "Equipment", "Mobiles & Laptops", "Fashion", "Fitness & Sport", "Education & Entertainment",
+    "Footwear", "Technology", "Retail-Grocery", "Retail-Fashion", "Retail-Other", "Wholesale",
+    "Textile",
+]
+
+# The KYC form's State dropdown. Smartlane's own sample body uses "Sindh".
+PAKISTAN_STATES = [
+    "Punjab",
+    "Sindh",
+    "Khyber Pakhtunkhwa",
+    "Balochistan",
+    "Islamabad Capital Territory",
+    "Gilgit-Baltistan",
+    "Azad Jammu & Kashmir",
+]
+_STATE_ALIASES = {
+    "kpk": "Khyber Pakhtunkhwa",
+    "kp": "Khyber Pakhtunkhwa",
+    "nwfp": "Khyber Pakhtunkhwa",
+    "khyber pakhtunkhwa": "Khyber Pakhtunkhwa",
+    "ict": "Islamabad Capital Territory",
+    "islamabad": "Islamabad Capital Territory",
+    "federal": "Islamabad Capital Territory",
+    "gb": "Gilgit-Baltistan",
+    "gilgit baltistan": "Gilgit-Baltistan",
+    "ajk": "Azad Jammu & Kashmir",
+    "azad kashmir": "Azad Jammu & Kashmir",
+    "azad jammu and kashmir": "Azad Jammu & Kashmir",
+    "baluchistan": "Balochistan",
+}
+
+_KYC_OPTIONS_CACHE_KEY = "oms_courier:kyc_options:v1"
+_KYC_OPTIONS_TTL = 24 * 60 * 60
+# A failed Smartlane fetch is retried sooner than a good one is refreshed.
+_KYC_OPTIONS_FALLBACK_TTL = 10 * 60
+
+
+def _string_rows(payload):
+    """{"code": 200, "data": ["...", ...]} -> the list of non-empty strings."""
+    rows = payload.get("data") if isinstance(payload, dict) else payload
+    return [r for r in rows if isinstance(r, str) and r.strip()] if isinstance(rows, list) else []
+
+
+def _clean_cities(rows):
+    """Smartlane's ~2,000 city names come in mixed case with near-duplicates
+    ("ABBOTABAD", "abbottabad", "Alipur") - title-cased and de-duplicated
+    for the form's suggestion list. City stays free text on the form, so
+    this only ever suggests."""
+    seen = {}
+    for row in rows:
+        name = string.capwords(re.sub(r"\s+", " ", row.strip()))
+        key = name.lower()
+        if key and key not in seen:
+            seen[key] = name
+    return sorted(seen.values())
+
+
+def kyc_options():
+    """What the OMS Courier form's dropdowns offer: Smartlane's own
+    industries (the only values its KYC accepts) and cities, plus Pakistan's
+    provinces. Fetched from Smartlane at most once a day per process and
+    served from cache otherwise, so opening the page doesn't wait on
+    Smartlane; falls back to the built-in industry list if Smartlane can't
+    be reached."""
+    cached = cache.get(_KYC_OPTIONS_CACHE_KEY)
+    if cached:
+        return cached
+
+    industries, cities = [], []
+    config = SmartlaneBusinessConfig.load()
+    if config.is_configured:
+        try:
+            industries = _string_rows(business_client.fetch_industries(config)[0])
+        except Exception:  # noqa: BLE001 - third-party call; the fallback list covers it
+            logger.exception("oms courier: could not load Smartlane's industries")
+        try:
+            cities = _string_rows(business_client.fetch_city_list(config)[0])
+        except Exception:  # noqa: BLE001 - suggestions only
+            logger.exception("oms courier: could not load Smartlane's cities")
+
+    options = {
+        "industries": industries or list(_FALLBACK_INDUSTRIES),
+        "cities": _clean_cities(cities),
+        "states": list(PAKISTAN_STATES),
+    }
+    cache.set(
+        _KYC_OPTIONS_CACHE_KEY, options,
+        _KYC_OPTIONS_TTL if industries and cities else _KYC_OPTIONS_FALLBACK_TTL,
+    )
+    return options
+
+
+def _canonical_industry(value, choices):
+    """The exact Smartlane value for `value` (case/space-insensitive, aliases
+    like "Clothing" -> "Fashion" allowed), or None."""
+    wanted = (value or "").strip().lower()
+    if not wanted:
+        return None
+    wanted = (_INDUSTRY_ALIASES.get(wanted) or wanted).strip().lower()
+    for choice in choices:
+        if choice.strip().lower() == wanted:
+            return choice
+    return None
+
+
+def _canonical_state(value):
+    wanted = re.sub(r"\s+", " ", (value or "").strip().lower())
+    if not wanted:
+        return None
+    for state in PAKISTAN_STATES:
+        if state.lower() == wanted:
+            return state
+    return _STATE_ALIASES.get(wanted.replace("-", " ").replace("&", "and")) or _STATE_ALIASES.get(wanted)
+
+
+def normalize_cnic(value):
+    """"35202-1234567-1" / "35202 1234567 1" -> "3520212345671" (Smartlane
+    wants the 13 digits with no dashes), or None if it isn't 13 digits."""
+    digits = re.sub(r"\D", "", value or "")
+    return digits if len(digits) == 13 else None
+
+
+def normalize_pk_mobile(value):
+    """"+92 300 1234567" / "923001234567" / "3001234567" -> "03001234567"
+    (Smartlane's sample format), or None."""
+    digits = re.sub(r"\D", "", value or "")
+    if digits.startswith("0092"):
+        digits = digits[4:]
+    elif digits.startswith("92") and len(digits) == 12:
+        digits = digits[2:]
+    if len(digits) == 10 and digits.startswith("3"):
+        digits = "0" + digits
+    return digits if re.fullmatch(r"03\d{9}", digits) else None
+
+
+def normalize_ntn(value):
+    """NTN as Smartlane's sample writes it ("0000000-0"): 8 digits get the
+    dash before the check digit; a 7-digit NTN or a 13-digit CNIC-based one
+    is kept as digits. None if it's none of those."""
+    digits = re.sub(r"\D", "", value or "")
+    if len(digits) == 8:
+        return f"{digits[:7]}-{digits[7]}"
+    if len(digits) in (7, 13):
+        return digits
+    return None
+
+
+def _clean_kyc_fields(link):
+    """Normalises the free-text KYC fields in place and returns a list of
+    problems (empty if all good). Optional fields are only checked when
+    filled in. The industry is checked against Smartlane's own list - a
+    value outside it is exactly what Smartlane answers 422 to."""
+    errors = []
+
+    if link.kyc_poc_cnic:
+        cnic = normalize_cnic(link.kyc_poc_cnic)
+        if cnic:
+            link.kyc_poc_cnic = cnic
+        else:
+            errors.append("CNIC must be 13 digits (e.g. 3520212345671).")
+
+    if link.kyc_phone:
+        phone = normalize_pk_mobile(link.kyc_phone)
+        if phone:
+            link.kyc_phone = phone
+        else:
+            errors.append("Phone must be a Pakistani mobile number like 03001234567.")
+
+    if link.kyc_email:
+        try:
+            validate_email(link.kyc_email)
+        except ValidationError:
+            errors.append("Email isn't a valid email address.")
+
+    if link.kyc_ntn:
+        ntn = normalize_ntn(link.kyc_ntn)
+        if ntn:
+            link.kyc_ntn = ntn
+        else:
+            errors.append("NTN must be like 1234567-8 (or a 13-digit CNIC-based NTN).")
+
+    if link.kyc_logo_url:
+        try:
+            URLValidator(schemes=["http", "https"])(link.kyc_logo_url)
+        except ValidationError:
+            errors.append("Logo URL must be a full link starting with https://.")
+
+    if link.kyc_industry:
+        industry = _canonical_industry(link.kyc_industry, kyc_options()["industries"])
+        if industry:
+            link.kyc_industry = industry
+        else:
+            errors.append("Industry must be one of the options in the list.")
+
+    if link.kyc_state:
+        state = _canonical_state(link.kyc_state)
+        if state:
+            link.kyc_state = state
+        else:
+            errors.append(f"State must be one of: {', '.join(PAKISTAN_STATES)}.")
+
+    for label, value in (
+        ("Avg order value", link.kyc_avg_order_value),
+        ("Avg monthly sales", link.kyc_avg_monthly_sales),
+        ("Annual retail sale", link.kyc_annual_retail_sales),
+    ):
+        if value is not None and value < 0:
+            errors.append(f"{label} can't be negative.")
+    return errors
+
 
 def build_kyc_payload(link):
     """The store link as Smartlane's KYC body.
@@ -313,10 +533,16 @@ def build_kyc_payload(link):
             payload[wire_key] = ""
             continue
         payload[wire_key] = str(value) if not isinstance(value, (int, str)) else value
-    industry = (payload.get("industry") or "").strip()
-    alias = _INDUSTRY_ALIASES.get(industry.lower())
-    if alias:
-        payload["industry"] = alias
+    # Requests saved before the form cleaned these on submit (CNIC with
+    # dashes, "+92..." phones, "Clothing") are cleaned on the way out too.
+    # No network call here - the cached industry list or the built-in one.
+    if payload.get("poc_cnic"):
+        payload["poc_cnic"] = normalize_cnic(payload["poc_cnic"]) or payload["poc_cnic"]
+    if payload.get("poc_phone"):
+        payload["poc_phone"] = normalize_pk_mobile(payload["poc_phone"]) or payload["poc_phone"]
+    industry = payload.get("industry") or ""
+    choices = (cache.get(_KYC_OPTIONS_CACHE_KEY) or {}).get("industries") or _FALLBACK_INDUSTRIES
+    payload["industry"] = _canonical_industry(industry, choices) or industry.strip()
     return payload
 
 
@@ -456,6 +682,13 @@ def submit_org_onboarding(organization_id, body, *, actor_user_id=None):
     ]
     if missing:
         raise SmartlaneBusinessError(f"Required: {', '.join(missing)}.")
+
+    # CNIC without dashes, phone as 03XXXXXXXXX, industry from Smartlane's
+    # own list, ... - caught here, with a readable message, rather than as
+    # a 422 from Smartlane after a super admin has already approved it.
+    problems = _clean_kyc_fields(link)
+    if problems:
+        raise SmartlaneBusinessError(" ".join(problems))
 
     link.status = "pending_approval"
     link.review_note = ""
