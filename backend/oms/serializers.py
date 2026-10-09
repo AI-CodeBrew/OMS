@@ -1,3 +1,4 @@
+from django.utils import timezone
 from rest_framework import serializers
 
 from .models import (
@@ -181,6 +182,7 @@ class OrderSerializer(serializers.ModelSerializer):
         source="parent_order.order_number", read_only=True, default=""
     )
     placed_at = serializers.SerializerMethodField()
+    in_transit_days = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -242,6 +244,8 @@ class OrderSerializer(serializers.ModelSerializer):
             "parent_order",
             "parent_order_number",
             "placed_at",
+            "in_transit_days",
+            "dispatch_requested_at",
             "dispatched_at",
             "delivered_at",
             "returned_at",
@@ -255,6 +259,7 @@ class OrderSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = [
+            "dispatch_requested_at",
             "id",
             "supabase_order_no",
             "status",
@@ -309,3 +314,11 @@ class OrderSerializer(serializers.ModelSerializer):
 
     def get_placed_at(self, order):
         return order.placed_at or order.created_at
+
+    def get_in_transit_days(self, order):
+        # Only the Critical Orders list carries this (see services.
+        # critical_transit_orders, which annotates it) - null everywhere else.
+        since = getattr(order, "_in_transit_since", None)
+        if since is None:
+            return None
+        return (timezone.now() - since).days

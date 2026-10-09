@@ -55,7 +55,8 @@ function normalizeOrderNumber(value) {
   return String(value || "").trim().replace(/^#/, "").toLowerCase();
 }
 
-export default function AirwayBillFilterModal({ orders, onClose }) {
+// onGenerated (optional) runs after each PDF that downloads successfully.
+export default function AirwayBillFilterModal({ orders, onClose, onGenerated }) {
   const [mode, setMode] = useState("all");
   const [selectedProducts, setSelectedProducts] = useState(() => new Set());
   const [allStatus, setAllStatus] = useState("idle");
@@ -111,6 +112,7 @@ export default function AirwayBillFilterModal({ orders, onClose }) {
     try {
       await ordersService.printSmartlaneAirwayBill(orders.map((o) => o.id));
       setAllStatus("done");
+      onGenerated?.();
     } catch (err) {
       setAllStatus("error");
       setError(err.message || "Print failed");
@@ -127,6 +129,7 @@ export default function AirwayBillFilterModal({ orders, onClose }) {
           .map((o) => o.id);
         await ordersService.printSmartlaneAirwayBill(ids, name);
         setRowStatus((prev) => ({ ...prev, [name]: "done" }));
+        onGenerated?.();
       } catch (err) {
         setRowStatus((prev) => ({ ...prev, [name]: "error" }));
         setError(err.message || `Failed to print "${name}"`);
@@ -162,6 +165,7 @@ export default function AirwayBillFilterModal({ orders, onClose }) {
     try {
       await ordersService.printSmartlaneAirwayBill(matched.map((o) => o.id), "selected");
       setOrderIdStatus("done");
+      onGenerated?.();
     } catch (err) {
       setOrderIdStatus("error");
       setError(err.message || "Print failed");

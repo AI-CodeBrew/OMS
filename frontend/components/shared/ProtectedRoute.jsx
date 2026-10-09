@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import useAuthStore from "../../store/authStore";
+import { installSessionGuard } from "../../lib/sessionGuard";
 
 export default function ProtectedRoute({ children, requireSuperAdmin = false }) {
   const router = useRouter();
@@ -14,6 +15,16 @@ export default function ProtectedRoute({ children, requireSuperAdmin = false }) 
   useEffect(() => {
     hydrateFromStorage();
   }, [hydrateFromStorage]);
+
+  // Once per page load: an expired session refreshes itself, or signs the
+  // user out and sends them to the login page with a message.
+  useEffect(() => {
+    try {
+      installSessionGuard();
+    } catch {
+      // Supabase env missing - the app can't sign in at all then.
+    }
+  }, []);
 
   useEffect(() => {
     if (!hydrated) return;

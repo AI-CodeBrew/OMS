@@ -121,6 +121,12 @@ BULK_ACTIONS = {
     "abandon_booking": lambda order, params, actor: services.abandon_smartlane_booking(
         order, actor_user_id=actor
     ),
+    "request_dispatch": lambda order, params, actor: services.request_dispatch(
+        order, actor_user_id=actor
+    ),
+    "withdraw_dispatch_request": lambda order, params, actor: services.withdraw_dispatch_request(
+        order, actor_user_id=actor
+    ),
 }
 
 
@@ -179,6 +185,10 @@ class OrderViewSet(viewsets.ModelViewSet):
         ]
         if extra:
             return None
+        if request.query_params.get("status") == "critical":
+            # Time-dependent (see services.critical_transit_orders), so a
+            # cached page would go stale with nothing to invalidate it.
+            return None
         return (
             request.query_params.get("status") or "all",
             request.query_params.get("page") or "1",
@@ -206,6 +216,14 @@ class OrderViewSet(viewsets.ModelViewSet):
         counts = services.compute_order_counts(organization_id)
         set_cached_counts(organization_id, counts, version=version)
         return counts
+
+    @staticmethod
+    def _with_critical_count(counts, qs):
+        """`counts` plus the Critical Orders tab's number - computed fresh on
+        every call rather than stored in the (cached) per-status counts,
+        since it changes with time, not only when an order does. Returns a
+        copy so the cached dict is never touched."""
+        return {**counts, "critical": services.critical_transit_orders(qs).count()}
 
     def _tab_list_payload(self, request, tab_status, page_size):
         organization_id = request.organization_id
@@ -340,7 +358,11 @@ class OrderViewSet(viewsets.ModelViewSet):
         status_param = params.get("status")
         if status_param:
             status_list = [s.strip() for s in status_param.split(",") if s.strip()]
-            qs = qs.filter(status__in=status_list)
+            if status_list == ["critical"]:
+                # Not a real status - in transit too long, longest first.
+                qs = services.critical_transit_orders(qs).order_by("_in_transit_since")
+            else:
+                qs = qs.filter(status__in=status_list)
             if status_list == ["ready_to_print"]:
                 # Default ordering (Order.Meta.ordering = -created_at) sorts
                 # by when the row was first created, not by when it most
@@ -383,6 +405,14 @@ class OrderViewSet(viewsets.ModelViewSet):
         store = params.get("store")
         if store:
             qs = qs.filter(organization_id=store)
+
+        # Dispatch Hub: only the orders stores have asked FynkTech to ship
+        # and that haven't been booked yet.
+        if params.get("dispatch_requested") == "yes":
+            qs = qs.filter(
+                dispatch_requested_at__isnull=False,
+                status__in=services.DISPATCH_REQUESTABLE_STATUSES,
+            )
 
         city = params.get("city")
         if city:
@@ -469,14 +499,62 @@ class OrderViewSet(viewsets.ModelViewSet):
             return error
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        # Everything a courier booking needs - the same columns the import
+        # template requires (see order_importer.REQUIRED_COLUMNS).
+        required = {
+            "order_number": "Order number",
+            "customer_name": "Customer name",
+            "customer_phone": "Phone",
+            "address_line1": "Address",
+            "city": "City",
+        }
+        missing = [label for field, label in required.items() if not str(data.get(field) or "").strip()]
+        items = data.get("items") or []
+        if not items:
+            missing.append("At least one product")
+        for index, item in enumerate(items, start=1):
+            if not str(item.get("product_name") or "").strip():
+                missing.append(f"Product name (item {index})")
+            if not item.get("quantity"):
+                missing.append(f"Quantity (item {index})")
+            if not item.get("weight_grams"):
+                missing.append(f"Weight (item {index})")
+        if missing:
+            return Response(
+                {"detail": "Please fill in: " + ", ".join(missing)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if Order.all_objects.filter(
+            organization_id=organization_id, order_number=data["order_number"]
+        ).exists():
+            return Response(
+                {"detail": f"Order number {data['order_number']} already exists."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        extra_fields = {
+            field: data[field]
+            for field in (
+                "customer_email", "secondary_phone", "address_line1", "address_line2",
+                "postal_code", "city", "payment_gateway", "shipping_amount",
+            )
+            if field in data
+        }
+        placed_at = order_importer._parse_order_date(str(request.data.get("order_date") or "").strip())
+        if placed_at:
+            extra_fields["placed_at"] = placed_at
 
         def _do_create():
             return services.create_order(
                 organization_id=organization_id,
-                order_number=serializer.validated_data["order_number"],
-                customer_name=serializer.validated_data["customer_name"],
-                customer_phone=serializer.validated_data.get("customer_phone", ""),
-                items=serializer.validated_data["items"],
+                order_number=data["order_number"],
+                customer_name=data["customer_name"],
+                customer_phone=data.get("customer_phone", ""),
+                items=items,
+                extra_fields=extra_fields,
+                note=str(request.data.get("notes") or "").strip(),
             )
 
         # In Hub mode the ambient context is scoped to every Hub store, not
@@ -535,7 +613,12 @@ class OrderViewSet(viewsets.ModelViewSet):
             request
         )
         if cacheable:
-            return Response(self._counts_payload(request.organization_id))
+            return Response(
+                self._with_critical_count(
+                    self._counts_payload(request.organization_id),
+                    Order.objects.filter(organization_id=request.organization_id),
+                )
+            )
 
         qs = self._apply_filters(
             Order.objects.filter(**org_filter(request)), params_without_status
@@ -545,7 +628,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         for row in rows:
             counts[row["status"]] = row["count"]
         counts["all"] = sum(counts.values())
-        return Response(counts)
+        return Response(self._with_critical_count(counts, qs))
 
     @action(detail=False, methods=["get"])
     def warmup(self, request):
@@ -567,7 +650,10 @@ class OrderViewSet(viewsets.ModelViewSet):
         page_size = min(max(page_size, 1), OrderPagination.max_page_size)
         organization_id = request.organization_id
 
-        counts = self._counts_payload(organization_id)
+        counts = self._with_critical_count(
+            self._counts_payload(organization_id),
+            Order.objects.filter(organization_id=organization_id),
+        )
         lists = {"all": self._tab_list_payload(request, "all", page_size)}
         for status, _label in Order.STATUS_CHOICES:
             lists[status] = self._tab_list_payload(request, status, page_size)
@@ -603,11 +689,16 @@ class OrderViewSet(viewsets.ModelViewSet):
         Defaults to a dry run - the caller must pass dry_run=false to
         actually write, so the UI can show what would change first.
         """
+        organization_id = request.organization_id
         if is_hub_request(request):
-            return Response(
-                {"detail": "Open the specific store to import a courier sheet for it."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            # Order numbers are only unique per store, so a Hub import has
+            # to name the one store the sheet belongs to.
+            organization_id = str(request.data.get("store") or "")
+            if organization_id not in {str(o) for o in request.organization_ids}:
+                return Response(
+                    {"detail": "Choose which Dispatch Hub store this sheet is for."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         upload = request.FILES.get("file")
         if not upload:
             return Response(
@@ -618,11 +709,14 @@ class OrderViewSet(viewsets.ModelViewSet):
             return str(request.data.get(name, "")).lower() in ("1", "true", "yes")
 
         try:
-            result = importers.run_import(
-                request.organization_id,
-                upload,
-                dry_run=not _flag("apply"),
-                overwrite_final=_flag("overwrite_final"),
+            result = _with_tenant_context(
+                organization_id,
+                lambda: importers.run_import(
+                    organization_id,
+                    upload,
+                    dry_run=not _flag("apply"),
+                    overwrite_final=_flag("overwrite_final"),
+                ),
             )
         except UnicodeDecodeError:
             return Response(
@@ -825,6 +919,22 @@ class OrderViewSet(viewsets.ModelViewSet):
             "id", "organization_id"
         )
         return {str(oid): str(org_id) for oid, org_id in rows}
+
+    @action(detail=False, methods=["get"], url_path="dispatch-hub-membership")
+    def dispatch_hub_membership(self, request):
+        """Whether the caller's own store is on the Dispatch Hub - the Orders
+        page offers "Send for dispatch" only when it is."""
+        from core.models import DispatchHubStore
+
+        if is_hub_request(request):
+            return Response({"in_dispatch_hub": False})
+        return Response(
+            {
+                "in_dispatch_hub": DispatchHubStore.objects.filter(
+                    organization_id=request.organization_id
+                ).exists()
+            }
+        )
 
     @action(detail=False, methods=["post"], url_path="bulk-action")
     def bulk_action(self, request):

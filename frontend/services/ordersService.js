@@ -144,6 +144,15 @@ class OrdersService {
     return data;
   }
 
+  async isInDispatchHub() {
+    const response = await fetch(
+      `${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderDispatchHubMembership}`,
+      { headers: authService.getAuthHeaders() }
+    );
+    const data = await response.json().catch(() => ({}));
+    return response.ok && Boolean(data.in_dispatch_hub);
+  }
+
   async scanDispatch({ orderNumber, trackingNumber = "" }) {
     const response = await fetch(`${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderScanDispatch}`, {
       method: "POST",
@@ -255,9 +264,11 @@ class OrdersService {
 
   // Uploads a courier/settlement sheet. Defaults to a preview: nothing is
   // written unless apply is true, so the UI can show the diff first.
-  async importCsv(file, { apply = false, overwriteFinal = false } = {}) {
+  async importCsv(file, { apply = false, overwriteFinal = false, store = "" } = {}) {
     const form = new FormData();
     form.append("file", file);
+    // Dispatch Hub only: which of its stores the sheet is for.
+    if (store) form.append("store", store);
     form.append("apply", apply ? "true" : "false");
     form.append("overwrite_final", overwriteFinal ? "true" : "false");
 

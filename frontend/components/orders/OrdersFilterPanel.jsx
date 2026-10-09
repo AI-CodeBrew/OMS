@@ -26,6 +26,19 @@ export default function OrdersFilterPanel({ filters, onChange, onApply, onClear,
           </select>
         </label>
       ) : null}
+      {stores ? (
+        <label className="block">
+          <span className="mb-1 block text-xs font-medium text-slate-700">Dispatch requests</span>
+          <select
+            value={filters.dispatch_requested}
+            onChange={update("dispatch_requested")}
+            className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
+          >
+            <option value="">All orders</option>
+            <option value="yes">Sent for dispatch only</option>
+          </select>
+        </label>
+      ) : null}
       <label className="block">
         <span className="mb-1 block text-xs font-medium text-slate-700">City</span>
         <input

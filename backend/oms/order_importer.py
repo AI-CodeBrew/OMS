@@ -29,14 +29,22 @@ COLUMN_ALIASES = {
     "order date": "order_date",
     "customer name": "customer_name",
     "phone": "phone",
+    "secondary phone": "secondary_phone",
+    "email": "email",
     "address": "address",
     "city": "city",
+    "payment method": "payment_method",
     "product": "product_name",
     "sku": "sku",
     "qty": "quantity",
     "quantity": "quantity",
     "unit price": "unit_price",
+    "weight (grams)": "weight_grams",
+    "weight": "weight_grams",
     "shipping": "shipping",
+    "shipping charges": "shipping",
+    # Older template column - still read so old sheets don't break, but
+    # never used: the amount is worked out from the items + shipping.
     "cod amount": "cod_amount",
     "notes": "notes",
     # Shopify "Export orders" CSV
@@ -47,6 +55,7 @@ COLUMN_ALIASES = {
     "phone number": "phone",
     "shipping address1": "address",
     "shipping city": "city",
+    "financial status": "payment_method",
     "lineitem name": "product_name",
     "lineitem sku": "sku",
     "lineitem quantity": "quantity",
@@ -54,37 +63,61 @@ COLUMN_ALIASES = {
     "notes attribute": "notes",
 }
 
+# Every field a normal OMS order carries - the same ones the Manual Order
+# form asks for. Columns marked required in REQUIRED_COLUMNS must be filled
+# on every row; the rest may be left blank.
 TEMPLATE_HEADERS = [
     "Order No",
     "Order Date",
     "Customer Name",
     "Phone",
+    "Email",
     "Address",
     "City",
+    "Payment Method",
     "Product",
     "SKU",
     "Qty",
     "Unit Price",
-    "Shipping",
-    "COD Amount",
+    "Weight (grams)",
+    "Shipping Charges",
     "Notes",
 ]
 
-TEMPLATE_SAMPLE_ROW = [
-    "1001",
-    "2026-10-01",
-    "Jane Doe",
-    "03001234567",
-    "House 12, Street 4, DHA",
-    "Lahore",
-    "Black T-Shirt",
-    "TS-BLK-M",
-    "2",
-    "1500",
-    "200",
-    "3200",
-    "Call before delivery",
+# Two rows with one Order No = one order with two items.
+TEMPLATE_SAMPLE_ROWS = [
+    [
+        "1001", "2026-10-01", "Ali Khan", "03001234567", "ali@example.com",
+        "House 12, Street 4, DHA Phase 5", "Lahore", "COD", "Black T-Shirt", "TS-BLK-M",
+        "2", "1500", "250", "200", "Call before delivery",
+    ],
+    [
+        "1001", "2026-10-01", "Ali Khan", "03001234567", "ali@example.com",
+        "House 12, Street 4, DHA Phase 5", "Lahore", "COD", "Blue Jeans", "JN-BLU-32",
+        "1", "2500", "600", "200", "",
+    ],
 ]
+
+# (row key, column label) - checked on every row.
+REQUIRED_COLUMNS = [
+    ("order_number", "Order No"),
+    ("customer_name", "Customer Name"),
+    ("phone", "Phone"),
+    ("address", "Address"),
+    ("city", "City"),
+    ("product_name", "Product"),
+    ("quantity", "Qty"),
+    ("unit_price", "Unit Price"),
+]
+
+
+def payment_gateway_for(value):
+    """'COD' / 'Prepaid' (or Shopify's financial status) -> Order.payment_gateway.
+    Blank or unrecognised counts as COD, the common case."""
+    value = (value or "").strip().lower()
+    if value in ("prepaid", "paid", "cc", "card", "online", "bank transfer"):
+        return "cc"
+    return "cod"
 
 
 def _clean(value):
@@ -117,7 +150,7 @@ def template_csv():
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerow(TEMPLATE_HEADERS)
-    writer.writerow(TEMPLATE_SAMPLE_ROW)
+    writer.writerows(TEMPLATE_SAMPLE_ROWS)
     return buffer.getvalue()
 
 
@@ -146,29 +179,32 @@ def parse_rows(file_obj):
     rows, errors = [], []
     for line_number, raw_row in enumerate(reader, start=2):
         row = {key: raw_row.get(name) for name, key in header_map.items()}
-        order_number = _clean(row.get("order_number"))
-        if not order_number:
-            errors.append(f"Line {line_number}: missing order number")
+        missing = [label for key, label in REQUIRED_COLUMNS if not _clean(row.get(key))]
+        if missing:
+            errors.append(f"Line {line_number}: missing {', '.join(missing)}")
             continue
-        product_name = _clean(row.get("product_name"))
-        if not product_name:
-            errors.append(f"Line {line_number}: missing product name")
+        unit_price = _parse_decimal(row.get("unit_price"))
+        if unit_price is None or unit_price < 0:
+            errors.append(f"Line {line_number}: Unit Price must be a number")
             continue
         rows.append(
             {
                 "line": line_number,
-                "order_number": order_number,
+                "order_number": _clean(row.get("order_number")),
                 "order_date": _clean(row.get("order_date")),
-                "customer_name": _clean(row.get("customer_name")) or "Unknown",
+                "customer_name": _clean(row.get("customer_name")),
                 "phone": _clean(row.get("phone")),
+                "secondary_phone": _clean(row.get("secondary_phone")),
+                "email": _clean(row.get("email")),
                 "address": _clean(row.get("address")),
                 "city": _clean(row.get("city")),
-                "product_name": product_name,
+                "payment_gateway": payment_gateway_for(_clean(row.get("payment_method"))),
+                "product_name": _clean(row.get("product_name")),
                 "sku": _clean(row.get("sku")),
                 "quantity": _parse_int(row.get("quantity")),
-                "unit_price": _parse_decimal(row.get("unit_price"), default=Decimal("0")),
+                "unit_price": unit_price,
+                "weight_grams": _parse_int(row.get("weight_grams"), default=None),
                 "shipping": _parse_decimal(row.get("shipping"), default=Decimal("0")),
-                "cod_amount": _parse_decimal(row.get("cod_amount")),
                 "notes": _clean(row.get("notes")),
             }
         )
@@ -188,10 +224,12 @@ def _group_by_order(rows):
                 "order_date": row["order_date"],
                 "customer_name": row["customer_name"],
                 "phone": row["phone"],
+                "secondary_phone": row["secondary_phone"],
+                "email": row["email"],
                 "address": row["address"],
                 "city": row["city"],
+                "payment_gateway": row["payment_gateway"],
                 "shipping": row["shipping"],
-                "cod_amount": row["cod_amount"],
                 "notes": [],
                 "items": [],
             },
@@ -274,8 +312,11 @@ def apply_import(organization_id, file_obj, *, shop_label=""):
             order_number=order_number[:50],
             customer_name=group["customer_name"][:255],
             customer_phone=group["phone"][:50],
+            secondary_phone=group["secondary_phone"][:50],
+            customer_email=group["email"][:255],
             address_line1=group["address"][:255],
             city=group["city"][:100],
+            payment_gateway=group["payment_gateway"],
             status="new",
             shop=(shop_label or "Manual")[:150],
             order_source="CSV",
@@ -291,6 +332,7 @@ def apply_import(organization_id, file_obj, *, shop_label=""):
                 barcode=item["sku"][:100],
                 quantity=item["quantity"],
                 unit_price=item["unit_price"],
+                weight_grams=item["weight_grams"],
             )
             total += item["quantity"] * item["unit_price"]
         order.total_amount = total

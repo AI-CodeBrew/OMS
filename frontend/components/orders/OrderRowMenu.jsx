@@ -6,14 +6,19 @@ import useBarqRaftarStatusStore from "../../app/(tenant)/integrations/barq-rafta
 import { withBarqRaftarActions } from "../../app/(tenant)/integrations/barq-raftar/_lib/orderActions";
 import usePostExStatusStore from "../../app/(tenant)/integrations/postex/_lib/postexStatusStore";
 import { withPostExActions } from "../../app/(tenant)/integrations/postex/_lib/orderActions";
+import { forOrdersBookingAccounts } from "./orderBookingAccount";
 
 export default function OrderRowMenu({ order, onAction, onRaiseTicket }) {
   const barqraftarConnected = useBarqRaftarStatusStore((s) => s.connected);
   const postexConnected = usePostExStatusStore((s) => s.connected);
-  const actions = withPostExActions(
-    order.status,
-    withBarqRaftarActions(order.status, ACTIONS_BY_STATUS[order.status] || [], barqraftarConnected),
-    postexConnected
+  // Only the documents/actions of the courier this order was booked with.
+  const actions = forOrdersBookingAccounts(
+    withPostExActions(
+      order.status,
+      withBarqRaftarActions(order.status, ACTIONS_BY_STATUS[order.status] || [], barqraftarConnected),
+      postexConnected
+    ),
+    [order]
   );
 
   // "Raise ticket" isn't a status mutation like everything in

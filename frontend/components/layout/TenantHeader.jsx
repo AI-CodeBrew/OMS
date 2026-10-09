@@ -6,6 +6,7 @@ import Dropdown from "../shared/Dropdown";
 import StoreSwitcher from "./StoreSwitcher";
 import authService from "../../services/authService";
 import { useEffectiveUser } from "../../store/authStore";
+import useCriticalOrdersStore from "../../store/criticalOrdersStore";
 import { getVisibleModules } from "./moduleNav";
 
 function BellIcon({ className }) {
@@ -34,6 +35,7 @@ export default function TenantHeader({ activeModule }) {
   const router = useRouter();
   const user = useEffectiveUser();
   const modules = getVisibleModules(user);
+  const criticalCount = useCriticalOrdersStore((s) => s.count);
   const activeModuleLabel = modules.find((m) => m.key === activeModule)?.label || "Menu";
 
   function logout() {
@@ -97,9 +99,21 @@ export default function TenantHeader({ activeModule }) {
           <button
             type="button"
             className="relative rounded-md p-2 text-brand-100 hover:bg-white/10 hover:text-white"
-            title="Notifications"
+            title={
+              criticalCount > 0
+                ? `${criticalCount} order${criticalCount === 1 ? "" : "s"} in transit for more than 3 days`
+                : "Notifications"
+            }
+            onClick={() => {
+              if (criticalCount > 0) router.push("/orders?status=critical");
+            }}
           >
             <BellIcon className="h-5 w-5" />
+            {criticalCount > 0 ? (
+              <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-semibold leading-none text-white">
+                {criticalCount > 99 ? "99+" : criticalCount}
+              </span>
+            ) : null}
           </button>
 
           <Dropdown

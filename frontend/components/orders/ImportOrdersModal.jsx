@@ -5,6 +5,7 @@ import Button from "../shared/Button";
 import Modal from "../shared/Modal";
 import ordersService from "../../services/ordersService";
 import useLoadingStore from "../../store/loadingStore";
+import ImportDataEditorModal, { parseCsv, toCsv } from "./ImportDataEditorModal";
 
 const COLUMNS = [
   "Web OrderID",
@@ -70,8 +71,16 @@ function Stat({ label, value, tone = "slate" }) {
   );
 }
 
-export default function ImportOrdersModal({ open, onClose, onImported }) {
+// `stores` is only passed in the Dispatch Hub, where the sheet has to be
+// pointed at one of its stores.
+export default function ImportOrdersModal({ open, onClose, onImported, stores = null }) {
   const inputRef = useRef(null);
+  const [store, setStore] = useState("");
+  // The uploaded sheet as parsed rows, edited in ImportDataEditorModal;
+  // `file` below is always rebuilt from it, so edits are what gets imported.
+  const [sheet, setSheet] = useState(null);
+  const [fileName, setFileName] = useState("");
+  const [editorOpen, setEditorOpen] = useState(false);
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -87,6 +96,10 @@ export default function ImportOrdersModal({ open, onClose, onImported }) {
     setError("");
     setApplied(null);
     setOverwriteFinal(false);
+    setStore("");
+    setSheet(null);
+    setFileName("");
+    setEditorOpen(false);
     if (inputRef.current) inputRef.current.value = "";
   }
 
@@ -95,7 +108,11 @@ export default function ImportOrdersModal({ open, onClose, onImported }) {
     onClose?.();
   }
 
-  async function runPreview(nextFile, nextOverwrite = overwriteFinal) {
+  async function runPreview(nextFile, nextOverwrite = overwriteFinal, nextStore = store) {
+    if (stores && !nextStore) {
+      setPreview(null);
+      return;
+    }
     setBusy(true);
     setError("");
     setApplied(null);
@@ -103,6 +120,7 @@ export default function ImportOrdersModal({ open, onClose, onImported }) {
       const result = await ordersService.importCsv(nextFile, {
         apply: false,
         overwriteFinal: nextOverwrite,
+        store: nextStore,
       });
       setPreview(result);
     } catch (err) {
@@ -113,11 +131,32 @@ export default function ImportOrdersModal({ open, onClose, onImported }) {
     }
   }
 
-  function onPick(event) {
+  // Opens the picked sheet in the full-size editor first; the preview runs
+  // on whatever the user saves from there.
+  async function onPick(event) {
     const picked = event.target.files?.[0];
     if (!picked) return;
-    setFile(picked);
-    runPreview(picked);
+    setError("");
+    try {
+      const [head = [], ...body] = parseCsv(await picked.text());
+      if (head.length === 0) {
+        setError("The file is empty.");
+        return;
+      }
+      setFileName(picked.name);
+      setSheet({ header: head, rows: body });
+      setEditorOpen(true);
+    } catch {
+      setError("Could not read the file - please upload a UTF-8 CSV.");
+    }
+  }
+
+  function onSaveEdits(header, rows) {
+    setSheet({ header, rows });
+    setEditorOpen(false);
+    const edited = new File([toCsv(header, rows)], fileName || "import.csv", { type: "text/csv" });
+    setFile(edited);
+    runPreview(edited);
   }
 
   function onToggleOverwrite(event) {
@@ -133,7 +172,7 @@ export default function ImportOrdersModal({ open, onClose, onImported }) {
     setError("");
     beginLoading("Importing orders");
     try {
-      const result = await ordersService.importCsv(file, { apply: true, overwriteFinal });
+      const result = await ordersService.importCsv(file, { apply: true, overwriteFinal, store });
       setApplied(result);
       setPreview(result);
       onImported?.(result);
@@ -146,8 +185,20 @@ export default function ImportOrdersModal({ open, onClose, onImported }) {
   }
 
   return (
+    <>
+    <ImportDataEditorModal
+      open={editorOpen}
+      header={sheet?.header || []}
+      rows={sheet?.rows || []}
+      onCancel={() => {
+        setEditorOpen(false);
+        // Backing out before the first save leaves nothing picked.
+        if (!file) reset();
+      }}
+      onSave={onSaveEdits}
+    />
     <Modal
-      open={open}
+      open={open && !editorOpen}
       onClose={close}
       title="Import courier sheet"
       width="max-w-2xl"
@@ -187,6 +238,27 @@ export default function ImportOrdersModal({ open, onClose, onImported }) {
           </div>
         </div>
 
+        {stores ? (
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-slate-700">Store</span>
+            <select
+              value={store}
+              onChange={(e) => {
+                setStore(e.target.value);
+                if (file) runPreview(file, overwriteFinal, e.target.value);
+              }}
+              className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
+            >
+              <option value="">Choose the store this sheet is for…</option>
+              {stores.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
+
         <div>
           <input
             ref={inputRef}
@@ -195,8 +267,21 @@ export default function ImportOrdersModal({ open, onClose, onImported }) {
             onChange={onPick}
             className="block w-full text-sm text-slate-600 file:mr-3 file:rounded-md file:border-0 file:bg-brand-800 file:px-3 file:py-2 file:text-sm file:font-medium file:text-white hover:file:bg-brand-900"
           />
-          {file ? (
-            <div className="mt-1 text-xs text-slate-500">{file.name}</div>
+          {sheet ? (
+            <div className="mt-1 flex items-center gap-3 text-xs text-slate-500">
+              <span>
+                {fileName} · {sheet.rows.length} row{sheet.rows.length === 1 ? "" : "s"}
+              </span>
+              {!applied ? (
+                <button
+                  type="button"
+                  onClick={() => setEditorOpen(true)}
+                  className="font-medium text-brand-600 hover:underline"
+                >
+                  View / edit data
+                </button>
+              ) : null}
+            </div>
           ) : null}
         </div>
 
@@ -332,5 +417,6 @@ export default function ImportOrdersModal({ open, onClose, onImported }) {
         ) : null}
       </div>
     </Modal>
+    </>
   );
 }
