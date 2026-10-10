@@ -48,6 +48,21 @@ urlpatterns = [
         integrations_admin_views.oms_courier,
         name="admin-oms-courier",
     ),
+    path(
+        "admin/oms-courier/requests/",
+        integrations_admin_views.oms_courier_requests,
+        name="admin-oms-courier-requests",
+    ),
+    path(
+        "admin/oms-courier/requests/<uuid:request_id>/approve/",
+        integrations_admin_views.oms_courier_request_approve,
+        name="admin-oms-courier-request-approve",
+    ),
+    path(
+        "admin/oms-courier/requests/<uuid:request_id>/reject/",
+        integrations_admin_views.oms_courier_request_reject,
+        name="admin-oms-courier-request-reject",
+    ),
     # Same reason - lives in the oms app (Ticket FKs Order) but is mounted
     # here for the IP allowlist.
     path("admin/tickets/", include("oms.admin_urls")),

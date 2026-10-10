@@ -9,7 +9,9 @@ from django.db.models import F
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
+from core.context import tenant_context
 from core.events import publish_event
+from core.platform_service import is_platform_organization
 from oms.models import Courier, Order, OrderItem
 
 from . import shopify_client, smartlane_client
@@ -495,6 +497,17 @@ def find_order_by_smartlane_reference(reference):
     return None
 
 
+def find_platform_order(reference):
+    """The order a Dispatch Hub booking through FynkTech's own Smartlane
+    account was sent as `reference` (Order.platform_reference - a store
+    code then digits, never a '#'). Searches every store: that account's
+    bookings belong to many."""
+    value = (reference or "").strip().lstrip("#")
+    if not value:
+        return None
+    return Order.all_objects.filter(platform_reference=value).first()
+
+
 def _catch_up_to_dispatched(order, tracking_number=""):
     """Walks an order forward to `dispatched`, through whatever intermediate
     states it never went through locally.
@@ -629,6 +642,25 @@ _ABSORBABLE_STATUSES = {
 }
 
 
+def _without_direct_courier_bookings(queryset):
+    """Drops orders booked with PostEx or BarqRaftar (an active shipment row
+    in either integration). Those have their own pollers and webhooks, so
+    Smartlane is never asked about them and never allowed to move them -
+    not even when Smartlane happens to know a booking with the same order
+    number, which would otherwise overwrite their tracking number/status.
+    Goes through the reverse relations rather than importing either
+    integration's models, so this module stays independent of both."""
+    return queryset.exclude(postex_shipments__is_active=True).exclude(
+        barqraftar_shipments__is_active=True
+    )
+
+
+def is_booked_with_direct_courier(order):
+    """True if `order` is PostEx's or BarqRaftar's - see
+    _without_direct_courier_bookings. Used by the Smartlane webhook."""
+    return not _without_direct_courier_bookings(Order.all_objects.filter(id=order.id)).exists()
+
+
 def absorb_untracked_smartlane_order(
     order, *, raw_status, row, actor_user_id=None, courier_name="Smartlane"
 ):
@@ -706,6 +738,11 @@ def poll_smartlane_statuses(organization_id, *, batch_size=50, limit=500, job=No
     from oms import services as oms_services
     from .models import SmartlaneConnection
 
+    if is_platform_organization(organization_id):
+        return _poll_platform_smartlane(
+            organization_id, oms_services, batch_size=batch_size, limit=limit, job=job,
+        )
+
     # Every connected account - the org's own Smartlane and OMS Courier are
     # separate accounts, each only knowing about its own bookings.
     connections = list(
@@ -753,8 +790,11 @@ def _poll_smartlane_statuses_body(
     # Asking Smartlane about every non-final order and trusting its "unknown
     # to us" 422 handling (smartlane_client.track_consignments) to filter
     # out the rest is simpler and correct, at the cost of some wasted
-    # lookups. Only orders already booked through the org's OTHER account
-    # are left out - this one can't know them.
+    # lookups. Only orders already booked through the org's OTHER account,
+    # with PostEx/BarqRaftar (see _without_direct_courier_bookings), or
+    # through FynkTech's own account from the Dispatch Hub
+    # (platform_reference - see _poll_platform_smartlane) are left out -
+    # this one can't know them.
     # smartlane_checked_at, nulls first, rotates the never/least-recently-
     # checked orders to the front each cycle instead of only ever checking
     # the same newest ones.
@@ -762,9 +802,11 @@ def _poll_smartlane_statuses_body(
         name for kind, name in connection.COURIER_NAMES.items() if kind != connection.kind
     ]
     orders = list(
-        Order.all_objects.filter(organization_id=organization_id)
-        .exclude(status__in=TERMINAL_STATUSES)
-        .exclude(courier__name__in=other_couriers)
+        _without_direct_courier_bookings(
+            Order.all_objects.filter(organization_id=organization_id, platform_reference="")
+            .exclude(status__in=TERMINAL_STATUSES)
+            .exclude(courier__name__in=other_couriers)
+        )
         .order_by(F("smartlane_checked_at").asc(nulls_first=True), "id")[:limit]
     )
     if not orders:
@@ -917,6 +959,115 @@ def _poll_smartlane_statuses_body(
     logger.info("smartlane poll for org %s (%s) finished: checked %s, updated %s",
                 organization_id, connection.kind, checked, updated)
     return {"checked": checked, "updated": updated}
+
+
+def _poll_platform_smartlane(organization_id, oms_services, *, batch_size, limit, job=None):
+    """poll_smartlane_statuses for FynkTech's own Smartlane account (the
+    super admin's OMS Couriers tab, on the platform org). It only ever
+    knows the orders the Dispatch Hub booked through it - spread across
+    many stores, each under its store-coded Order.platform_reference rather
+    than its order number - so those are exactly what it asks about, by
+    that reference. Nothing to absorb (every one was booked here), and each
+    order is updated inside its own store's tenant context."""
+    from .models import SmartlaneConnection
+
+    connection = SmartlaneConnection.all_objects.filter(
+        organization_id=organization_id, kind=SmartlaneConnection.KIND_OWN, is_connected=True
+    ).first()
+    if connection is None:
+        logger.warning("smartlane poll skipped for the platform org: not connected")
+        return {"checked": 0, "updated": 0, "detail": "Smartlane is not connected"}
+
+    orders = list(
+        _without_direct_courier_bookings(
+            Order.all_objects.exclude(platform_reference="")
+            .filter(courier__name=connection.courier_name)
+            .exclude(status__in=TERMINAL_STATUSES)
+        )
+        .order_by(F("smartlane_checked_at").asc(nulls_first=True), "id")[:limit]
+    )
+    if job is not None:
+        job.total_available = len(orders)
+        _save_progress(job, ["total_available", "updated_at"])
+    if not orders:
+        logger.info("smartlane poll for the platform org: no Dispatch Hub bookings to check")
+        return {"checked": 0, "updated": 0}
+
+    by_reference = {o.platform_reference: o for o in orders}
+    checked = 0
+    updated = 0
+    for start in range(0, len(orders), batch_size):
+        chunk = orders[start : start + batch_size]
+        try:
+            rows = smartlane_client.track_consignments(
+                connection.api_key, [o.platform_reference for o in chunk]
+            )
+        except smartlane_client.SmartlaneAPIError as exc:
+            logger.error("smartlane poll chunk failed for the platform org (%s order(s)): %s",
+                         len(chunk), exc)
+            continue
+
+        checked += len(chunk)
+        Order.all_objects.filter(id__in=[o.id for o in chunk]).update(
+            smartlane_checked_at=timezone.now()
+        )
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            reference, consignment, raw_status = extract_smartlane_event(row)
+            order = by_reference.get(reference.lstrip("#"))
+            if order is None:
+                continue
+            try:
+                with tenant_context(order.organization_id):
+                    if _apply_platform_smartlane_row(order, consignment, raw_status, row, oms_services):
+                        updated += 1
+            except oms_services.InvalidTransition:
+                continue
+            except Exception:
+                logger.exception("smartlane poll: unexpected error handling order %s", order.order_number)
+
+        if job is not None:
+            job.checked_count = checked
+            job.updated_count = updated
+            _save_progress(job, ["checked_count", "updated_count", "updated_at"])
+            job.refresh_from_db(fields=["cancel_requested", "status"])
+            if job.cancel_requested:
+                return {"checked": checked, "updated": updated, "cancelled": True}
+
+    connection.last_event_at = timezone.now()
+    connection.save(update_fields=["last_event_at"])
+    logger.info("smartlane poll for the platform org finished: checked %s, updated %s", checked, updated)
+    return {"checked": checked, "updated": updated}
+
+
+def _apply_platform_smartlane_row(order, consignment, raw_status, row, oms_services):
+    """One /track row for a Dispatch Hub booking - the store poll's own
+    per-row handling (consignment number first, then Booking Pending ->
+    Ready to Print, then the status), minus absorbing. Returns True if the
+    order visibly changed."""
+    changed = False
+    if consignment and consignment != order.tracking_number:
+        order.tracking_number = _truncate(consignment, 100)
+        order.save(update_fields=["tracking_number", "updated_at"])
+        publish_event(
+            "order.updated",
+            {
+                "organization_id": str(order.organization_id),
+                "order_id": str(order.id),
+                "order_number": order.order_number,
+                "source": "smartlane",
+            },
+        )
+        changed = True
+    if order.status == "booking_pending" and consignment:
+        oms_services.advance_booking_confirmed(order)
+        return True
+    moved = apply_smartlane_status(
+        order, raw_status, tracking_number=consignment,
+        organization_id=order.organization_id, row=row,
+    )
+    return moved or changed
 
 
 def run_smartlane_sync(organization_id, job_id):

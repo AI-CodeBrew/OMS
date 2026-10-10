@@ -21,12 +21,19 @@ import re
 import time
 from datetime import timedelta
 
+from django.conf import settings
 from django.db import transaction
 from django.db.models import F
 from django.db.utils import OperationalError
 from django.utils import timezone
 
+from core.context import tenant_context
 from core.events import publish_event
+from core.platform_service import (
+    is_platform_organization,
+    platform_organization_id,
+    platform_reference,
+)
 
 from .client import BarqRaftarAPIError
 from . import client
@@ -288,20 +295,68 @@ def _cod_amount(order):
     return 0
 
 
+# ------------------------------------------------------ Booking accounts --
+# A store's orders book through its own BarqRaftar account - or, from the
+# Dispatch Hub, through FynkTech's own (the super admin's OMS Couriers tab,
+# held by the platform org - see core.platform_service). Such a booking
+# keeps the store-coded reference it went out under on
+# Order.platform_reference, which is how everything after booking (track,
+# print, cancel, the poller, the webhook) knows to use FynkTech's account.
+
+def platform_connection():
+    """FynkTech's own connected BarqRaftar account, or None."""
+    return BarqRaftarConnection.all_objects.filter(
+        organization_id=platform_organization_id(), is_connected=True
+    ).first()
+
+
+def connection_for_order(order):
+    """The connected account `order` was booked through."""
+    if order.platform_reference:
+        return platform_connection()
+    return BarqRaftarConnection.all_objects.filter(
+        organization_id=order.organization_id, is_connected=True
+    ).first()
+
+
+def connection_for_request(request):
+    """The account a request acts on: FynkTech's own while operating the
+    Dispatch Hub (every Hub booking goes through it), else the store's."""
+    if getattr(request, "organization_ids", None):
+        return platform_connection()
+    return BarqRaftarConnection.objects.filter(
+        organization_id=request.organization_id, is_connected=True
+    ).first()
+
+
+def _shipments_for(connection):
+    """Active shipments booked through `connection`: the store's own - or,
+    for FynkTech's account, every Hub booking made through it, whichever
+    store's order it is."""
+    qs = BarqRaftarShipment.all_objects.filter(is_active=True)
+    if is_platform_organization(connection.organization_id):
+        return qs.exclude(order__platform_reference="")
+    return qs.filter(organization_id=connection.organization_id, order__platform_reference="")
+
+
 def _as_int(value):
     """City/address ids are integers in BarqRaftar's docs; the connection
     stores them as strings (CharField), so convert on the way out."""
     return int(value) if str(value).strip().isdigit() else value
 
 
-def _next_reference_id(order):
+def _next_reference_id(order, *, via_platform=False):
     """order.order_number (without '#'), or -R2/-R3/... if an earlier
     attempt already used the plain form and was cancelled (see
     cancel_on_barqraftar/release_shipment_stock_and_deactivate - the old
     shipment row stays as history, never deleted or reused). Rebooking with
     the same reference id a second time is exactly what produces
-    BarqRaftar's "Order already exist" error."""
+    BarqRaftar's "Order already exist" error. Through FynkTech's account
+    it carries the store code in front (core.platform_service.
+    platform_reference)."""
     base = order.order_number.lstrip("#") or order.order_number
+    if via_platform:
+        base = platform_reference(order, base)
     existing = set(
         BarqRaftarShipment.all_objects.filter(
             organization_id=order.organization_id, order=order
@@ -371,7 +426,7 @@ def _match_bulk_store_results(chunk_refs, rows):
 _BOOKING_CHUNK_SIZE = 25
 
 
-def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False):
+def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False, via_platform=False):
     """Books one or many orders with BarqRaftar in one pass - the handler
     behind the "Book with BarqRaftar" action (see oms/views.py's
     bulk_action, which calls this directly for action="push_to_barqraftar"
@@ -387,6 +442,9 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False):
     "error_code"?, "shortages"?} dicts - exactly the shape oms/views.py's
     generic bulk-action loop already returns, so the frontend's stock-
     shortage modal and force-retry work unchanged.
+
+    via_platform books through FynkTech's own account instead of the
+    store's - the Dispatch Hub's bookings (see "Booking accounts" above).
     """
     from oms.models import Courier, Order
     from wms import services as wms_services
@@ -396,14 +454,16 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False):
         for o in Order.objects.filter(organization_id=organization_id, id__in=order_ids).prefetch_related("items")
     }
 
-    try:
-        connection = BarqRaftarConnection.objects.get(organization_id=organization_id, is_connected=True)
-    except BarqRaftarConnection.DoesNotExist:
-        return [
-            {"order_id": str(oid), "success": False,
-             "error": "Connect BarqRaftar from the Integrations page first."}
-            for oid in order_ids
-        ]
+    if via_platform:
+        connection = platform_connection()
+        not_connected = "Connect FynkTech's BarqRaftar account on the super admin's OMS Couriers tab first."
+    else:
+        connection = BarqRaftarConnection.objects.filter(
+            organization_id=organization_id, is_connected=True
+        ).first()
+        not_connected = "Connect BarqRaftar from the Integrations page first."
+    if connection is None:
+        return [{"order_id": str(oid), "success": False, "error": not_connected} for oid in order_ids]
 
     # Every booking goes out from the ACTIVE pickup address (Pickup
     # Addresses tab -> "Set as active"), with a pickup request - the only way
@@ -469,7 +529,7 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False):
             continue
 
         try:
-            reference_id = _next_reference_id(order)
+            reference_id = _next_reference_id(order, via_platform=via_platform)
             payload = _build_order_payload(order, connection, city, reference_id)
         except BarqRaftarBookingError as exc:
             results.append({
@@ -579,6 +639,7 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False):
                 _finalize_booking(
                     b["order"], reference_id=ref, tracking_number=tracking_number,
                     courier=courier, connection=connection, actor_user_id=actor_user_id,
+                    via_platform=via_platform,
                 )
                 results.append({
                     "order_id": b["order_id"], "order_number": b["order"].order_number, "success": True,
@@ -597,7 +658,8 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False):
     return results
 
 
-def _finalize_booking(order, *, reference_id, tracking_number, courier, connection, actor_user_id):
+def _finalize_booking(order, *, reference_id, tracking_number, courier, connection, actor_user_id,
+                      via_platform=False):
     """Saves the shipment row FIRST, before any local status change - so a
     failure in the local transition below never loses the one thing that
     can't be recovered without calling BarqRaftar again (the tracking
@@ -614,6 +676,11 @@ def _finalize_booking(order, *, reference_id, tracking_number, courier, connecti
         is_active=True,
         pickup_requested=True,
     )
+    # Which account the order belongs to from here on - see "Booking
+    # accounts" above. Cleared for a store-account booking, in case an
+    # earlier, since-cancelled one went through FynkTech's.
+    order.platform_reference = reference_id if via_platform else ""
+    order.save(update_fields=["platform_reference", "updated_at"])
     with transaction.atomic():
         order = oms_services.book_with_courier(
             order, courier_id=courier.id, tracking_number=tracking_number, actor_user_id=actor_user_id,
@@ -639,9 +706,7 @@ def cancel_on_barqraftar(order):
     if not shipment or not shipment.tracking_number:
         return
 
-    connection = BarqRaftarConnection.all_objects.filter(
-        organization_id=order.organization_id, is_connected=True
-    ).first()
+    connection = connection_for_order(order)
     if not connection:
         raise BarqRaftarBookingError(
             "BarqRaftar is not connected - cannot confirm whether the shipment can still be cancelled."
@@ -698,16 +763,6 @@ def mark_ready_for_pickup(organization_id, order_ids):
     orders_by_id = {
         str(o.id): o for o in Order.all_objects.filter(organization_id=organization_id, id__in=order_ids)
     }
-    connection = BarqRaftarConnection.all_objects.filter(
-        organization_id=organization_id, is_connected=True
-    ).first()
-    if not connection:
-        return [
-            {"order_id": str(oid), "success": False,
-             "error": "Connect BarqRaftar from the Integrations page first."}
-            for oid in order_ids
-        ]
-
     shipments = {
         str(s.order_id): s
         for s in BarqRaftarShipment.all_objects.filter(
@@ -716,7 +771,10 @@ def mark_ready_for_pickup(organization_id, order_ids):
     }
 
     results = []
-    to_mark = []
+    # Grouped by the account each order was booked through - the store's own,
+    # or FynkTech's for a Dispatch Hub booking (see "Booking accounts").
+    by_account = {}
+    connections = {}
     for oid in order_ids:
         order = orders_by_id.get(str(oid))
         if not order:
@@ -729,8 +787,28 @@ def mark_ready_for_pickup(organization_id, order_ids):
                 "error": f"Order {order.order_number} isn't booked with BarqRaftar.",
             })
             continue
-        to_mark.append((str(oid), order, shipment))
+        via_platform = bool(order.platform_reference)
+        if via_platform not in connections:
+            connections[via_platform] = connection_for_order(order)
+        if connections[via_platform] is None:
+            results.append({
+                "order_id": str(oid), "order_number": order.order_number, "success": False,
+                "error": (
+                    "FynkTech's BarqRaftar account isn't connected (super admin's OMS Couriers tab)."
+                    if via_platform else "Connect BarqRaftar from the Integrations page first."
+                ),
+            })
+            continue
+        by_account.setdefault(via_platform, []).append((str(oid), order, shipment))
 
+    for via_platform, to_mark in by_account.items():
+        results += _mark_ready_for_pickup_chunks(connections[via_platform], to_mark)
+    return results
+
+
+def _mark_ready_for_pickup_chunks(connection, to_mark):
+    """mark_ready_for_pickup's BarqRaftar calls for one account."""
+    results = []
     for start in range(0, len(to_mark), 50):
         chunk = to_mark[start:start + 50]
         try:
@@ -959,59 +1037,328 @@ def handle_webhook_event(connection, payload):
     the URL with support, nothing about signing), so the payload itself is
     never trusted for what status to apply, only for which shipment to
     check."""
-    from core.context import current_organization_id
-
     tracking_number, reference_id, _status_code, _status_label = extract_webhook_event(payload)
     if not tracking_number and not reference_id:
         logger.warning("barqraftar webhook: payload had neither a tracking number nor a reference id")
         return
 
-    context_token = current_organization_id.set(connection.organization_id)
-    try:
-        qs = BarqRaftarShipment.all_objects.filter(
-            organization_id=connection.organization_id, is_active=True,
+    # FynkTech's own account (OMS Couriers) reports on Hub bookings that
+    # belong to many stores - _shipments_for covers both cases.
+    qs = _shipments_for(connection)
+    qs = qs.filter(tracking_number=tracking_number) if tracking_number else qs.filter(reference_id=reference_id)
+    shipment = qs.first()
+    if not shipment:
+        logger.info(
+            "barqraftar webhook: no active shipment for tracking=%r reference=%r",
+            tracking_number, reference_id,
         )
-        qs = qs.filter(tracking_number=tracking_number) if tracking_number else qs.filter(reference_id=reference_id)
-        shipment = qs.first()
-        if not shipment:
-            logger.info(
-                "barqraftar webhook: no active shipment for tracking=%r reference=%r",
-                tracking_number, reference_id,
-            )
-            return
+        return
 
-        try:
-            if shipment.tracking_number:
-                row = client.get_order(
-                    connection.api_key, connection.api_secret, tracking_number=shipment.tracking_number,
+    try:
+        if shipment.tracking_number:
+            row = client.get_order(
+                connection.api_key, connection.api_secret, tracking_number=shipment.tracking_number,
+            )
+        else:
+            row = client.get_order(
+                connection.api_key, connection.api_secret, reference_id=shipment.reference_id,
+            )
+    except BarqRaftarAPIError:
+        logger.exception("barqraftar webhook: re-fetch failed for %s", shipment.tracking_number)
+        return
+
+    # The order's own store, not the account's - the oms.services
+    # transitions below rely on the tenant context (this request carries no
+    # JWT, so TenantMiddleware never set it).
+    with tenant_context(shipment.organization_id):
+        _apply_fetched_status(shipment, row)
+
+
+# ------------------------------------------------------- Portal bookings --
+# An order booked straight on BarqRaftar's own portal (or by its Shopify
+# app) never went through book_orders, so it has no BarqRaftarShipment row -
+# and the poller, webhook and cancel only ever look at those rows. Every
+# poll therefore first adopts such bookings, found two ways - the
+# BarqRaftar counterpart of Smartlane's absorb_untracked_smartlane_order:
+# - by tracking number: an order that already carries one (typically from a
+#   courier sheet imported into OMS, see oms/importers.py) is looked up
+#   directly with get_multiple_orders, however old the booking is;
+# - by reference: BarqRaftar's own order list (GET /orders) for a recent
+#   window, matching customer_reference to our order numbers (bulk-uploaded
+#   portal bookings).
+
+# Local statuses an order sits in before any courier booking - the same set
+# as Smartlane's _ABSORBABLE_STATUSES (local copy, deliberately not
+# imported). Adopting from here forces Booking Pending and consumes stock,
+# exactly as booking through OMS would have.
+_PRE_BOOKING_STATUSES = {
+    "new", "pending_cc", "pending_cod",
+    "awaiting_assigning", "awaiting_approval", "approved",
+}
+# Already past booking locally (processed by hand). Adopting one of these
+# only links the shipment so its status keeps flowing - no forced move, no
+# stock - and only when its courier is blank or BarqRaftar. city_issue and
+# dispatch_issue are in neither set: a human flagged those.
+_TRACK_ONLY_STATUSES = {
+    "booking_pending", "ready_to_print", "ready_to_pick", "awaiting_dispatched",
+    "dispatched", "out_for_delivery", "attempt",
+}
+_ADOPT_PAGE_SIZE = 100
+# Safety stop for one read (20,000 orders) - a window never needs more.
+_ADOPT_MAX_PAGES = 200
+
+
+def _list_orders_between(connection, start, end):
+    """Every BarqRaftar order created start..end, all pages of GET /orders."""
+    rows = []
+    for page in range(1, _ADOPT_MAX_PAGES + 1):
+        data = client.list_orders(
+            connection.api_key, connection.api_secret,
+            date_from=start.isoformat(), date_to=end.isoformat(), page=page, limit=_ADOPT_PAGE_SIZE,
+        )
+        batch = client._rows(data)
+        if not batch:
+            break
+        rows += batch
+        # {"orders": [...], "total", "from", "to"} (confirmed live) - trust
+        # total when present, in case BarqRaftar caps the page size lower.
+        total = data.get("total") if isinstance(data, dict) else None
+        if str(total).isdigit():
+            if len(rows) >= int(total):
+                break
+        elif len(batch) < _ADOPT_PAGE_SIZE:
+            break
+    return rows
+
+
+def _live_bookings_by_reference(rows):
+    """{reference without '#': row} for every BarqRaftar booking that isn't
+    cancelled. A reference booked more than once (cancelled, then booked
+    again) keeps its newest live row."""
+    result = {}
+    for row in rows:
+        tracking_number, reference, status_code, _label, _logs = _extract_order_fields(row)
+        key = reference.strip().lstrip("#")
+        if not key or not tracking_number or status_code in _CANCELLED_CODES:
+            continue
+        current = result.get(key)
+        if current is None or str(row.get("created_at") or "") > str(current.get("created_at") or ""):
+            result[key] = row
+    return result
+
+
+def _courier(organization_id):
+    from oms.models import Courier
+
+    courier = Courier.all_objects.filter(organization_id=organization_id, name__iexact="BarqRaftar").first()
+    return courier or Courier.all_objects.create(organization_id=organization_id, name="BarqRaftar", is_active=True)
+
+
+def _adoptable_orders(organization_id):
+    """Orders an outside-OMS booking may be adopted onto: not final, not
+    flagged by a human, and not already BarqRaftar's or PostEx's."""
+    from oms.models import Order
+
+    return (
+        Order.all_objects.filter(
+            organization_id=organization_id,
+            status__in=_PRE_BOOKING_STATUSES | _TRACK_ONLY_STATUSES,
+        )
+        .exclude(barqraftar_shipments__is_active=True)
+        .exclude(postex_shipments__is_active=True)
+        .select_related("courier")
+    )
+
+
+def _is_barqraftar_or_blank(order):
+    """Courier sheets write the name every way ("Barq Raftar", "BARQ",
+    "barq-raftar") - all of them count, as does no courier at all."""
+    letters = re.sub(r"[^a-z]", "", (order.courier.name if order.courier_id else "").lower())
+    return letters == "" or letters.startswith("barq")
+
+
+def _adopt_one(order, row, *, reference, tracking_number, known):
+    """Saves the shipment, brings the order to where an OMS booking would
+    have left it, then applies BarqRaftar's current status from `row`.
+    `known` is (tracking numbers, references) already used in this org -
+    updated here. Returns True if the order was adopted."""
+    from oms import services as oms_services
+
+    known_tracking, known_references = known
+    _tn, _ref, status_code, status_label, _logs = _extract_order_fields(row)
+    courier = _courier(order.organization_id)
+    pre_booking = order.status in _PRE_BOOKING_STATUSES
+    before_status = order.status
+    try:
+        with transaction.atomic():
+            shipment = BarqRaftarShipment.all_objects.create(
+                organization_id=order.organization_id,
+                order=order,
+                reference_id=reference,
+                tracking_number=tracking_number,
+                status_code=status_code,
+                status_label=status_label[:100],
+                last_payload=row,
+                is_active=True,
+            )
+            if pre_booking:
+                oms_services.absorb_courier_booking(
+                    order, courier_id=courier.id, tracking_number=tracking_number,
+                    note="Booked on BarqRaftar outside OMS - reconciled automatically",
                 )
             else:
-                row = client.get_order(
-                    connection.api_key, connection.api_secret, reference_id=shipment.reference_id,
-                )
-        except BarqRaftarAPIError:
-            logger.exception("barqraftar webhook: re-fetch failed for %s", shipment.tracking_number)
-            return
+                order.courier = courier
+                order.tracking_number = order.tracking_number or tracking_number
+                order.save(update_fields=["courier", "tracking_number", "updated_at"])
+    except Exception:  # noqa: BLE001 - one order's failure must not stop the rest
+        logger.exception("barqraftar: adopting booking %s for order %s failed",
+                         tracking_number, order.order_number)
+        return False
 
+    known_tracking.add(tracking_number)
+    known_references.add(reference)
+    logger.info("barqraftar: adopted booking %s for order %s (was %s)",
+                tracking_number, order.order_number, before_status)
+    if not pre_booking:
+        # No status change yet - the row itself changed, though.
+        publish_event(
+            "order.updated",
+            {
+                "organization_id": str(order.organization_id),
+                "order_id": str(order.id),
+                "order_number": order.order_number,
+                "source": "barqraftar",
+            },
+        )
+    try:
         _apply_fetched_status(shipment, row)
-    finally:
-        current_organization_id.reset(context_token)
+    except Exception:  # noqa: BLE001 - the next poll retries it through the shipment row
+        logger.exception("barqraftar: applying status to adopted order %s failed", order.order_number)
+    return True
+
+
+# Tracking-number pass: most orders asked about per run (ones BarqRaftar
+# doesn't know stay candidates, so this bounds what every cycle re-asks),
+# in chunks the same size as the poller's.
+_ADOPT_TRACKING_LIMIT = 500
+_ADOPT_TRACKING_CHUNK = 50
+
+
+def _adopt_by_tracking_number(organization_id, connection, known):
+    """Orders already carrying a tracking number whose courier is blank or
+    BarqRaftar, looked up with get_multiple_orders. A chunk BarqRaftar
+    rejects is skipped, not fatal - the next poll asks again."""
+    candidates = {}
+    orders = _adoptable_orders(organization_id).exclude(tracking_number="").order_by("-updated_at")
+    for order in orders[:_ADOPT_TRACKING_LIMIT]:
+        tracking_number = order.tracking_number.strip()
+        if tracking_number and tracking_number not in known[0] and _is_barqraftar_or_blank(order):
+            candidates.setdefault(tracking_number, order)
+
+    numbers = list(candidates)
+    adopted = 0
+    for start in range(0, len(numbers), _ADOPT_TRACKING_CHUNK):
+        try:
+            rows = client.get_multiple_orders(
+                connection.api_key, connection.api_secret, numbers[start:start + _ADOPT_TRACKING_CHUNK],
+            )
+        except BarqRaftarAPIError as exc:
+            logger.error("barqraftar: tracking-number adoption chunk failed for org %s: %s", organization_id, exc)
+            continue
+        for row in rows:
+            tracking_number, reference, status_code, _label, _logs = _extract_order_fields(row)
+            order = candidates.pop(tracking_number, None)
+            if order is None or status_code in _CANCELLED_CODES:
+                continue
+            # BarqRaftar's own reference when it has a free one, else the
+            # tracking number - the reference is unique per org.
+            reference = reference.strip()[:100]
+            if not reference or reference in known[1]:
+                reference = tracking_number[:100]
+            if _adopt_one(order, row, reference=reference, tracking_number=tracking_number[:100], known=known):
+                adopted += 1
+    return adopted
+
+
+def _adopt_by_reference(organization_id, connection, days, known):
+    """BarqRaftar bookings from the last `days` days whose customer_reference
+    is one of our order numbers. Raises BarqRaftarAPIError if the order list
+    couldn't be read."""
+    # +1 day: the server's date can still be yesterday while it's already
+    # today in Pakistan, and date_to may or may not be inclusive.
+    end = timezone.localdate() + timedelta(days=1)
+    bookings = _live_bookings_by_reference(
+        _list_orders_between(connection, end - timedelta(days=days), end)
+    )
+    if not bookings:
+        return 0
+
+    orders = _adoptable_orders(organization_id).filter(
+        order_number__in=[n for key in bookings for n in (key, f"#{key}")],
+    )
+    adopted = 0
+    for order in orders:
+        row = bookings[order.order_number.lstrip("#")]
+        tracking_number, reference, _code, _label, _logs = _extract_order_fields(row)
+        tracking_number = tracking_number.strip()[:100]
+        reference = reference.strip()[:100]
+        if tracking_number in known[0] or reference in known[1]:
+            # Already one of ours (an OMS booking since cancelled) - the
+            # reference is unique per org, so it could not be saved again.
+            continue
+        if order.status not in _PRE_BOOKING_STATUSES and not _is_barqraftar_or_blank(order):
+            continue
+        if _adopt_one(order, row, reference=reference, tracking_number=tracking_number, known=known):
+            adopted += 1
+    return adopted
+
+
+def adopt_portal_bookings(organization_id, connection, *, days):
+    """Adopts BarqRaftar bookings made outside OMS - by tracking number
+    first, then by reference over the last `days` days (see the section
+    comment above). Returns how many orders were adopted. Raises
+    BarqRaftarAPIError if the order list couldn't be read."""
+    if days <= 0:
+        return 0
+    shipments = BarqRaftarShipment.all_objects.filter(organization_id=organization_id)
+    known = (
+        set(shipments.values_list("tracking_number", flat=True)),
+        set(shipments.values_list("reference_id", flat=True)),
+    )
+    adopted = _adopt_by_tracking_number(organization_id, connection, known)
+    return adopted + _adopt_by_reference(organization_id, connection, days, known)
+
+
+def _adopt_for_poll(organization_id, connection, days):
+    """adopt_portal_bookings for a poll run - never lets a failure there stop
+    the status sync that follows. None means it failed."""
+    if days is None:
+        days = settings.BARQRAFTAR_ADOPT_LOOKBACK_DAYS
+    try:
+        return adopt_portal_bookings(organization_id, connection, days=days)
+    except BarqRaftarAPIError as exc:
+        logger.error("barqraftar: portal-booking check failed for org %s: %s", organization_id, exc)
+    except Exception:  # noqa: BLE001
+        logger.exception("barqraftar: portal-booking check failed for org %s", organization_id)
+    return None
 
 
 # ---------------------------------------------------------------- Poller --
 
-def poll_barqraftar_statuses(organization_id, *, batch_size=50, limit=500, job=None):
+def poll_barqraftar_statuses(organization_id, *, batch_size=50, limit=500, job=None, adopt_days=None):
     """Pulls status updates from BarqRaftar for every active shipment of a
     connected org - the scheduled-job counterpart to the webhook, same
     reasoning as integrations.services.poll_smartlane_statuses (works from
     anywhere, doesn't need a publicly reachable webhook URL).
 
     Scoped to BarqRaftarShipment rows, NOT "every non-final order" the way
-    Smartlane's poller is - Smartlane has to cast that wide because it has
-    no shipment table of its own and needs to notice orders booked outside
-    this app entirely; BarqRaftar orders are always booked through
-    book_orders above, so there is always a shipment row to key off, and
-    this never has to guess from an order's courier name.
+    Smartlane's poller is - so it never has to guess from an order's
+    courier name. Orders booked outside this app get their shipment row
+    first: each run starts by adopting bookings made on BarqRaftar's own
+    portal over the last `adopt_days` days (default
+    BARQRAFTAR_ADOPT_LOOKBACK_DAYS) - see adopt_portal_bookings. The
+    result's "adopted" is None when that step failed; the status sync runs
+    either way.
     """
     from core.context import current_organization_id
 
@@ -1023,14 +1370,23 @@ def poll_barqraftar_statuses(organization_id, *, batch_size=50, limit=500, job=N
 
     context_token = current_organization_id.set(organization_id)
     try:
-        return _poll_barqraftar_statuses_body(organization_id, connection, batch_size=batch_size, limit=limit, job=job)
+        # FynkTech's own account (OMS Couriers) has no orders of its own to
+        # adopt portal bookings into - its shipments are the Hub's.
+        adopted = (
+            0 if is_platform_organization(organization_id)
+            else _adopt_for_poll(organization_id, connection, adopt_days)
+        )
+        result = _poll_barqraftar_statuses_body(
+            organization_id, connection, batch_size=batch_size, limit=limit, job=job,
+        )
+        return {**result, "adopted": adopted}
     finally:
         current_organization_id.reset(context_token)
 
 
 def _poll_barqraftar_statuses_body(organization_id, connection, *, batch_size, limit, job=None):
     shipments = list(
-        BarqRaftarShipment.all_objects.filter(organization_id=organization_id, is_active=True)
+        _shipments_for(connection)
         .exclude(order__status__in=TERMINAL_STATUSES)
         .select_related("order")
         .order_by(F("last_checked_at").asc(nulls_first=True), "id")[:limit]
@@ -1072,8 +1428,10 @@ def _poll_barqraftar_statuses_body(organization_id, connection, *, batch_size, l
                 continue
             seen.add(tn)
             try:
-                if _apply_fetched_status(shipment, row):
-                    updated += 1
+                # The shipment's own store - FynkTech's account polls many.
+                with tenant_context(shipment.organization_id):
+                    if _apply_fetched_status(shipment, row):
+                        updated += 1
             except Exception:  # noqa: BLE001 - one shipment's failure must not abort the batch
                 logger.exception("barqraftar poll: unexpected error handling shipment %s", tn)
 
@@ -1084,7 +1442,7 @@ def _poll_barqraftar_statuses_body(organization_id, connection, *, batch_size, l
         unseen = [t for t in chunk if t not in seen]
         if unseen:
             BarqRaftarShipment.all_objects.filter(
-                organization_id=organization_id, tracking_number__in=unseen,
+                id__in=[by_tracking[t].id for t in unseen],
             ).update(last_checked_at=timezone.now())
 
         if job is not None:

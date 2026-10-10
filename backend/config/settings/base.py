@@ -265,6 +265,14 @@ BARQRAFTAR_API_BASE_URL = env("BARQRAFTAR_API_BASE_URL", default="https://barqra
 # default so it never fires during local manage.py commands/tests.
 BARQRAFTAR_AUTO_POLL = env("BARQRAFTAR_AUTO_POLL", default="false").lower() == "true"
 BARQRAFTAR_AUTO_POLL_INTERVAL_SECONDS = int(env("BARQRAFTAR_AUTO_POLL_INTERVAL_SECONDS", default="900"))
+# How many days back each BarqRaftar sync reads BarqRaftar's own order list
+# to adopt bookings made on its portal, outside OMS, by reference (see
+# barqraftar/services.adopt_portal_bookings - orders that already carry a
+# tracking number are looked up by it directly, no window involved). The
+# poller's first cycle after a (re)start reads the longer BACKFILL window
+# once, so older orders get picked up too. 0 turns adoption off entirely.
+BARQRAFTAR_ADOPT_LOOKBACK_DAYS = int(env("BARQRAFTAR_ADOPT_LOOKBACK_DAYS", default="3"))
+BARQRAFTAR_ADOPT_BACKFILL_DAYS = int(env("BARQRAFTAR_ADOPT_BACKFILL_DAYS", default="90"))
 
 # PostEx's Merchant (COD) API - its own direct integration
 # (integrations/postex/), unrelated to Smartlane or BarqRaftar. Its poller
@@ -275,6 +283,11 @@ POSTEX_API_BASE_URL = env(
 )
 POSTEX_AUTO_POLL = env("POSTEX_AUTO_POLL", default="false").lower() == "true"
 POSTEX_AUTO_POLL_INTERVAL_SECONDS = int(env("POSTEX_AUTO_POLL_INTERVAL_SECONDS", default="900"))
+# Same as BARQRAFTAR_ADOPT_* above, for PostEx (postex/services.
+# adopt_portal_bookings). PostEx's list is read a week per call, so the
+# 90-day backfill is ~13 calls, once per restart.
+POSTEX_ADOPT_LOOKBACK_DAYS = int(env("POSTEX_ADOPT_LOOKBACK_DAYS", default="3"))
+POSTEX_ADOPT_BACKFILL_DAYS = int(env("POSTEX_ADOPT_BACKFILL_DAYS", default="90"))
 
 # Comma-separated client IPs allowed to hit /api/core/admin/*
 ADMIN_IP_ALLOWLIST = env(

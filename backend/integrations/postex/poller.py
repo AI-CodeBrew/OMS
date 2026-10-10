@@ -36,6 +36,11 @@ def _poll_loop():
     from .services import poll_postex_statuses
 
     interval = settings.POSTEX_AUTO_POLL_INTERVAL_SECONDS
+    # Orgs whose PostEx portal bookings have been read back the full
+    # POSTEX_ADOPT_BACKFILL_DAYS since this process started (see
+    # services.adopt_portal_bookings) - every later cycle only reads the
+    # short POSTEX_ADOPT_LOOKBACK_DAYS window. Retried until it succeeds.
+    backfilled = set()
     while True:
         try:
             close_old_connections()
@@ -44,9 +49,14 @@ def _poll_loop():
             )
             for org_id in org_ids:
                 try:
-                    result = poll_postex_statuses(org_id)
-                    logger.info("postex auto-poll org=%s checked=%s updated=%s",
-                                org_id, result.get("checked"), result.get("updated"))
+                    result = poll_postex_statuses(
+                        org_id,
+                        adopt_days=None if org_id in backfilled else settings.POSTEX_ADOPT_BACKFILL_DAYS,
+                    )
+                    if result.get("adopted") is not None:
+                        backfilled.add(org_id)
+                    logger.info("postex auto-poll org=%s checked=%s updated=%s adopted=%s",
+                                org_id, result.get("checked"), result.get("updated"), result.get("adopted"))
                 except PostExAPIError:
                     logger.exception("postex auto-poll failed for org %s", org_id)
                 except Exception:

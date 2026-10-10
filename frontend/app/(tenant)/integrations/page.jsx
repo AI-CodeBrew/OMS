@@ -71,14 +71,14 @@ const INTEGRATIONS = [
   {
     key: "oms_courier",
     name: "OMS Courier",
-    tagline: "Ship through the platform's own courier account - no separate signup needed.",
+    tagline: "FynkTech dispatches your orders through its own courier accounts - no signup needed.",
     logo: OmsCourierLogo,
     href: "/integrations/oms-courier",
     live: true,
     features: [
-      { label: "Platform-managed Onboarding", done: true },
-      { label: "Create Bookings", done: true },
-      { label: "Real-time Tracking", done: true },
+      { label: "Smartlane, PostEx & BarqRaftar", done: true },
+      { label: "FynkTech Books & Dispatches", done: true },
+      { label: "Live Tracking on Your Orders", done: true },
     ],
   },
   {
@@ -217,7 +217,17 @@ export default function IntegrationsOverviewPage() {
       .catch(() => {});
     integrationsService
       .getOmsCourierOnboarding()
-      .then((d) => setConnectedMap((m) => ({ ...m, oms_courier: Boolean(d.live) })))
+      .then((d) => d.live && setConnectedMap((m) => ({ ...m, oms_courier: true })))
+      .catch(() => {});
+    // Either way counts: onboarded through Smartlane Business, or at least
+    // one courier approved for FynkTech to book with.
+    integrationsService
+      .getOmsCourierCouriers()
+      .then(
+        (d) =>
+          (d.couriers || []).some((c) => c.is_enabled && c.status === "approved") &&
+          setConnectedMap((m) => ({ ...m, oms_courier: true }))
+      )
       .catch(() => {});
   }, []);
 

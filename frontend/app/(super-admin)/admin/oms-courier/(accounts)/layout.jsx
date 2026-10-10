@@ -7,7 +7,7 @@ import { invalidateViewCache } from "../../../../../lib/viewCache";
 import LoadingOverlay from "../../../../../components/shared/LoadingOverlay";
 import { IntegrationsHomeProvider } from "../../../../../components/integrations/IntegrationsHome";
 
-const HOME = { href: "/admin/oms-courier", label: "OMS Courier" };
+const HOME = { href: "/admin/oms-courier", label: "OMS Couriers" };
 
 // FynkTech's own BarqRaftar / PostEx / Smartlane accounts are managed on the
 // store admin's own integration pages, acting as the hidden platform org

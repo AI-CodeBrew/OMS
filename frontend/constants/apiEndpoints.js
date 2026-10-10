@@ -19,6 +19,10 @@ export const API_ENDPOINTS = {
     // FynkTech's own courier accounts + the platform org id the OMS
     // Courier tab acts as to manage them.
     omsCourier: "/api/core/admin/oms-courier/",
+    // Stores' courier requests from their OMS Courier page.
+    omsCourierRequests: "/api/core/admin/oms-courier/requests/",
+    omsCourierRequestApprove: (id) => `/api/core/admin/oms-courier/requests/${id}/approve/`,
+    omsCourierRequestReject: (id) => `/api/core/admin/oms-courier/requests/${id}/reject/`,
     // Smartlane Business API. Under /api/core/admin/ so it inherits the
     // backend's IP allowlist, even though the code lives in the
     // integrations app.

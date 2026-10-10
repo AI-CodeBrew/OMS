@@ -29,6 +29,29 @@ class IntegrationsAdminService {
   async getOmsCourier() {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.omsCourier}`);
   }
+
+  // status: "pending" | "approved" | "rejected" | "" (all)
+  async listOmsCourierRequests(status = "") {
+    const qs = status ? `?status=${encodeURIComponent(status)}` : "";
+    const data = await request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.omsCourierRequests}${qs}`);
+    return data.requests || [];
+  }
+
+  async approveOmsCourierRequest(id, message) {
+    const data = await request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.omsCourierRequestApprove(id)}`, {
+      method: "POST",
+      body: JSON.stringify({ message }),
+    });
+    return data.request;
+  }
+
+  async rejectOmsCourierRequest(id, message) {
+    const data = await request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.omsCourierRequestReject(id)}`, {
+      method: "POST",
+      body: JSON.stringify({ message }),
+    });
+    return data.request;
+  }
 }
 
 export const integrationsAdminService = new IntegrationsAdminService();

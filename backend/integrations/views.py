@@ -20,6 +20,7 @@ from core.context import current_organization_id
 from core.events import publish_event
 from core.middleware import get_client_ip
 from core.permissions import IsOrgAdmin
+from core.platform_service import is_platform_organization
 from core.rbac import write_audit_log
 from oms import services as oms_services
 
@@ -528,18 +529,38 @@ def smartlane_shipment_webhook(request, token):
     order_number, tracking_number, smartlane_status = services.extract_smartlane_event(payload)
 
     if order_number:
+        # FynkTech's own account (OMS Couriers) reports on Dispatch Hub
+        # bookings across many stores, by their store-coded reference - see
+        # services.find_platform_order. The order's own store is the tenant
+        # context for those.
+        is_platform = is_platform_organization(connection.organization_id)
+        platform_order = services.find_platform_order(order_number) if is_platform else None
         # This request carries no Supabase JWT, so TenantMiddleware never
         # set the tenant context - the oms.services transition helpers
         # below rely on it (via Order.objects' tenant-scoped manager), so
         # it has to be set explicitly here, scoped to just this block.
-        context_token = current_organization_id.set(connection.organization_id)
+        context_token = current_organization_id.set(
+            platform_order.organization_id if platform_order else connection.organization_id
+        )
         try:
-            order = services.find_order_by_smartlane_reference(order_number)
+            order = (
+                platform_order if is_platform
+                else services.find_order_by_smartlane_reference(order_number)
+            )
             logger.info(
                 "smartlane webhook parsed: order=%s cn=%r status=%r -> %s",
                 order_number, tracking_number, smartlane_status,
                 f"matched order in status {order.status}" if order else "NO MATCHING ORDER",
             )
+            if order and services.is_booked_with_direct_courier(order):
+                # Booked with PostEx/BarqRaftar - same rule as the poller
+                # (services._without_direct_courier_bookings): Smartlane
+                # knowing the same order number must not move it.
+                logger.warning(
+                    "smartlane webhook: order %s is booked with PostEx/BarqRaftar - ignored",
+                    order_number,
+                )
+                order = None
             if order:
                 if tracking_number and tracking_number != order.tracking_number:
                     order.tracking_number = tracking_number[:100]
@@ -559,7 +580,7 @@ def smartlane_shipment_webhook(request, token):
                         },
                     )
 
-                if order.status in services._ABSORBABLE_STATUSES:
+                if order.status in services._ABSORBABLE_STATUSES and not is_platform:
                     # Order Smartlane knows about but this app never pushed
                     # there itself - most commonly booked directly on
                     # Smartlane's own portal. See
@@ -611,7 +632,7 @@ def smartlane_shipment_webhook(request, token):
                         order,
                         smartlane_status,
                         tracking_number=tracking_number,
-                        organization_id=connection.organization_id,
+                        organization_id=order.organization_id,
                         row=payload,
                     )
                 except oms_services.InvalidTransition as exc:

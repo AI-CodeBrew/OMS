@@ -36,7 +36,7 @@ const NAV = [
   },
   {
     href: "/admin/oms-courier",
-    label: "OMS Courier",
+    label: "OMS Couriers",
     match: (path) => path.startsWith("/admin/oms-courier") || path.startsWith("/admin/smartlane"),
   },
   {

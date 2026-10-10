@@ -268,6 +268,32 @@ class IntegrationsService {
     return data;
   }
 
+  // --- Which couriers FynkTech ships this store's orders with, through
+  // FynkTech's own accounts (see backend integrations/oms_courier_views.py) ---
+  async getOmsCourierCouriers() {
+    const response = await fetch(`${apiConfig.baseUrl}/api/integrations/oms-courier/couriers/`, {
+      headers: authService.getAuthHeaders(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || data.detail || "Failed to load couriers");
+    return data;
+  }
+
+  // body: { is_enabled, store_name, phone, pickup_address }
+  async saveOmsCourierCourier(courier, body) {
+    const response = await fetch(
+      `${apiConfig.baseUrl}/api/integrations/oms-courier/couriers/${encodeURIComponent(courier)}/`,
+      {
+        method: "PUT",
+        headers: authService.getAuthHeaders(),
+        body: JSON.stringify(body),
+      }
+    );
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || data.detail || "Failed to save");
+    return data.courier;
+  }
+
   // --- Webhook / warehouse-edit / finance requests (need super-admin OK
   // before they reach Smartlane - see SmartlaneRequestsView) ---
   async getOmsCourierRequests(type) {

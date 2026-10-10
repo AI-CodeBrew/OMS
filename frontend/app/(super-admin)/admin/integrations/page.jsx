@@ -119,10 +119,7 @@ function SummaryCard({ integration, stats, active, onToggle }) {
 function IntegrationCell({ integration, entry, disabled, highlighted, onManage }) {
   const state = cellState(integration.key, entry);
   const pill = STATE_PILL[state];
-  // OMS Courier's label is its onboarding status - redundant next to a
-  // "Connected" pill, useful next to any other.
-  const detail =
-    integration.key === "oms_courier" && state === "connected" ? "" : entry?.label || "";
+  const detail = entry?.label || "";
   const activity = entry?.last_activity_at;
   const action = state === "none" ? "Set up" : "Manage";
 

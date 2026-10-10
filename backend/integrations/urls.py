@@ -1,6 +1,6 @@
 from django.urls import include, path
 
-from . import views
+from . import oms_courier_views, views
 
 urlpatterns = [
     # BarqRaftar's own routes live entirely in integrations/barqraftar/ -
@@ -37,6 +37,18 @@ urlpatterns = [
         "oms-courier/",
         views.OmsCourierOnboardingView.as_view(),
         name="oms-courier-onboarding",
+    ),
+    # The store choosing which couriers FynkTech ships its orders with
+    # (through FynkTech's own accounts) - see oms_courier_views.
+    path(
+        "oms-courier/couriers/",
+        oms_courier_views.OmsCourierEnrollmentListView.as_view(),
+        name="oms-courier-couriers",
+    ),
+    path(
+        "oms-courier/couriers/<str:courier>/",
+        oms_courier_views.OmsCourierEnrollmentDetailView.as_view(),
+        name="oms-courier-courier",
     ),
     path(
         "oms-courier/options/",

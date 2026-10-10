@@ -12,9 +12,12 @@ credentials, only whether a connection is live and what identifies it.
 from core.models import Organization
 from core.platform_service import get_platform_organization
 
+from . import oms_courier_service
+
 from .barqraftar.models import BarqRaftarConnection
 from .business_services import _is_live
 from .models import (
+    OmsCourierEnrollment,
     ShopifyConnection,
     SmartlaneBusinessConfig,
     SmartlaneConnection,
@@ -64,13 +67,24 @@ def _smartlane(conn):
     }
 
 
-def _oms_courier(link, conn):
-    if link is None and conn is None:
+def _oms_courier(link, conn, approved, pending):
+    """Either way of using OMS Courier counts: couriers approved for
+    FynkTech to book with (OmsCourierEnrollment), or onboarding through
+    Smartlane Business going live. A courier request still waiting on the
+    Requests page reads as pending."""
+    if link is None and conn is None and not approved and not pending:
         return None
+    live = _is_live(link, conn)
+    if approved or pending:
+        label = ", ".join(approved + [f"{name} (pending)" for name in pending])
+        status = "" if approved else "pending_approval"
+    else:
+        label = link.get_status_display() if link and not live else ""
+        status = link.status if link else ""
     return {
-        "connected": _is_live(link, conn),
-        "status": link.status if link else "",
-        "label": link.get_status_display() if link else "",
+        "connected": live or bool(approved),
+        "status": status,
+        "label": label,
         "last_activity_at": _iso(conn.last_event_at if conn else None),
     }
 
@@ -115,6 +129,19 @@ def list_store_integrations():
     oms_link = _by_org(SmartlaneStoreLink.all_objects.all())
     barqraftar = _by_org(BarqRaftarConnection.all_objects.all())
     postex = _by_org(PostExConnection.all_objects.all())
+    courier_names = dict(OmsCourierEnrollment.COURIER_CHOICES)
+    approved, pending = {}, {}
+    for org_id, courier, status in (
+        OmsCourierEnrollment.all_objects.filter(is_enabled=True)
+        .order_by("courier")
+        .values_list("organization_id", "courier", "status")
+    ):
+        bucket = {
+            OmsCourierEnrollment.STATUS_APPROVED: approved,
+            OmsCourierEnrollment.STATUS_PENDING: pending,
+        }.get(status)
+        if bucket is not None:
+            bucket.setdefault(org_id, []).append(courier_names.get(courier, courier))
 
     stores = []
     for org in orgs:
@@ -129,7 +156,10 @@ def list_store_integrations():
                 "integrations": {
                     "shopify": _shopify(shopify.get(org.id)),
                     "smartlane": _smartlane(smartlane.get(org.id)),
-                    "oms_courier": _oms_courier(oms_link.get(org.id), oms_conn.get(org.id)),
+                    "oms_courier": _oms_courier(
+                        oms_link.get(org.id), oms_conn.get(org.id),
+                        approved.get(org.id, []), pending.get(org.id, []),
+                    ),
                     "barq_raftar": _barqraftar(barqraftar.get(org.id)),
                     "postex": _postex(postex.get(org.id)),
                 },
@@ -167,4 +197,5 @@ def oms_courier_summary():
             "active": config.is_active,
             "pending_requests": pending,
         },
+        "pending_requests": oms_courier_service.pending_count(),
     }

@@ -141,17 +141,31 @@ export default function OmsCourierPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold text-slate-900">OMS Courier</h1>
-        <p className="mt-1 text-sm text-slate-500">
-          FynkTech&apos;s own courier accounts, for the stores that hand their dispatching to
-          FynkTech. Connect and manage them exactly the way a store admin does.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold text-slate-900">OMS Couriers</h1>
+          <p className="mt-1 text-sm text-slate-500">
+            FynkTech&apos;s own courier accounts, for the stores that hand their dispatching to
+            FynkTech. Connect and manage them exactly the way a store admin does.
+          </p>
+        </div>
+        <Link
+          href="/admin/oms-courier/requests"
+          className="inline-flex shrink-0 items-center gap-2 rounded-md bg-brand-800 px-4 py-2 text-sm font-medium text-white transition hover:bg-brand-900"
+        >
+          Requests
+          {data?.pending_requests ? (
+            <span className="rounded-full bg-amber-400 px-2 py-0.5 text-xs font-semibold text-slate-900">
+              {data.pending_requests}
+            </span>
+          ) : null}
+        </Link>
       </div>
 
-      <p className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-        Dispatch Hub orders still book through each store&apos;s own accounts for now. Booking
-        them through these FynkTech accounts is the next step.
+      <p className="rounded-lg border border-surface-border bg-white px-4 py-3 text-sm text-slate-600">
+        Orders booked from the Dispatch Hub go through these accounts - for each store, only with
+        the couriers it requested on its own OMS Courier page and you approved under Requests.
+        Tracking numbers and status updates land on the store&apos;s own orders.
       </p>
 
       {error ? (

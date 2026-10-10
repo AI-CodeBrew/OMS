@@ -19,6 +19,7 @@ from django.utils import timezone
 from core.rbac import write_audit_log
 
 from .models import (
+    OmsCourierEnrollment,
     SmartlaneBusinessConfig,
     SmartlaneConnection,
     SmartlaneCourierOffering,
@@ -695,7 +696,32 @@ def submit_org_onboarding(organization_id, body, *, actor_user_id=None):
     link.requested_by_user_id = actor_user_id
     link.requested_at = timezone.now()
     link.save()
+    _enable_smartlane_enrollment(link)
     return _serialize_link(link)
+
+
+def _enable_smartlane_enrollment(link):
+    """Sending these business details is how a store asks for Smartlane from
+    its OMS Courier page, so the same submit files the Smartlane
+    OmsCourierEnrollment request the super admin approves on the OMS
+    Couriers tab's Requests page (integrations.oms_courier_service) - with
+    the business name, contact number and address as its shipper details."""
+    address = ", ".join(p for p in [link.kyc_business_address, link.kyc_city] if p)
+    OmsCourierEnrollment.all_objects.update_or_create(
+        organization_id=link.organization_id,
+        courier=OmsCourierEnrollment.COURIER_SMARTLANE,
+        defaults={
+            "is_enabled": True,
+            "status": OmsCourierEnrollment.STATUS_PENDING,
+            "store_name": (link.kyc_name or "")[:255],
+            "phone": (link.kyc_phone or "")[:50],
+            "pickup_address": address[:500],
+            "requested_at": timezone.now(),
+            "review_note": "",
+            "reviewed_by_email": "",
+            "reviewed_at": None,
+        },
+    )
 
 
 def list_store_links(status=None, *, build_absolute_uri=None):
@@ -937,6 +963,20 @@ def reject_store_link(link_id, *, note="", actor_email=""):
     link.reviewed_by_email = actor_email or ""
     link.reviewed_at = timezone.now()
     link.save()
+    # The Smartlane request on the store's OMS Courier page is rejected
+    # with it, same reason, until the store resubmits (see
+    # _enable_smartlane_enrollment) - the Dispatch Hub mustn't book with it
+    # meanwhile.
+    OmsCourierEnrollment.all_objects.filter(
+        organization_id=link.organization_id, courier=OmsCourierEnrollment.COURIER_SMARTLANE
+    ).update(
+        is_enabled=False,
+        status=OmsCourierEnrollment.STATUS_REJECTED,
+        review_note=link.review_note,
+        reviewed_by_email=link.reviewed_by_email,
+        reviewed_at=link.reviewed_at,
+        updated_at=timezone.now(),
+    )
 
     _audit(
         link,

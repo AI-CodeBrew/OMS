@@ -22,12 +22,19 @@ import re
 import time
 from datetime import timedelta
 
+from django.conf import settings
 from django.db import transaction
 from django.db.models import F
 from django.db.utils import OperationalError
 from django.utils import timezone
 
+from core.context import tenant_context
 from core.events import publish_event
+from core.platform_service import (
+    is_platform_organization,
+    platform_organization_id,
+    platform_reference,
+)
 
 from . import client
 from .exceptions import PostExAPIError, PostExBookingError
@@ -262,11 +269,59 @@ def _piece_count(order):
     return sum(item.quantity for item in order.items.all()) or 1
 
 
-def _next_reference(order):
+# ------------------------------------------------------ Booking accounts --
+# Same arrangement as BarqRaftar's (see its services.py): a store's orders
+# book through its own PostEx account - or, from the Dispatch Hub, through
+# FynkTech's own (the super admin's OMS Couriers tab, held by the platform
+# org - core.platform_service). Order.platform_reference marks such a
+# booking, so tracking, printing, cancelling, the poller and the webhook
+# all use FynkTech's account for it.
+
+def platform_connection():
+    """FynkTech's own connected PostEx account, or None."""
+    return PostExConnection.all_objects.filter(
+        organization_id=platform_organization_id(), is_connected=True
+    ).first()
+
+
+def connection_for_order(order):
+    """The connected account `order` was booked through."""
+    if order.platform_reference:
+        return platform_connection()
+    return PostExConnection.all_objects.filter(
+        organization_id=order.organization_id, is_connected=True
+    ).first()
+
+
+def connection_for_request(request):
+    """The account a request acts on: FynkTech's own while operating the
+    Dispatch Hub (every Hub booking goes through it), else the store's."""
+    if getattr(request, "organization_ids", None):
+        return platform_connection()
+    return PostExConnection.objects.filter(
+        organization_id=request.organization_id, is_connected=True
+    ).first()
+
+
+def _shipments_for(connection):
+    """Active shipments booked through `connection`: the store's own - or,
+    for FynkTech's account, every Hub booking made through it, whichever
+    store's order it is."""
+    qs = PostExShipment.all_objects.filter(is_active=True)
+    if is_platform_organization(connection.organization_id):
+        return qs.exclude(order__platform_reference="")
+    return qs.filter(organization_id=connection.organization_id, order__platform_reference="")
+
+
+def _next_reference(order, *, via_platform=False):
     """order.order_number (without '#'), or -R2/-R3/... if an earlier,
     since-cancelled booking already used the plain form - the old shipment
-    row stays as history and is never reused."""
+    row stays as history and is never reused. Through FynkTech's account it
+    carries the store code in front (core.platform_service.
+    platform_reference)."""
     base = order.order_number.lstrip("#") or order.order_number
+    if via_platform:
+        base = platform_reference(order, base)
     existing = set(
         PostExShipment.all_objects.filter(organization_id=order.organization_id, order=order)
         .values_list("reference", flat=True)
@@ -311,7 +366,7 @@ def _build_order_payload(order, connection, city_name, reference):
 
 # --------------------------------------------------------------- Booking --
 
-def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False):
+def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False, via_platform=False):
     """Books one or many orders with PostEx - the handler behind "Book with
     PostEx" (oms/views.py's bulk_action special-cases action="push_to_postex"
     and calls this directly). PostEx has no bulk create, so each order is
@@ -320,7 +375,10 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False):
 
     Returns [{"order_id", "order_number", "success", "error"?, "error_code"?,
     "shortages"?}] - the same shape as oms/views.py's generic bulk-action
-    loop, so the stock-shortage modal and its force-retry work unchanged."""
+    loop, so the stock-shortage modal and its force-retry work unchanged.
+
+    via_platform books through FynkTech's own account instead of the
+    store's - the Dispatch Hub's bookings (see "Booking accounts" above)."""
     from oms.models import Courier, Order
     from wms import services as wms_services
 
@@ -329,12 +387,14 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False):
         for o in Order.objects.filter(organization_id=organization_id, id__in=order_ids).prefetch_related("items")
     }
 
-    connection = PostExConnection.objects.filter(organization_id=organization_id, is_connected=True).first()
+    if via_platform:
+        connection = platform_connection()
+        not_connected = "Connect FynkTech's PostEx account on the super admin's OMS Couriers tab first."
+    else:
+        connection = PostExConnection.objects.filter(organization_id=organization_id, is_connected=True).first()
+        not_connected = "Connect PostEx from the Integrations page first."
     if not connection:
-        return [
-            {"order_id": str(oid), "success": False, "error": "Connect PostEx from the Integrations page first."}
-            for oid in order_ids
-        ]
+        return [{"order_id": str(oid), "success": False, "error": not_connected} for oid in order_ids]
     if not connection.pickup_address_code:
         return [
             {"order_id": str(oid), "success": False,
@@ -390,7 +450,7 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False):
             continue
 
         try:
-            reference = _next_reference(order)
+            reference = _next_reference(order, via_platform=via_platform)
             payload = _build_order_payload(order, connection, city_name, reference)
         except PostExBookingError as exc:
             results.append({**base, "success": False, "error": str(exc)})
@@ -420,7 +480,7 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False):
             _finalize_booking(
                 order, reference=reference, tracking_number=tracking_number, courier=courier,
                 connection=connection, status_label=str(dist.get("orderStatus") or "Unbooked"),
-                actor_user_id=actor_user_id,
+                actor_user_id=actor_user_id, via_platform=via_platform,
             )
             results.append({**base, "success": True})
         except Exception as exc:  # noqa: BLE001 - one order's failure must not lose the rest
@@ -436,7 +496,8 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False):
     return results
 
 
-def _finalize_booking(order, *, reference, tracking_number, courier, connection, status_label, actor_user_id):
+def _finalize_booking(order, *, reference, tracking_number, courier, connection, status_label, actor_user_id,
+                      via_platform=False):
     """Saves the shipment row FIRST, so a failure in the local transition
     below never loses the tracking number. Then moves the order through
     Booking Pending to Ready to Print in one atomic block."""
@@ -451,20 +512,17 @@ def _finalize_booking(order, *, reference, tracking_number, courier, connection,
         pickup_address_code=connection.pickup_address_code,
         is_active=True,
     )
+    # Which account the order belongs to from here on - see "Booking
+    # accounts" above. Cleared for a store-account booking, in case an
+    # earlier, since-cancelled one went through FynkTech's.
+    order.platform_reference = reference if via_platform else ""
+    order.save(update_fields=["platform_reference", "updated_at"])
     with transaction.atomic():
         order = oms_services.book_with_courier(
             order, courier_id=courier.id, tracking_number=tracking_number, actor_user_id=actor_user_id,
         )
         oms_services.advance_booking_confirmed(order, actor_user_id=actor_user_id)
     return order
-
-
-def active_shipments(organization_id, order_ids):
-    return list(
-        PostExShipment.objects.filter(
-            organization_id=organization_id, order_id__in=order_ids, is_active=True,
-        ).exclude(tracking_number="").select_related("order").order_by("booked_at", "id")
-    )
 
 
 def mark_load_sheet_generated(shipments):
@@ -485,9 +543,7 @@ def cancel_on_postex(order):
     if not shipment or not shipment.tracking_number:
         return
 
-    connection = PostExConnection.all_objects.filter(
-        organization_id=order.organization_id, is_connected=True
-    ).first()
+    connection = connection_for_order(order)
     if not connection:
         raise PostExBookingError("PostEx is not connected - cannot confirm whether the shipment can still be cancelled.")
 
@@ -715,47 +771,43 @@ def handle_webhook_event(connection, payload):
     their real status from PostEx's own API (bulk track) before applying
     anything - the body's format is undocumented, so it's never trusted for
     what status to apply. Returns how many orders visibly changed."""
-    from core.context import current_organization_id
-
     tracking_numbers = extract_tracking_numbers(payload)
     if not tracking_numbers:
         logger.warning("postex webhook for org %s: no tracking number found in the body",
                        connection.organization_id)
         return 0
 
-    context_token = current_organization_id.set(connection.organization_id)
+    # FynkTech's own account (OMS Couriers) reports on Hub bookings that
+    # belong to many stores - _shipments_for covers both cases.
+    shipments = {
+        s.tracking_number: s
+        for s in _shipments_for(connection).filter(tracking_number__in=tracking_numbers)
+    }
+    if not shipments:
+        logger.info("postex webhook for org %s: none of %s were booked from OMS",
+                    connection.organization_id, tracking_numbers[:5])
+        return 0
+
     try:
-        shipments = {
-            s.tracking_number: s
-            for s in PostExShipment.all_objects.filter(
-                organization_id=connection.organization_id, is_active=True,
-                tracking_number__in=tracking_numbers,
-            )
-        }
-        if not shipments:
-            logger.info("postex webhook for org %s: none of %s were booked from OMS",
-                        connection.organization_id, tracking_numbers[:5])
-            return 0
+        rows = client.track_bulk(connection.api_token, list(shipments))
+    except PostExAPIError:
+        logger.exception("postex webhook: re-fetch failed for org %s", connection.organization_id)
+        return 0
 
+    updated = 0
+    for tn, row in rows.items():
+        shipment = shipments.get(tn)
+        if not shipment:
+            continue
         try:
-            rows = client.track_bulk(connection.api_token, list(shipments))
-        except PostExAPIError:
-            logger.exception("postex webhook: re-fetch failed for org %s", connection.organization_id)
-            return 0
-
-        updated = 0
-        for tn, row in rows.items():
-            shipment = shipments.get(tn)
-            if not shipment:
-                continue
-            try:
+            # The order's own store - the oms.services transitions rely on
+            # the tenant context, which this JWT-less request never got.
+            with tenant_context(shipment.organization_id):
                 if _apply_fetched_status(shipment, row):
                     updated += 1
-            except Exception:  # noqa: BLE001 - one shipment's failure must not drop the rest
-                logger.exception("postex webhook: unexpected error handling shipment %s", tn)
-        return updated
-    finally:
-        current_organization_id.reset(context_token)
+        except Exception:  # noqa: BLE001 - one shipment's failure must not drop the rest
+            logger.exception("postex webhook: unexpected error handling shipment %s", tn)
+    return updated
 
 
 _RECENT_PAYLOADS_KEPT = 5
@@ -795,16 +847,277 @@ def record_webhook_rejected(connection, reason):
     connection.save(update_fields=["last_webhook_error", "last_webhook_error_at", "updated_at"])
 
 
+# ------------------------------------------------------- Portal bookings --
+# An order booked straight on PostEx's own portal (or by PostEx's Shopify
+# app) never went through book_orders, so it has no PostExShipment row - and
+# the poller, webhook and cancel only ever look at those rows. Every poll
+# therefore first adopts such bookings, found two ways - the PostEx
+# counterpart of Smartlane's absorb_untracked_smartlane_order:
+# - by tracking number: an order that already carries one (typically from a
+#   courier sheet imported into OMS, see oms/importers.py) is looked up
+#   directly with bulk track, however old the booking is;
+# - by reference: PostEx's own order list for a recent window, matching
+#   orderRefNumber to our order numbers (bulk-uploaded portal bookings).
+
+# Local statuses an order sits in before any courier booking - the same set
+# as Smartlane's _ABSORBABLE_STATUSES (local copy, deliberately not
+# imported). Adopting from here forces Booking Pending and consumes stock,
+# exactly as booking through OMS would have.
+_PRE_BOOKING_STATUSES = {
+    "new", "pending_cc", "pending_cod",
+    "awaiting_assigning", "awaiting_approval", "approved",
+}
+# Already past booking locally (processed by hand). Adopting one of these
+# only links the shipment so its status keeps flowing - no forced move, no
+# stock - and only when its courier is blank or PostEx. city_issue and
+# dispatch_issue are in neither set: a human flagged those.
+_TRACK_ONLY_STATUSES = {
+    "booking_pending", "ready_to_print", "ready_to_pick", "awaiting_dispatched",
+    "dispatched", "out_for_delivery", "attempt",
+}
+
+# get-all-order is slow over long ranges (see client.list_orders), so a
+# range is read one week at a time.
+_LIST_WINDOW_DAYS = 7
+
+
+def list_orders_between(token, start, end, status_id=0):
+    """client.list_orders over start..end (dates, inclusive), one
+    _LIST_WINDOW_DAYS window per call."""
+    rows = []
+    cursor = start
+    while cursor <= end:
+        window_end = min(cursor + timedelta(days=_LIST_WINDOW_DAYS - 1), end)
+        rows += client.list_orders(
+            token, start_date=cursor.isoformat(), end_date=window_end.isoformat(), status_id=status_id,
+        )
+        cursor = window_end + timedelta(days=1)
+    return rows
+
+
+def _live_bookings_by_reference(rows):
+    """{reference without '#': row} for every PostEx booking that isn't
+    cancelled. A reference booked more than once (cancelled, then booked
+    again) keeps its newest live row."""
+    result = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        key = str(row.get("orderRefNumber") or "").strip().lstrip("#")
+        if not key or not str(row.get("trackingNumber") or "").strip():
+            continue
+        if status_stage(row.get("transactionStatus")) == "cancelled":
+            continue
+        current = result.get(key)
+        if current is None or str(row.get("transactionDate") or "") > str(current.get("transactionDate") or ""):
+            result[key] = row
+    return result
+
+
+def _courier(organization_id):
+    from oms.models import Courier
+
+    courier = Courier.all_objects.filter(organization_id=organization_id, name__iexact=COURIER_NAME).first()
+    return courier or Courier.all_objects.create(organization_id=organization_id, name=COURIER_NAME, is_active=True)
+
+
+def _adoptable_orders(organization_id):
+    """Orders an outside-OMS booking may be adopted onto: not final, not
+    flagged by a human, and not already PostEx's or BarqRaftar's."""
+    from oms.models import Order
+
+    return (
+        Order.all_objects.filter(
+            organization_id=organization_id,
+            status__in=_PRE_BOOKING_STATUSES | _TRACK_ONLY_STATUSES,
+        )
+        .exclude(postex_shipments__is_active=True)
+        .exclude(barqraftar_shipments__is_active=True)
+        .select_related("courier")
+    )
+
+
+def _courier_key(order):
+    """The order's courier name reduced to letters - courier sheets write it
+    every way ("Post Ex", "POSTEX", "post-ex"), all of which become
+    "postex"."""
+    return re.sub(r"[^a-z]", "", (order.courier.name if order.courier_id else "").lower())
+
+
+def _adopt_one(order, row, *, reference, tracking_number, known):
+    """Saves the shipment, brings the order to where an OMS booking would
+    have left it, then applies PostEx's current status from `row`. `known`
+    is (tracking numbers, references) already used in this org - updated
+    here. Returns True if the order was adopted."""
+    from oms import services as oms_services
+
+    known_tracking, known_references = known
+    courier = _courier(order.organization_id)
+    pre_booking = order.status in _PRE_BOOKING_STATUSES
+    before_status = order.status
+    try:
+        with transaction.atomic():
+            shipment = PostExShipment.all_objects.create(
+                organization_id=order.organization_id,
+                order=order,
+                reference=reference,
+                tracking_number=tracking_number,
+                status_label=str(row.get("transactionStatus") or "")[:100],
+                last_payload=row,
+                is_active=True,
+            )
+            if pre_booking:
+                oms_services.absorb_courier_booking(
+                    order, courier_id=courier.id, tracking_number=tracking_number,
+                    note="Booked on PostEx outside OMS - reconciled automatically",
+                )
+            else:
+                order.courier = courier
+                order.tracking_number = order.tracking_number or tracking_number
+                order.save(update_fields=["courier", "tracking_number", "updated_at"])
+    except Exception:  # noqa: BLE001 - one order's failure must not stop the rest
+        logger.exception("postex: adopting booking %s for order %s failed", tracking_number, order.order_number)
+        return False
+
+    known_tracking.add(tracking_number)
+    known_references.add(reference)
+    logger.info("postex: adopted booking %s for order %s (was %s)",
+                tracking_number, order.order_number, before_status)
+    if not pre_booking:
+        # No status change yet - the row itself changed, though.
+        publish_event(
+            "order.updated",
+            {
+                "organization_id": str(order.organization_id),
+                "order_id": str(order.id),
+                "order_number": order.order_number,
+                "source": "postex",
+            },
+        )
+    try:
+        _apply_fetched_status(shipment, row)
+    except Exception:  # noqa: BLE001 - the next poll retries it through the shipment row
+        logger.exception("postex: applying status to adopted order %s failed", order.order_number)
+    return True
+
+
+# Most orders the tracking-number pass asks about per run. Ones PostEx
+# doesn't know stay candidates, so this bounds what every cycle re-asks.
+_ADOPT_TRACKING_LIMIT = 500
+
+
+def _adopt_by_tracking_number(organization_id, connection, known):
+    """Orders already carrying a PostEx tracking number (plain digits, see
+    client.py) whose courier is blank or PostEx, looked up with bulk track.
+    A chunk PostEx rejects is skipped, not fatal - the next poll asks again."""
+    candidates = {}
+    orders = _adoptable_orders(organization_id).exclude(tracking_number="").order_by("-updated_at")
+    for order in orders[:_ADOPT_TRACKING_LIMIT]:
+        tracking_number = order.tracking_number.strip()
+        if tracking_number.isdigit() and tracking_number not in known[0] and _courier_key(order) in ("", "postex"):
+            candidates.setdefault(tracking_number, order)
+
+    numbers = list(candidates)
+    adopted = 0
+    for start in range(0, len(numbers), _TRACK_CHUNK_SIZE):
+        try:
+            rows = client.track_bulk(connection.api_token, numbers[start:start + _TRACK_CHUNK_SIZE])
+        except PostExAPIError as exc:
+            logger.error("postex: tracking-number adoption chunk failed for org %s: %s", organization_id, exc)
+            continue
+        for tracking_number, row in rows.items():
+            order = candidates.get(tracking_number)
+            if order is None:
+                continue
+            if status_stage(row.get("transactionStatus"), row.get("transactionStatusHistory")) == "cancelled":
+                continue
+            # PostEx's own reference when it has a free one, else the
+            # tracking number - the reference is unique per org.
+            reference = str(row.get("orderRefNumber") or "").strip()[:100]
+            if not reference or reference in known[1]:
+                reference = tracking_number[:100]
+            if _adopt_one(order, row, reference=reference, tracking_number=tracking_number[:100], known=known):
+                adopted += 1
+    return adopted
+
+
+def _adopt_by_reference(organization_id, connection, days, known):
+    """PostEx bookings from the last `days` days whose orderRefNumber is one
+    of our order numbers. Raises PostExAPIError if PostEx's order list
+    couldn't be read."""
+    # +1 day: the server's date can still be yesterday while it's already
+    # today in Pakistan.
+    end = timezone.localdate() + timedelta(days=1)
+    bookings = _live_bookings_by_reference(
+        list_orders_between(connection.api_token, end - timedelta(days=days), end)
+    )
+    if not bookings:
+        return 0
+
+    orders = _adoptable_orders(organization_id).filter(
+        order_number__in=[n for key in bookings for n in (key, f"#{key}")],
+    )
+    adopted = 0
+    for order in orders:
+        row = bookings[order.order_number.lstrip("#")]
+        reference = str(row["orderRefNumber"]).strip()[:100]
+        tracking_number = str(row["trackingNumber"]).strip()[:100]
+        if tracking_number in known[0] or reference in known[1]:
+            # Already one of ours (an OMS booking since cancelled) - the
+            # reference is unique per org, so it could not be saved again.
+            continue
+        if order.status not in _PRE_BOOKING_STATUSES and _courier_key(order) not in ("", "postex"):
+            continue
+        if _adopt_one(order, row, reference=reference, tracking_number=tracking_number, known=known):
+            adopted += 1
+    return adopted
+
+
+def adopt_portal_bookings(organization_id, connection, *, days):
+    """Adopts PostEx bookings made outside OMS - by tracking number first,
+    then by reference over the last `days` days (see the section comment
+    above). Returns how many orders were adopted. Raises PostExAPIError if
+    PostEx's order list couldn't be read."""
+    if days <= 0:
+        return 0
+    shipments = PostExShipment.all_objects.filter(organization_id=organization_id)
+    known = (
+        set(shipments.values_list("tracking_number", flat=True)),
+        set(shipments.values_list("reference", flat=True)),
+    )
+    adopted = _adopt_by_tracking_number(organization_id, connection, known)
+    return adopted + _adopt_by_reference(organization_id, connection, days, known)
+
+
+def _adopt_for_poll(organization_id, connection, days):
+    """adopt_portal_bookings for a poll run - never lets a failure there stop
+    the status sync that follows. None means it failed."""
+    if days is None:
+        days = settings.POSTEX_ADOPT_LOOKBACK_DAYS
+    try:
+        return adopt_portal_bookings(organization_id, connection, days=days)
+    except PostExAPIError as exc:
+        logger.error("postex: portal-booking check failed for org %s: %s", organization_id, exc)
+    except Exception:  # noqa: BLE001
+        logger.exception("postex: portal-booking check failed for org %s", organization_id)
+    return None
+
+
 # ---------------------------------------------------------------- Poller --
 
 _TRACK_CHUNK_SIZE = 50
 
 
-def poll_postex_statuses(organization_id, *, limit=500, job=None):
+def poll_postex_statuses(organization_id, *, limit=500, job=None, adopt_days=None):
     """Pulls status updates from PostEx for every active, non-final shipment
     of a connected org (oldest-checked first, at most `limit` per run) using
     bulk track. Scoped to PostExShipment rows, so it never guesses from an
-    order's courier name."""
+    order's courier name.
+
+    First adopts bookings made on PostEx's own portal over the last
+    `adopt_days` days (default POSTEX_ADOPT_LOOKBACK_DAYS) - see
+    adopt_portal_bookings. The result's "adopted" is None when that step
+    failed; the status sync runs either way."""
     from core.context import current_organization_id
 
     connection = PostExConnection.all_objects.filter(organization_id=organization_id, is_connected=True).first()
@@ -814,14 +1127,20 @@ def poll_postex_statuses(organization_id, *, limit=500, job=None):
 
     context_token = current_organization_id.set(organization_id)
     try:
-        return _poll_body(organization_id, connection, limit=limit, job=job)
+        # FynkTech's own account (OMS Couriers) has no orders of its own to
+        # adopt portal bookings into - its shipments are the Hub's.
+        adopted = (
+            0 if is_platform_organization(organization_id)
+            else _adopt_for_poll(organization_id, connection, adopt_days)
+        )
+        return {**_poll_body(organization_id, connection, limit=limit, job=job), "adopted": adopted}
     finally:
         current_organization_id.reset(context_token)
 
 
 def _poll_body(organization_id, connection, *, limit, job=None):
     shipments = list(
-        PostExShipment.all_objects.filter(organization_id=organization_id, is_active=True)
+        _shipments_for(connection)
         .exclude(tracking_number="")
         .exclude(order__status__in=TERMINAL_STATUSES)
         .order_by(F("last_checked_at").asc(nulls_first=True), "id")[:limit]
@@ -853,8 +1172,10 @@ def _poll_body(organization_id, connection, *, limit, job=None):
             if not shipment:
                 continue
             try:
-                if _apply_fetched_status(shipment, row):
-                    updated += 1
+                # The shipment's own store - FynkTech's account polls many.
+                with tenant_context(shipment.organization_id):
+                    if _apply_fetched_status(shipment, row):
+                        updated += 1
             except Exception:  # noqa: BLE001 - one shipment's failure must not abort the batch
                 logger.exception("postex poll: unexpected error handling shipment %s", tn)
 
@@ -863,7 +1184,7 @@ def _poll_body(organization_id, connection, *, limit, job=None):
         unseen = [t for t in chunk if t not in rows]
         if unseen:
             PostExShipment.all_objects.filter(
-                organization_id=organization_id, tracking_number__in=unseen,
+                id__in=[by_tracking[t].id for t in unseen],
             ).update(last_checked_at=timezone.now())
 
         if job is not None:

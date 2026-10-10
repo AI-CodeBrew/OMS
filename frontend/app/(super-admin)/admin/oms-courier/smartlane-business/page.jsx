@@ -509,7 +509,7 @@ export default function SmartlaneBusinessPage() {
     <div className="space-y-6">
       <nav className="flex items-center gap-1.5 text-sm text-slate-500">
         <Link href="/admin/oms-courier" className="hover:text-slate-700">
-          OMS Courier
+          OMS Couriers
         </Link>
         <span>/</span>
         <span className="font-medium text-slate-700">Smartlane Business</span>

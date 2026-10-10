@@ -13,7 +13,7 @@ from rest_framework.response import Response
 from core.permissions import IsSuperAdmin
 
 from . import business_services as service
-from . import overview_service
+from . import oms_courier_service, overview_service
 from .business_services import SmartlaneBusinessError
 
 
@@ -289,3 +289,51 @@ def oms_courier(request):
     """FynkTech's own courier accounts for the super admin's OMS Courier
     tab, and the platform org id the tab acts as to manage them."""
     return Response({"success": True, **overview_service.oms_courier_summary()})
+
+
+@api_view(["GET"])
+@permission_classes([IsSuperAdmin])
+def oms_courier_requests(request):
+    """The OMS Couriers tab's Requests page - ?status=pending|approved|
+    rejected narrows it."""
+    status_filter = request.query_params.get("status") or None
+    return Response(
+        {"success": True, "requests": oms_courier_service.list_requests(status_filter)}
+    )
+
+
+def _request_error(exc):
+    return Response(
+        {"success": False, "error": exc.message, "code": "oms_courier_request_error"},
+        status=exc.status_code,
+    )
+
+
+@api_view(["POST"])
+@permission_classes([IsSuperAdmin])
+def oms_courier_request_approve(request, request_id):
+    """POST {message} - the message is optional here; the store sees it."""
+    try:
+        result = oms_courier_service.approve_request(
+            request_id,
+            message=(request.data or {}).get("message", ""),
+            actor_email=getattr(request, "auth_email", "") or "",
+        )
+    except oms_courier_service.OmsCourierRequestError as exc:
+        return _request_error(exc)
+    return Response({"success": True, "request": result})
+
+
+@api_view(["POST"])
+@permission_classes([IsSuperAdmin])
+def oms_courier_request_reject(request, request_id):
+    """POST {message} - required: the store sees why."""
+    try:
+        result = oms_courier_service.reject_request(
+            request_id,
+            message=(request.data or {}).get("message", ""),
+            actor_email=getattr(request, "auth_email", "") or "",
+        )
+    except oms_courier_service.OmsCourierRequestError as exc:
+        return _request_error(exc)
+    return Response({"success": True, "request": result})

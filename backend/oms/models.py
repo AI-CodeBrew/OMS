@@ -135,6 +135,14 @@ class Order(TenantScopedModel):
         Courier, on_delete=models.SET_NULL, null=True, blank=True, related_name="orders"
     )
     tracking_number = models.CharField(max_length=100, blank=True, default="")
+    # Set when the Dispatch Hub booked this order through FynkTech's own
+    # courier account (the super admin's OMS Couriers tab - see core.
+    # platform_service) instead of the store's: the reference that account
+    # knows it by, store code + order number, since several stores' order
+    # numbers collide inside one FynkTech account. While set, tracking,
+    # printing, cancelling and status sync all go through FynkTech's
+    # account. Empty for a booking made through the store's own account.
+    platform_reference = models.CharField(max_length=100, blank=True, default="", db_index=True)
     # Last time integrations.services.poll_smartlane_statuses asked Smartlane
     # about this order - null means never checked. Drives the poll query's
     # ordering (never-checked/longest-since-checked first) so a broad "check
