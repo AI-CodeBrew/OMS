@@ -63,11 +63,24 @@ class Organization(models.Model):
     # oms.order_importer instead. Lets the frontend decide which store
     # switcher entries show "Import orders" vs the usual integration cards.
     is_manual_store = models.BooleanField(default=False)
+    # True for the one hidden organization that holds FynkTech's own courier
+    # accounts (the super admin's "OMS Courier" tab - see core.
+    # platform_service). Reusing a real org lets those accounts live in the
+    # same tenant-scoped connection tables and be managed through the same
+    # integration screens a store admin uses. Never listed as a store.
+    is_platform = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = '"core"."organizations"'
+        constraints = [
+            models.UniqueConstraint(
+                fields=["is_platform"],
+                condition=models.Q(is_platform=True),
+                name="core_one_platform_organization",
+            )
+        ]
 
     def __str__(self):
         return self.name

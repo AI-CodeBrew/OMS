@@ -14,8 +14,10 @@ from rest_framework import status as http_status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.context import tenant_context
 from core.middleware import get_client_ip
 from core.permissions import IsOrgAdmin, RequireModule
+from core.platform_service import is_platform_organization
 from core.rbac import write_audit_log
 
 from . import client, services
@@ -33,9 +35,8 @@ ORDER_TYPES = ("Normal", "Reversed", "Replacement")
 
 # get-all-order is slow over long ranges (5 weeks timed out at 60s, single
 # days answer in ~2s - confirmed live), so the Shipments tab's range is
-# capped and fetched in week-sized windows.
+# capped and fetched in week-sized windows (services.list_orders_between).
 MAX_LIST_DAYS = 31
-LIST_WINDOW_DAYS = 7
 
 
 def _connection(request):
@@ -183,7 +184,9 @@ class PostExStatusView(APIView):
     required_module = "oms"
 
     def get(self, request):
-        connection = _connection(request)
+        # In the Dispatch Hub this is FynkTech's own account (every Hub
+        # booking goes through it) - see services.connection_for_request.
+        connection = services.connection_for_request(request)
         connected = bool(connection)
         ready_to_book = bool(connected and connection.pickup_address_code)
         return Response(PostExStatusSerializer({"connected": connected, "ready_to_book": ready_to_book}).data)
@@ -315,18 +318,6 @@ class PostExPickupAddressesView(APIView):
         return Response({"addresses": addresses, "active_code": connection.pickup_address_code})
 
 
-def _list_window(start, end, status_id, token):
-    rows = []
-    cursor = start
-    while cursor <= end:
-        window_end = min(cursor + timedelta(days=LIST_WINDOW_DAYS - 1), end)
-        rows += client.list_orders(
-            token, start_date=cursor.isoformat(), end_date=window_end.isoformat(), status_id=status_id,
-        )
-        cursor = window_end + timedelta(days=1)
-    return rows
-
-
 class PostExShipmentsView(APIView):
     """PostEx's own order listing (get-all-order) for a date range, or one
     order by tracking number / our order number. Rows booked through OMS get
@@ -358,8 +349,9 @@ class PostExShipmentsView(APIView):
                         status=http_status.HTTP_400_BAD_REQUEST,
                     )
                 status_id = request.query_params.get("status_id") or 0
-                rows = _list_window(start, end, int(status_id) if str(status_id).isdigit() else 0,
-                                    connection.api_token)
+                rows = services.list_orders_between(
+                    connection.api_token, start, end, int(status_id) if str(status_id).isdigit() else 0,
+                )
         except PostExAPIError as exc:
             return _bad_gateway(exc)
 
@@ -447,18 +439,26 @@ class PostExShipmentActionView(APIView):
         if action_name == "cancel":
             from oms import services as oms_services
 
-            shipment = PostExShipment.objects.filter(
-                organization_id=request.organization_id, tracking_number=tracking_number, is_active=True,
-            ).select_related("order").first()
+            if is_platform_organization(request.organization_id):
+                # FynkTech's account (OMS Couriers tab) - its parcels are
+                # the Hub stores' orders.
+                shipment = PostExShipment.all_objects.filter(
+                    tracking_number=tracking_number, is_active=True,
+                ).exclude(order__platform_reference="").select_related("order").first()
+            else:
+                shipment = PostExShipment.objects.filter(
+                    organization_id=request.organization_id, tracking_number=tracking_number, is_active=True,
+                ).select_related("order").first()
             if not shipment:
                 return Response(
                     {"detail": "This parcel wasn't booked from OMS - cancel it from the PostEx portal."},
                     status=http_status.HTTP_404_NOT_FOUND,
                 )
             try:
-                oms_services.cancel_order(
-                    shipment.order, reason=request.data.get("reason", ""), actor_user_id=request.user_id,
-                )
+                with tenant_context(shipment.organization_id):
+                    oms_services.cancel_order(
+                        shipment.order, reason=request.data.get("reason", ""), actor_user_id=request.user_id,
+                    )
             except (PostExBookingError, oms_services.InvalidTransition) as exc:
                 return Response({"detail": str(exc)}, status=http_status.HTTP_400_BAD_REQUEST)
             return Response({"success": True})
@@ -512,6 +512,69 @@ def _save_print_batch(*, organization_id, order_numbers, content, actor_user_id,
         logger.exception("postex: failed to save print batch")
 
 
+def _shipments_by_account(order_ids):
+    """The selected orders' active shipments, grouped by (store, booking
+    account) - one store's own account, or FynkTech's for a Dispatch Hub
+    booking (services.connection_for_order). PostEx only prints an
+    account's own parcels, and each store keeps its own print history, so
+    every group is rendered on its own. TenantManager scopes the query to
+    the store - or to every Hub store while operating the Hub. Returns
+    (groups, error_response); groups is [(organization_id, connection,
+    shipments)] in first-seen order."""
+    shipments = list(
+        PostExShipment.objects.filter(order_id__in=order_ids, is_active=True)
+        .exclude(tracking_number="").select_related("order").order_by("booked_at", "id")
+    )
+    if not shipments:
+        return None, Response(
+            {"detail": "None of the selected orders have an active PostEx shipment."},
+            status=http_status.HTTP_404_NOT_FOUND,
+        )
+    connections = {}
+    groups = {}
+    for shipment in shipments:
+        via_platform = bool(shipment.order.platform_reference)
+        key = (str(shipment.organization_id), via_platform)
+        if key not in connections:
+            connections[key] = services.connection_for_order(shipment.order)
+            if connections[key] is None:
+                if via_platform:
+                    return None, Response(
+                        {"detail": "FynkTech's PostEx account isn't connected (super admin's OMS Couriers tab)."},
+                        status=http_status.HTTP_404_NOT_FOUND,
+                    )
+                return None, _not_connected()
+        groups.setdefault(key, []).append(shipment)
+    return [(key[0], connections[key], group) for key, group in groups.items()], None
+
+
+def _merge_pdfs(pdf_byte_list):
+    if len(pdf_byte_list) == 1:
+        return pdf_byte_list[0]
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    for pdf_bytes in pdf_byte_list:
+        writer.append(fileobj=io.BytesIO(pdf_bytes))
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
+def _airway_bill_pdf(connection, tracking_numbers):
+    """One account's airway bills as a single PDF - PostEx prints at most
+    AIRWAY_BILL_MAX per call."""
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    for start in range(0, len(tracking_numbers), client.AIRWAY_BILL_MAX):
+        chunk = tracking_numbers[start:start + client.AIRWAY_BILL_MAX]
+        writer.append(fileobj=io.BytesIO(client.airway_bill(connection.api_token, chunk)))
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
 class PostExAirwayBillView(APIView):
     """POST {order_ids} or {tracking_numbers} -> one merged PDF of PostEx
     airway bills. PostEx prints at most 10 per call, so this chunks and
@@ -527,42 +590,44 @@ class PostExAirwayBillView(APIView):
             return Response(
                 {"detail": "order_ids or tracking_numbers is required"}, status=http_status.HTTP_400_BAD_REQUEST
             )
+        if order_ids:
+            # Per (store, booking account) - a Dispatch Hub selection booked
+            # through FynkTech's account prints through it.
+            groups, error = _shipments_by_account(order_ids)
+            if error:
+                return error
+            pdf_parts = []
+            for organization_id, connection, shipments in groups:
+                try:
+                    pdf_bytes = _airway_bill_pdf(connection, [s.tracking_number for s in shipments])
+                except PostExAPIError as exc:
+                    return _bad_gateway(exc)
+                _save_print_batch(
+                    organization_id=organization_id,
+                    order_numbers=[s.order.order_number for s in shipments],
+                    content=pdf_bytes, actor_user_id=request.user_id, kind="airway_bill",
+                )
+                pdf_parts.append(pdf_bytes)
+            return HttpResponse(_merge_pdfs(pdf_parts), content_type="application/pdf")
+
         connection = _connection(request)
         if not connection:
             return _not_connected()
 
-        if order_ids:
-            shipments = services.active_shipments(request.organization_id, order_ids)
-            if not shipments:
-                return Response(
-                    {"detail": "None of the selected orders have an active PostEx shipment."},
-                    status=http_status.HTTP_404_NOT_FOUND,
-                )
-            tracking_numbers = [s.tracking_number for s in shipments]
-            order_numbers = [s.order.order_number for s in shipments]
-        else:
-            # Shipments tab rows come from PostEx's own listing and may never
-            # have been booked from OMS - print by tracking number directly.
-            tracking_numbers = requested
-            order_numbers = list(
-                PostExShipment.objects.filter(
-                    organization_id=request.organization_id, tracking_number__in=requested,
-                ).values_list("order__order_number", flat=True)
-            )
+        # Shipments tab rows come from PostEx's own listing and may never
+        # have been booked from OMS - print by tracking number directly.
+        tracking_numbers = requested
+        order_numbers = list(
+            PostExShipment.objects.filter(
+                organization_id=request.organization_id, tracking_number__in=requested,
+            ).values_list("order__order_number", flat=True)
+        )
 
-        from pypdf import PdfWriter
-
-        writer = PdfWriter()
         try:
-            for start in range(0, len(tracking_numbers), client.AIRWAY_BILL_MAX):
-                chunk = tracking_numbers[start:start + client.AIRWAY_BILL_MAX]
-                writer.append(fileobj=io.BytesIO(client.airway_bill(connection.api_token, chunk)))
+            merged = _airway_bill_pdf(connection, tracking_numbers)
         except PostExAPIError as exc:
             return _bad_gateway(exc)
 
-        buffer = io.BytesIO()
-        writer.write(buffer)
-        merged = buffer.getvalue()
         _save_print_batch(
             organization_id=request.organization_id, order_numbers=order_numbers,
             content=merged, actor_user_id=request.user_id, kind="airway_bill",
@@ -582,30 +647,28 @@ class PostExLoadSheetView(APIView):
         order_ids = request.data.get("order_ids") or []
         if not order_ids:
             return Response({"detail": "order_ids is required"}, status=http_status.HTTP_400_BAD_REQUEST)
-        connection = _connection(request)
-        if not connection:
-            return _not_connected()
 
-        shipments = services.active_shipments(request.organization_id, order_ids)
-        if not shipments:
-            return Response(
-                {"detail": "None of the selected orders have an active PostEx shipment."},
-                status=http_status.HTTP_404_NOT_FOUND,
-            )
-        try:
-            pdf_bytes = client.generate_load_sheet(
-                connection.api_token, [s.tracking_number for s in shipments],
-            )
-        except PostExAPIError as exc:
-            return _bad_gateway(exc)
+        # Per (store, booking account), same as the airway bills above.
+        groups, error = _shipments_by_account(order_ids)
+        if error:
+            return error
+        pdf_parts = []
+        for organization_id, connection, shipments in groups:
+            try:
+                pdf_bytes = client.generate_load_sheet(
+                    connection.api_token, [s.tracking_number for s in shipments],
+                )
+            except PostExAPIError as exc:
+                return _bad_gateway(exc)
 
-        services.mark_load_sheet_generated(shipments)
-        _save_print_batch(
-            organization_id=request.organization_id,
-            order_numbers=[s.order.order_number for s in shipments],
-            content=pdf_bytes, actor_user_id=request.user_id, kind="loadsheet",
-        )
-        return HttpResponse(pdf_bytes, content_type="application/pdf")
+            services.mark_load_sheet_generated(shipments)
+            _save_print_batch(
+                organization_id=organization_id,
+                order_numbers=[s.order.order_number for s in shipments],
+                content=pdf_bytes, actor_user_id=request.user_id, kind="loadsheet",
+            )
+            pdf_parts.append(pdf_bytes)
+        return HttpResponse(_merge_pdfs(pdf_parts), content_type="application/pdf")
 
 
 # --------------------------------------------------------------- Webhook --

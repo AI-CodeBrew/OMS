@@ -61,7 +61,7 @@ def list_hub_stores():
 
 def add_to_hub(organization_id, *, per_order_rate=0, actor_user_id=None):
     try:
-        organization = Organization.objects.get(id=organization_id)
+        organization = Organization.objects.get(id=organization_id, is_platform=False)
     except Organization.DoesNotExist as exc:
         raise DispatchHubError("Store not found", 404) from exc
 

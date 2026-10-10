@@ -2,6 +2,7 @@
 
 import Checkbox from "../shared/Checkbox";
 import OrderRowMenu from "./OrderRowMenu";
+import FynkTechDispatchTag from "./FynkTechDispatchTag";
 import { formatPakPhone } from "../../lib/formatPhone";
 
 // Mirrors oms.services.DISPATCH_REQUESTABLE_STATUSES - the flag only means
@@ -137,7 +138,12 @@ export default function OrdersTable({
                   )}
                 </td>
                 <td className="px-3 py-1.5 text-slate-700">{order.city || "—"}</td>
-                <td className="px-3 py-1.5 text-slate-700">{order.courier_name || "—"}</td>
+                <td className="px-3 py-1.5 text-slate-700">
+                  <div className="flex items-center gap-1.5">
+                    <span className="truncate">{order.courier_name || "—"}</span>
+                    {order.dispatched_by_fynktech ? <FynkTechDispatchTag /> : null}
+                  </div>
+                </td>
                 {showTransitColumn ? (
                   <td className="whitespace-nowrap px-3 py-1.5 font-medium text-red-600">
                     {order.in_transit_days != null

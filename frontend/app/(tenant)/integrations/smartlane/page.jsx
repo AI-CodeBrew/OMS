@@ -5,6 +5,7 @@ import Link from "next/link";
 import integrationsService from "../../../../services/integrationsService";
 import Button from "../../../../components/shared/Button";
 import PasswordInput from "../../../../components/shared/PasswordInput";
+import { useIntegrationsHome } from "../../../../components/integrations/IntegrationsHome";
 
 const EMPTY_FORM = { api_key: "", store_warehouse_code: "" };
 // Same convention as the Shopify integration page's sync job polling.
@@ -22,6 +23,7 @@ function TruckIcon({ className }) {
 }
 
 export default function SmartlaneIntegrationPage() {
+  const integrationsHome = useIntegrationsHome();
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [connecting, setConnecting] = useState(false);
@@ -229,8 +231,8 @@ export default function SmartlaneIntegrationPage() {
   return (
     <div>
       <nav className="mb-4 flex items-center gap-1.5 text-sm text-slate-500">
-        <Link href="/integrations" className="hover:text-brand-600">
-          Integrations
+        <Link href={integrationsHome.href} className="hover:text-brand-600">
+          {integrationsHome.label}
         </Link>
         <span>/</span>
         <span className="font-medium text-slate-700">Smartlane</span>

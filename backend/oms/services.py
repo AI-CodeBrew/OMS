@@ -150,9 +150,10 @@ def _transition(order, to_status, *, actor_user_id=None, note="", extra_fields=N
 def _force_transition(order, to_status, *, actor_user_id=None, note="", extra_fields=None):
     """Same bookkeeping as _transition, deliberately WITHOUT checking
     ALLOWED_TRANSITIONS. Reserved for integrations.services.absorb_smartlane_booking
-    (via absorb_smartlane_booking below) - the one place allowed to jump an
+    (via absorb_smartlane_booking below) and its PostEx/BarqRaftar
+    counterpart absorb_courier_booking - the only places allowed to jump an
     order straight to Booking Pending from wherever it's sitting locally,
-    because Smartlane has already proven the booking is real (it was made
+    because the courier has already proven the booking is real (it was made
     directly on their portal, outside this app's own approve/assign/push
     pipeline). Every other call site must keep going through _transition."""
     logger.warning(
@@ -355,7 +356,9 @@ def cancel_order(order, *, reason="", actor_user_id=None, propagate_to_courier=T
             from integrations.models import SmartlaneConnection
 
             connection = SmartlaneConnection.for_order(order)
-            smartlane_client.cancel_consignment(connection.api_key, order.order_number)
+            smartlane_client.cancel_consignment(
+                connection.api_key, SmartlaneConnection.reference_for(order)
+            )
         except Exception:
             pass
         # consume_for_order only ever runs for a Smartlane courier (push_
@@ -453,7 +456,7 @@ def _smartlane_courier_names():
     return set(SmartlaneConnection.COURIER_NAMES.values())
 
 
-def push_order_to_smartlane(order, *, actor_user_id=None, force=False, account="own"):
+def push_order_to_smartlane(order, *, actor_user_id=None, force=False, account="own", via_platform=False):
     """Submits this order to Smartlane and moves it to Booking Pending -
     the Smartlane-assigned equivalent of the manual Approve/Dispatch path,
     triggered from the "Assign courier" modal when the user picks
@@ -463,6 +466,12 @@ def push_order_to_smartlane(order, *, actor_user_id=None, force=False, account="
     org's own Smartlane) or "oms" (OMS Courier). The order gets that
     account's courier, which is how it's tracked/printed/cancelled through
     the same account afterwards.
+
+    `via_platform` (the Dispatch Hub's bookings, set server-side only - see
+    oms/views.py's bulk_action) sends an "own" booking through FynkTech's
+    own Smartlane account instead of the store's, under a store-coded
+    store_order_id kept on Order.platform_reference - which is how it's
+    tracked/printed/cancelled through FynkTech's account afterwards.
 
     Smartlane's /create call is fire-and-forget: it confirms the booking
     was accepted but does not hand back a consignment number, so this
@@ -510,19 +519,37 @@ def push_order_to_smartlane(order, *, actor_user_id=None, force=False, account="
 
     if account not in SmartlaneConnection.COURIER_NAMES:
         raise SmartlaneBookingError(f"Unknown booking account {account!r}.")
-    try:
-        connection = SmartlaneConnection.objects.get(
-            organization_id=order.organization_id, kind=account, is_connected=True
-        )
-    except SmartlaneConnection.DoesNotExist:
-        logger.error("smartlane push failed for %s: no connected %s SmartlaneConnection for org %s",
-                     order.order_number, account, order.organization_id)
-        raise SmartlaneBookingError(
-            f"Connect {SmartlaneConnection.COURIER_NAMES[account]} from the Integrations page first."
-        )
+    platform_reference = ""
+    if via_platform and account == SmartlaneConnection.KIND_OWN:
+        from core.platform_service import platform_organization_id, platform_smartlane_reference
+
+        connection = SmartlaneConnection.all_objects.filter(
+            organization_id=platform_organization_id(),
+            kind=SmartlaneConnection.KIND_OWN,
+            is_connected=True,
+        ).first()
+        if connection is None:
+            raise SmartlaneBookingError(
+                "Connect FynkTech's Smartlane account on the super admin's OMS Couriers tab first."
+            )
+        platform_reference = platform_smartlane_reference(order)
+    else:
+        try:
+            connection = SmartlaneConnection.objects.get(
+                organization_id=order.organization_id, kind=account, is_connected=True
+            )
+        except SmartlaneConnection.DoesNotExist:
+            logger.error("smartlane push failed for %s: no connected %s SmartlaneConnection for org %s",
+                         order.order_number, account, order.organization_id)
+            raise SmartlaneBookingError(
+                f"Connect {SmartlaneConnection.COURIER_NAMES[account]} from the Integrations page first."
+            )
 
     try:
-        smartlane_client.create_booking(order, connection.api_key, connection.store_warehouse_code)
+        smartlane_client.create_booking(
+            order, connection.api_key, connection.store_warehouse_code,
+            store_order_id=platform_reference or None,
+        )
     except smartlane_client.SmartlaneAPIError as exc:
         logger.error("smartlane booking REJECTED for %s: %s", order.order_number, exc)
         raise SmartlaneBookingError(str(exc)) from exc
@@ -537,7 +564,9 @@ def push_order_to_smartlane(order, *, actor_user_id=None, force=False, account="
             order,
             "booking_pending",
             actor_user_id=actor_user_id,
-            extra_fields={"courier_id": courier.id},
+            # Cleared for a store-account booking, in case an earlier,
+            # since-abandoned one went through FynkTech's.
+            extra_fields={"courier_id": courier.id, "platform_reference": platform_reference},
         )
         # force=True here because the shortage decision was already made
         # above - re-checking would raise on exactly the case the user just
@@ -586,6 +615,30 @@ def absorb_smartlane_booking(order, *, actor_user_id=None, courier_name="Smartla
     return order
 
 
+def absorb_courier_booking(order, *, courier_id, tracking_number, note, actor_user_id=None):
+    """absorb_smartlane_booking's counterpart for a directly-integrated
+    courier (PostEx, BarqRaftar): lands an order at Booking Pending for a
+    booking made on that courier's own portal rather than through this app,
+    with the tracking number the courier already reported. No courier API
+    call - same forced transition + stock consumption pair, so the order
+    ends up exactly where book_with_courier would have put it. The caller
+    (integrations.postex/barqraftar services' adopt_portal_bookings) has
+    already saved the shipment row and advances it from here."""
+    from wms import services as wms_services
+
+    with transaction.atomic():
+        order = _force_transition(
+            order,
+            "booking_pending",
+            actor_user_id=actor_user_id,
+            note=note,
+            extra_fields={"courier_id": courier_id, "tracking_number": tracking_number},
+        )
+        wms_services.consume_for_order(order, force=True, actor_user_id=actor_user_id)
+    logger.info("courier absorb COMPLETE for %s - now Booking Pending (%s)", order.order_number, note)
+    return order
+
+
 def abandon_smartlane_booking(order, *, actor_user_id=None):
     """Returns an order stuck in Booking Pending to Awaiting Assigning so it
     can be pushed again, and puts back the stock the failed push consumed.
@@ -609,7 +662,9 @@ def abandon_smartlane_booking(order, *, actor_user_id=None):
         raise SmartlaneBookingError("Connect Smartlane from the Integrations page first.")
 
     try:
-        rows = smartlane_client.track_consignments(connection.api_key, [order.order_number])
+        rows = smartlane_client.track_consignments(
+            connection.api_key, [SmartlaneConnection.reference_for(order)]
+        )
     except smartlane_client.SmartlaneAPIError as exc:
         # Refuse rather than guess - if we can't confirm the booking is
         # absent we must not put its stock back.
@@ -636,7 +691,7 @@ def abandon_smartlane_booking(order, *, actor_user_id=None):
         "awaiting_assigning",
         actor_user_id=actor_user_id,
         note="Smartlane booking was never created - returned for re-push",
-        extra_fields={"courier_id": None, "tracking_number": ""},
+        extra_fields={"courier_id": None, "tracking_number": "", "platform_reference": ""},
     )
 
 

@@ -36,16 +36,27 @@ def _poll_loop():
     from .services import poll_barqraftar_statuses
 
     interval = settings.BARQRAFTAR_AUTO_POLL_INTERVAL_SECONDS
+    # Orgs whose BarqRaftar portal bookings have been read back the full
+    # BARQRAFTAR_ADOPT_BACKFILL_DAYS since this process started (see
+    # services.adopt_portal_bookings) - every later cycle only reads the
+    # short BARQRAFTAR_ADOPT_LOOKBACK_DAYS window. Retried until it succeeds.
+    backfilled = set()
     while True:
         try:
             close_old_connections()
             connections_qs = list(BarqRaftarConnection.all_objects.filter(is_connected=True))
             for connection in connections_qs:
+                org_id = connection.organization_id
                 try:
-                    result = poll_barqraftar_statuses(connection.organization_id)
+                    result = poll_barqraftar_statuses(
+                        org_id,
+                        adopt_days=None if org_id in backfilled else settings.BARQRAFTAR_ADOPT_BACKFILL_DAYS,
+                    )
+                    if result.get("adopted") is not None:
+                        backfilled.add(org_id)
                     logger.info(
-                        "barqraftar auto-poll org=%s checked=%s updated=%s",
-                        connection.organization_id, result.get("checked"), result.get("updated"),
+                        "barqraftar auto-poll org=%s checked=%s updated=%s adopted=%s",
+                        org_id, result.get("checked"), result.get("updated"), result.get("adopted"),
                     )
                 except BarqRaftarAPIError:
                     logger.exception(

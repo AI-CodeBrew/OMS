@@ -69,6 +69,56 @@ def _with_tenant_context(organization_id, fn):
         return fn()
 
 
+def _oms_courier_refusals(organization_id, order_ids, courier):
+    """The Dispatch Hub books a store's orders through FynkTech's own
+    account (OMS Couriers) only with couriers the store requested on its OMS
+    Courier page and the super admin approved (integrations.
+    oms_courier_service). Per-order refusals when it isn't, else None."""
+    from integrations.models import OmsCourierEnrollment
+
+    if OmsCourierEnrollment.is_enabled_for(organization_id, courier):
+        return None
+    label = dict(OmsCourierEnrollment.COURIER_CHOICES)[courier]
+    numbers = dict(
+        Order.all_objects.filter(organization_id=organization_id, id__in=order_ids)
+        .values_list("id", "order_number")
+    )
+    return [
+        {
+            "order_id": str(oid),
+            "order_number": numbers.get(oid) or numbers.get(str(oid)) or "",
+            "success": False,
+            "error": (
+                f"{label} isn't approved for this store - it has to request it on its OMS "
+                "Courier page, and you approve it under OMS Couriers > Requests."
+            ),
+        }
+        for oid in order_ids
+    ]
+
+
+def _hub_push_to_smartlane(order, params, actor):
+    """BULK_ACTIONS["push_to_smartlane"] while operating the Dispatch Hub: a
+    Smartlane booking goes through FynkTech's own account (OMS Couriers),
+    and only for a store whose Smartlane request was approved.
+    Booking through the store's OMS Courier (Smartlane Business, account
+    "oms") is unchanged."""
+    from integrations.models import OmsCourierEnrollment, SmartlaneConnection
+
+    account = params.get("account") or "own"
+    if account == SmartlaneConnection.KIND_OWN and not OmsCourierEnrollment.is_enabled_for(
+        order.organization_id, OmsCourierEnrollment.COURIER_SMARTLANE
+    ):
+        raise services.SmartlaneBookingError(
+            "Smartlane isn't approved for this store - it has to request it on its OMS Courier "
+            "page, and you approve it under OMS Couriers > Requests."
+        )
+    return services.push_order_to_smartlane(
+        order, actor_user_id=actor, force=bool(params.get("force")), account=account,
+        via_platform=True,
+    )
+
+
 SEARCHABLE_FIELDS = {
     "order_number": "order_number__icontains",
     "customer_name": "customer_name__icontains",
@@ -955,13 +1005,18 @@ class OrderViewSet(viewsets.ModelViewSet):
         # "push_to_postex" (integrations.postex.services.book_orders) rides
         # the same per-store split - same result shape, same one-org-at-a-
         # time constraint.
+        # In the Dispatch Hub both book through FynkTech's own account
+        # (via_platform - decided here, never by the client), and only for
+        # stores that enabled that courier on their OMS Courier page.
         if action_name in ("push_to_barqraftar", "barqraftar_ready_for_pickup", "push_to_postex"):
             from integrations.barqraftar import services as barqraftar_services
+            from integrations.models import OmsCourierEnrollment
             from integrations.postex import services as postex_services
 
+            hub = is_hub_request(request)
             org_by_order = (
                 self._order_orgs_in_hub(request, order_ids)
-                if is_hub_request(request)
+                if hub
                 else {str(oid): request.organization_id for oid in order_ids}
             )
             by_org = {}
@@ -973,19 +1028,29 @@ class OrderViewSet(viewsets.ModelViewSet):
             results = []
             for org_id, ids in by_org.items():
                 if action_name == "push_to_postex":
+                    refused = hub and _oms_courier_refusals(org_id, ids, OmsCourierEnrollment.COURIER_POSTEX)
+                    if refused:
+                        results += refused
+                        continue
                     results += _with_tenant_context(
                         org_id,
                         lambda ids=ids, org_id=org_id: postex_services.book_orders(
                             org_id, ids, actor_user_id=request.user_id,
-                            force=bool(params.get("force")),
+                            force=bool(params.get("force")), via_platform=hub,
                         ),
                     )
                 elif action_name == "push_to_barqraftar":
+                    refused = hub and _oms_courier_refusals(
+                        org_id, ids, OmsCourierEnrollment.COURIER_BARQRAFTAR
+                    )
+                    if refused:
+                        results += refused
+                        continue
                     results += _with_tenant_context(
                         org_id,
                         lambda ids=ids, org_id=org_id: barqraftar_services.book_orders(
                             org_id, ids, actor_user_id=request.user_id,
-                            force=bool(params.get("force")),
+                            force=bool(params.get("force")), via_platform=hub,
                         ),
                     )
                 else:
@@ -1007,6 +1072,9 @@ class OrderViewSet(viewsets.ModelViewSet):
             return Response(
                 {"detail": f"Unknown action {action_name!r}"}, status=status.HTTP_400_BAD_REQUEST
             )
+        if action_name == "push_to_smartlane" and is_hub_request(request):
+            # Through FynkTech's own account - decided here, never by params.
+            handler = _hub_push_to_smartlane
 
         actor = request.user_id
         results = []
@@ -1223,13 +1291,17 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     @staticmethod
     def _group_orders_by_org(orders):
-        """Preserves first-seen order so a single-store selection (the
-        overwhelming common case, including every non-Hub request) takes
-        exactly the same path it always did - one group, no merge."""
+        """[(organization_id, orders)] - one group per store, and a store's
+        Dispatch Hub bookings through FynkTech's own account (Order.
+        platform_reference) in a group of their own, since that account
+        prints them. Preserves first-seen order so a single-store selection
+        (the overwhelming common case, including every non-Hub request)
+        takes exactly the same path it always did - one group, no merge."""
         groups = {}
         for order in orders:
-            groups.setdefault(str(order.organization_id), []).append(order)
-        return groups
+            key = (str(order.organization_id), bool(order.platform_reference))
+            groups.setdefault(key, []).append(order)
+        return [(key[0], group) for key, group in groups.items()]
 
     @staticmethod
     def _merge_pdfs(pdf_byte_list):
@@ -1313,6 +1385,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         single-store selection (every non-Hub request) takes the same one
         group, no-merge path it always did."""
         from integrations import smartlane_client
+        from integrations.models import SmartlaneConnection
 
         order_ids = request.data.get("order_ids") or []
         if not order_ids:
@@ -1325,14 +1398,14 @@ class OrderViewSet(viewsets.ModelViewSet):
             return Response({"detail": "No matching orders"}, status=status.HTTP_404_NOT_FOUND)
 
         pdf_parts = []
-        for organization_id, org_orders in self._group_orders_by_org(orders).items():
+        for organization_id, org_orders in self._group_orders_by_org(orders):
             connection, error = self._smartlane_connection_or_error(org_orders)
             if error:
                 return error
             org_order_numbers = [o.order_number for o in org_orders]
             try:
                 pdf_bytes = smartlane_client.render_airway_bill_pdf(
-                    connection.api_key, org_order_numbers
+                    connection.api_key, [SmartlaneConnection.reference_for(o) for o in org_orders]
                 )
             except smartlane_client.SmartlaneAPIError as exc:
                 return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
@@ -1357,6 +1430,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         callers should let the user pick a specific courier (leopards is
         the only one confirmed live on this account so far)."""
         from integrations import smartlane_client
+        from integrations.models import SmartlaneConnection
 
         courier = (request.data.get("courier") or "").strip().lower()
         order_ids = request.data.get("order_ids") or []
@@ -1380,8 +1454,6 @@ class OrderViewSet(viewsets.ModelViewSet):
                                "open the specific store to print by date range."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            from integrations.models import SmartlaneConnection
-
             connected = SmartlaneConnection.objects.filter(
                 organization_id=request.organization_id, is_connected=True
             )
@@ -1422,14 +1494,15 @@ class OrderViewSet(viewsets.ModelViewSet):
             return Response({"detail": "No matching orders"}, status=status.HTTP_404_NOT_FOUND)
 
         pdf_parts = []
-        for organization_id, org_orders in self._group_orders_by_org(orders).items():
+        for organization_id, org_orders in self._group_orders_by_org(orders):
             connection, error = self._smartlane_connection_or_error(org_orders)
             if error:
                 return error
             org_order_numbers = [o.order_number for o in org_orders]
             try:
                 pdf_bytes = smartlane_client.render_load_sheet_pdf(
-                    connection.api_key, courier=courier, store_order_ids=org_order_numbers,
+                    connection.api_key, courier=courier,
+                    store_order_ids=[SmartlaneConnection.reference_for(o) for o in org_orders],
                     start_date=start_date, end_date=end_date,
                 )
             except smartlane_client.SmartlaneAPIError as exc:

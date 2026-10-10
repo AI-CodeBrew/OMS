@@ -416,7 +416,14 @@ class SmartlaneConnection(TenantScopedModel):
         """The connected account to track, print or cancel `order` through:
         the one it was booked with, going by its courier. An order booked
         through neither (no courier yet, or another courier) falls back to
-        whichever account the org has connected, its own first."""
+        whichever account the org has connected, its own first. A Dispatch
+        Hub booking (Order.platform_reference) is FynkTech's own account's."""
+        if order.platform_reference:
+            from core.platform_service import platform_organization_id
+
+            return cls.all_objects.filter(
+                organization_id=platform_organization_id(), kind=cls.KIND_OWN, is_connected=True
+            ).first()
         connected = cls.all_objects.filter(
             organization_id=order.organization_id, is_connected=True
         )
@@ -425,6 +432,74 @@ class SmartlaneConnection(TenantScopedModel):
             if name == courier_name:
                 return connected.filter(kind=kind).first()
         return connected.filter(kind=cls.KIND_OWN).first() or connected.first()
+
+
+    @staticmethod
+    def reference_for(order):
+        """What the booking account knows `order` by - its store-coded
+        reference when booked through FynkTech's account from the Dispatch
+        Hub, else its own order number."""
+        return order.platform_reference or order.order_number
+
+
+class OmsCourierEnrollment(TenantScopedModel):
+    """A store's request to ship with one courier through OMS Courier -
+    FynkTech's own account for it (the super admin's OMS Couriers tab), not
+    the store's. Turning a courier on (or changing its details) asks; the
+    super admin approves or rejects it with a message on the tab's Requests
+    page. The Dispatch Hub books a store's orders through FynkTech's account
+    only with couriers that are on and approved (is_enabled_for). Shipper
+    details are generic for now; per-courier fields can join later."""
+
+    COURIER_SMARTLANE = "smartlane"
+    COURIER_POSTEX = "postex"
+    COURIER_BARQRAFTAR = "barq_raftar"
+    COURIER_CHOICES = [
+        (COURIER_SMARTLANE, "Smartlane"),
+        (COURIER_POSTEX, "PostEx"),
+        (COURIER_BARQRAFTAR, "BarqRaftar"),
+    ]
+    STATUS_PENDING = "pending"
+    STATUS_APPROVED = "approved"
+    STATUS_REJECTED = "rejected"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending"),
+        (STATUS_APPROVED, "Approved"),
+        (STATUS_REJECTED, "Rejected"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    courier = models.CharField(max_length=20, choices=COURIER_CHOICES)
+    # The store's own switch. Turning it off keeps the details and the
+    # approval, so turning it back on unchanged needs no new review.
+    is_enabled = models.BooleanField(default=True)
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    store_name = models.CharField(max_length=255)
+    phone = models.CharField(max_length=50)
+    pickup_address = models.CharField(max_length=500)
+    requested_at = models.DateTimeField(null=True, blank=True)
+    # The super admin's message to the store, shown on its OMS Courier page.
+    review_note = models.CharField(max_length=500, blank=True, default="")
+    reviewed_by_email = models.CharField(max_length=255, blank=True, default="")
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = '"integrations"."oms_courier_enrollments"'
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "courier"], name="integrations_one_oms_courier_enrollment"
+            )
+        ]
+
+    def __str__(self):
+        return f"OMS Courier {self.courier} ({self.organization_id})"
+
+    @classmethod
+    def is_enabled_for(cls, organization_id, courier):
+        return cls.all_objects.filter(
+            organization_id=organization_id, courier=courier, is_enabled=True,
+            status=cls.STATUS_APPROVED,
+        ).exists()
 
 
 class SmartlaneSyncJob(TenantScopedModel):

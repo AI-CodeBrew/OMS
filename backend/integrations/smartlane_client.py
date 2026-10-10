@@ -165,7 +165,7 @@ def _dummy_email(order):
     return f"{slug}@gmail.com"
 
 
-def _build_consignment(order):
+def _build_consignment(order, store_order_id=None):
     items = list(order.items.all())
     total_weight_g = sum((item.weight_grams or 0) * item.quantity for item in items)
     weight_kg = round(total_weight_g / 1000, 2) if total_weight_g else 0.5
@@ -174,8 +174,10 @@ def _build_consignment(order):
         # Portal bookings use 10758; Shopify OMS numbers are #10758. Same
         # digits, no hash, so /track and the Smartlane UI line up. A bare
         # number, not a quoted string, in this JSON body - see
-        # _order_id_for_body.
-        "store_order_id": _order_id_for_body(order.order_number),
+        # _order_id_for_body. A Dispatch Hub booking through FynkTech's own
+        # account passes its store-coded id instead (core.platform_service.
+        # platform_smartlane_reference).
+        "store_order_id": _order_id_for_body(store_order_id or order.order_number),
         "consignee_name": order.customer_name,
         "consignee_email": order.customer_email or _dummy_email(order),
         "consignee_phone": order.customer_phone,
@@ -193,7 +195,7 @@ def _build_consignment(order):
     }
 
 
-def create_booking(order, api_key, warehouse_code):
+def create_booking(order, api_key, warehouse_code, store_order_id=None):
     """Submits this order to Smartlane's booking api (POST /create).
 
     Smartlane validates and queues the consignment but does NOT return a
@@ -203,6 +205,9 @@ def create_booking(order, api_key, warehouse_code):
     value as a tracking number; it's just confirmation the booking was
     accepted, and the order should sit in an interim "booking submitted"
     state until a real consignment number shows up.
+
+    store_order_id overrides the order number Smartlane knows the
+    consignment by - see _build_consignment.
     """
     _require_key(api_key)
     if not warehouse_code:
@@ -213,7 +218,7 @@ def create_booking(order, api_key, warehouse_code):
 
     body = {
         "store_warehouse_code": warehouse_code,
-        "consignments": [_build_consignment(order)],
+        "consignments": [_build_consignment(order, store_order_id)],
     }
     logger.info("smartlane booking order=%s warehouse=%s city=%r amount=%s",
                 order.order_number, warehouse_code, order.city, order.amount_receivable)

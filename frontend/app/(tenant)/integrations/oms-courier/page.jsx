@@ -1,368 +1,204 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import Button from "../../../../components/shared/Button";
+import Modal from "../../../../components/shared/Modal";
 import integrationsService from "../../../../services/integrationsService";
+import {
+  Badge,
+  BarqRaftarWordmark,
+  PostExWordmark,
+  SmartlaneLogo,
+} from "../../../../components/integrations/IntegrationLogos";
+import SmartlaneBusinessForm from "./_components/SmartlaneBusinessForm";
 
-// Mirrors Smartlane's real KYC request shape (from their Postman
-// collection, not the doc's prose field list - the doc omitted city,
-// state and CNIC entirely, and used different field names/order).
-// Nothing on this page names Smartlane - to the org this is OMS Courier.
-// Grouped into sections so the form reads top to bottom; `kind` drives the
-// input, its clean-up as the user types, and its check before submit (the
-// backend repeats every check - see business_services._clean_kyc_fields).
-const KYC_SECTIONS = [
+// FynkTech dispatches the store's orders through its own account for each
+// courier turned on here and approved by FynkTech on its Requests page
+// (backend integrations/oms_courier_views.py, oms_courier_service.py).
+// Smartlane is asked for with the full business details its onboarding
+// needs (the same form as before); the others with generic shipper details.
+const COURIERS = [
   {
-    title: "Business",
-    fields: [
-      { key: "name", label: "Business name", required: true, placeholder: "e.g. Halora" },
-      {
-        key: "industry",
-        label: "Industry",
-        required: true,
-        kind: "industry",
-        hint: "Only these industries are accepted by the courier.",
-      },
-      {
-        key: "platform",
-        label: "Platform",
-        required: true,
-        kind: "select",
-        options: [
-          { value: "api", label: "Api" },
-          { value: "shopify", label: "Shopify" },
-          { value: "wordpress", label: "Wordpress" },
-        ],
-      },
-      {
-        key: "business_years",
-        label: "Years in business",
-        kind: "number",
-        integer: true,
-        placeholder: "e.g. 2",
-      },
-      {
-        key: "ntn",
-        label: "NTN",
-        kind: "ntn",
-        placeholder: "1234567-8",
-        hint: "Optional. 8 digits - the dash is added for you.",
-      },
-      {
-        key: "logo_url",
-        label: "Logo URL",
-        kind: "url",
-        placeholder: "https://…",
-        hint: "Optional. A full link to your logo image.",
-      },
-    ],
+    key: "smartlane",
+    name: "Smartlane",
+    tagline: "Leopards, BlueEx and more through Smartlane.",
+    logo: SmartlaneLogo,
   },
   {
-    title: "Address",
-    fields: [
-      { key: "address", label: "Business address", required: true, wide: true, placeholder: "Plot, street, area" },
-      { key: "city", label: "City", required: true, kind: "city", hint: "Start typing and pick from the list." },
-      { key: "state", label: "Province", required: true, kind: "state" },
-    ],
+    key: "postex",
+    name: "PostEx",
+    tagline: "Nationwide COD deliveries with PostEx.",
+    logo: PostExWordmark,
+    wordmark: true,
   },
   {
-    title: "Contact person",
-    fields: [
-      { key: "poc_name", label: "Full name", required: true },
-      { key: "poc_email", label: "Email", required: true, kind: "email", placeholder: "name@example.com" },
-      {
-        key: "poc_phone",
-        label: "Mobile number",
-        required: true,
-        kind: "phone",
-        placeholder: "03001234567",
-        hint: "11 digits starting with 03. +92 numbers are converted for you.",
-      },
-      {
-        key: "poc_cnic",
-        label: "CNIC",
-        required: true,
-        kind: "cnic",
-        placeholder: "3520212345671",
-        hint: "13 digits without dashes - dashes are removed for you.",
-      },
-    ],
-  },
-  {
-    title: "Sales (approximate, in PKR)",
-    fields: [
-      { key: "avg_order_value", label: "Average order value", kind: "number", placeholder: "e.g. 2500" },
-      { key: "avg_monthly_sale", label: "Average monthly sales", kind: "number", placeholder: "e.g. 500000" },
-      { key: "annual_retail_sale", label: "Annual retail sales", kind: "number", placeholder: "e.g. 6000000" },
-    ],
+    key: "barq_raftar",
+    name: "BarqRaftar",
+    tagline: "Fast same-city and domestic deliveries.",
+    logo: BarqRaftarWordmark,
+    wordmark: true,
   },
 ];
 
-const KYC_FIELDS = KYC_SECTIONS.flatMap((s) => s.fields);
-
-// Used if the options endpoint can't be reached - same list the backend
-// validates against.
-const FALLBACK_STATES = [
-  "Punjab",
-  "Sindh",
-  "Khyber Pakhtunkhwa",
-  "Balochistan",
-  "Islamabad Capital Territory",
-  "Gilgit-Baltistan",
-  "Azad Jammu & Kashmir",
-];
-
-const digitsOnly = (value) => String(value ?? "").replace(/\D/g, "");
-
-// "+92 300 1234567" / "923001234567" / "3001234567" -> "03001234567", or ""
-// if it can't be made into a Pakistani mobile number.
-function normalizePhone(value) {
-  let d = digitsOnly(value);
-  if (d.startsWith("0092")) d = d.slice(4);
-  else if (d.startsWith("92") && d.length === 12) d = d.slice(2);
-  if (d.length === 10 && d.startsWith("3")) d = `0${d}`;
-  return /^03\d{9}$/.test(d) ? d : "";
-}
-
-// 8 digits -> "1234567-8" (the courier's own sample format); 7 or 13 kept.
-function normalizeNtn(value) {
-  const d = digitsOnly(value);
-  if (d.length === 8) return `${d.slice(0, 7)}-${d.slice(7)}`;
-  if (d.length === 7 || d.length === 13) return d;
-  return "";
-}
-
-function sameText(a, b) {
-  return String(a ?? "").trim().toLowerCase() === String(b ?? "").trim().toLowerCase();
-}
-
-// Cleans a value as it's typed, so the field never holds something the
-// courier won't take (dashes in a CNIC, letters in a phone number, ...).
-function cleanWhileTyping(field, value) {
-  if (field.kind === "cnic") return digitsOnly(value).slice(0, 13);
-  if (field.kind === "phone") return String(value).replace(/[^\d+\s-]/g, "").slice(0, 16);
-  if (field.kind === "ntn") return String(value).replace(/[^\d-]/g, "").slice(0, 15);
-  return value;
-}
-
-// Tidies a value once the user leaves the field.
-function cleanOnBlur(field, value) {
-  if (field.kind === "phone") return normalizePhone(value) || value;
-  if (field.kind === "ntn") return normalizeNtn(value) || value;
-  if (typeof value === "string" && field.kind !== "industry") return value.trim();
-  return value;
-}
-
-function validateField(field, value, options) {
-  const text = String(value ?? "").trim();
-  if (!text) return field.required ? "Required." : "";
-  switch (field.kind) {
-    case "industry":
-      return options.industries.length && !options.industries.some((i) => i === value)
-        ? "Pick an industry from the list."
-        : "";
-    case "state":
-      return options.states.includes(value) ? "" : "Pick a province from the list.";
-    case "cnic":
-      return /^\d{13}$/.test(text) ? "" : `CNIC must be 13 digits (you have ${digitsOnly(text).length}).`;
-    case "phone":
-      return normalizePhone(text) ? "" : "Enter a mobile number like 03001234567.";
-    case "ntn":
-      return normalizeNtn(text) ? "" : "NTN must be like 1234567-8.";
-    case "email":
-      return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text) ? "" : "Enter a valid email address.";
-    case "url":
-      return /^https?:\/\/\S+\.\S+/.test(text) ? "" : "Must be a full link starting with https://.";
-    case "number": {
-      const n = Number(text);
-      if (!Number.isFinite(n) || n < 0) return "Enter a number (0 or more).";
-      if (field.integer && !Number.isInteger(n)) return "Enter a whole number.";
-      return "";
-    }
-    default:
-      return "";
-  }
-}
-
-// What actually gets sent - every value in the exact shape the courier wants.
-function cleanForSubmit(form) {
-  const out = { ...form };
-  for (const field of KYC_FIELDS) {
-    const value = out[field.key];
-    if (value === undefined || value === null) continue;
-    if (field.kind === "cnic") out[field.key] = digitsOnly(value);
-    else if (field.kind === "phone") out[field.key] = normalizePhone(value) || value;
-    else if (field.kind === "ntn") out[field.key] = value ? normalizeNtn(value) || value : "";
-    else if (typeof value === "string" && field.kind !== "industry") out[field.key] = value.trim();
-  }
-  return out;
-}
-
-const STATUS_TONE = {
-  pending_approval: "bg-amber-50 text-amber-700",
-  in_review: "bg-blue-50 text-blue-700",
-  active: "bg-emerald-50 text-emerald-700",
-  rejected: "bg-red-50 text-red-700",
-  in_active: "bg-slate-100 text-slate-600",
-  draft: "bg-slate-100 text-slate-600",
-};
-
-// Our own labels rather than the backend's status_display, which names
-// Smartlane ("In review with Smartlane").
-const STATUS_LABEL = {
-  pending_approval: "Pending approval",
-  in_review: "In review",
-  active: "Active",
-  rejected: "Rejected",
-  in_active: "Inactive",
-  draft: "Draft",
-};
-
-const STATUS_BLURB = {
-  pending_approval: "Submitted. Waiting for the platform team to review it.",
-  in_review: "Your details are being reviewed. The platform team will activate your account once it clears.",
-  active: "Live. On the Orders page, pick OMS Courier when assigning a courier to book through it.",
-  rejected: "Not approved. See the reason below, fix it and submit again.",
-  in_active: "This account is currently inactive. Contact the platform team.",
-};
-
-// Same convention as the Shopify integration page's sync job polling.
-const ACTIVE_JOB_STATUSES = new Set(["pending", "running"]);
+const SMARTLANE_FORM_ID = "oms-courier-smartlane-form";
+const DETAILS_FORM_ID = "oms-courier-details-form";
+const EMPTY_FORM = { store_name: "", phone: "", pickup_address: "" };
 
 const inputClass =
-  "w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500";
+  "mt-1 w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100";
 
-const INPUT_TYPE = { email: "email", url: "url", number: "number" };
+// Smartlane onboarding the store can still edit - nothing sent yet, or sent
+// back with a reason. Anything else is with a reviewer.
+function smartlaneEditable(link) {
+  return !link?.status || link.status === "draft" || link.status === "rejected";
+}
 
-function KycField({ field, value, options, editable, error, onChange, onBlur }) {
-  const cls = `${inputClass} disabled:bg-slate-50 disabled:text-slate-500 ${
-    error ? "border-red-400 focus:border-red-500" : ""
-  }`;
-  const current = value ?? "";
-  let control;
-
-  if (!editable) {
-    // Read-only once submitted - plain text, even for the dropdown fields.
-    const shown =
-      field.kind === "select"
-        ? field.options.find((o) => o.value === current)?.label || current
-        : String(current).trim();
-    control = <input disabled value={shown} className={cls} />;
-  } else if (field.kind === "select") {
-    control = (
-      <select value={current} onChange={(e) => onChange(e.target.value)} className={cls}>
-        {field.options.map((opt) => (
-          <option key={opt.value} value={opt.value}>
-            {opt.label}
-          </option>
-        ))}
-      </select>
-    );
-  } else if ((field.kind === "industry" && options.industries.length) || field.kind === "state") {
-    const list = field.kind === "industry" ? options.industries : options.states;
-    // A saved value that isn't in the list (typed before this was a
-    // dropdown) stays visible, flagged, instead of silently changing.
-    const unknown = current && !list.includes(current);
-    control = (
-      <select value={current} onChange={(e) => onChange(e.target.value)} className={cls}>
-        <option value="" disabled>
-          {field.kind === "industry" ? "Select an industry…" : "Select a province…"}
-        </option>
-        {unknown ? <option value={current}>{`${String(current).trim()} (not accepted - pick another)`}</option> : null}
-        {list.map((item) => (
-          <option key={item} value={item}>
-            {item.trim()}
-          </option>
-        ))}
-      </select>
-    );
-  } else {
-    control = (
-      <input
-        type={INPUT_TYPE[field.kind] || "text"}
-        inputMode={field.kind === "cnic" ? "numeric" : field.kind === "phone" ? "tel" : undefined}
-        list={field.kind === "city" ? "oms-courier-city-options" : undefined}
-        min={field.kind === "number" ? 0 : undefined}
-        step={field.kind === "number" ? (field.integer ? 1 : "any") : undefined}
-        placeholder={field.placeholder}
-        value={current}
-        onChange={(e) => onChange(e.target.value)}
-        onBlur={onBlur}
-        className={cls}
-        autoComplete="off"
-      />
-    );
-  }
-
-  const cnicCount =
-    editable && field.kind === "cnic" && current ? ` ${String(current).length}/13 digits.` : "";
-
+function Toggle({ checked, disabled, onChange, label }) {
   return (
-    <label className={`block text-sm ${field.wide ? "sm:col-span-2" : ""}`}>
-      <span className="mb-1 block text-xs font-medium text-slate-700">
-        {field.label}
-        {field.required ? <span className="text-red-500"> *</span> : null}
-      </span>
-      {control}
-      {field.kind === "city" && editable ? (
-        <datalist id="oms-courier-city-options">
-          {options.cities.map((c) => (
-            <option key={c} value={c} />
-          ))}
-        </datalist>
-      ) : null}
-      {error ? (
-        <span className="mt-1 block text-xs text-red-600">{error}</span>
-      ) : editable && (field.hint || cnicCount) ? (
-        <span className="mt-1 block text-xs text-slate-400">
-          {field.hint}
-          {cnicCount}
-        </span>
-      ) : null}
-    </label>
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-200 disabled:cursor-not-allowed disabled:opacity-50 ${
+        checked ? "bg-brand-600" : "bg-slate-300"
+      }`}
+    >
+      <span
+        className={`inline-block h-5 w-5 rounded-full bg-white shadow transition ${
+          checked ? "translate-x-5" : "translate-x-0.5"
+        }`}
+      />
+    </button>
   );
 }
 
-function StatRow({ label, children }) {
+// Where the store's request stands, and FynkTech's answer.
+function RequestStatus({ enrollment, onResubmit }) {
+  if (!enrollment) return null;
+  const { status, is_enabled: enabled, review_note: note } = enrollment;
+  if (status === "rejected") {
+    return (
+      <div className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
+        <p>
+          <span className="font-medium">Request rejected.</span>
+          {note ? ` ${note}` : ""}
+        </p>
+        <button type="button" onClick={onResubmit} className="mt-1 text-xs font-medium underline">
+          Edit and resubmit
+        </button>
+      </div>
+    );
+  }
+  if (!enabled) return null;
+  if (status === "pending") {
+    return (
+      <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
+        Request pending - FynkTech will review it, and their answer shows up here.
+      </p>
+    );
+  }
+  return note ? (
+    <p className="mt-3 rounded-lg bg-green-50 px-3 py-2 text-sm text-green-800">
+      <span className="font-medium">Message from FynkTech:</span> {note}
+    </p>
+  ) : null;
+}
+
+const STATUS_PILL = {
+  pending: { text: "Request pending", className: "bg-amber-50 text-amber-700" },
+  approved: { text: "Approved", className: "bg-green-100 text-green-700" },
+  rejected: { text: "Rejected", className: "bg-red-50 text-red-700" },
+};
+
+// One courier per row - logo, details and FynkTech's answer, then the switch.
+function CourierCard({ courier, enrollment, onboarding, busy, onToggle, onEdit, onResubmit }) {
+  const enabled = Boolean(enrollment?.is_enabled);
+  const isSmartlane = courier.key === "smartlane";
+  const unavailable = isSmartlane && onboarding && !onboarding.available;
+  const pill =
+    enrollment && (enabled || enrollment.status === "rejected") ? STATUS_PILL[enrollment.status] : null;
+  const showDetails = enrollment && (enabled || enrollment.status === "rejected");
+
   return (
-    <div className="flex justify-between gap-4">
-      <span className="text-slate-500">{label}</span>
-      <span className="text-right font-medium text-slate-900">{children}</span>
+    <div className="flex flex-col gap-4 rounded-xl border border-surface-border bg-white p-5 sm:flex-row sm:items-start">
+      <Badge Logo={courier.logo} wordmark={courier.wordmark} />
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <h3 className="text-base font-semibold text-slate-900">{courier.name}</h3>
+          {pill ? (
+            <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${pill.className}`}>
+              {pill.text}
+            </span>
+          ) : null}
+        </div>
+        <p className="mt-1 text-sm text-slate-500">{courier.tagline}</p>
+        {unavailable ? (
+          <p className="mt-2 text-xs text-slate-400">Not available yet - check back later.</p>
+        ) : null}
+        {showDetails ? (
+          <p className="mt-2 text-xs text-slate-600">
+            {[enrollment.store_name, enrollment.phone, enrollment.pickup_address]
+              .filter(Boolean)
+              .join(" · ")}
+          </p>
+        ) : null}
+        <RequestStatus enrollment={enrollment} onResubmit={() => onResubmit(courier)} />
+        <div className="mt-2 flex flex-wrap gap-4 text-xs font-medium">
+          {enabled && !isSmartlane ? (
+            <button type="button" onClick={() => onEdit(courier)} className="text-brand-700 hover:underline">
+              Edit details
+            </button>
+          ) : null}
+          {isSmartlane && onboarding?.link?.status && onboarding.link.status !== "draft" ? (
+            <Link
+              href="/integrations/oms-courier/smartlane-business"
+              className="text-brand-700 hover:underline"
+            >
+              Business details →
+            </Link>
+          ) : null}
+        </div>
+      </div>
+      <Toggle
+        checked={enabled}
+        disabled={busy || unavailable}
+        onChange={(next) => onToggle(courier, next)}
+        label={`Enable ${courier.name}`}
+      />
     </div>
   );
 }
 
 export default function OmsCourierPage() {
-  const [data, setData] = useState(null);
-  const [form, setForm] = useState({ platform: "api" });
+  const [enrollments, setEnrollments] = useState({});
+  const [defaults, setDefaults] = useState({});
+  const [onboarding, setOnboarding] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [syncing, setSyncing] = useState(false);
-  const [syncJob, setSyncJob] = useState(null);
-  const [options, setOptions] = useState({ industries: [], cities: [], states: FALLBACK_STATES });
-  // Field errors only show after the first submit attempt, then update live.
-  const [showErrors, setShowErrors] = useState(false);
-  const pollRef = useRef(null);
+  // The open dialog: the courier being enabled/edited, or null.
+  const [dialog, setDialog] = useState(null);
+  const [dialogError, setDialogError] = useState("");
+  const [form, setForm] = useState(EMPTY_FORM);
+  const [saving, setSaving] = useState(false);
+  const [busyKey, setBusyKey] = useState("");
 
   const load = useCallback(async () => {
-    setLoading(true);
     setError("");
     try {
-      const result = await integrationsService.getOmsCourierOnboarding();
-      setData(result);
-      if (result.link) {
-        const kyc = Object.fromEntries(
-          Object.entries(result.link.kyc || {}).map(([k, v]) => [k, v ?? ""]),
-        );
-        setForm({ ...kyc, platform: kyc.platform || "api" });
-      } else {
-        setForm({ platform: "api" });
-      }
+      const [couriers, onboardingData] = await Promise.all([
+        integrationsService.getOmsCourierCouriers(),
+        integrationsService.getOmsCourierOnboarding().catch(() => null),
+      ]);
+      setEnrollments(Object.fromEntries((couriers.couriers || []).map((c) => [c.courier, c])));
+      setDefaults(couriers.defaults || {});
+      setOnboarding(onboardingData);
     } catch (err) {
-      setError(err.message || "Failed to load");
+      setError(err.message || "Failed to load OMS Courier");
     } finally {
       setLoading(false);
     }
@@ -372,159 +208,145 @@ export default function OmsCourierPage() {
     load();
   }, [load]);
 
-  const link = data?.link;
-  const status = link?.status;
-  const live = Boolean(data?.live);
-  const courier = data?.courier;
-  // The courier side can mark the store active before the platform team
-  // has approved it here with credentials - to the org that's still in review.
-  const displayStatus = live ? "active" : status === "active" ? "in_review" : status;
-  // Only these two states are the org's to act on; anything else is with a
-  // reviewer and the form is read-only.
-  const editable = !status || status === "draft" || status === "rejected";
-  const available = Boolean(data?.available);
-
-  // The dropdown lists are only needed while the form can be edited.
-  useEffect(() => {
-    if (!editable || !available) return undefined;
-    let cancelled = false;
-    integrationsService
-      .getOmsCourierKycOptions()
-      .then((opts) => {
-        if (cancelled) return;
-        const next = {
-          industries: opts.industries || [],
-          cities: opts.cities || [],
-          states: opts.states?.length ? opts.states : FALLBACK_STATES,
-        };
-        setOptions(next);
-        // A value saved before these were dropdowns ("fashion", "punjab")
-        // snaps to the listed spelling, so the dropdown shows it.
-        setForm((f) => {
-          const industry = next.industries.find((i) => sameText(i, f.industry));
-          const state = next.states.find((s) => sameText(s, f.state));
-          return { ...f, ...(industry ? { industry } : {}), ...(state ? { state } : {}) };
-        });
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [editable, available]);
-
-  const fieldErrors = Object.fromEntries(
-    KYC_FIELDS.map((f) => [f.key, validateField(f, form[f.key], options)])
-  );
-
-  function stopPolling() {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
+  function openDialog(courier) {
+    if (courier.key !== "smartlane") {
+      const existing = enrollments[courier.key];
+      // A first form starts from another courier's details (and the store's
+      // own name), so a second courier is usually one click.
+      const filled = Object.values(enrollments).find((e) => e.store_name);
+      setForm({
+        store_name: existing?.store_name || filled?.store_name || defaults.store_name || "",
+        phone: existing?.phone || filled?.phone || "",
+        pickup_address: existing?.pickup_address || filled?.pickup_address || "",
+      });
     }
-    setSyncing(false);
+    setDialog(courier);
+    setDialogError("");
+    setError("");
+    setNotice("");
   }
 
-  // Same 2-second polling pattern as the Shopify integration page.
-  function startPolling() {
-    if (pollRef.current) return;
-    setSyncing(true);
-    pollRef.current = setInterval(async () => {
-      try {
-        const job = await integrationsService.getSmartlaneSyncJobStatus();
-        setSyncJob(job);
-        if (!ACTIVE_JOB_STATUSES.has(job.status)) {
-          stopPolling();
-          if (job.status === "completed") {
-            setNotice(`Sync finished: checked ${job.checked_count}, updated ${job.updated_count}.`);
-            await load();
-          } else if (job.status === "failed") {
-            setError(job.error_message || "Sync failed");
-          } else if (job.status === "cancelled") {
-            setNotice(`Sync cancelled — ${job.checked_count} order(s) checked before stopping.`);
-          }
-        }
-      } catch {
-        // Transient poll failure - just try again on the next tick.
-      }
-    }, 2000);
+  function closeDialog() {
+    if (saving) return;
+    setDialog(null);
   }
 
-  // Resume polling if a sync was already running (e.g. page refresh mid-sync).
-  useEffect(() => {
-    if (!live) return undefined;
-    integrationsService
-      .getSmartlaneSyncJobStatus()
-      .then((job) => {
-        setSyncJob(job);
-        if (job && ACTIVE_JOB_STATUSES.has(job.status)) startPolling();
-      })
-      .catch(() => {});
-    return () => stopPolling();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [live]);
-
-  async function onSyncNow() {
-    if (!window.confirm("Sync order statuses from OMS Courier now?")) return;
+  async function saveEnrollment(courier, body, message) {
+    setBusyKey(courier.key);
     setError("");
     setNotice("");
     try {
-      const job = await integrationsService.syncSmartlane();
-      setSyncJob(job);
-      startPolling();
+      const saved = await integrationsService.saveOmsCourierCourier(courier.key, body);
+      setEnrollments((prev) => ({ ...prev, [courier.key]: saved }));
+      setNotice(message);
     } catch (err) {
-      setError(err.message || "Failed to start sync");
+      setError(err.message || "Could not save");
+    } finally {
+      setBusyKey("");
     }
   }
 
-  async function onCancelSync() {
-    if (!window.confirm("Stop the sync? Orders already updated are kept.")) return;
-    try {
-      const job = await integrationsService.cancelSmartlaneSync();
-      setSyncJob(job);
-      stopPolling();
-      setNotice(`Sync cancelled — ${job.checked_count} order(s) checked before stopping.`);
-    } catch (err) {
-      setError(err.message || "Failed to cancel sync");
-    }
-  }
-
-  async function onSubmit(e) {
-    e.preventDefault();
-    if (KYC_FIELDS.some((f) => fieldErrors[f.key])) {
-      setShowErrors(true);
-      setNotice("");
-      setError("Please fix the highlighted fields below.");
+  async function onToggle(courier, next) {
+    if (!next) {
+      if (
+        !window.confirm(
+          `Turn off ${courier.name}? FynkTech will stop booking your orders with ${courier.name}.`
+        )
+      ) {
+        return;
+      }
+      await saveEnrollment(courier, { is_enabled: false }, `${courier.name} turned off.`);
       return;
     }
+
+    const existing = enrollments[courier.key];
+    if (existing?.status === "approved") {
+      // Already approved - back on unchanged, no new request.
+      await saveEnrollment(
+        courier,
+        {
+          is_enabled: true,
+          store_name: existing.store_name,
+          phone: existing.phone,
+          pickup_address: existing.pickup_address,
+        },
+        `${courier.name} turned back on.`
+      );
+      return;
+    }
+    await requestCourier(courier);
+  }
+
+  // A fresh request - through the form, unless Smartlane's business details
+  // are already with FynkTech and can't be edited (it then asks again with
+  // them as they are).
+  async function requestCourier(courier) {
+    const link = onboarding?.link;
+    if (courier.key === "smartlane" && !smartlaneEditable(link)) {
+      const existing = enrollments.smartlane;
+      const kyc = link?.kyc || {};
+      await saveEnrollment(
+        courier,
+        {
+          is_enabled: true,
+          store_name: existing?.store_name || kyc.name || "",
+          phone: existing?.phone || kyc.poc_phone || "",
+          pickup_address:
+            existing?.pickup_address || [kyc.address, kyc.city].filter(Boolean).join(", "),
+        },
+        "Smartlane requested - FynkTech will review it."
+      );
+      return;
+    }
+    openDialog(courier);
+  }
+
+  async function onSaveDetails(e) {
+    e.preventDefault();
+    if (!dialog) return;
     setSaving(true);
-    setError("");
-    setNotice("");
+    setDialogError("");
     try {
-      await integrationsService.submitOmsCourierOnboarding(cleanForSubmit(form));
-      setShowErrors(false);
-      setNotice("Request submitted. The platform team will review it.");
-      await load();
+      const saved = await integrationsService.saveOmsCourierCourier(dialog.key, {
+        is_enabled: true,
+        ...form,
+      });
+      setEnrollments((prev) => ({ ...prev, [dialog.key]: saved }));
+      setNotice(
+        saved.status === "pending"
+          ? `${dialog.name} requested - FynkTech will review it and answer here.`
+          : `${dialog.name} saved.`
+      );
+      setDialog(null);
     } catch (err) {
-      setError(err.message || "Failed to submit");
+      setDialogError(err.message || "Could not save");
     } finally {
       setSaving(false);
     }
   }
 
+  async function onSmartlaneSubmitted() {
+    setDialog(null);
+    setNotice("Smartlane requested - your business details were sent to FynkTech for review.");
+    await load();
+  }
+
+  const isSmartlaneDialog = dialog?.key === "smartlane";
+  const editingEnabled = dialog && enrollments[dialog.key]?.is_enabled;
+  const rejected = onboarding?.link?.status === "rejected";
+
   return (
     <div>
-      <Link
-        href="/integrations"
-        className="text-sm font-medium text-brand-600 hover:underline"
-      >
+      <Link href="/integrations" className="text-sm font-medium text-brand-600 hover:underline">
         ← Integrations
       </Link>
 
       <div className="mt-3">
         <h1 className="text-[28px] font-semibold leading-8 text-slate-900">OMS Courier</h1>
-        <p className="mt-1 text-sm text-slate-500">
-          Book shipments through the platform&apos;s own courier account — no separate courier
-          signup needed. Send your business details and the platform team reviews the request.
+        <p className="mt-1 max-w-2xl text-sm text-slate-500">
+          Let FynkTech dispatch your orders through its own courier accounts - no courier signup
+          of your own. Turn on the couriers you want and add your details; tracking numbers and
+          status updates show on your orders as they happen.
         </p>
       </div>
 
@@ -537,141 +359,125 @@ export default function OmsCourierPage() {
 
       {loading ? (
         <p className="mt-6 text-sm text-slate-500">Loading…</p>
-      ) : !data?.available ? (
-        <div className="mt-6 rounded-lg border border-surface-border bg-white p-6">
-          <p className="text-sm font-medium text-slate-800">Not available yet</p>
-          <p className="mt-1 text-sm text-slate-500">
-            The platform hasn&apos;t finished setting up OMS Courier. Check back later, or ask
-            the platform team.
-          </p>
-        </div>
       ) : (
-        <>
-          {displayStatus ? (
-            <div className="mt-6 rounded-lg border border-surface-border bg-white p-5">
-              <span
-                className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                  STATUS_TONE[displayStatus] || "bg-slate-100 text-slate-600"
-                }`}
-              >
-                {STATUS_LABEL[displayStatus] || displayStatus}
-              </span>
-              <p className="mt-2 text-sm text-slate-600">{STATUS_BLURB[displayStatus]}</p>
-              {status === "rejected" && link.review_note ? (
-                <p className="mt-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
-                  <span className="font-medium">Reason:</span> {link.review_note}
-                </p>
-              ) : null}
-            </div>
-          ) : null}
-
-          {live && courier ? (
-            <div className="mt-4 rounded-lg border border-surface-border bg-white p-5">
-              <h2 className="text-sm font-semibold text-slate-900">Connection</h2>
-              <div className="mt-3 space-y-2 text-sm">
-                <StatRow label="Warehouse code">
-                  <span className="font-mono">{courier.store_warehouse_code || "—"}</span>
-                </StatRow>
-                <StatRow label="Live tracking updates">
-                  {courier.webhooks_active ? "Active" : "Waiting for the first update"}
-                </StatRow>
-                <StatRow label="Updates received">{courier.events_received_count ?? 0}</StatRow>
-                <StatRow label="Last update">
-                  {courier.last_event_at ? new Date(courier.last_event_at).toLocaleString() : "Never"}
-                </StatRow>
-              </div>
-
-              <div className="mt-4 border-t border-surface-border pt-4">
-                <Button variant="secondary" onClick={onSyncNow} loading={syncing}>
-                  Sync statuses now
-                </Button>
-                <span className="mt-1 block text-xs text-slate-400">
-                  Checks every order still in progress and applies what comes back - tracking
-                  numbers for Booking Pending orders, and delivered / returned outcomes.
-                </span>
-
-                {syncing && syncJob ? (
-                  <div className="mt-2 space-y-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-xs text-slate-500">
-                        Syncing… {syncJob.checked_count}
-                        {syncJob.total_available != null ? ` of ${syncJob.total_available}` : ""}{" "}
-                        order{syncJob.checked_count === 1 ? "" : "s"} checked
-                        {syncJob.updated_count ? `, ${syncJob.updated_count} updated` : ""}
-                      </p>
-                      <button
-                        type="button"
-                        onClick={onCancelSync}
-                        className="shrink-0 text-xs font-medium text-red-600 hover:underline"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                    {syncJob.total_available ? (
-                      <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
-                        <div
-                          className="h-full rounded-full bg-brand-500 transition-all"
-                          style={{
-                            width: `${Math.min(
-                              (syncJob.checked_count / syncJob.total_available) * 100,
-                              100,
-                            )}%`,
-                          }}
-                        />
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-              </div>
-            </div>
-          ) : null}
-
-          <form onSubmit={onSubmit} noValidate className="mt-4 space-y-4">
-            <details className="group rounded-lg border border-surface-border bg-white p-5" open={editable || undefined}>
-              <summary className="flex cursor-pointer list-none items-start justify-between gap-4 [&::-webkit-details-marker]:hidden">
-                <div>
-                  <h2 className="text-sm font-semibold text-slate-900">Business details</h2>
-                  <p className="mt-1 text-xs text-slate-500">
-                    We need these to set up your courier account. Fields marked * are required.
-                  </p>
-                </div>
-                <span className="-rotate-90 shrink-0 text-slate-400 transition-transform group-open:rotate-0">▾</span>
-              </summary>
-              <div className="mt-3 space-y-6 border-t border-surface-border pt-4">
-                {KYC_SECTIONS.map((section) => (
-                  <fieldset key={section.title}>
-                    <legend className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                      {section.title}
-                    </legend>
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      {section.fields.map((f) => (
-                        <KycField
-                          key={f.key}
-                          field={f}
-                          value={form[f.key]}
-                          options={options}
-                          editable={editable}
-                          error={showErrors ? fieldErrors[f.key] : ""}
-                          onChange={(value) => setForm((prev) => ({ ...prev, [f.key]: cleanWhileTyping(f, value) }))}
-                          onBlur={() => setForm((prev) => ({ ...prev, [f.key]: cleanOnBlur(f, prev[f.key] ?? "") }))}
-                        />
-                      ))}
-                    </div>
-                  </fieldset>
-                ))}
-              </div>
-            </details>
-
-            {editable ? (
-              <div className="flex justify-end">
-                <Button type="submit" loading={saving}>
-                  {status === "rejected" ? "Resubmit request" : "Submit request"}
-                </Button>
-              </div>
-            ) : null}
-          </form>
-        </>
+        <div className="mt-6 max-w-4xl space-y-4">
+          {COURIERS.map((courier) => (
+            <CourierCard
+              key={courier.key}
+              courier={courier}
+              enrollment={enrollments[courier.key]}
+              onboarding={onboarding}
+              busy={busyKey === courier.key}
+              onToggle={onToggle}
+              onEdit={openDialog}
+              onResubmit={requestCourier}
+            />
+          ))}
+        </div>
       )}
+
+      <Modal
+        open={isSmartlaneDialog}
+        onClose={closeDialog}
+        title={rejected ? "Resubmit Smartlane request" : "Request Smartlane"}
+        width="max-w-3xl"
+        footer={
+          <>
+            <Button variant="secondary" onClick={closeDialog} disabled={saving}>
+              Cancel
+            </Button>
+            <Button type="submit" form={SMARTLANE_FORM_ID} loading={saving}>
+              {rejected ? "Resubmit request" : "Send request"}
+            </Button>
+          </>
+        }
+      >
+        <p className="text-xs text-slate-500">
+          Business details - we need these to set up your courier account. Fields marked * are
+          required. FynkTech reviews your request and answers on this page.
+        </p>
+        {rejected && onboarding?.link?.review_note ? (
+          <p className="mt-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
+            <span className="font-medium">Reason:</span> {onboarding.link.review_note}
+          </p>
+        ) : null}
+        {dialogError ? (
+          <p className="mt-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{dialogError}</p>
+        ) : null}
+        <div className="mt-4">
+          {isSmartlaneDialog ? (
+            <SmartlaneBusinessForm
+              formId={SMARTLANE_FORM_ID}
+              initialKyc={onboarding?.link?.kyc}
+              editable
+              onSubmitted={onSmartlaneSubmitted}
+              onError={setDialogError}
+              onSavingChange={setSaving}
+            />
+          ) : null}
+        </div>
+      </Modal>
+
+      <Modal
+        open={Boolean(dialog) && !isSmartlaneDialog}
+        onClose={closeDialog}
+        title={dialog ? `${editingEnabled ? "Edit" : "Request"} ${dialog.name}` : ""}
+        width="max-w-md"
+        footer={
+          <>
+            <Button variant="secondary" onClick={closeDialog} disabled={saving}>
+              Cancel
+            </Button>
+            <Button type="submit" form={DETAILS_FORM_ID} loading={saving}>
+              {editingEnabled ? "Save" : "Send request"}
+            </Button>
+          </>
+        }
+      >
+        <form id={DETAILS_FORM_ID} onSubmit={onSaveDetails} className="space-y-4">
+          <p className="text-xs text-slate-500">
+            FynkTech uses these details when booking your orders with {dialog?.name}, and reviews
+            the request first.{editingEnabled ? " Changing them sends it for review again." : ""}
+          </p>
+          {dialogError ? (
+            <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{dialogError}</p>
+          ) : null}
+          <label className="block text-sm font-medium text-slate-700">
+            Store name
+            <input
+              type="text"
+              value={form.store_name}
+              onChange={(e) => setForm((f) => ({ ...f, store_name: e.target.value }))}
+              maxLength={255}
+              required
+              className={inputClass}
+            />
+          </label>
+          <label className="block text-sm font-medium text-slate-700">
+            Phone number
+            <input
+              type="tel"
+              value={form.phone}
+              onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))}
+              placeholder="03XX XXXXXXX"
+              maxLength={50}
+              required
+              className={inputClass}
+            />
+          </label>
+          <label className="block text-sm font-medium text-slate-700">
+            Pickup address
+            <textarea
+              value={form.pickup_address}
+              onChange={(e) => setForm((f) => ({ ...f, pickup_address: e.target.value }))}
+              rows={3}
+              maxLength={500}
+              required
+              className={inputClass}
+            />
+          </label>
+        </form>
+      </Modal>
     </div>
   );
 }

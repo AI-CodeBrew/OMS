@@ -1,5 +1,7 @@
 from django.urls import include, path
 
+from integrations import admin_views as integrations_admin_views
+
 from . import admin_views, team_views, views
 
 urlpatterns = [
@@ -34,6 +36,33 @@ urlpatterns = [
     # Lives in the integrations app but is mounted here on purpose: the
     # /api/core/admin/ prefix is what AdminIPAllowlistMiddleware matches.
     path("admin/smartlane/", include("integrations.admin_urls")),
+    # Same reason - every store's status across every integration.
+    path(
+        "admin/integrations/",
+        integrations_admin_views.integrations_overview,
+        name="admin-integrations",
+    ),
+    # Same reason - FynkTech's own courier accounts (OMS Courier tab).
+    path(
+        "admin/oms-courier/",
+        integrations_admin_views.oms_courier,
+        name="admin-oms-courier",
+    ),
+    path(
+        "admin/oms-courier/requests/",
+        integrations_admin_views.oms_courier_requests,
+        name="admin-oms-courier-requests",
+    ),
+    path(
+        "admin/oms-courier/requests/<uuid:request_id>/approve/",
+        integrations_admin_views.oms_courier_request_approve,
+        name="admin-oms-courier-request-approve",
+    ),
+    path(
+        "admin/oms-courier/requests/<uuid:request_id>/reject/",
+        integrations_admin_views.oms_courier_request_reject,
+        name="admin-oms-courier-request-reject",
+    ),
     # Same reason - lives in the oms app (Ticket FKs Order) but is mounted
     # here for the IP allowlist.
     path("admin/tickets/", include("oms.admin_urls")),

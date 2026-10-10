@@ -30,9 +30,14 @@ const NAV = [
     match: (path) => path.startsWith("/admin/invoices"),
   },
   {
-    href: "/admin/smartlane",
-    label: "Smartlane",
-    match: (path) => path.startsWith("/admin/smartlane"),
+    href: "/admin/integrations",
+    label: "Integrations",
+    match: (path) => path.startsWith("/admin/integrations"),
+  },
+  {
+    href: "/admin/oms-courier",
+    label: "OMS Couriers",
+    match: (path) => path.startsWith("/admin/oms-courier") || path.startsWith("/admin/smartlane"),
   },
   {
     href: "/admin/tickets",
@@ -41,6 +46,14 @@ const NAV = [
   },
 ];
 
+const PLATFORM_ACCOUNT_PAGES = ["barq-raftar", "postex", "smartlane"].map(
+  (slug) => `/admin/oms-courier/${slug}`
+);
+
+function isPlatformAccountPage(path) {
+  return PLATFORM_ACCOUNT_PAGES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
+}
+
 function SuperAdminShell({ children }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -48,8 +61,10 @@ function SuperAdminShell({ children }) {
   const exitStore = useAuthStore((s) => s.exitStore);
 
   // Reaching the panel (e.g. via browser Back) means we're no longer operating a store.
+  // Acting as the platform org is the OMS Courier tab's own business - its
+  // layout enters and leaves it.
   useEffect(() => {
-    if (!actingStore) return;
+    if (!actingStore || actingStore.platform) return;
     exitStore();
     invalidateViewCache();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -98,7 +113,16 @@ function SuperAdminShell({ children }) {
         </div>
       </aside>
       <main className="min-w-0 flex-1 overflow-auto">
-        <div className="mx-auto max-w-5xl px-6 py-8">{children}</div>
+        {/* The OMS Courier account pages are the store admin's own
+            integration screens (tables, tabs) - give them the width they
+            were built for. */}
+        <div
+          className={`mx-auto px-6 py-8 ${
+            isPlatformAccountPage(pathname) ? "max-w-7xl" : "max-w-5xl"
+          }`}
+        >
+          {children}
+        </div>
       </main>
     </div>
   );

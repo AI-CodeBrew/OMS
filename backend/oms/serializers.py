@@ -183,6 +183,10 @@ class OrderSerializer(serializers.ModelSerializer):
     )
     placed_at = serializers.SerializerMethodField()
     in_transit_days = serializers.SerializerMethodField()
+    # Booked through FynkTech's own courier account from the Dispatch Hub
+    # (Order.platform_reference) rather than by the store with its own -
+    # the "Dispatched by FynkTech" tag on the store's orders.
+    dispatched_by_fynktech = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -221,6 +225,8 @@ class OrderSerializer(serializers.ModelSerializer):
             "courier",
             "courier_name",
             "tracking_number",
+            "platform_reference",
+            "dispatched_by_fynktech",
             "issue_note",
             "return_reason",
             "total_amount",
@@ -266,6 +272,7 @@ class OrderSerializer(serializers.ModelSerializer):
             "total_amount",
             "courier",
             "tracking_number",
+            "platform_reference",
             "issue_note",
             "return_reason",
             "parent_order",
@@ -289,6 +296,9 @@ class OrderSerializer(serializers.ModelSerializer):
         prob_map = self.context.get("probability_map") or {}
         entry = prob_map.get(order.customer_phone)
         return entry[key] if entry else None
+
+    def get_dispatched_by_fynktech(self, order):
+        return bool(order.platform_reference)
 
     def get_cancelled_pct(self, order):
         return self._probability(order, "cancelled_pct")

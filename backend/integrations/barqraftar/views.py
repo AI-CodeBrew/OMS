@@ -14,8 +14,10 @@ from rest_framework import status as http_status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.context import tenant_context
 from core.middleware import get_client_ip
 from core.permissions import IsOrgAdmin, RequireModule
+from core.platform_service import is_platform_organization
 from core.rbac import write_audit_log
 
 from . import client, services
@@ -142,9 +144,9 @@ class BarqRaftarStatusView(APIView):
     required_module = "oms"
 
     def get(self, request):
-        connection = BarqRaftarConnection.objects.filter(
-            organization_id=request.organization_id, is_connected=True
-        ).first()
+        # In the Dispatch Hub this is FynkTech's own account (every Hub
+        # booking goes through it) - see services.connection_for_request.
+        connection = services.connection_for_request(request)
         connected = bool(connection)
         ready_to_book = bool(connected and connection.pickup_address_id and connection.from_city_id)
         return Response(
@@ -443,9 +445,16 @@ class BarqRaftarShipmentActionView(APIView):
             from .models import BarqRaftarShipment
             from oms import services as oms_services
 
-            shipment = BarqRaftarShipment.objects.filter(
-                organization_id=request.organization_id, tracking_number=tracking_number, is_active=True,
-            ).select_related("order").first()
+            if is_platform_organization(request.organization_id):
+                # FynkTech's account (OMS Couriers tab) - its parcels are
+                # the Hub stores' orders.
+                shipment = BarqRaftarShipment.all_objects.filter(
+                    tracking_number=tracking_number, is_active=True,
+                ).exclude(order__platform_reference="").select_related("order").first()
+            else:
+                shipment = BarqRaftarShipment.objects.filter(
+                    organization_id=request.organization_id, tracking_number=tracking_number, is_active=True,
+                ).select_related("order").first()
             if not shipment:
                 return Response(
                     {"detail": "No local order found for this tracking number - "
@@ -453,9 +462,10 @@ class BarqRaftarShipmentActionView(APIView):
                     status=http_status.HTTP_404_NOT_FOUND,
                 )
             try:
-                oms_services.cancel_order(
-                    shipment.order, reason=request.data.get("reason", ""), actor_user_id=request.user_id,
-                )
+                with tenant_context(shipment.organization_id):
+                    oms_services.cancel_order(
+                        shipment.order, reason=request.data.get("reason", ""), actor_user_id=request.user_id,
+                    )
             except (BarqRaftarBookingError, oms_services.InvalidTransition) as exc:
                 return Response({"detail": str(exc)}, status=http_status.HTTP_400_BAD_REQUEST)
             return Response({"success": True})
@@ -509,6 +519,58 @@ def _save_print_batch(*, organization_id, order_numbers, content, actor_user_id,
         logger.exception("barqraftar: failed to save print batch")
 
 
+def _shipments_by_account(order_ids):
+    """The selected orders' active shipments, grouped by (store, booking
+    account) - one store's own account, or FynkTech's for a Dispatch Hub
+    booking (services.connection_for_order). BarqRaftar only prints an
+    account's own parcels, and each store keeps its own print history, so
+    every group is rendered on its own. TenantManager scopes the query to
+    the store - or to every Hub store while operating the Hub. Returns
+    (groups, error_response); groups is [(organization_id, connection,
+    shipments)] in first-seen order."""
+    from .models import BarqRaftarShipment
+
+    shipments = list(
+        BarqRaftarShipment.objects.filter(order_id__in=order_ids, is_active=True)
+        .exclude(tracking_number="").select_related("order").order_by("booked_at", "id")
+    )
+    if not shipments:
+        return None, Response(
+            {"detail": "None of the selected orders have an active BarqRaftar shipment."},
+            status=http_status.HTTP_404_NOT_FOUND,
+        )
+    connections = {}
+    groups = {}
+    for shipment in shipments:
+        via_platform = bool(shipment.order.platform_reference)
+        key = (str(shipment.organization_id), via_platform)
+        if key not in connections:
+            connections[key] = services.connection_for_order(shipment.order)
+            if connections[key] is None:
+                return None, Response(
+                    {"detail": (
+                        "FynkTech's BarqRaftar account isn't connected (super admin's OMS Couriers tab)."
+                        if via_platform else "BarqRaftar is not connected"
+                    )},
+                    status=http_status.HTTP_404_NOT_FOUND,
+                )
+        groups.setdefault(key, []).append(shipment)
+    return [(key[0], connections[key], group) for key, group in groups.items()], None
+
+
+def _merge_pdfs(pdf_byte_list):
+    if len(pdf_byte_list) == 1:
+        return pdf_byte_list[0]
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    for pdf_bytes in pdf_byte_list:
+        writer.append(fileobj=io.BytesIO(pdf_bytes))
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
 class BarqRaftarLoadSheetView(APIView):
     """POST {order_ids} -> our own Goods Load Sheet PDF for the selected
     orders' active BarqRaftar shipments, in the same layout as BarqRaftar's
@@ -523,47 +585,54 @@ class BarqRaftarLoadSheetView(APIView):
         from core.models import Organization
 
         from . import loadsheet
-        from .models import BarqRaftarShipment
 
         order_ids = request.data.get("order_ids") or []
         if not order_ids:
             return Response({"detail": "order_ids is required"}, status=http_status.HTTP_400_BAD_REQUEST)
 
-        connection = BarqRaftarConnection.objects.filter(
-            organization_id=request.organization_id, is_connected=True
-        ).first()
-        if not connection:
-            return Response({"detail": "BarqRaftar is not connected"}, status=http_status.HTTP_404_NOT_FOUND)
+        groups, error = _shipments_by_account(order_ids)
+        if error:
+            return error
 
-        shipments = list(
-            BarqRaftarShipment.objects.filter(
-                organization_id=request.organization_id, order_id__in=order_ids, is_active=True,
-            ).exclude(tracking_number="").select_related("order").order_by("booked_at", "id")
-        )
-        if not shipments:
-            return Response(
-                {"detail": "None of the selected orders have an active BarqRaftar shipment."},
-                status=http_status.HTTP_404_NOT_FOUND,
+        pdf_parts = []
+        for organization_id, connection, shipments in groups:
+            try:
+                rows, shipper_name = loadsheet.build_rows(connection, shipments)
+                org = Organization.objects.filter(id=organization_id).first()
+                html_doc = loadsheet.build_html(
+                    customer_name=shipper_name or (org.name if org else ""),
+                    account_number=connection.account_number,
+                    rows=rows,
+                )
+                pdf_bytes = loadsheet.render_pdf(html_doc)
+            except BarqRaftarAPIError as exc:
+                return Response({"detail": str(exc)}, status=http_status.HTTP_502_BAD_GATEWAY)
+
+            _save_print_batch(
+                organization_id=organization_id,
+                order_numbers=[s.order.order_number for s in shipments],
+                content=pdf_bytes, actor_user_id=request.user_id, kind="loadsheet",
             )
+            pdf_parts.append(pdf_bytes)
+        return HttpResponse(_merge_pdfs(pdf_parts), content_type="application/pdf")
 
-        try:
-            rows, shipper_name = loadsheet.build_rows(connection, shipments)
-            org = Organization.objects.filter(id=request.organization_id).first()
-            html_doc = loadsheet.build_html(
-                customer_name=shipper_name or (org.name if org else ""),
-                account_number=connection.account_number,
-                rows=rows,
-            )
-            pdf_bytes = loadsheet.render_pdf(html_doc)
-        except BarqRaftarAPIError as exc:
-            return Response({"detail": str(exc)}, status=http_status.HTTP_502_BAD_GATEWAY)
 
-        _save_print_batch(
-            organization_id=request.organization_id,
-            order_numbers=[s.order.order_number for s in shipments],
-            content=pdf_bytes, actor_user_id=request.user_id, kind="loadsheet",
+def _print_label_chunks(connection, tracking_numbers):
+    """One account's labels as a single PDF - BarqRaftar's print_orders
+    takes at most 20 tracking numbers per call."""
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    for start in range(0, len(tracking_numbers), 20):
+        chunk = tracking_numbers[start:start + 20]
+        pdf_bytes = client.print_labels(
+            connection.api_key, connection.api_secret, chunk,
+            response_type="pdf", label_format=connection.label_format,
         )
-        return HttpResponse(pdf_bytes, content_type="application/pdf")
+        writer.append(fileobj=io.BytesIO(pdf_bytes))
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
 
 
 class BarqRaftarLabelsView(APIView):
@@ -574,7 +643,11 @@ class BarqRaftarLabelsView(APIView):
     from BarqRaftar's own /orders listing and don't carry an OMS order id
     at all. BarqRaftar's own print_orders takes at most 20 tracking numbers
     per call, so this chunks and merges with pypdf (see requirements.txt)
-    rather than exposing that limit to the frontend."""
+    rather than exposing that limit to the frontend.
+
+    order_ids are printed per (store, booking account) - see
+    _shipments_by_account - so a Dispatch Hub selection booked through
+    FynkTech's account prints through it."""
 
     permission_classes = [RequireModule]
     required_module = "oms"
@@ -589,46 +662,8 @@ class BarqRaftarLabelsView(APIView):
                 {"detail": "order_ids or tracking_numbers is required"}, status=http_status.HTTP_400_BAD_REQUEST
             )
 
-        connection = BarqRaftarConnection.objects.filter(
-            organization_id=request.organization_id, is_connected=True
-        ).first()
-        if not connection:
-            return Response({"detail": "BarqRaftar is not connected"}, status=http_status.HTTP_404_NOT_FOUND)
-
-        if order_ids:
-            shipments = list(
-                BarqRaftarShipment.objects.filter(
-                    organization_id=request.organization_id, order_id__in=order_ids,
-                    is_active=True,
-                ).exclude(tracking_number="").select_related("order")
-            )
-            order_numbers = [s.order.order_number for s in shipments]
-        else:
-            shipments = list(
-                BarqRaftarShipment.objects.filter(
-                    organization_id=request.organization_id,
-                    tracking_number__in=requested_tracking_numbers,
-                ).select_related("order")
-            )
-            order_numbers = [s.order.order_number for s in shipments]
-        if not shipments:
-            # A tracking number BarqRaftar's own listing shows that this
-            # app never booked (e.g. imported straight on their portal)
-            # has no local shipment row at all - fall back to printing by
-            # tracking number directly, just without a PrintBatch record.
-            if requested_tracking_numbers:
-                tracking_numbers = list(requested_tracking_numbers)
-                order_numbers = []
-            else:
-                return Response(
-                    {"detail": "None of the selected orders have an active BarqRaftar shipment."},
-                    status=http_status.HTTP_404_NOT_FOUND,
-                )
-        else:
-            tracking_numbers = [s.tracking_number for s in shipments]
-
         try:
-            from pypdf import PdfWriter
+            import pypdf  # noqa: F401 - checked up front for a clear message
         except ImportError:
             return Response(
                 {"detail": "The 'pypdf' package isn't installed on the server yet - run "
@@ -636,21 +671,53 @@ class BarqRaftarLabelsView(APIView):
                 status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-        writer = PdfWriter()
-        try:
-            for start in range(0, len(tracking_numbers), 20):
-                chunk = tracking_numbers[start:start + 20]
-                pdf_bytes = client.print_labels(
-                    connection.api_key, connection.api_secret, chunk,
-                    response_type="pdf", label_format=connection.label_format,
+        if order_ids:
+            groups, error = _shipments_by_account(order_ids)
+            if error:
+                return error
+            pdf_parts = []
+            for organization_id, connection, shipments in groups:
+                try:
+                    pdf_bytes = _print_label_chunks(connection, [s.tracking_number for s in shipments])
+                except BarqRaftarAPIError as exc:
+                    return Response({"detail": str(exc)}, status=http_status.HTTP_502_BAD_GATEWAY)
+                _save_print_batch(
+                    organization_id=organization_id,
+                    order_numbers=[s.order.order_number for s in shipments],
+                    content=pdf_bytes, actor_user_id=request.user_id,
                 )
-                writer.append(fileobj=io.BytesIO(pdf_bytes))
+                pdf_parts.append(pdf_bytes)
+            return HttpResponse(_merge_pdfs(pdf_parts), content_type="application/pdf")
+
+        # tracking_numbers: the Shipments tab, i.e. one account's own listing.
+        connection = BarqRaftarConnection.objects.filter(
+            organization_id=request.organization_id, is_connected=True
+        ).first()
+        if not connection:
+            return Response({"detail": "BarqRaftar is not connected"}, status=http_status.HTTP_404_NOT_FOUND)
+
+        shipments = list(
+            BarqRaftarShipment.objects.filter(
+                organization_id=request.organization_id,
+                tracking_number__in=requested_tracking_numbers,
+            ).select_related("order")
+        )
+        if shipments:
+            tracking_numbers = [s.tracking_number for s in shipments]
+            order_numbers = [s.order.order_number for s in shipments]
+        else:
+            # A tracking number BarqRaftar's own listing shows that this
+            # app never booked (e.g. imported straight on their portal) has
+            # no local shipment row at all - print by tracking number
+            # directly. Always the case on FynkTech's own account (OMS
+            # Couriers tab), whose parcels' rows belong to the Hub stores.
+            tracking_numbers = list(requested_tracking_numbers)
+            order_numbers = []
+
+        try:
+            merged = _print_label_chunks(connection, tracking_numbers)
         except BarqRaftarAPIError as exc:
             return Response({"detail": str(exc)}, status=http_status.HTTP_502_BAD_GATEWAY)
-
-        buffer = io.BytesIO()
-        writer.write(buffer)
-        merged = buffer.getvalue()
 
         _save_print_batch(
             organization_id=request.organization_id, order_numbers=order_numbers,
