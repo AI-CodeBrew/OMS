@@ -30,6 +30,11 @@ const NAV = [
     match: (path) => path.startsWith("/admin/invoices"),
   },
   {
+    href: "/admin/integrations",
+    label: "Integrations",
+    match: (path) => path.startsWith("/admin/integrations"),
+  },
+  {
     href: "/admin/smartlane",
     label: "Smartlane",
     match: (path) => path.startsWith("/admin/smartlane"),

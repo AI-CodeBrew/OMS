@@ -1,5 +1,7 @@
 from django.urls import include, path
 
+from integrations import admin_views as integrations_admin_views
+
 from . import admin_views, team_views, views
 
 urlpatterns = [
@@ -34,6 +36,12 @@ urlpatterns = [
     # Lives in the integrations app but is mounted here on purpose: the
     # /api/core/admin/ prefix is what AdminIPAllowlistMiddleware matches.
     path("admin/smartlane/", include("integrations.admin_urls")),
+    # Same reason - every store's status across every integration.
+    path(
+        "admin/integrations/",
+        integrations_admin_views.integrations_overview,
+        name="admin-integrations",
+    ),
     # Same reason - lives in the oms app (Ticket FKs Order) but is mounted
     # here for the IP allowlist.
     path("admin/tickets/", include("oms.admin_urls")),

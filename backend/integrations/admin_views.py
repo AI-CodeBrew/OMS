@@ -13,6 +13,7 @@ from rest_framework.response import Response
 from core.permissions import IsSuperAdmin
 
 from . import business_services as service
+from . import overview_service
 from .business_services import SmartlaneBusinessError
 
 
@@ -272,3 +273,11 @@ def api_explorer_test(request):
     except SmartlaneBusinessError as exc:
         return _error(exc)
     return Response({"success": True, **result})
+
+
+@api_view(["GET"])
+@permission_classes([IsSuperAdmin])
+def integrations_overview(request):
+    """Every store's status across every integration, for the super
+    admin's Integrations page. Read-only - see overview_service."""
+    return Response({"success": True, "stores": overview_service.list_store_integrations()})

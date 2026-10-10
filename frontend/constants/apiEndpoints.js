@@ -14,6 +14,8 @@ export const API_ENDPOINTS = {
     invoicePaid: (id) => `/api/core/admin/invoices/${id}/paid/`,
     invoiceVoid: (id) => `/api/core/admin/invoices/${id}/void/`,
     invoicePrint: (id) => `/api/core/admin/invoices/${id}/print/`,
+    // Every store's status across every integration (read-only).
+    integrations: "/api/core/admin/integrations/",
     // Smartlane Business API. Under /api/core/admin/ so it inherits the
     // backend's IP allowlist, even though the code lives in the
     // integrations app.
