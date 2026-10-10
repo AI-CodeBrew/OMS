@@ -59,8 +59,10 @@ export const useAuthStore = create((set, get) => ({
   user: null,
   hydrated: false,
   // { id, name, modules, is_manual_store } of the store a super admin is
-  // operating, or { hub: true, name, modules, storeCount } while operating
-  // the Dispatch Hub (several stores at once - see useEffectiveUser below).
+  // operating, { hub: true, name, modules, storeCount } while operating
+  // the Dispatch Hub (several stores at once - see useEffectiveUser below),
+  // or { platform: true, id, name } while managing FynkTech's own courier
+  // accounts on the OMS Courier tab (see enterPlatform).
   actingStore: null,
 
   hydrateFromStorage: () => {
@@ -79,6 +81,14 @@ export const useAuthStore = create((set, get) => ({
   enterStore: (store) => {
     persistActingStore(store);
     set({ actingStore: store });
+  },
+
+  // Acts as the hidden platform org that holds FynkTech's own courier
+  // accounts. Deliberately not persisted: a reload starts clean and the OMS
+  // Courier layout enters it again, so the panel is never left acting as
+  // the platform org after leaving that tab.
+  enterPlatform: (org) => {
+    set({ actingStore: { ...org, platform: true } });
   },
 
   exitStore: () => {

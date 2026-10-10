@@ -83,8 +83,12 @@ def list_organizations(*, include_emails=False):
     Org list UI only needs member counts — keep include_emails=False there.
     Users tab should pass include_emails=True.
     """
-    orgs = Organization.objects.prefetch_related("memberships", "modules").order_by(
-        "-created_at"
+    # is_platform: FynkTech's own hidden account holder, not a store - see
+    # core.platform_service.
+    orgs = (
+        Organization.objects.filter(is_platform=False)
+        .prefetch_related("memberships", "modules")
+        .order_by("-created_at")
     )
     email_map = {}
     if include_emails:
@@ -111,8 +115,10 @@ def list_organizations(*, include_emails=False):
 
 def get_organization(organization_id):
     try:
-        org = Organization.objects.prefetch_related("memberships", "modules").get(
-            id=organization_id
+        org = (
+            Organization.objects.filter(is_platform=False)
+            .prefetch_related("memberships", "modules")
+            .get(id=organization_id)
         )
     except Organization.DoesNotExist as exc:
         raise OrganizationAdminError("Organization not found", 404) from exc
@@ -199,7 +205,7 @@ def set_organization_active(organization_id, *, is_active, actor_user_id=None, a
     including the check the login page makes right after signing in - so
     nothing in Supabase Auth needs changing."""
     try:
-        org = Organization.objects.get(id=organization_id)
+        org = Organization.objects.get(id=organization_id, is_platform=False)
     except Organization.DoesNotExist as exc:
         raise OrganizationAdminError("Organization not found", 404) from exc
 
@@ -230,7 +236,7 @@ def delete_organization(organization_id, *, confirm_name, actor_email=""):
     is reported back rather than failing the removal: with its org gone,
     TenantMiddleware already turns that user away."""
     try:
-        org = Organization.objects.get(id=organization_id)
+        org = Organization.objects.get(id=organization_id, is_platform=False)
     except Organization.DoesNotExist as exc:
         raise OrganizationAdminError("Organization not found", 404) from exc
 

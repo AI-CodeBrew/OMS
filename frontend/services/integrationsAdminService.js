@@ -23,6 +23,12 @@ class IntegrationsAdminService {
     const data = await request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.integrations}`);
     return data.stores || [];
   }
+
+  // { organization: {id, name}, accounts: {smartlane, barq_raftar, postex},
+  //   smartlane_business: {configured, active, pending_requests} }
+  async getOmsCourier() {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.omsCourier}`);
+  }
 }
 
 export const integrationsAdminService = new IntegrationsAdminService();

@@ -106,7 +106,7 @@ function SummaryCard({ integration, stats, active, onToggle }) {
       </p>
       {integration.key === "oms_courier" && stats.pending ? (
         <Link
-          href="/admin/smartlane"
+          href="/admin/oms-courier/smartlane-business"
           className="mt-1 text-xs font-medium text-brand-700 hover:underline"
         >
           Review requests →

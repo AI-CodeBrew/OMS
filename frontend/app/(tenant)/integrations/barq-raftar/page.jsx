@@ -11,6 +11,7 @@ import ShipmentsTab from "./_components/ShipmentsTab";
 import PickupAddressesTab from "./_components/PickupAddressesTab";
 import PaymentsTab from "./_components/PaymentsTab";
 import CitiesTab from "./_components/CitiesTab";
+import { useIntegrationsHome } from "../../../../components/integrations/IntegrationsHome";
 
 const TABS = [
   { key: "shipments", label: "Shipments" },
@@ -34,6 +35,7 @@ function TruckIcon({ className }) {
 }
 
 export default function BarqRaftarIntegrationPage() {
+  const integrationsHome = useIntegrationsHome();
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -97,8 +99,8 @@ export default function BarqRaftarIntegrationPage() {
   return (
     <div>
       <nav className="mb-6 flex items-center gap-1.5 text-sm text-slate-500">
-        <Link href="/integrations" className="hover:text-slate-700">
-          Integrations
+        <Link href={integrationsHome.href} className="hover:text-slate-700">
+          {integrationsHome.label}
         </Link>
         <span>/</span>
         <span className="font-medium text-slate-700">BarqRaftar</span>

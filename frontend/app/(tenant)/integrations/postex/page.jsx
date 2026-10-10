@@ -10,6 +10,7 @@ import SettingsCard from "./_components/SettingsCard";
 import ShipmentsTab from "./_components/ShipmentsTab";
 import PickupAddressesTab from "./_components/PickupAddressesTab";
 import CitiesTab from "./_components/CitiesTab";
+import { useIntegrationsHome } from "../../../../components/integrations/IntegrationsHome";
 
 const TABS = [
   { key: "shipments", label: "Shipments" },
@@ -28,6 +29,7 @@ function PostExWordmark() {
 }
 
 export default function PostExIntegrationPage() {
+  const integrationsHome = useIntegrationsHome();
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -96,8 +98,8 @@ export default function PostExIntegrationPage() {
   return (
     <div>
       <nav className="mb-6 flex items-center gap-1.5 text-sm text-slate-500">
-        <Link href="/integrations" className="hover:text-slate-700">
-          Integrations
+        <Link href={integrationsHome.href} className="hover:text-slate-700">
+          {integrationsHome.label}
         </Link>
         <span>/</span>
         <span className="font-medium text-slate-700">PostEx</span>

@@ -10,10 +10,17 @@ credentials, only whether a connection is live and what identifies it.
 """
 
 from core.models import Organization
+from core.platform_service import get_platform_organization
 
 from .barqraftar.models import BarqRaftarConnection
 from .business_services import _is_live
-from .models import ShopifyConnection, SmartlaneConnection, SmartlaneStoreLink
+from .models import (
+    ShopifyConnection,
+    SmartlaneBusinessConfig,
+    SmartlaneConnection,
+    SmartlaneRequest,
+    SmartlaneStoreLink,
+)
 from .postex.models import PostExConnection
 
 
@@ -92,7 +99,11 @@ def _postex(conn):
 
 
 def list_store_integrations():
-    orgs = Organization.objects.prefetch_related("modules").order_by("name")
+    orgs = (
+        Organization.objects.filter(is_platform=False)
+        .prefetch_related("modules")
+        .order_by("name")
+    )
 
     shopify = _by_org(ShopifyConnection.all_objects.all())
     smartlane = _by_org(
@@ -125,3 +136,35 @@ def list_store_integrations():
             }
         )
     return stores
+
+
+def oms_courier_summary():
+    """The super admin's OMS Courier tab: FynkTech's own accounts, which
+    live on the hidden platform org (core.platform_service), in the same
+    per-integration shape as list_store_integrations - plus how the
+    Smartlane Business console (per-store OMS Courier onboarding) stands."""
+    org = get_platform_organization()
+    config = SmartlaneBusinessConfig.load()
+    pending = (
+        SmartlaneStoreLink.all_objects.filter(status__in=["pending_approval", "in_review"]).count()
+        + SmartlaneRequest.all_objects.filter(status="pending_approval").count()
+    )
+    return {
+        "organization": {"id": str(org.id), "name": org.name},
+        "accounts": {
+            "smartlane": _smartlane(
+                SmartlaneConnection.all_objects.filter(
+                    organization_id=org.id, kind=SmartlaneConnection.KIND_OWN
+                ).first()
+            ),
+            "barq_raftar": _barqraftar(
+                BarqRaftarConnection.all_objects.filter(organization_id=org.id).first()
+            ),
+            "postex": _postex(PostExConnection.all_objects.filter(organization_id=org.id).first()),
+        },
+        "smartlane_business": {
+            "configured": config.is_configured,
+            "active": config.is_active,
+            "pending_requests": pending,
+        },
+    }

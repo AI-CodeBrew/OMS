@@ -42,6 +42,12 @@ urlpatterns = [
         integrations_admin_views.integrations_overview,
         name="admin-integrations",
     ),
+    # Same reason - FynkTech's own courier accounts (OMS Courier tab).
+    path(
+        "admin/oms-courier/",
+        integrations_admin_views.oms_courier,
+        name="admin-oms-courier",
+    ),
     # Same reason - lives in the oms app (Ticket FKs Order) but is mounted
     # here for the IP allowlist.
     path("admin/tickets/", include("oms.admin_urls")),

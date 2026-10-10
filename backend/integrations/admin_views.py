@@ -281,3 +281,11 @@ def integrations_overview(request):
     """Every store's status across every integration, for the super
     admin's Integrations page. Read-only - see overview_service."""
     return Response({"success": True, "stores": overview_service.list_store_integrations()})
+
+
+@api_view(["GET"])
+@permission_classes([IsSuperAdmin])
+def oms_courier(request):
+    """FynkTech's own courier accounts for the super admin's OMS Courier
+    tab, and the platform org id the tab acts as to manage them."""
+    return Response({"success": True, **overview_service.oms_courier_summary()})

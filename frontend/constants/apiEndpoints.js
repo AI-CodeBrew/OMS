@@ -16,6 +16,9 @@ export const API_ENDPOINTS = {
     invoicePrint: (id) => `/api/core/admin/invoices/${id}/print/`,
     // Every store's status across every integration (read-only).
     integrations: "/api/core/admin/integrations/",
+    // FynkTech's own courier accounts + the platform org id the OMS
+    // Courier tab acts as to manage them.
+    omsCourier: "/api/core/admin/oms-courier/",
     // Smartlane Business API. Under /api/core/admin/ so it inherits the
     // backend's IP allowlist, even though the code lives in the
     // integrations app.
