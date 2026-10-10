@@ -5,6 +5,7 @@ import Button from "../../shared/Button";
 import EditableField from "../../shared/EditableField";
 import ordersService from "../../../services/ordersService";
 import { EDITABLE_STATUSES } from "../statusConfig";
+import FynkTechDispatchTag from "../FynkTechDispatchTag";
 
 const ITEM_FIELDS = [
   ["product_name", "Product", "text"],
@@ -64,7 +65,10 @@ export default function LineItemsTab({ order, onOrderChanged }) {
         </div>
         <div>
           <div className="text-[10px] uppercase tracking-wide text-brand-100">Courier Status</div>
-          {order.courier_name || "Unassigned"}
+          <div className="flex flex-wrap items-center gap-1.5">
+            {order.courier_name || "Unassigned"}
+            {order.dispatched_by_fynktech ? <FynkTechDispatchTag onDark /> : null}
+          </div>
         </div>
         <div>
           <div className="text-[10px] uppercase tracking-wide text-brand-100">Fulfillment Status</div>
