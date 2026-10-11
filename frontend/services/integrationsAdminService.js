@@ -37,6 +37,15 @@ class IntegrationsAdminService {
     return data.requests || [];
   }
 
+  // Corrects a request's form fields; the store is notified of the change.
+  async editOmsCourierRequest(id, body) {
+    const data = await request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.omsCourierRequest(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    });
+    return data.request;
+  }
+
   async approveOmsCourierRequest(id, message) {
     const data = await request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.omsCourierRequestApprove(id)}`, {
       method: "POST",

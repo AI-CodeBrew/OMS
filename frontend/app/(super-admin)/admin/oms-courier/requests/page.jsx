@@ -3,8 +3,143 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import Button from "../../../../../components/shared/Button";
+import Modal from "../../../../../components/shared/Modal";
 import integrationsAdminService from "../../../../../services/integrationsAdminService";
 import timeAgo from "../../../../../lib/timeAgo";
+// The store's own request forms, reused as-is so a correction is cleaned
+// and laid out exactly like the store's submit.
+import PostExAddressForm from "../../../../(tenant)/integrations/oms-courier/_components/PostExAddressForm";
+import BarqRaftarAddressForm from "../../../../(tenant)/integrations/oms-courier/_components/BarqRaftarAddressForm";
+
+const EDIT_FORM_ID = "oms-courier-request-edit-form";
+// Couriers whose request is their own address form; the rest (Smartlane)
+// carry the generic three fields.
+const ADDRESS_FORMS = { postex: PostExAddressForm, barq_raftar: BarqRaftarAddressForm };
+
+const inputClass =
+  "mt-1 w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100";
+
+function GenericForm({ formId, initial, onSubmit }) {
+  const [form, setForm] = useState(initial);
+  return (
+    <form
+      id={formId}
+      onSubmit={(e) => {
+        e.preventDefault();
+        onSubmit(form);
+      }}
+      className="space-y-4"
+    >
+      {[
+        ["store_name", "Store name", "text"],
+        ["phone", "Phone number", "tel"],
+      ].map(([field, label, type]) => (
+        <label key={field} className="block text-sm font-medium text-slate-700">
+          {label}
+          <input
+            type={type}
+            value={form[field]}
+            onChange={(e) => setForm((f) => ({ ...f, [field]: e.target.value }))}
+            required
+            className={inputClass}
+          />
+        </label>
+      ))}
+      <label className="block text-sm font-medium text-slate-700">
+        Pickup address
+        <textarea
+          value={form.pickup_address}
+          onChange={(e) => setForm((f) => ({ ...f, pickup_address: e.target.value }))}
+          rows={3}
+          maxLength={500}
+          required
+          className={inputClass}
+        />
+      </label>
+    </form>
+  );
+}
+
+// The super admin correcting a request. The store is notified of exactly
+// what changed (backend oms_courier_service.edit_request).
+function EditRequestModal({ request, onClose, onSaved }) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const AddressForm = ADDRESS_FORMS[request.courier];
+  const movesAddress = Boolean(AddressForm) && request.status === "approved";
+
+  async function save(values) {
+    if (
+      movesAddress &&
+      !window.confirm(
+        `Save? A changed address is added to FynkTech's ${request.courier_name} account as a new ` +
+          "pickup address, and this store's bookings go out from it from now on."
+      )
+    ) {
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      onSaved(await integrationsAdminService.editOmsCourierRequest(request.id, values));
+    } catch (err) {
+      setError(err.message || "Could not save");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal
+      open
+      onClose={saving ? undefined : onClose}
+      title={`Edit ${request.courier_name} request - ${request.organization_name}`}
+      width={AddressForm ? "max-w-2xl" : "max-w-md"}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={saving}>
+            Cancel
+          </Button>
+          <Button type="submit" form={EDIT_FORM_ID} loading={saving}>
+            Save and notify store
+          </Button>
+        </>
+      }
+    >
+      <p className="text-xs text-slate-500">
+        The store gets a notification listing what you changed.
+        {movesAddress
+          ? ` Already approved: a changed address becomes a new pickup address on FynkTech's ` +
+            `${request.courier_name} account (${request.courier_name} can't edit one in place).`
+          : ""}
+      </p>
+      {error ? (
+        <p className="mt-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
+      ) : null}
+      <div className="mt-4">
+        {AddressForm ? (
+          <AddressForm
+            formId={EDIT_FORM_ID}
+            initial={request.details || {}}
+            addressCode={request.courier_reference}
+            pickupAddressId={request.courier_reference}
+            onSubmit={save}
+          />
+        ) : (
+          <GenericForm
+            formId={EDIT_FORM_ID}
+            initial={{
+              store_name: request.store_name || "",
+              phone: request.phone || "",
+              pickup_address: request.pickup_address || "",
+            }}
+            onSubmit={save}
+          />
+        )}
+      </div>
+    </Modal>
+  );
+}
 
 const FILTERS = [
   { key: "pending", label: "Pending" },
@@ -39,6 +174,9 @@ function RequestCard({ request, onAnswered }) {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const editable = request.status !== "rejected";
   const pill = STATUS_PILL[request.status] || STATUS_PILL.pending;
   const smartlane = request.smartlane;
   const postex = request.courier === "postex" ? request.details || {} : null;
@@ -91,10 +229,40 @@ function RequestCard({ request, onAnswered }) {
             {!request.is_enabled && request.status === "approved" ? " · turned off by the store" : ""}
           </p>
         </div>
-        <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${pill.className}`}>
-          {pill.text}
-        </span>
+        <div className="flex items-center gap-2">
+          {editable ? (
+            <button
+              type="button"
+              onClick={() => {
+                setEditing(true);
+                setSaved(false);
+              }}
+              className="rounded-md border border-surface-border px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
+            >
+              Edit
+            </button>
+          ) : null}
+          <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${pill.className}`}>
+            {pill.text}
+          </span>
+        </div>
       </div>
+      {saved ? (
+        <p className="mt-3 rounded-md bg-green-50 px-3 py-2 text-xs text-green-700">
+          Saved - the store was notified of the changes.
+        </p>
+      ) : null}
+      {editing ? (
+        <EditRequestModal
+          request={request}
+          onClose={() => setEditing(false)}
+          onSaved={(updated) => {
+            setEditing(false);
+            setSaved(true);
+            onAnswered(updated);
+          }}
+        />
+      ) : null}
 
       {hasPostExForm ? (
         <div className="mt-4 rounded-lg bg-slate-50 p-4">

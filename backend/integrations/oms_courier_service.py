@@ -1,8 +1,12 @@
 """The super admin's side of OMS Courier requests - the OMS Couriers tab's
 Requests page. A store asks for a courier from its OMS Courier page
 (integrations.oms_courier_views); here it's approved or rejected, with a
-message the store sees. Only an approved courier lets the Dispatch Hub book
-that store's orders through FynkTech's account."""
+message the store sees, or corrected (edit_request). Each of those also
+lands under the store's bell (core.notification_service). Only an approved
+courier lets the Dispatch Hub book that store's orders through FynkTech's
+account."""
+
+import logging
 
 from django.utils import timezone
 
@@ -10,6 +14,8 @@ from core.models import DispatchHubStore
 from core.rbac import write_audit_log
 
 from .models import OmsCourierEnrollment, SmartlaneStoreLink
+
+logger = logging.getLogger(__name__)
 
 COURIERS = dict(OmsCourierEnrollment.COURIER_CHOICES)
 # The store's address type (oms_courier_views.POSTEX_ADDRESS_TYPES) as
@@ -103,12 +109,35 @@ def pending_count():
     ).count()
 
 
-def _get(enrollment_id):
+def _notify_store(enrollment, title, message="", changes=None, actor_email=""):
+    """Puts the update under the store's bell. Never fails the action."""
+    from core import notification_service
+    from core.models import Notification
+
+    try:
+        notification_service.notify(
+            enrollment.organization_id,
+            kind=Notification.KIND_COURIER_REQUEST,
+            title=title,
+            message=message,
+            changes=changes,
+            actor_email=actor_email,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("could not notify the store about its %s request", enrollment.courier)
+
+
+def _find(enrollment_id):
     enrollment = (
         OmsCourierEnrollment.all_objects.select_related("organization").filter(id=enrollment_id).first()
     )
     if enrollment is None:
         raise OmsCourierRequestError("Request not found.", 404)
+    return enrollment
+
+
+def _get(enrollment_id):
+    enrollment = _find(enrollment_id)
     if enrollment.status != OmsCourierEnrollment.STATUS_PENDING:
         raise OmsCourierRequestError(
             f"Only pending requests can be answered (this one is {enrollment.status}).", 409
@@ -260,6 +289,10 @@ def approve_request(enrollment_id, *, message="", actor_email=""):
         ]
     )
     _audit(enrollment, "oms_courier.approved", "Approved", message, actor_email)
+    name = COURIERS.get(enrollment.courier, enrollment.courier)
+    _notify_store(
+        enrollment, f"FynkTech approved your {name} request", message, actor_email=actor_email,
+    )
     return _serialize_one(enrollment)
 
 
@@ -281,6 +314,7 @@ def reject_request(enrollment_id, *, message="", actor_email=""):
             business_services.reject_store_link(link.id, note=message, actor_email=actor_email)
             enrollment.refresh_from_db()
             _audit(enrollment, "oms_courier.rejected", "Rejected", message, actor_email)
+            _notify_rejected(enrollment, message, actor_email)
             return _serialize_one(enrollment)
 
     enrollment.status = OmsCourierEnrollment.STATUS_REJECTED
@@ -294,6 +328,101 @@ def reject_request(enrollment_id, *, message="", actor_email=""):
         ]
     )
     _audit(enrollment, "oms_courier.rejected", "Rejected", message, actor_email)
+    _notify_rejected(enrollment, message, actor_email)
+    return _serialize_one(enrollment)
+
+
+def _notify_rejected(enrollment, message, actor_email):
+    name = COURIERS.get(enrollment.courier, enrollment.courier)
+    _notify_store(
+        enrollment, f"FynkTech rejected your {name} request", message, actor_email=actor_email,
+    )
+
+
+def _form_labels(courier):
+    """{field: label} of what a request's form shows - its courier's own
+    address form, or the generic three fields."""
+    from .oms_courier_views import BARQRAFTAR_FIELDS, DETAIL_FIELDS, POSTEX_FIELDS
+
+    fields = {
+        OmsCourierEnrollment.COURIER_POSTEX: POSTEX_FIELDS,
+        OmsCourierEnrollment.COURIER_BARQRAFTAR: BARQRAFTAR_FIELDS,
+    }.get(courier)
+    if fields is None:
+        return {field: label for field, (label, _) in DETAIL_FIELDS.items()}
+    # BarqRaftar's city shows as its name; the id beside it is bookkeeping.
+    return {field: spec[0] for field, spec in fields.items() if field != "city_id"}
+
+
+def _shown(field, value):
+    from .oms_courier_views import POSTEX_ADDRESS_TYPES
+
+    if field == "address_type":
+        value = POSTEX_ADDRESS_TYPES.get(value, value)
+    return value or "-"
+
+
+def edit_request(enrollment_id, body, *, actor_email=""):
+    """The super admin correcting a store's request - its courier's own form
+    fields, cleaned exactly as the store's own submit is. A pending request
+    just takes the new values. An approved PostEx/BarqRaftar one already has
+    its pickup address on FynkTech's account, and neither courier can edit
+    one (PostEx has no API for it; BarqRaftar's "update" makes a new
+    address), so a changed address is added as a new one there and the
+    store's bookings move to its code. A rejected request is the store's to
+    fix and resend. The store is told what changed."""
+    from .oms_courier_views import COURIER_FORMS, _clean_generic
+
+    enrollment = _find(enrollment_id)
+    if enrollment.status == OmsCourierEnrollment.STATUS_REJECTED:
+        raise OmsCourierRequestError(
+            "A rejected request is fixed and sent again by the store.", 409
+        )
+    clean = COURIER_FORMS.get(enrollment.courier, _clean_generic)
+    details, generic, problem = clean(body or {})
+    if problem:
+        raise OmsCourierRequestError(problem)
+
+    own_form = enrollment.courier in COURIER_FORMS
+    old_values = (enrollment.details or {}) if own_form else {
+        f: getattr(enrollment, f) for f in generic
+    }
+    new_values = details if own_form else generic
+    changes = [
+        {"field": field, "label": label,
+         "old": _shown(field, old_values.get(field)), "new": _shown(field, new_values.get(field))}
+        for field, label in _form_labels(enrollment.courier).items()
+        if (old_values.get(field) or "") != (new_values.get(field) or "")
+    ]
+    if not changes and (not own_form or (enrollment.details or {}) == details):
+        return _serialize_one(enrollment)
+
+    old_reference = enrollment.courier_reference
+    enrollment.details = details
+    for field, value in generic.items():
+        setattr(enrollment, field, value)
+    create_address = _ON_APPROVE.get(enrollment.courier)
+    if enrollment.status == OmsCourierEnrollment.STATUS_APPROVED and create_address is not None:
+        # Nothing is saved if the courier refuses the new address.
+        enrollment.courier_reference = create_address(enrollment)
+        changes.append({
+            "field": "courier_reference",
+            "label": "Pickup address code" if enrollment.courier == OmsCourierEnrollment.COURIER_POSTEX
+            else "Pickup address ID",
+            "old": old_reference or "-",
+            "new": enrollment.courier_reference,
+        })
+    enrollment.save()
+
+    name = COURIERS.get(enrollment.courier, enrollment.courier)
+    summary = "; ".join(f"{c['label']}: {c['old']} -> {c['new']}" for c in changes[:3])
+    if len(changes) > 3:
+        summary += f" (+{len(changes) - 3} more)"
+    _audit(enrollment, "oms_courier.edited", "Edited", summary, actor_email)
+    _notify_store(
+        enrollment, f"FynkTech updated your {name} request", summary, changes=changes,
+        actor_email=actor_email,
+    )
     return _serialize_one(enrollment)
 
 
