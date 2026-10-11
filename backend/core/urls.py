@@ -2,7 +2,7 @@ from django.urls import include, path
 
 from integrations import admin_views as integrations_admin_views
 
-from . import admin_views, team_views, views
+from . import admin_views, notification_views, team_views, views
 
 urlpatterns = [
     path("health/", views.health, name="health"),
@@ -11,6 +11,8 @@ urlpatterns = [
     path("team/<uuid:user_id>/", team_views.team_member_detail, name="team-member-detail"),
     path("audit-logs/", team_views.audit_logs, name="audit-logs"),
     path("stores/", views.stores, name="stores"),
+    path("notifications/", notification_views.notifications, name="notifications"),
+    path("notifications/read/", notification_views.notifications_read, name="notifications-read"),
     path("stores/switch/", views.switch_store, name="stores-switch"),
     path("admin/organizations/", admin_views.organizations, name="admin-organizations"),
     path(

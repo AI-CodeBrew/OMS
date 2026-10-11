@@ -4,24 +4,11 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import Dropdown from "../shared/Dropdown";
 import StoreSwitcher from "./StoreSwitcher";
+import NotificationBell from "./NotificationBell";
 import authService from "../../services/authService";
 import { useEffectiveUser } from "../../store/authStore";
 import useCriticalOrdersStore from "../../store/criticalOrdersStore";
 import { getVisibleModules } from "./moduleNav";
-
-function BellIcon({ className }) {
-  return (
-    <svg viewBox="0 0 20 20" fill="none" className={className} aria-hidden="true">
-      <path
-        d="M10 2.5c-2.2 0-4 1.8-4 4v2.3c0 .5-.2 1-.5 1.4L4.5 11.5A1 1 0 0 0 5.3 13h9.4a1 1 0 0 0 .8-1.6L14.5 10.2a2 2 0 0 1-.5-1.4V6.5c0-2.2-1.8-4-4-4Z"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinejoin="round"
-      />
-      <path d="M8.3 16a1.8 1.8 0 0 0 3.4 0" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
 
 function ChevronIcon({ className }) {
   return (
@@ -96,25 +83,10 @@ export default function TenantHeader({ activeModule }) {
         <div className="flex shrink-0 items-center justify-end gap-1 sm:gap-4">
           <StoreSwitcher />
 
-          <button
-            type="button"
-            className="relative rounded-md p-2 text-brand-100 hover:bg-white/10 hover:text-white"
-            title={
-              criticalCount > 0
-                ? `${criticalCount} order${criticalCount === 1 ? "" : "s"} in transit for more than 3 days`
-                : "Notifications"
-            }
-            onClick={() => {
-              if (criticalCount > 0) router.push("/orders?status=critical");
-            }}
-          >
-            <BellIcon className="h-5 w-5" />
-            {criticalCount > 0 ? (
-              <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-semibold leading-none text-white">
-                {criticalCount > 99 ? "99+" : criticalCount}
-              </span>
-            ) : null}
-          </button>
+          <NotificationBell
+            criticalCount={criticalCount}
+            canMarkRead={user?.role !== "super_admin"}
+          />
 
           <Dropdown
             align="right"

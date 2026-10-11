@@ -641,9 +641,40 @@ class OrderViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(instance, data=request.data, partial=partial)
         serializer.is_valid(raise_exception=True)
         items = serializer.validated_data.pop("items", None)
+        before = {field: getattr(instance, field) for field in serializer.validated_data}
+        items_before = services.order_items_summary(instance) if items is not None else None
         order = services.update_order_detail(instance, fields=serializer.validated_data, items=items)
+        if getattr(request, "is_super_admin", False):
+            self._notify_store_of_edit(request, order, services.order_changes(order, before, items_before))
         output = self.get_serializer(order)
         return Response(output.data)
+
+    @staticmethod
+    def _notify_store_of_edit(request, order, changes):
+        """FynkTech's super admin changed a store's order (from the Dispatch
+        Hub or operating the store): tell the store, under its header's bell,
+        exactly what changed - saved, so it stays on record. Never fails the
+        edit itself."""
+        if not changes:
+            return
+        from core import notification_service
+        from core.models import Notification
+
+        summary = "; ".join(f"{c['label']}: {c['old']} -> {c['new']}" for c in changes[:3])
+        if len(changes) > 3:
+            summary += f" (+{len(changes) - 3} more)"
+        try:
+            notification_service.notify(
+                order.organization_id,
+                kind=Notification.KIND_ORDER_EDITED,
+                title=f"FynkTech edited order {order.order_number}",
+                message=summary,
+                order=order,
+                changes=changes,
+                actor_email=getattr(request, "auth_email", "") or "",
+            )
+        except Exception:
+            logger.exception("could not notify the store about the edit to %s", order.order_number)
 
     @action(detail=False, methods=["get"])
     def counts(self, request):
