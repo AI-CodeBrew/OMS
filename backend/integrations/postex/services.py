@@ -23,6 +23,7 @@ import time
 from datetime import timedelta
 
 from django.conf import settings
+from django.core.cache import cache
 from django.db import transaction
 from django.db.models import F
 from django.db.utils import OperationalError
@@ -227,6 +228,41 @@ def get_cities(connection, *, force_refresh=False):
     connection.cities_cache = cities
     connection.cities_cached_at = timezone.now()
     connection.save(update_fields=["cities_cache", "cities_cached_at", "updated_at"])
+    return cities
+
+
+_PICKUP_CITIES_TTL = 24 * 60 * 60
+
+
+def get_pickup_cities(connection):
+    """The cities PostEx picks up from, sorted - what a pickup address's
+    city must be (get_cities above is the delivery list). Read once a day
+    per process (same convention as business_services.kyc_options); raises
+    PostExAPIError if PostEx can't be reached and nothing is cached."""
+    key = f"postex_pickup_cities:{connection.pk}"
+    cached = cache.get(key)
+    if cached:
+        return cached
+
+    seen = set()
+    cities = []
+    for row in client.fetch_operational_cities(connection.api_token, city_type="Pickup"):
+        if not isinstance(row, dict):
+            continue
+        # Live answers carry booleans, the guide's sample shows "true"
+        # strings - and the filter above should already have done this.
+        flag = row.get("isPickupCity")
+        if flag is not None and str(flag).strip().lower() not in ("true", "1"):
+            continue
+        name = str(row.get("operationalCityName") or "").strip()
+        key_name = _normalize_city_name(name)
+        if not name or key_name in seen:
+            continue
+        seen.add(key_name)
+        cities.append(name)
+    cities.sort(key=str.lower)
+    if cities:
+        cache.set(key, cities, _PICKUP_CITIES_TTL)
     return cities
 
 

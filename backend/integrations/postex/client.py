@@ -184,12 +184,17 @@ def _require_token(token):
 
 # ------------------------------------------------------------ Reference --
 
-def fetch_operational_cities(token):
+def fetch_operational_cities(token, *, city_type=None):
     """[{"operationalCityName": "ABBOTTABAD", "countryName", "isPickupCity",
     "isDeliveryCity"}, ...] - ~900 rows, names mostly UPPER CASE (confirmed
-    live)."""
+    live). city_type "Pickup" or "Delivery" narrows it server-side - the
+    guide's operationalCityType query param (Merchant API guide v4.1.9,
+    3.1.2)."""
     _require_token(token)
-    body = _request("GET", "/v2/get-operational-city", token, context="Operational cities", timeout=90)
+    params = {"operationalCityType": city_type} if city_type else None
+    body = _request(
+        "GET", "/v2/get-operational-city", token, context="Operational cities", params=params, timeout=90,
+    )
     rows = _dist(body)
     return rows if isinstance(rows, list) else []
 

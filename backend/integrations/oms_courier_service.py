@@ -13,9 +13,9 @@ from .models import OmsCourierEnrollment, SmartlaneStoreLink
 
 COURIERS = dict(OmsCourierEnrollment.COURIER_CHOICES)
 # The store's address type (oms_courier_views.POSTEX_ADDRESS_TYPES) as
-# PostEx's create-merchant-address addressTypeId. Its API knows 1 (Return)
-# and 2 (Pickup) - an address made with 2 lists as "Pickup/Return Address" -
-# so both pickup choices go as 2.
+# PostEx's create-merchant-address addressTypeId: 1 = Return, 2 = Pickup are
+# its only values (Merchant API guide v4.1.9, 3.3.2), and an address made
+# with 2 lists as "Pickup/Return Address" - so both pickup choices go as 2.
 POSTEX_ADDRESS_TYPE_IDS = {"return": 1, "pickup": 2, "pickup_return": 2}
 
 
@@ -155,16 +155,18 @@ def _create_postex_address(enrollment):
         before = {
             str(a.get("addressCode")) for a in postex_client.list_pickup_addresses(connection.api_token)
         }
+        # Paired as the guide describes the fields (3.3.2): the contact person
+        # with phone1/phone2 (both mandatory - Contact#2 falls back to
+        # Contact#1), the shipper as the warehouse manager with phone3.
+        phone1 = form.get("contact_1") or form.get("shipper_contact") or ""
         postex_client.create_pickup_address(
             connection.api_token,
             address=form["address"],
             city_name=form["city"],
             contact_person_name=form.get("contact_person_name") or form.get("shipper_name") or "",
-            phone1=form["shipper_contact"],
-            phone2=form.get("contact_1") or form["shipper_contact"],
-            phone3=form.get("contact_2") or "",
-            # PostEx's API has no shipper field; this is the free-text name it
-            # keeps beside the contact person.
+            phone1=phone1,
+            phone2=form.get("contact_2") or phone1,
+            phone3=form.get("shipper_contact") or "",
             warehouse_manager_name=form.get("shipper_name") or "",
             address_type_id=POSTEX_ADDRESS_TYPE_IDS.get(form.get("address_type"), 2),
         )

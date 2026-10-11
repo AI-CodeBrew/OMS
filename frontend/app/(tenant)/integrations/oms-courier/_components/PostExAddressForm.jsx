@@ -33,9 +33,11 @@ function Field({ label, required, hint, wide, children }) {
 // PostEx's own "Add Address" form, field for field. When FynkTech approves
 // the request it becomes a pickup address on FynkTech's PostEx account, and
 // PostEx gives it the address code every booking of this store's orders
-// then goes out from (backend integrations/oms_courier_service.py). The
-// caller renders the submit button (form={formId}) and saves `onSubmit`'s
-// values.
+// then goes out from (backend integrations/oms_courier_service.py). What's
+// required is what PostEx's create-merchant-address requires: the contact
+// person and their first number; the shipper (PostEx's warehouse manager)
+// is optional. Cities are the ones PostEx picks up from. The caller renders
+// the submit button (form={formId}) and saves `onSubmit`'s values.
 export default function PostExAddressForm({ formId, initial, addressCode, onSubmit }) {
   const [form, setForm] = useState(() => ({ ...EMPTY_POSTEX_FORM, ...(initial || {}) }));
   const [options, setOptions] = useState({ cities: [], address_types: [] });
@@ -101,7 +103,7 @@ export default function PostExAddressForm({ formId, initial, addressCode, onSubm
               type="text"
               value={form.city}
               onChange={(e) => set("city", e.target.value)}
-              placeholder={optionsError ? "e.g. LAHORE" : "Loading cities…"}
+              placeholder={optionsError ? "e.g. LAHORE" : "Loading pickup cities…"}
               required
               className={inputClass}
             />
@@ -138,25 +140,23 @@ export default function PostExAddressForm({ formId, initial, addressCode, onSubm
             className={inputClass}
           />
         </Field>
-        <Field label="Shipper Name" required>
+        <Field label="Shipper Name">
           <input
             type="text"
             value={form.shipper_name}
             onChange={(e) => set("shipper_name", e.target.value)}
             placeholder="Shipper Name"
             maxLength={255}
-            required
             className={inputClass}
           />
         </Field>
-        <Field label="Shipper Contact" required>
+        <Field label="Shipper Contact">
           <input
             type="tel"
             value={form.shipper_contact}
             onChange={(e) => set("shipper_contact", e.target.value)}
             placeholder="03xxxxxxxxx"
             maxLength={16}
-            required
             className={inputClass}
           />
         </Field>
@@ -171,13 +171,14 @@ export default function PostExAddressForm({ formId, initial, addressCode, onSubm
             className={inputClass}
           />
         </Field>
-        <Field label="Contact#1">
+        <Field label="Contact#1" required>
           <input
             type="tel"
             value={form.contact_1}
             onChange={(e) => set("contact_1", e.target.value)}
             placeholder="03xxxxxxxxx"
             maxLength={16}
+            required
             className={inputClass}
           />
         </Field>

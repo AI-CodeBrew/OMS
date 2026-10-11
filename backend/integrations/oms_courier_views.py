@@ -30,7 +30,10 @@ DETAIL_FIELDS = {
 # PostEx is asked for with its own "Add Address" form, which becomes a
 # pickup address on FynkTech's PostEx account when approved (see
 # oms_courier_service.approve_request). Field -> (label, max length,
-# required, kind). PostEx assigns the address code itself.
+# required, kind). Required as PostEx's create-merchant-address requires
+# them (Merchant API guide v4.1.9, 3.3.2): the contact person and their
+# first number are mandatory there, the shipper (its warehouse manager
+# name/phone) optional. PostEx assigns the address code itself.
 POSTEX_ADDRESS_TYPES = {
     "return": "Return Address",
     "pickup": "Pickup Address",
@@ -39,10 +42,10 @@ POSTEX_ADDRESS_TYPES = {
 POSTEX_FIELDS = {
     "city": ("City", 150, True, "text"),
     "address_type": ("Address type", 20, True, "address_type"),
-    "shipper_name": ("Shipper name", 255, True, "text"),
-    "shipper_contact": ("Shipper contact", 11, True, "phone"),
+    "shipper_name": ("Shipper name", 255, False, "text"),
+    "shipper_contact": ("Shipper contact", 11, False, "phone"),
     "contact_person_name": ("Contact person name", 255, True, "text"),
-    "contact_1": ("Contact#1", 11, False, "phone"),
+    "contact_1": ("Contact#1", 11, True, "phone"),
     "contact_2": ("Contact#2", 11, False, "phone"),
     "address": ("Address", 500, True, "text"),
 }
@@ -84,8 +87,8 @@ def _clean_postex(body):
     if problems:
         return None, None, " ".join(problems)
     generic = {
-        "store_name": details["shipper_name"][:255],
-        "phone": details["shipper_contact"],
+        "store_name": (details["shipper_name"] or details["contact_person_name"])[:255],
+        "phone": details["shipper_contact"] or details["contact_1"],
         "pickup_address": f"{details['address']}, {details['city']}"[:500],
     }
     return details, generic, ""
@@ -152,8 +155,9 @@ class OmsCourierEnrollmentListView(APIView):
 
 
 class OmsCourierEnrollmentOptionsView(APIView):
-    """GET -> what a courier's request form picks from. PostEx: its cities
-    (from FynkTech's own PostEx account) and address types."""
+    """GET -> what a courier's request form picks from. PostEx: the cities
+    it picks up from (from FynkTech's own PostEx account) and address
+    types."""
 
     permission_classes = [IsOrgAdmin]
 
@@ -168,7 +172,7 @@ class OmsCourierEnrollmentOptionsView(APIView):
         cities = []
         if connection is not None:
             try:
-                cities = postex_services.get_cities(connection)
+                cities = postex_services.get_pickup_cities(connection)
             except PostExAPIError as exc:
                 return Response(
                     {"success": False, "error": f"Could not load PostEx cities: {exc}"},
