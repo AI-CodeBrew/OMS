@@ -51,6 +51,11 @@ urlpatterns = [
         name="oms-courier-courier",
     ),
     path(
+        "oms-courier/couriers/<str:courier>/options/",
+        oms_courier_views.OmsCourierEnrollmentOptionsView.as_view(),
+        name="oms-courier-courier-options",
+    ),
+    path(
         "oms-courier/options/",
         views.OmsCourierKycOptionsView.as_view(),
         name="oms-courier-kyc-options",

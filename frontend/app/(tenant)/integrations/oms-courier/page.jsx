@@ -12,12 +12,16 @@ import {
   SmartlaneLogo,
 } from "../../../../components/integrations/IntegrationLogos";
 import SmartlaneBusinessForm from "./_components/SmartlaneBusinessForm";
+import PostExAddressForm from "./_components/PostExAddressForm";
+import BarqRaftarAddressForm from "./_components/BarqRaftarAddressForm";
 
 // FynkTech dispatches the store's orders through its own account for each
 // courier turned on here and approved by FynkTech on its Requests page
 // (backend integrations/oms_courier_views.py, oms_courier_service.py).
 // Smartlane is asked for with the full business details its onboarding
-// needs (the same form as before); the others with generic shipper details.
+// needs (the same form as before); PostEx and BarqRaftar with their own
+// pickup-address forms, which become the store's pickup address on
+// FynkTech's account for that courier once approved.
 const COURIERS = [
   {
     key: "smartlane",
@@ -42,11 +46,34 @@ const COURIERS = [
 ];
 
 const SMARTLANE_FORM_ID = "oms-courier-smartlane-form";
-const DETAILS_FORM_ID = "oms-courier-details-form";
-const EMPTY_FORM = { store_name: "", phone: "", pickup_address: "" };
 
-const inputClass =
-  "mt-1 w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100";
+// The couriers asked for with their own pickup-address form: the form, what
+// the courier calls the address once approved, and a first form's prefill.
+const ADDRESS_FORMS = {
+  postex: {
+    formId: "oms-courier-postex-form",
+    Form: PostExAddressForm,
+    referenceLabel: "PostEx address code",
+    prefill: (storeName) => ({ shipper_name: storeName }),
+  },
+  barq_raftar: {
+    formId: "oms-courier-barqraftar-form",
+    Form: BarqRaftarAddressForm,
+    referenceLabel: "BarqRaftar pickup address ID",
+    prefill: (storeName) => ({ name: storeName }),
+  },
+};
+
+// The request body that re-sends a courier's saved details as they are -
+// its own address form, or Smartlane's generic three fields.
+function savedForm(courierKey, enrollment) {
+  if (ADDRESS_FORMS[courierKey]) return { ...(enrollment.details || {}) };
+  return {
+    store_name: enrollment.store_name,
+    phone: enrollment.phone,
+    pickup_address: enrollment.pickup_address,
+  };
+}
 
 // Smartlane onboarding the store can still edit - nothing sent yet, or sent
 // back with a reason. Anything else is with a reviewer.
@@ -146,6 +173,12 @@ function CourierCard({ courier, enrollment, onboarding, busy, onToggle, onEdit, 
               .join(" · ")}
           </p>
         ) : null}
+        {enrollment?.courier_reference && enrollment.status === "approved" ? (
+          <p className="mt-1 text-xs text-slate-500">
+            {ADDRESS_FORMS[courier.key]?.referenceLabel || "Reference"}:{" "}
+            <span className="font-mono font-medium">{enrollment.courier_reference}</span>
+          </p>
+        ) : null}
         <RequestStatus enrollment={enrollment} onResubmit={() => onResubmit(courier)} />
         <div className="mt-2 flex flex-wrap gap-4 text-xs font-medium">
           {enabled && !isSmartlane ? (
@@ -173,6 +206,54 @@ function CourierCard({ courier, enrollment, onboarding, busy, onToggle, onEdit, 
   );
 }
 
+// The dialog for a courier asked for with its own pickup-address form.
+function AddressRequestModal({ courier, enrollment, storeName, saving, error, onClose, onSubmit }) {
+  const config = courier ? ADDRESS_FORMS[courier.key] : null;
+  const editing = Boolean(enrollment?.is_enabled);
+  const hasSaved = enrollment?.details && Object.keys(enrollment.details).length;
+  return (
+    <Modal
+      open={Boolean(config)}
+      onClose={onClose}
+      title={courier ? `${editing ? "Edit" : "Request"} ${courier.name}${editing ? " address" : ""}` : ""}
+      width="max-w-2xl"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={saving}>
+            Cancel
+          </Button>
+          <Button type="submit" form={config?.formId} loading={saving}>
+            {editing ? "Save" : "Send request"}
+          </Button>
+        </>
+      }
+    >
+      {config ? (
+        <>
+          <p className="text-xs text-slate-500">
+            Your pickup address for {courier.name}. Once FynkTech approves the request it&apos;s
+            added to FynkTech&apos;s {courier.name} account, and every one of your {courier.name}{" "}
+            orders - booked by FynkTech or by you - is picked up from it.
+            {editing ? " Changing it sends the request for review again." : ""}
+          </p>
+          {error ? (
+            <p className="mt-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
+          ) : null}
+          <div className="mt-4">
+            <config.Form
+              formId={config.formId}
+              initial={hasSaved ? enrollment.details : config.prefill(storeName || "")}
+              addressCode={enrollment?.courier_reference}
+              pickupAddressId={enrollment?.courier_reference}
+              onSubmit={onSubmit}
+            />
+          </div>
+        </>
+      ) : null}
+    </Modal>
+  );
+}
+
 export default function OmsCourierPage() {
   const [enrollments, setEnrollments] = useState({});
   const [defaults, setDefaults] = useState({});
@@ -183,7 +264,6 @@ export default function OmsCourierPage() {
   // The open dialog: the courier being enabled/edited, or null.
   const [dialog, setDialog] = useState(null);
   const [dialogError, setDialogError] = useState("");
-  const [form, setForm] = useState(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [busyKey, setBusyKey] = useState("");
 
@@ -209,17 +289,6 @@ export default function OmsCourierPage() {
   }, [load]);
 
   function openDialog(courier) {
-    if (courier.key !== "smartlane") {
-      const existing = enrollments[courier.key];
-      // A first form starts from another courier's details (and the store's
-      // own name), so a second courier is usually one click.
-      const filled = Object.values(enrollments).find((e) => e.store_name);
-      setForm({
-        store_name: existing?.store_name || filled?.store_name || defaults.store_name || "",
-        phone: existing?.phone || filled?.phone || "",
-        pickup_address: existing?.pickup_address || filled?.pickup_address || "",
-      });
-    }
     setDialog(courier);
     setDialogError("");
     setError("");
@@ -264,12 +333,7 @@ export default function OmsCourierPage() {
       // Already approved - back on unchanged, no new request.
       await saveEnrollment(
         courier,
-        {
-          is_enabled: true,
-          store_name: existing.store_name,
-          phone: existing.phone,
-          pickup_address: existing.pickup_address,
-        },
+        { is_enabled: true, ...savedForm(courier.key, existing) },
         `${courier.name} turned back on.`
       );
       return;
@@ -301,15 +365,15 @@ export default function OmsCourierPage() {
     openDialog(courier);
   }
 
-  async function onSaveDetails(e) {
-    e.preventDefault();
+  // Saves the open dialog's address form.
+  async function saveDialog(values) {
     if (!dialog) return;
     setSaving(true);
     setDialogError("");
     try {
       const saved = await integrationsService.saveOmsCourierCourier(dialog.key, {
         is_enabled: true,
-        ...form,
+        ...values,
       });
       setEnrollments((prev) => ({ ...prev, [dialog.key]: saved }));
       setNotice(
@@ -332,7 +396,6 @@ export default function OmsCourierPage() {
   }
 
   const isSmartlaneDialog = dialog?.key === "smartlane";
-  const editingEnabled = dialog && enrollments[dialog.key]?.is_enabled;
   const rejected = onboarding?.link?.status === "rejected";
 
   return (
@@ -418,66 +481,15 @@ export default function OmsCourierPage() {
         </div>
       </Modal>
 
-      <Modal
-        open={Boolean(dialog) && !isSmartlaneDialog}
+      <AddressRequestModal
+        courier={dialog && ADDRESS_FORMS[dialog.key] ? dialog : null}
+        enrollment={dialog ? enrollments[dialog.key] : null}
+        storeName={defaults.store_name}
+        saving={saving}
+        error={dialogError}
         onClose={closeDialog}
-        title={dialog ? `${editingEnabled ? "Edit" : "Request"} ${dialog.name}` : ""}
-        width="max-w-md"
-        footer={
-          <>
-            <Button variant="secondary" onClick={closeDialog} disabled={saving}>
-              Cancel
-            </Button>
-            <Button type="submit" form={DETAILS_FORM_ID} loading={saving}>
-              {editingEnabled ? "Save" : "Send request"}
-            </Button>
-          </>
-        }
-      >
-        <form id={DETAILS_FORM_ID} onSubmit={onSaveDetails} className="space-y-4">
-          <p className="text-xs text-slate-500">
-            FynkTech uses these details when booking your orders with {dialog?.name}, and reviews
-            the request first.{editingEnabled ? " Changing them sends it for review again." : ""}
-          </p>
-          {dialogError ? (
-            <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{dialogError}</p>
-          ) : null}
-          <label className="block text-sm font-medium text-slate-700">
-            Store name
-            <input
-              type="text"
-              value={form.store_name}
-              onChange={(e) => setForm((f) => ({ ...f, store_name: e.target.value }))}
-              maxLength={255}
-              required
-              className={inputClass}
-            />
-          </label>
-          <label className="block text-sm font-medium text-slate-700">
-            Phone number
-            <input
-              type="tel"
-              value={form.phone}
-              onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))}
-              placeholder="03XX XXXXXXX"
-              maxLength={50}
-              required
-              className={inputClass}
-            />
-          </label>
-          <label className="block text-sm font-medium text-slate-700">
-            Pickup address
-            <textarea
-              value={form.pickup_address}
-              onChange={(e) => setForm((f) => ({ ...f, pickup_address: e.target.value }))}
-              rows={3}
-              maxLength={500}
-              required
-              className={inputClass}
-            />
-          </label>
-        </form>
-      </Modal>
+        onSubmit={saveDialog}
+      />
     </div>
   );
 }

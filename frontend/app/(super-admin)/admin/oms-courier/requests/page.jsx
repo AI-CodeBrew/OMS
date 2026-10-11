@@ -19,6 +19,12 @@ const STATUS_PILL = {
   rejected: { text: "Rejected", className: "bg-red-50 text-red-700" },
 };
 
+const POSTEX_ADDRESS_TYPES = {
+  return: "Return Address",
+  pickup: "Pickup Address",
+  pickup_return: "Pickup/Return Address",
+};
+
 function Detail({ label, children }) {
   if (!children) return null;
   return (
@@ -35,6 +41,13 @@ function RequestCard({ request, onAnswered }) {
   const [error, setError] = useState("");
   const pill = STATUS_PILL[request.status] || STATUS_PILL.pending;
   const smartlane = request.smartlane;
+  const postex = request.courier === "postex" ? request.details || {} : null;
+  const hasPostExForm = Boolean(postex && postex.address);
+  const barq = request.courier === "barq_raftar" ? request.details || {} : null;
+  const hasBarqForm = Boolean(barq && barq.address);
+  // Couriers whose approval adds the store's address to FynkTech's account.
+  const addsAddress = Boolean(postex || barq);
+  const hasAddressForm = hasPostExForm || hasBarqForm;
 
   async function answer(kind) {
     const text = message.trim();
@@ -83,11 +96,61 @@ function RequestCard({ request, onAnswered }) {
         </span>
       </div>
 
-      <dl className="mt-4 grid gap-4 sm:grid-cols-3">
-        <Detail label="Store name">{request.store_name}</Detail>
-        <Detail label="Phone">{request.phone}</Detail>
-        <Detail label="Pickup address">{request.pickup_address}</Detail>
-      </dl>
+      {hasPostExForm ? (
+        <div className="mt-4 rounded-lg bg-slate-50 p-4">
+          <p className="text-xs font-semibold text-slate-700">PostEx address</p>
+          <dl className="mt-3 grid gap-4 sm:grid-cols-3">
+            <Detail label="City">{postex.city}</Detail>
+            <Detail label="Address type">
+              {POSTEX_ADDRESS_TYPES[postex.address_type] || postex.address_type}
+            </Detail>
+            <Detail label="Address code">
+              {request.courier_reference ? (
+                <span className="font-mono">{request.courier_reference}</span>
+              ) : (
+                "Given by PostEx on approval"
+              )}
+            </Detail>
+            <Detail label="Shipper name">{postex.shipper_name}</Detail>
+            <Detail label="Shipper contact">{postex.shipper_contact}</Detail>
+            <Detail label="Contact person">{postex.contact_person_name}</Detail>
+            <Detail label="Contact#1">{postex.contact_1}</Detail>
+            <Detail label="Contact#2">{postex.contact_2}</Detail>
+          </dl>
+          <dl className="mt-4">
+            <Detail label="Address">{postex.address}</Detail>
+          </dl>
+        </div>
+      ) : hasBarqForm ? (
+        <div className="mt-4 rounded-lg bg-slate-50 p-4">
+          <p className="text-xs font-semibold text-slate-700">BarqRaftar pickup address</p>
+          <dl className="mt-3 grid gap-4 sm:grid-cols-3">
+            <Detail label="Store name">{barq.name}</Detail>
+            <Detail label="City">{barq.city_name}</Detail>
+            <Detail label="Pickup address ID">
+              {request.courier_reference ? (
+                <span className="font-mono">{request.courier_reference}</span>
+              ) : (
+                "Given by BarqRaftar on approval"
+              )}
+            </Detail>
+            <Detail label="Person of contact">{barq.person_of_contact}</Detail>
+            <Detail label="Phone">{barq.phone_number}</Detail>
+            <Detail label="Location">
+              {barq.latitude && barq.longitude ? `${barq.latitude}, ${barq.longitude}` : ""}
+            </Detail>
+          </dl>
+          <dl className="mt-4">
+            <Detail label="Address">{barq.address}</Detail>
+          </dl>
+        </div>
+      ) : (
+        <dl className="mt-4 grid gap-4 sm:grid-cols-3">
+          <Detail label="Store name">{request.store_name}</Detail>
+          <Detail label="Phone">{request.phone}</Detail>
+          <Detail label="Pickup address">{request.pickup_address}</Detail>
+        </dl>
+      )}
 
       {smartlane ? (
         <div className="mt-4 rounded-lg bg-slate-50 p-4">
@@ -134,6 +197,16 @@ function RequestCard({ request, onAnswered }) {
               className="mt-1 w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
             />
           </label>
+          {addsAddress ? (
+            <p className="text-xs text-slate-500">
+              {hasAddressForm
+                ? `Approving adds this address to FynkTech's ${request.courier_name} account - every ` +
+                  `${request.courier_name} order of this store is then picked up from it. If ` +
+                  `${request.courier_name} refuses it, the request stays pending.`
+                : `This request came before the ${request.courier_name} address form - reject it so ` +
+                  "the store sends the form again."}
+            </p>
+          ) : null}
           {error ? <p className="text-sm text-red-600">{error}</p> : null}
           <div className="flex flex-wrap justify-end gap-2">
             <Button

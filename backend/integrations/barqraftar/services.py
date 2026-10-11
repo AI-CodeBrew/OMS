@@ -329,6 +329,25 @@ def connection_for_request(request):
     ).first()
 
 
+def store_pickup(organization_id):
+    """(pickup_address_id, from_city_id) of the store's own pickup address on
+    FynkTech's BarqRaftar account - added from its OMS Courier request when
+    the super admin approved it (integrations.oms_courier_service). Every
+    booking of its orders through FynkTech's account goes out from here;
+    ("", "") if there's none."""
+    from integrations.models import OmsCourierEnrollment
+
+    enrollment = OmsCourierEnrollment.all_objects.filter(
+        organization_id=organization_id,
+        courier=OmsCourierEnrollment.COURIER_BARQRAFTAR,
+        status=OmsCourierEnrollment.STATUS_APPROVED,
+        is_enabled=True,
+    ).first()
+    if enrollment is None or not enrollment.courier_reference:
+        return "", ""
+    return enrollment.courier_reference, str((enrollment.details or {}).get("city_id") or "")
+
+
 def _shipments_for(connection):
     """Active shipments booked through `connection`: the store's own - or,
     for FynkTech's account, every Hub booking made through it, whichever
@@ -370,7 +389,7 @@ def _next_reference_id(order, *, via_platform=False):
     return f"{base}-R{n}"
 
 
-def _build_order_payload(order, connection, city, reference_id):
+def _build_order_payload(order, connection, city, reference_id, from_city_id):
     phone = _normalize_phone(order.customer_phone)
     if not phone:
         raise BarqRaftarBookingError(
@@ -395,7 +414,7 @@ def _build_order_payload(order, connection, city, reference_id):
         "total_amount": int(round(order.grand_total)),
         "cod_amount": cod_amount,
         "to_city_id": _as_int(city["id"]),
-        "from_city_id": _as_int(connection.from_city_id),
+        "from_city_id": _as_int(from_city_id),
         "shipment_type": "cod" if cod_amount > 0 else "courier",
         "weight_grams": _order_weight(order, connection),
         "line_items": line_items or [{"name": order.order_number, "quantity": 1}],
@@ -464,6 +483,12 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False, 
         not_connected = "Connect BarqRaftar from the Integrations page first."
     if connection is None:
         return [{"order_id": str(oid), "success": False, "error": not_connected} for oid in order_ids]
+    # Through FynkTech's account, from the store's own address on it (not the
+    # account's active one) - see store_pickup.
+    if via_platform:
+        pickup_address_id, from_city_id = store_pickup(organization_id)
+    else:
+        pickup_address_id, from_city_id = connection.pickup_address_id, connection.from_city_id
 
     # Every booking goes out from the ACTIVE pickup address (Pickup
     # Addresses tab -> "Set as active"), with a pickup request - the only way
@@ -471,12 +496,13 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False, 
     # pickup_address_id sent without create_pickup_request is silently
     # ignored and the parcel falls back to the account's registered address
     # (confirmed live, 2026-09-30). from_city_id comes from the same address.
-    if not connection.pickup_address_id or not connection.from_city_id:
-        return [
-            {"order_id": str(oid), "success": False,
-             "error": "Set an active pickup address on the BarqRaftar integration page first."}
-            for oid in order_ids
-        ]
+    if not pickup_address_id or not from_city_id:
+        no_pickup = (
+            "This store's BarqRaftar pickup address isn't on FynkTech's account yet - approve its "
+            "BarqRaftar request under OMS Couriers > Requests."
+            if via_platform else "Set an active pickup address on the BarqRaftar integration page first."
+        )
+        return [{"order_id": str(oid), "success": False, "error": no_pickup} for oid in order_ids]
 
     try:
         get_cities(connection)
@@ -530,7 +556,7 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False, 
 
         try:
             reference_id = _next_reference_id(order, via_platform=via_platform)
-            payload = _build_order_payload(order, connection, city, reference_id)
+            payload = _build_order_payload(order, connection, city, reference_id, from_city_id)
         except BarqRaftarBookingError as exc:
             results.append({
                 "order_id": str(order_id), "order_number": order.order_number,
@@ -560,7 +586,7 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False, 
             response = client.bulk_store(
                 connection.api_key, connection.api_secret, payloads,
                 create_pickup_request=True,
-                pickup_address_id=connection.pickup_address_id,
+                pickup_address_id=pickup_address_id,
             )
         except BarqRaftarAPIError as exc:
             for b in chunk:

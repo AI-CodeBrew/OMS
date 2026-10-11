@@ -29,13 +29,18 @@ function MoneyCell({ label, value }) {
 
 export default function OrderItemsEditor({ order, draft, editing, onChange, onAction, onScan, working }) {
   const barqraftarConnected = useBarqRaftarStatusStore((s) => s.connected);
+  const barqraftarOmsConnected = useBarqRaftarStatusStore((s) => s.omsConnected);
   const postexConnected = usePostExStatusStore((s) => s.connected);
+  const postexOmsConnected = usePostExStatusStore((s) => s.omsConnected);
   // Only the documents/actions of the courier this order was booked with.
   const actions = forOrdersBookingAccounts(
     withPostExActions(
       order.status,
-      withBarqRaftarActions(order.status, ACTIONS_BY_STATUS[order.status] || [], barqraftarConnected),
-      postexConnected
+      withBarqRaftarActions(
+        order.status, ACTIONS_BY_STATUS[order.status] || [], barqraftarConnected, barqraftarOmsConnected
+      ),
+      postexConnected,
+      postexOmsConnected
     ),
     [order]
   );

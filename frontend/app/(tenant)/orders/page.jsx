@@ -535,7 +535,9 @@ export default function OrdersPage() {
   );
 
   const barqraftarConnected = useBarqRaftarStatusStore((s) => s.connected);
+  const barqraftarOmsConnected = useBarqRaftarStatusStore((s) => s.omsConnected);
   const postexConnected = usePostExStatusStore((s) => s.connected);
+  const postexOmsConnected = usePostExStatusStore((s) => s.omsConnected);
 
   // Memoized so OrderDetailPanel gets a stable prop between renders. The
   // per-org "is X connected" checks these come from don't mean anything
@@ -564,8 +566,11 @@ export default function OrdersPage() {
     const actions = forOrdersBookingAccounts(
       withPostExActions(
         status,
-        withBarqRaftarActions(status, ACTIONS_BY_STATUS[status] || [], barqraftarConnected),
-        postexConnected
+        withBarqRaftarActions(
+          status, ACTIONS_BY_STATUS[status] || [], barqraftarConnected, barqraftarOmsConnected
+        ),
+        postexConnected,
+        postexOmsConnected
       ),
       selectedOrders,
       ["print_loadsheet", "print_airway_bill"]
@@ -581,16 +586,16 @@ export default function OrdersPage() {
       covered.add("barqraftar_ready_for_pickup");
     }
     return actions.filter((a) => !covered.has(a.action));
-  }, [selectedOrders, barqraftarConnected, postexConnected]);
+  }, [selectedOrders, barqraftarConnected, barqraftarOmsConnected, postexConnected, postexOmsConnected]);
 
   // The couriers the picker offers: whichever this org can print for.
   const printAccounts = useMemo(
     () => [
       ...bookingAccounts.map((a) => a.id),
-      ...(barqraftarConnected ? ["barqraftar"] : []),
-      ...(postexConnected ? ["postex"] : []),
+      ...(barqraftarConnected || barqraftarOmsConnected ? ["barqraftar"] : []),
+      ...(postexConnected || postexOmsConnected ? ["postex"] : []),
     ],
-    [bookingAccounts, barqraftarConnected, postexConnected]
+    [bookingAccounts, barqraftarConnected, barqraftarOmsConnected, postexConnected, postexOmsConnected]
   );
 
   // fromBulk: the toolbar/selection bar (several orders, maybe several

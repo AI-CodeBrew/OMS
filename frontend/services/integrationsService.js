@@ -279,7 +279,19 @@ class IntegrationsService {
     return data;
   }
 
-  // body: { is_enabled, store_name, phone, pickup_address }
+  // What a courier's request form picks from - PostEx: { cities, address_types }.
+  async getOmsCourierCourierOptions(courier) {
+    const response = await fetch(
+      `${apiConfig.baseUrl}/api/integrations/oms-courier/couriers/${encodeURIComponent(courier)}/options/`,
+      { headers: authService.getAuthHeaders() }
+    );
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || data.detail || "Failed to load the form");
+    return data;
+  }
+
+  // body: { is_enabled, ...form fields } - PostEx's address form, or
+  // store_name / phone / pickup_address for the others.
   async saveOmsCourierCourier(courier, body) {
     const response = await fetch(
       `${apiConfig.baseUrl}/api/integrations/oms-courier/couriers/${encodeURIComponent(courier)}/`,

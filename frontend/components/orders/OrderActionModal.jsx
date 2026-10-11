@@ -71,6 +71,16 @@ const CONFIRM_BY_ACTION = {
     button: "Book",
     result: "be booked with PostEx",
   },
+  push_to_barqraftar_oms: {
+    title: "Book with BarqRaftar (OMS Courier)",
+    button: "Book",
+    result: "be booked with BarqRaftar through FynkTech's account, from your pickup address",
+  },
+  push_to_postex_oms: {
+    title: "Book with PostEx (OMS Courier)",
+    button: "Book",
+    result: "be booked with PostEx through FynkTech's account, from your pickup address",
+  },
 };
 
 export default function OrderActionModal({ action, couriers, count, onSubmit, onClose, submitting }) {

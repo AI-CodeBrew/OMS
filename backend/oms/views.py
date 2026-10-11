@@ -89,8 +89,8 @@ def _oms_courier_refusals(organization_id, order_ids, courier):
             "order_number": numbers.get(oid) or numbers.get(str(oid)) or "",
             "success": False,
             "error": (
-                f"{label} isn't approved for this store - it has to request it on its OMS "
-                "Courier page, and you approve it under OMS Couriers > Requests."
+                f"{label} through OMS Courier isn't approved for this store yet - it's requested "
+                "on the store's OMS Courier page and approved under OMS Couriers > Requests."
             ),
         }
         for oid in order_ids
@@ -1007,8 +1007,14 @@ class OrderViewSet(viewsets.ModelViewSet):
         # time constraint.
         # In the Dispatch Hub both book through FynkTech's own account
         # (via_platform - decided here, never by the client), and only for
-        # stores that enabled that courier on their OMS Courier page.
-        if action_name in ("push_to_barqraftar", "barqraftar_ready_for_pickup", "push_to_postex"):
+        # stores whose request for that courier was approved.
+        # "push_to_postex_oms" / "push_to_barqraftar_oms" are a store booking
+        # its own orders through FynkTech's account (OMS Courier) - same
+        # approval check.
+        if action_name in (
+            "push_to_barqraftar", "push_to_barqraftar_oms", "barqraftar_ready_for_pickup",
+            "push_to_postex", "push_to_postex_oms",
+        ):
             from integrations.barqraftar import services as barqraftar_services
             from integrations.models import OmsCourierEnrollment
             from integrations.postex import services as postex_services
@@ -1027,20 +1033,24 @@ class OrderViewSet(viewsets.ModelViewSet):
 
             results = []
             for org_id, ids in by_org.items():
-                if action_name == "push_to_postex":
-                    refused = hub and _oms_courier_refusals(org_id, ids, OmsCourierEnrollment.COURIER_POSTEX)
+                if action_name in ("push_to_postex", "push_to_postex_oms"):
+                    via_platform = hub or action_name == "push_to_postex_oms"
+                    refused = via_platform and _oms_courier_refusals(
+                        org_id, ids, OmsCourierEnrollment.COURIER_POSTEX
+                    )
                     if refused:
                         results += refused
                         continue
                     results += _with_tenant_context(
                         org_id,
-                        lambda ids=ids, org_id=org_id: postex_services.book_orders(
+                        lambda ids=ids, org_id=org_id, via_platform=via_platform: postex_services.book_orders(
                             org_id, ids, actor_user_id=request.user_id,
-                            force=bool(params.get("force")), via_platform=hub,
+                            force=bool(params.get("force")), via_platform=via_platform,
                         ),
                     )
-                elif action_name == "push_to_barqraftar":
-                    refused = hub and _oms_courier_refusals(
+                elif action_name in ("push_to_barqraftar", "push_to_barqraftar_oms"):
+                    via_platform = hub or action_name == "push_to_barqraftar_oms"
+                    refused = via_platform and _oms_courier_refusals(
                         org_id, ids, OmsCourierEnrollment.COURIER_BARQRAFTAR
                     )
                     if refused:
@@ -1048,9 +1058,9 @@ class OrderViewSet(viewsets.ModelViewSet):
                         continue
                     results += _with_tenant_context(
                         org_id,
-                        lambda ids=ids, org_id=org_id: barqraftar_services.book_orders(
+                        lambda ids=ids, org_id=org_id, via_platform=via_platform: barqraftar_services.book_orders(
                             org_id, ids, actor_user_id=request.user_id,
-                            force=bool(params.get("force")), via_platform=hub,
+                            force=bool(params.get("force")), via_platform=via_platform,
                         ),
                     )
                 else:
