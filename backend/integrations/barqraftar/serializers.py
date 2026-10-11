@@ -49,6 +49,9 @@ class BarqRaftarStatusSerializer(serializers.Serializer):
 
     connected = serializers.BooleanField()
     ready_to_book = serializers.BooleanField()
+    # BarqRaftar through OMS Courier: FynkTech's own account, from the
+    # store's approved pickup address on it (see services.store_pickup).
+    oms_connected = serializers.BooleanField(default=False)
 
 
 class BarqRaftarSyncJobSerializer(serializers.ModelSerializer):

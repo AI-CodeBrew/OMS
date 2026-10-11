@@ -149,8 +149,19 @@ class BarqRaftarStatusView(APIView):
         connection = services.connection_for_request(request)
         connected = bool(connection)
         ready_to_book = bool(connected and connection.pickup_address_id and connection.from_city_id)
+        # A store booking its own orders through FynkTech's account (OMS
+        # Courier) - not a Dispatch Hub thing, where `connected` already is
+        # FynkTech's account.
+        oms_connected = bool(
+            not getattr(request, "organization_ids", None)
+            and request.organization_id
+            and all(services.store_pickup(request.organization_id))
+            and services.platform_connection()
+        )
         return Response(
-            BarqRaftarStatusSerializer({"connected": connected, "ready_to_book": ready_to_book}).data
+            BarqRaftarStatusSerializer(
+                {"connected": connected, "ready_to_book": ready_to_book, "oms_connected": oms_connected}
+            ).data
         )
 
 

@@ -51,6 +51,23 @@ POSTEX_FIELDS = {
 }
 
 
+# BarqRaftar is asked for with its own pickup-address form - the fields of
+# its company_addresses/store API (BarqRaftar's Postman collection, "Create
+# / Update Pickup Address"): the address's name (the store's), city id,
+# address, person of contact, phone, optional coordinates. Approved, it
+# becomes a pickup address on FynkTech's BarqRaftar account.
+BARQRAFTAR_FIELDS = {
+    "name": ("Store name", 255, True, "text"),
+    "city_id": ("City", 20, True, "city_id"),
+    "city_name": ("City", 150, True, "text"),
+    "address": ("Address", 500, True, "text"),
+    "person_of_contact": ("Person of contact", 255, True, "text"),
+    "phone_number": ("Phone number", 11, True, "phone"),
+    "latitude": ("Latitude", 20, False, "coordinate"),
+    "longitude": ("Longitude", 20, False, "coordinate"),
+}
+
+
 def _mobile(value):
     """"+92 300 1234567" / "923001234567" / "3001234567" -> "03001234567",
     or "" if it isn't a Pakistani mobile number - the shape PostEx takes."""
@@ -64,11 +81,11 @@ def _mobile(value):
     return digits if re.fullmatch(r"03\d{9}", digits) else ""
 
 
-def _clean_postex(body):
-    """(details, generic fields, error) from a PostEx address form."""
+def _clean_fields(body, fields):
+    """(details, problems) for a courier's own form - see POSTEX_FIELDS."""
     details = {}
     problems = []
-    for field, (label, limit, required, kind) in POSTEX_FIELDS.items():
+    for field, (label, limit, required, kind) in fields.items():
         value = str(body.get(field) or "").strip()
         if not value:
             if required:
@@ -81,9 +98,19 @@ def _clean_postex(body):
                 problems.append(f"{label} must be a mobile number like 03001234567.")
         elif kind == "address_type" and value not in POSTEX_ADDRESS_TYPES:
             problems.append(f"Pick an {label.lower()} from the list.")
+        elif kind == "city_id" and not value.isdigit():
+            problems.append(f"Pick a {label.lower()} from the list.")
+        elif kind == "coordinate" and not re.fullmatch(r"-?\d{1,3}(\.\d+)?", value):
+            problems.append(f"{label} must be a number like 31.5204.")
         elif len(value) > limit:
             problems.append(f"{label} can be at most {limit} characters.")
         details[field] = value
+    return details, problems
+
+
+def _clean_postex(body):
+    """(details, generic fields, error) from a PostEx address form."""
+    details, problems = _clean_fields(body, POSTEX_FIELDS)
     if problems:
         return None, None, " ".join(problems)
     generic = {
@@ -92,6 +119,26 @@ def _clean_postex(body):
         "pickup_address": f"{details['address']}, {details['city']}"[:500],
     }
     return details, generic, ""
+
+
+def _clean_barqraftar(body):
+    """(details, generic fields, error) from a BarqRaftar address form."""
+    details, problems = _clean_fields(body, BARQRAFTAR_FIELDS)
+    if problems:
+        return None, None, " ".join(dict.fromkeys(problems))
+    generic = {
+        "store_name": details["name"][:255],
+        "phone": details["phone_number"],
+        "pickup_address": f"{details['address']}, {details['city_name']}"[:500],
+    }
+    return details, generic, ""
+
+
+# Courier -> its own request form's cleaner (the rest use _clean_generic).
+COURIER_FORMS = {
+    OmsCourierEnrollment.COURIER_POSTEX: _clean_postex,
+    OmsCourierEnrollment.COURIER_BARQRAFTAR: _clean_barqraftar,
+}
 
 
 def _clean_generic(body):
@@ -155,13 +202,15 @@ class OmsCourierEnrollmentListView(APIView):
 
 
 class OmsCourierEnrollmentOptionsView(APIView):
-    """GET -> what a courier's request form picks from. PostEx: the cities
-    it picks up from (from FynkTech's own PostEx account) and address
-    types."""
+    """GET -> what a courier's request form picks from, from FynkTech's own
+    account for it. PostEx: the cities it picks up from and address types.
+    BarqRaftar: its cities ({id, name})."""
 
     permission_classes = [IsOrgAdmin]
 
     def get(self, request, courier):
+        if courier == OmsCourierEnrollment.COURIER_BARQRAFTAR:
+            return self._barqraftar()
         if courier != OmsCourierEnrollment.COURIER_POSTEX:
             return Response({"success": True})
 
@@ -189,10 +238,35 @@ class OmsCourierEnrollmentOptionsView(APIView):
         )
 
 
+    def _barqraftar(self):
+        from .barqraftar import services as barqraftar_services
+        from .barqraftar.client import BarqRaftarAPIError
+
+        connection = barqraftar_services.platform_connection()
+        cities = []
+        if connection is not None:
+            try:
+                cities = barqraftar_services.get_cities(connection)
+            except BarqRaftarAPIError as exc:
+                return Response(
+                    {"success": False, "error": f"Could not load BarqRaftar cities: {exc}"},
+                    status=http_status.HTTP_502_BAD_GATEWAY,
+                )
+        return Response(
+            {
+                "success": True,
+                "cities": sorted(
+                    ({"id": str(c["id"]), "name": c["name"]} for c in cities),
+                    key=lambda c: c["name"].lower(),
+                ),
+            }
+        )
+
+
 class OmsCourierEnrollmentDetailView(APIView):
     """PUT {is_enabled, ...form fields} asks for one courier (or updates the
-    request, or turns it off) - PostEx with its address form
-    (POSTEX_FIELDS), the rest with store_name/phone/pickup_address. Turning
+    request, or turns it off) - PostEx and BarqRaftar with their own address
+    forms (COURIER_FORMS), the rest with store_name/phone/pickup_address. Turning
     on with new details, or after a rejection, is a fresh request; turning
     an approved courier back on unchanged keeps its approval."""
 
@@ -213,7 +287,7 @@ class OmsCourierEnrollmentDetailView(APIView):
 
         details, generic = {}, {}
         if is_enabled:
-            clean = _clean_postex if courier == OmsCourierEnrollment.COURIER_POSTEX else _clean_generic
+            clean = COURIER_FORMS.get(courier, _clean_generic)
             details, generic, problem = clean(body)
             if problem:
                 return Response(

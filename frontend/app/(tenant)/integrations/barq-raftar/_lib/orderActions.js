@@ -44,10 +44,25 @@ export const BARQRAFTAR_ACTIONS_BY_STATUS = {
   awaiting_dispatched: [PRINT_LOADSHEET],
 };
 
+// Books through FynkTech's own BarqRaftar account from the store's approved
+// pickup address on it (OMS Courier) - beside, not instead of, the store's
+// own "Book with BarqRaftar".
+const BOOK_THROUGH_OMS = {
+  key: "push_to_barqraftar_oms",
+  action: "push_to_barqraftar_oms",
+  label: "Book with BarqRaftar (OMS Courier)",
+};
+
 // Every place that renders ACTIONS_BY_STATUS[status] should wrap it with
-// this instead - `connected` comes from _lib/barqraftarStatusStore.js.
-export function withBarqRaftarActions(status, baseActions, connected) {
-  if (!connected) return baseActions;
-  const extra = BARQRAFTAR_ACTIONS_BY_STATUS[status];
-  return extra ? [...baseActions, ...extra] : baseActions;
+// this instead - `connected` (the store's own BarqRaftar) and
+// `omsConnected` (BarqRaftar through OMS Courier) come from
+// _lib/barqraftarStatusStore.js. Either one brings the BarqRaftar labels,
+// load sheet and pickup notice; each brings its own "Book" action.
+export function withBarqRaftarActions(status, baseActions, connected, omsConnected = false) {
+  if (!connected && !omsConnected) return baseActions;
+  const extra = (BARQRAFTAR_ACTIONS_BY_STATUS[status] || []).filter(
+    (a) => connected || a.action !== "push_to_barqraftar"
+  );
+  if (omsConnected && status === "awaiting_assigning") extra.push(BOOK_THROUGH_OMS);
+  return extra.length ? [...baseActions, ...extra] : baseActions;
 }

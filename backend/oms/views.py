@@ -1008,10 +1008,12 @@ class OrderViewSet(viewsets.ModelViewSet):
         # In the Dispatch Hub both book through FynkTech's own account
         # (via_platform - decided here, never by the client), and only for
         # stores whose request for that courier was approved.
-        # "push_to_postex_oms" is a store booking its own orders through
-        # FynkTech's PostEx account (OMS Courier) - same approval check.
+        # "push_to_postex_oms" / "push_to_barqraftar_oms" are a store booking
+        # its own orders through FynkTech's account (OMS Courier) - same
+        # approval check.
         if action_name in (
-            "push_to_barqraftar", "barqraftar_ready_for_pickup", "push_to_postex", "push_to_postex_oms",
+            "push_to_barqraftar", "push_to_barqraftar_oms", "barqraftar_ready_for_pickup",
+            "push_to_postex", "push_to_postex_oms",
         ):
             from integrations.barqraftar import services as barqraftar_services
             from integrations.models import OmsCourierEnrollment
@@ -1046,8 +1048,9 @@ class OrderViewSet(viewsets.ModelViewSet):
                             force=bool(params.get("force")), via_platform=via_platform,
                         ),
                     )
-                elif action_name == "push_to_barqraftar":
-                    refused = hub and _oms_courier_refusals(
+                elif action_name in ("push_to_barqraftar", "push_to_barqraftar_oms"):
+                    via_platform = hub or action_name == "push_to_barqraftar_oms"
+                    refused = via_platform and _oms_courier_refusals(
                         org_id, ids, OmsCourierEnrollment.COURIER_BARQRAFTAR
                     )
                     if refused:
@@ -1055,9 +1058,9 @@ class OrderViewSet(viewsets.ModelViewSet):
                         continue
                     results += _with_tenant_context(
                         org_id,
-                        lambda ids=ids, org_id=org_id: barqraftar_services.book_orders(
+                        lambda ids=ids, org_id=org_id, via_platform=via_platform: barqraftar_services.book_orders(
                             org_id, ids, actor_user_id=request.user_id,
-                            force=bool(params.get("force")), via_platform=hub,
+                            force=bool(params.get("force")), via_platform=via_platform,
                         ),
                     )
                 else:

@@ -189,14 +189,66 @@ def _create_postex_address(enrollment):
     return str(new_rows[0].get("addressCode") or "")
 
 
+def _create_barqraftar_address(enrollment):
+    """Adds the store's address form to FynkTech's BarqRaftar account as a
+    pickup address (company_addresses/store, named after the store) and
+    returns the pickup_address_id BarqRaftar answers with - every booking of
+    this store's orders through that account then picks up from it, with
+    its city as from_city_id (barqraftar.services.store_pickup)."""
+    from .barqraftar import client as barqraftar_client
+    from .barqraftar import services as barqraftar_services
+    from .barqraftar.client import BarqRaftarAPIError
+
+    connection = barqraftar_services.platform_connection()
+    if connection is None:
+        raise OmsCourierRequestError(
+            "Connect FynkTech's BarqRaftar account on the OMS Couriers tab before approving."
+        )
+    form = enrollment.details or {}
+    if not form.get("address") or not form.get("city_id"):
+        raise OmsCourierRequestError(
+            "This request has no BarqRaftar address details - reject it so the store sends the form."
+        )
+    try:
+        result = barqraftar_client.save_pickup_address(
+            connection.api_key, connection.api_secret,
+            name=form.get("name") or enrollment.store_name,
+            address=form["address"],
+            city_id=form["city_id"],
+            person_of_contact=form.get("person_of_contact") or "",
+            phone_number=form.get("phone_number") or "",
+            latitude=form.get("latitude") or None,
+            longitude=form.get("longitude") or None,
+        )
+    except BarqRaftarAPIError as exc:
+        raise OmsCourierRequestError(f"BarqRaftar didn't accept the address: {exc}", 502) from exc
+    address_id = result.get("pickup_address_id") if isinstance(result, dict) else None
+    if not address_id:
+        raise OmsCourierRequestError(
+            "BarqRaftar answered without a pickup address id - check FynkTech's BarqRaftar page "
+            "before approving again.",
+            502,
+        )
+    return str(address_id)
+
+
+# Courier -> what approving first creates on FynkTech's account for it,
+# returning the reference bookings then use (courier_reference).
+_ON_APPROVE = {
+    OmsCourierEnrollment.COURIER_POSTEX: _create_postex_address,
+    OmsCourierEnrollment.COURIER_BARQRAFTAR: _create_barqraftar_address,
+}
+
+
 def approve_request(enrollment_id, *, message="", actor_email=""):
-    """Approves a request. A PostEx one first becomes a pickup address on
-    FynkTech's PostEx account (_create_postex_address) - if PostEx refuses
-    it, the request stays pending and the reason comes back."""
+    """Approves a request. A PostEx or BarqRaftar one first becomes a pickup
+    address on FynkTech's account for it (_ON_APPROVE) - if the courier
+    refuses it, the request stays pending and the reason comes back."""
     enrollment = _get(enrollment_id)
     message = (message or "").strip()[:500]
-    if enrollment.courier == OmsCourierEnrollment.COURIER_POSTEX:
-        enrollment.courier_reference = _create_postex_address(enrollment)
+    create_address = _ON_APPROVE.get(enrollment.courier)
+    if create_address is not None:
+        enrollment.courier_reference = create_address(enrollment)
     enrollment.status = OmsCourierEnrollment.STATUS_APPROVED
     enrollment.review_note = message
     enrollment.reviewed_by_email = actor_email or ""

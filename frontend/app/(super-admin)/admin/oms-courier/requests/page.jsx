@@ -43,6 +43,11 @@ function RequestCard({ request, onAnswered }) {
   const smartlane = request.smartlane;
   const postex = request.courier === "postex" ? request.details || {} : null;
   const hasPostExForm = Boolean(postex && postex.address);
+  const barq = request.courier === "barq_raftar" ? request.details || {} : null;
+  const hasBarqForm = Boolean(barq && barq.address);
+  // Couriers whose approval adds the store's address to FynkTech's account.
+  const addsAddress = Boolean(postex || barq);
+  const hasAddressForm = hasPostExForm || hasBarqForm;
 
   async function answer(kind) {
     const text = message.trim();
@@ -116,6 +121,29 @@ function RequestCard({ request, onAnswered }) {
             <Detail label="Address">{postex.address}</Detail>
           </dl>
         </div>
+      ) : hasBarqForm ? (
+        <div className="mt-4 rounded-lg bg-slate-50 p-4">
+          <p className="text-xs font-semibold text-slate-700">BarqRaftar pickup address</p>
+          <dl className="mt-3 grid gap-4 sm:grid-cols-3">
+            <Detail label="Store name">{barq.name}</Detail>
+            <Detail label="City">{barq.city_name}</Detail>
+            <Detail label="Pickup address ID">
+              {request.courier_reference ? (
+                <span className="font-mono">{request.courier_reference}</span>
+              ) : (
+                "Given by BarqRaftar on approval"
+              )}
+            </Detail>
+            <Detail label="Person of contact">{barq.person_of_contact}</Detail>
+            <Detail label="Phone">{barq.phone_number}</Detail>
+            <Detail label="Location">
+              {barq.latitude && barq.longitude ? `${barq.latitude}, ${barq.longitude}` : ""}
+            </Detail>
+          </dl>
+          <dl className="mt-4">
+            <Detail label="Address">{barq.address}</Detail>
+          </dl>
+        </div>
       ) : (
         <dl className="mt-4 grid gap-4 sm:grid-cols-3">
           <Detail label="Store name">{request.store_name}</Detail>
@@ -169,13 +197,14 @@ function RequestCard({ request, onAnswered }) {
               className="mt-1 w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
             />
           </label>
-          {postex ? (
+          {addsAddress ? (
             <p className="text-xs text-slate-500">
-              {hasPostExForm
-                ? "Approving adds this address to FynkTech's PostEx account - every PostEx order of " +
-                  "this store is then picked up from it. If PostEx refuses it, the request stays pending."
-                : "This request came before the PostEx address form - reject it so the store sends " +
-                  "the form again."}
+              {hasAddressForm
+                ? `Approving adds this address to FynkTech's ${request.courier_name} account - every ` +
+                  `${request.courier_name} order of this store is then picked up from it. If ` +
+                  `${request.courier_name} refuses it, the request stays pending.`
+                : `This request came before the ${request.courier_name} address form - reject it so ` +
+                  "the store sends the form again."}
             </p>
           ) : null}
           {error ? <p className="text-sm text-red-600">{error}</p> : null}
