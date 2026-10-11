@@ -190,3 +190,33 @@ class DispatchHubStore(models.Model):
 
     def __str__(self):
         return f"Dispatch Hub: {self.organization_id}"
+
+
+class Notification(TenantScopedModel):
+    """A message for a store's own users, under the bell in its header -
+    today, FynkTech's super admin changing one of the store's orders (see
+    oms.views.OrderViewSet.update), so the store knows what changed and why
+    its order no longer looks the way it left it. No FK to the order (core
+    doesn't import oms) - its id and number are kept instead."""
+
+    KIND_ORDER_EDITED = "order_edited"
+    KIND_CHOICES = [(KIND_ORDER_EDITED, "Order edited by FynkTech")]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    kind = models.CharField(max_length=30, choices=KIND_CHOICES)
+    title = models.CharField(max_length=255)
+    message = models.CharField(max_length=1000, blank=True, default="")
+    order_id = models.UUIDField(null=True, blank=True)
+    order_number = models.CharField(max_length=100, blank=True, default="")
+    # [{"field", "label", "old", "new"}] - every value as shown, before/after.
+    changes = models.JSONField(default=list, blank=True)
+    actor_email = models.CharField(max_length=255, blank=True, default="")
+    read_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = '"core"."notifications"'
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["organization", "-created_at"], name="core_notification_org_idx")]
+
+    def __str__(self):
+        return f"{self.kind} ({self.organization_id})"

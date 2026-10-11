@@ -1,5 +1,6 @@
 import logging
 from datetime import timedelta
+from decimal import Decimal
 
 from django.db import transaction
 from django.db.models import Count, DateTimeField, OuterRef, Q, Subquery
@@ -899,7 +900,65 @@ def update_order_detail(order, *, fields, items=None):
         order.total_amount = total
         order.save(update_fields=["total_amount"])
 
+    # Drops the store's cached Orders lists and patches its open tabs
+    # (core/realtime.py) - without it an edit made elsewhere, e.g. from the
+    # Dispatch Hub, kept showing the old values to the store.
+    publish_event(
+        "order.updated",
+        {
+            "organization_id": str(order.organization_id),
+            "order_id": str(order.id),
+            "order_number": order.order_number,
+        },
+    )
     return order
+
+
+def order_items_summary(order):
+    """"Comb x 2, Brush x 1" - read fresh, not through a prefetch."""
+    return ", ".join(
+        f"{i.product_name} x {i.quantity}"
+        for i in OrderItem.objects.filter(order_id=order.id).order_by("product_name", "id")
+    )
+
+
+def _display(value):
+    """A field value the way a person reads it in a change list."""
+    if value is None or value == "":
+        return "-"
+    if isinstance(value, Decimal):
+        text = f"{value:f}"
+        return text.rstrip("0").rstrip(".") if "." in text else text
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+def order_changes(order, before, items_before=None):
+    """[{"field", "label", "old", "new"}] for what an edit actually changed:
+    `before` is {field: value} taken just before update_order_detail, and
+    `items_before` the order_items_summary then (None if items weren't part
+    of the edit)."""
+    changes = []
+    for field, old in before.items():
+        new = getattr(order, field)
+        if _display(old) == _display(new):
+            continue
+        label = str(Order._meta.get_field(field).verbose_name)
+        changes.append({
+            "field": field,
+            "label": label[:1].upper() + label[1:],
+            "old": _display(old),
+            "new": _display(new),
+        })
+    if items_before is not None:
+        items_after = order_items_summary(order)
+        if items_after != items_before:
+            changes.append({
+                "field": "items", "label": "Items",
+                "old": items_before or "-", "new": items_after or "-",
+            })
+    return changes
 
 
 def split_order(order, *, item_splits, actor_user_id=None):
