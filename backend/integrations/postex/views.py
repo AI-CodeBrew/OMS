@@ -648,10 +648,45 @@ class PostExAirwayBillView(APIView):
         return HttpResponse(merged, content_type="application/pdf")
 
 
+def _saved_load_sheets(organization_id, shipments):
+    """The load sheets already generated for `shipments`, as saved then.
+    PostEx puts a parcel on one load sheet only - generating it moves the
+    parcel Unbooked -> Booked, and asking again is refused ("INVALID
+    TRACKING NUMBER(S)", seen live when a store re-downloaded a sheet the
+    Dispatch Hub had already made) - so a re-download is served from that
+    copy. Returns (pdf parts, order numbers with no saved copy)."""
+    from oms.models import PrintBatch
+
+    parts, used, missing = [], set(), []
+    for shipment in shipments:
+        number = shipment.order.order_number
+        batch = (
+            PrintBatch.all_objects.filter(
+                organization_id=organization_id, kind="loadsheet", courier="postex",
+                order_numbers__contains=[number],
+            )
+            .exclude(file="")
+            .order_by("-created_at")
+            .first()
+        )
+        if batch is None:
+            missing.append(number)
+            continue
+        if batch.id in used:
+            continue
+        used.add(batch.id)
+        with batch.file.open("rb") as handle:
+            parts.append(handle.read())
+    return parts, missing
+
+
 class PostExLoadSheetView(APIView):
     """POST {order_ids} -> PostEx's own load sheet PDF for the selected
     orders' active shipments. This is the hand-over step on PostEx's side
-    (their status goes Unbooked -> Booked and the rider collects them)."""
+    (their status goes Unbooked -> Booked and the rider collects them), so
+    it happens once per parcel: a parcel already on a load sheet gets the
+    copy saved then (_saved_load_sheets) - e.g. a store downloading the
+    sheet for an order the Dispatch Hub booked and handed over."""
 
     permission_classes = [RequireModule]
     required_module = "oms"
@@ -667,17 +702,34 @@ class PostExLoadSheetView(APIView):
             return error
         pdf_parts = []
         for organization_id, connection, shipments in groups:
+            handed_over = [s for s in shipments if s.load_sheet_at]
+            if handed_over:
+                saved, missing = _saved_load_sheets(organization_id, handed_over)
+                if missing:
+                    return Response(
+                        {"detail": (
+                            f"PostEx already has these on a load sheet ({', '.join(missing)}) and "
+                            "can't make another - the earlier one isn't saved here, so download it "
+                            "from the PostEx portal."
+                        )},
+                        status=http_status.HTTP_409_CONFLICT,
+                    )
+                pdf_parts += saved
+
+            fresh = [s for s in shipments if not s.load_sheet_at]
+            if not fresh:
+                continue
             try:
                 pdf_bytes = client.generate_load_sheet(
-                    connection.api_token, [s.tracking_number for s in shipments],
+                    connection.api_token, [s.tracking_number for s in fresh],
                 )
             except PostExAPIError as exc:
                 return _bad_gateway(exc)
 
-            services.mark_load_sheet_generated(shipments)
+            services.mark_load_sheet_generated(fresh)
             _save_print_batch(
                 organization_id=organization_id,
-                order_numbers=[s.order.order_number for s in shipments],
+                order_numbers=[s.order.order_number for s in fresh],
                 content=pdf_bytes, actor_user_id=request.user_id, kind="loadsheet",
             )
             pdf_parts.append(pdf_bytes)
