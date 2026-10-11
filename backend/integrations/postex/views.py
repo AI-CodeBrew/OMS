@@ -716,24 +716,47 @@ class PostExLoadSheetView(APIView):
                     )
                 pdf_parts += saved
 
-            fresh = [s for s in shipments if not s.load_sheet_at]
-            if not fresh:
-                continue
-            try:
-                pdf_bytes = client.generate_load_sheet(
-                    connection.api_token, [s.tracking_number for s in fresh],
-                )
-            except PostExAPIError as exc:
-                return _bad_gateway(exc)
+            # One sheet per pickup address the parcels were booked from:
+            # without pickupAddress PostEx heads the sheet with the
+            # account's default address - which, on FynkTech's account,
+            # isn't the store the rider is collecting from.
+            by_address = {}
+            for shipment in shipments:
+                if not shipment.load_sheet_at:
+                    by_address.setdefault(shipment.pickup_address_code or "", []).append(shipment)
+            for address_code, fresh in by_address.items():
+                try:
+                    pdf_bytes = _generate_load_sheet(connection, fresh, address_code)
+                except PostExAPIError as exc:
+                    return _bad_gateway(exc)
 
-            services.mark_load_sheet_generated(fresh)
-            _save_print_batch(
-                organization_id=organization_id,
-                order_numbers=[s.order.order_number for s in fresh],
-                content=pdf_bytes, actor_user_id=request.user_id, kind="loadsheet",
-            )
-            pdf_parts.append(pdf_bytes)
+                services.mark_load_sheet_generated(fresh)
+                _save_print_batch(
+                    organization_id=organization_id,
+                    order_numbers=[s.order.order_number for s in fresh],
+                    content=pdf_bytes, actor_user_id=request.user_id, kind="loadsheet",
+                )
+                pdf_parts.append(pdf_bytes)
         return HttpResponse(_merge_pdfs(pdf_parts), content_type="application/pdf")
+
+
+def _generate_load_sheet(connection, shipments, address_code):
+    """PostEx's load sheet for `shipments`, headed with the pickup address
+    they were booked from. The guide (v4.1.9, 3.7.2) only calls
+    pickupAddress "Pickup address from where parcel will be picked", so the
+    address code is tried first and, if PostEx refuses it, the sheet is
+    asked for without it as before (headed with the default address)."""
+    tracking_numbers = [s.tracking_number for s in shipments]
+    if address_code:
+        try:
+            return client.generate_load_sheet(
+                connection.api_token, tracking_numbers, pickup_address=address_code,
+            )
+        except PostExAPIError:
+            logger.warning(
+                "postex: load sheet with pickupAddress=%r refused - retrying without it", address_code,
+            )
+    return client.generate_load_sheet(connection.api_token, tracking_numbers)
 
 
 # --------------------------------------------------------------- Webhook --
