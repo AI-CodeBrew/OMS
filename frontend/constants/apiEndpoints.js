@@ -21,6 +21,7 @@ export const API_ENDPOINTS = {
     omsCourier: "/api/core/admin/oms-courier/",
     // Stores' courier requests from their OMS Courier page.
     omsCourierRequests: "/api/core/admin/oms-courier/requests/",
+    omsCourierRequest: (id) => `/api/core/admin/oms-courier/requests/${id}/`,
     omsCourierRequestApprove: (id) => `/api/core/admin/oms-courier/requests/${id}/approve/`,
     omsCourierRequestReject: (id) => `/api/core/admin/oms-courier/requests/${id}/reject/`,
     // Smartlane Business API. Under /api/core/admin/ so it inherits the

@@ -194,13 +194,19 @@ class DispatchHubStore(models.Model):
 
 class Notification(TenantScopedModel):
     """A message for a store's own users, under the bell in its header -
-    today, FynkTech's super admin changing one of the store's orders (see
-    oms.views.OrderViewSet.update), so the store knows what changed and why
-    its order no longer looks the way it left it. No FK to the order (core
+    FynkTech's super admin changing one of the store's orders (see
+    oms.views.OrderViewSet.update) or answering/editing its OMS Courier
+    request, so the store knows what changed. No FK to the order (core
     doesn't import oms) - its id and number are kept instead."""
 
     KIND_ORDER_EDITED = "order_edited"
-    KIND_CHOICES = [(KIND_ORDER_EDITED, "Order edited by FynkTech")]
+    # The super admin editing, approving or rejecting the store's OMS
+    # Courier request (integrations.oms_courier_service).
+    KIND_COURIER_REQUEST = "oms_courier_request"
+    KIND_CHOICES = [
+        (KIND_ORDER_EDITED, "Order edited by FynkTech"),
+        (KIND_COURIER_REQUEST, "OMS Courier request updated by FynkTech"),
+    ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     kind = models.CharField(max_length=30, choices=KIND_CHOICES)

@@ -337,3 +337,17 @@ def oms_courier_request_reject(request, request_id):
     except oms_courier_service.OmsCourierRequestError as exc:
         return _request_error(exc)
     return Response({"success": True, "request": result})
+
+
+@api_view(["PATCH"])
+@permission_classes([IsSuperAdmin])
+def oms_courier_request_detail(request, request_id):
+    """PATCH {...form fields} - corrects a store's request; the store is
+    notified of what changed (see oms_courier_service.edit_request)."""
+    try:
+        result = oms_courier_service.edit_request(
+            request_id, request.data or {}, actor_email=getattr(request, "auth_email", "") or "",
+        )
+    except oms_courier_service.OmsCourierRequestError as exc:
+        return _request_error(exc)
+    return Response({"success": True, "request": result})

@@ -56,6 +56,11 @@ urlpatterns = [
         name="admin-oms-courier-requests",
     ),
     path(
+        "admin/oms-courier/requests/<uuid:request_id>/",
+        integrations_admin_views.oms_courier_request_detail,
+        name="admin-oms-courier-request-detail",
+    ),
+    path(
         "admin/oms-courier/requests/<uuid:request_id>/approve/",
         integrations_admin_views.oms_courier_request_approve,
         name="admin-oms-courier-request-approve",
