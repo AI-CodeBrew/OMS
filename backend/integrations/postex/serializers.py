@@ -57,6 +57,9 @@ class PostExStatusSerializer(serializers.Serializer):
 
     connected = serializers.BooleanField()
     ready_to_book = serializers.BooleanField()
+    # PostEx through OMS Courier: FynkTech's own account, from the store's
+    # approved pickup address on it (see services.store_pickup_code).
+    oms_connected = serializers.BooleanField(default=False)
 
 
 class PostExSyncJobSerializer(serializers.ModelSerializer):

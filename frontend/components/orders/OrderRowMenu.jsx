@@ -11,12 +11,14 @@ import { forOrdersBookingAccounts } from "./orderBookingAccount";
 export default function OrderRowMenu({ order, onAction, onRaiseTicket }) {
   const barqraftarConnected = useBarqRaftarStatusStore((s) => s.connected);
   const postexConnected = usePostExStatusStore((s) => s.connected);
+  const postexOmsConnected = usePostExStatusStore((s) => s.omsConnected);
   // Only the documents/actions of the courier this order was booked with.
   const actions = forOrdersBookingAccounts(
     withPostExActions(
       order.status,
       withBarqRaftarActions(order.status, ACTIONS_BY_STATUS[order.status] || [], barqraftarConnected),
-      postexConnected
+      postexConnected,
+      postexOmsConnected
     ),
     [order]
   );

@@ -12,12 +12,15 @@ import {
   SmartlaneLogo,
 } from "../../../../components/integrations/IntegrationLogos";
 import SmartlaneBusinessForm from "./_components/SmartlaneBusinessForm";
+import PostExAddressForm from "./_components/PostExAddressForm";
 
 // FynkTech dispatches the store's orders through its own account for each
 // courier turned on here and approved by FynkTech on its Requests page
 // (backend integrations/oms_courier_views.py, oms_courier_service.py).
 // Smartlane is asked for with the full business details its onboarding
-// needs (the same form as before); the others with generic shipper details.
+// needs (the same form as before), PostEx with its own "Add Address" form
+// (it becomes the store's pickup address on FynkTech's PostEx account), and
+// BarqRaftar with generic shipper details.
 const COURIERS = [
   {
     key: "smartlane",
@@ -42,11 +45,23 @@ const COURIERS = [
 ];
 
 const SMARTLANE_FORM_ID = "oms-courier-smartlane-form";
+const POSTEX_FORM_ID = "oms-courier-postex-form";
 const DETAILS_FORM_ID = "oms-courier-details-form";
 const EMPTY_FORM = { store_name: "", phone: "", pickup_address: "" };
 
 const inputClass =
   "mt-1 w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100";
+
+// The request body that re-sends a courier's saved details as they are -
+// PostEx's address form, or the generic three fields.
+function savedForm(courierKey, enrollment) {
+  if (courierKey === "postex") return { ...(enrollment.details || {}) };
+  return {
+    store_name: enrollment.store_name,
+    phone: enrollment.phone,
+    pickup_address: enrollment.pickup_address,
+  };
+}
 
 // Smartlane onboarding the store can still edit - nothing sent yet, or sent
 // back with a reason. Anything else is with a reviewer.
@@ -146,6 +161,11 @@ function CourierCard({ courier, enrollment, onboarding, busy, onToggle, onEdit, 
               .join(" · ")}
           </p>
         ) : null}
+        {enrollment?.courier_reference && enrollment.status === "approved" ? (
+          <p className="mt-1 text-xs text-slate-500">
+            PostEx address code: <span className="font-mono font-medium">{enrollment.courier_reference}</span>
+          </p>
+        ) : null}
         <RequestStatus enrollment={enrollment} onResubmit={() => onResubmit(courier)} />
         <div className="mt-2 flex flex-wrap gap-4 text-xs font-medium">
           {enabled && !isSmartlane ? (
@@ -209,7 +229,7 @@ export default function OmsCourierPage() {
   }, [load]);
 
   function openDialog(courier) {
-    if (courier.key !== "smartlane") {
+    if (courier.key !== "smartlane" && courier.key !== "postex") {
       const existing = enrollments[courier.key];
       // A first form starts from another courier's details (and the store's
       // own name), so a second courier is usually one click.
@@ -264,12 +284,7 @@ export default function OmsCourierPage() {
       // Already approved - back on unchanged, no new request.
       await saveEnrollment(
         courier,
-        {
-          is_enabled: true,
-          store_name: existing.store_name,
-          phone: existing.phone,
-          pickup_address: existing.pickup_address,
-        },
+        { is_enabled: true, ...savedForm(courier.key, existing) },
         `${courier.name} turned back on.`
       );
       return;
@@ -301,15 +316,15 @@ export default function OmsCourierPage() {
     openDialog(courier);
   }
 
-  async function onSaveDetails(e) {
-    e.preventDefault();
+  // Saves the open dialog's form - PostEx's address form or the generic one.
+  async function saveDialog(values) {
     if (!dialog) return;
     setSaving(true);
     setDialogError("");
     try {
       const saved = await integrationsService.saveOmsCourierCourier(dialog.key, {
         is_enabled: true,
-        ...form,
+        ...values,
       });
       setEnrollments((prev) => ({ ...prev, [dialog.key]: saved }));
       setNotice(
@@ -325,6 +340,11 @@ export default function OmsCourierPage() {
     }
   }
 
+  function onSaveDetails(e) {
+    e.preventDefault();
+    saveDialog(form);
+  }
+
   async function onSmartlaneSubmitted() {
     setDialog(null);
     setNotice("Smartlane requested - your business details were sent to FynkTech for review.");
@@ -332,6 +352,7 @@ export default function OmsCourierPage() {
   }
 
   const isSmartlaneDialog = dialog?.key === "smartlane";
+  const isPostExDialog = dialog?.key === "postex";
   const editingEnabled = dialog && enrollments[dialog.key]?.is_enabled;
   const rejected = onboarding?.link?.status === "rejected";
 
@@ -419,7 +440,48 @@ export default function OmsCourierPage() {
       </Modal>
 
       <Modal
-        open={Boolean(dialog) && !isSmartlaneDialog}
+        open={isPostExDialog}
+        onClose={closeDialog}
+        title={editingEnabled ? "Edit PostEx address" : "Request PostEx"}
+        width="max-w-2xl"
+        footer={
+          <>
+            <Button variant="secondary" onClick={closeDialog} disabled={saving}>
+              Cancel
+            </Button>
+            <Button type="submit" form={POSTEX_FORM_ID} loading={saving}>
+              {editingEnabled ? "Save" : "Send request"}
+            </Button>
+          </>
+        }
+      >
+        <p className="text-xs text-slate-500">
+          Your pickup address for PostEx. Once FynkTech approves the request it&apos;s added to
+          FynkTech&apos;s PostEx account, and every one of your PostEx orders - booked by FynkTech
+          or by you - is picked up from it.
+          {editingEnabled ? " Changing it sends the request for review again." : ""}
+        </p>
+        {dialogError ? (
+          <p className="mt-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{dialogError}</p>
+        ) : null}
+        <div className="mt-4">
+          {isPostExDialog ? (
+            <PostExAddressForm
+              formId={POSTEX_FORM_ID}
+              initial={
+                enrollments.postex?.details && Object.keys(enrollments.postex.details).length
+                  ? enrollments.postex.details
+                  : { shipper_name: defaults.store_name || "" }
+              }
+              addressCode={enrollments.postex?.courier_reference}
+              onSubmit={saveDialog}
+            />
+          ) : null}
+        </div>
+      </Modal>
+
+      <Modal
+        open={Boolean(dialog) && !isSmartlaneDialog && !isPostExDialog}
         onClose={closeDialog}
         title={dialog ? `${editingEnabled ? "Edit" : "Request"} ${dialog.name}` : ""}
         width="max-w-md"

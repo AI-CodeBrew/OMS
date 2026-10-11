@@ -477,6 +477,15 @@ class OmsCourierEnrollment(TenantScopedModel):
     store_name = models.CharField(max_length=255)
     phone = models.CharField(max_length=50)
     pickup_address = models.CharField(max_length=500)
+    # Courier-specific form fields beyond the generic three above - for
+    # PostEx, its own "Add Address" form (city, address type, shipper,
+    # contacts; see oms_courier_views.POSTEX_FIELDS), which becomes a pickup
+    # address on FynkTech's PostEx account when approved.
+    details = models.JSONField(default=dict, blank=True)
+    # What the courier calls the store's address on FynkTech's account once
+    # approved - PostEx's addressCode, sent as pickupAddressCode on every
+    # booking of this store's orders through FynkTech's account.
+    courier_reference = models.CharField(max_length=50, blank=True, default="")
     requested_at = models.DateTimeField(null=True, blank=True)
     # The super admin's message to the store, shown on its OMS Courier page.
     review_note = models.CharField(max_length=500, blank=True, default="")

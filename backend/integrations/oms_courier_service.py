@@ -12,6 +12,11 @@ from core.rbac import write_audit_log
 from .models import OmsCourierEnrollment, SmartlaneStoreLink
 
 COURIERS = dict(OmsCourierEnrollment.COURIER_CHOICES)
+# The store's address type (oms_courier_views.POSTEX_ADDRESS_TYPES) as
+# PostEx's create-merchant-address addressTypeId. Its API knows 1 (Return)
+# and 2 (Pickup) - an address made with 2 lists as "Pickup/Return Address" -
+# so both pickup choices go as 2.
+POSTEX_ADDRESS_TYPE_IDS = {"return": 1, "pickup": 2, "pickup_return": 2}
 
 
 class OmsCourierRequestError(Exception):
@@ -53,6 +58,8 @@ def _serialize(enrollment, *, hub_ids, links):
         "store_name": enrollment.store_name,
         "phone": enrollment.phone,
         "pickup_address": enrollment.pickup_address,
+        "details": enrollment.details or {},
+        "courier_reference": enrollment.courier_reference,
         "review_note": enrollment.review_note,
         "reviewed_by_email": enrollment.reviewed_by_email,
         "requested_at": enrollment.requested_at.isoformat() if enrollment.requested_at else None,
@@ -123,15 +130,80 @@ def _audit(enrollment, action, verb, message, actor_email):
     )
 
 
+def _create_postex_address(enrollment):
+    """Adds the store's address form to FynkTech's PostEx account as a
+    pickup address and returns the addressCode PostEx gave it - what every
+    booking of this store's orders through that account then picks up from.
+    PostEx's create answers without the code, so the address list is read
+    before and after and the new one found by diffing (same as the PostEx
+    page's own "Add pickup address")."""
+    from .postex import client as postex_client
+    from .postex import services as postex_services
+    from .postex.exceptions import PostExAPIError
+
+    connection = postex_services.platform_connection()
+    if connection is None:
+        raise OmsCourierRequestError(
+            "Connect FynkTech's PostEx account on the OMS Couriers tab before approving."
+        )
+    form = enrollment.details or {}
+    if not form.get("address") or not form.get("city"):
+        raise OmsCourierRequestError(
+            "This request has no PostEx address details - reject it so the store sends the form."
+        )
+    try:
+        before = {
+            str(a.get("addressCode")) for a in postex_client.list_pickup_addresses(connection.api_token)
+        }
+        postex_client.create_pickup_address(
+            connection.api_token,
+            address=form["address"],
+            city_name=form["city"],
+            contact_person_name=form.get("contact_person_name") or form.get("shipper_name") or "",
+            phone1=form["shipper_contact"],
+            phone2=form.get("contact_1") or form["shipper_contact"],
+            phone3=form.get("contact_2") or "",
+            # PostEx's API has no shipper field; this is the free-text name it
+            # keeps beside the contact person.
+            warehouse_manager_name=form.get("shipper_name") or "",
+            address_type_id=POSTEX_ADDRESS_TYPE_IDS.get(form.get("address_type"), 2),
+        )
+        after = postex_client.list_pickup_addresses(connection.api_token)
+    except PostExAPIError as exc:
+        raise OmsCourierRequestError(f"PostEx didn't accept the address: {exc}", 502) from exc
+
+    new_rows = [a for a in after if str(a.get("addressCode")) not in before]
+    if len(new_rows) > 1:
+        # Another address was added at the same moment - keep this one's.
+        new_rows = [
+            a for a in new_rows if str(a.get("address") or "").strip() == form["address"]
+        ] or new_rows
+    if not new_rows:
+        raise OmsCourierRequestError(
+            "PostEx accepted the address but it isn't in the account's address list yet - "
+            "check FynkTech's PostEx page before approving again.",
+            502,
+        )
+    return str(new_rows[0].get("addressCode") or "")
+
+
 def approve_request(enrollment_id, *, message="", actor_email=""):
+    """Approves a request. A PostEx one first becomes a pickup address on
+    FynkTech's PostEx account (_create_postex_address) - if PostEx refuses
+    it, the request stays pending and the reason comes back."""
     enrollment = _get(enrollment_id)
     message = (message or "").strip()[:500]
+    if enrollment.courier == OmsCourierEnrollment.COURIER_POSTEX:
+        enrollment.courier_reference = _create_postex_address(enrollment)
     enrollment.status = OmsCourierEnrollment.STATUS_APPROVED
     enrollment.review_note = message
     enrollment.reviewed_by_email = actor_email or ""
     enrollment.reviewed_at = timezone.now()
     enrollment.save(
-        update_fields=["status", "review_note", "reviewed_by_email", "reviewed_at", "updated_at"]
+        update_fields=[
+            "status", "courier_reference", "review_note", "reviewed_by_email", "reviewed_at",
+            "updated_at",
+        ]
     )
     _audit(enrollment, "oms_courier.approved", "Approved", message, actor_email)
     return _serialize_one(enrollment)

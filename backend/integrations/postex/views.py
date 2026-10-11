@@ -189,7 +189,20 @@ class PostExStatusView(APIView):
         connection = services.connection_for_request(request)
         connected = bool(connection)
         ready_to_book = bool(connected and connection.pickup_address_code)
-        return Response(PostExStatusSerializer({"connected": connected, "ready_to_book": ready_to_book}).data)
+        # A store booking its own orders through FynkTech's account (OMS
+        # Courier) - not a Dispatch Hub thing, where `connected` already is
+        # FynkTech's account.
+        oms_connected = bool(
+            not getattr(request, "organization_ids", None)
+            and request.organization_id
+            and services.store_pickup_code(request.organization_id)
+            and services.platform_connection()
+        )
+        return Response(
+            PostExStatusSerializer(
+                {"connected": connected, "ready_to_book": ready_to_book, "oms_connected": oms_connected}
+            ).data
+        )
 
 
 def _mark_stale_job_failed(job):

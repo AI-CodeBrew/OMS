@@ -183,9 +183,9 @@ class OrderSerializer(serializers.ModelSerializer):
     )
     placed_at = serializers.SerializerMethodField()
     in_transit_days = serializers.SerializerMethodField()
-    # Booked through FynkTech's own courier account from the Dispatch Hub
-    # (Order.platform_reference) rather than by the store with its own -
-    # the "Dispatched by FynkTech" tag on the store's orders.
+    # Booked through FynkTech's own courier account (Order.
+    # platform_reference) - by the Dispatch Hub or by the store through OMS
+    # Courier - rather than with the store's own: the "by FynkTech" tag.
     dispatched_by_fynktech = serializers.SerializerMethodField()
 
     class Meta:

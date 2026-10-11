@@ -303,6 +303,26 @@ def connection_for_request(request):
     ).first()
 
 
+def store_pickup_code(organization_id):
+    """The store's own pickup address on FynkTech's PostEx account - added
+    from its OMS Courier request when the super admin approved it
+    (integrations.oms_courier_service). Every booking of its orders through
+    FynkTech's account goes out from here, or "" if there's none."""
+    from integrations.models import OmsCourierEnrollment
+
+    return (
+        OmsCourierEnrollment.all_objects.filter(
+            organization_id=organization_id,
+            courier=OmsCourierEnrollment.COURIER_POSTEX,
+            status=OmsCourierEnrollment.STATUS_APPROVED,
+            is_enabled=True,
+        )
+        .values_list("courier_reference", flat=True)
+        .first()
+        or ""
+    )
+
+
 def _shipments_for(connection):
     """Active shipments booked through `connection`: the store's own - or,
     for FynkTech's account, every Hub booking made through it, whichever
@@ -334,7 +354,7 @@ def _next_reference(order, *, via_platform=False):
     return f"{base}-R{n}"
 
 
-def _build_order_payload(order, connection, city_name, reference):
+def _build_order_payload(order, connection, city_name, reference, pickup_address_code):
     phone = _normalize_phone(order.customer_phone) or _normalize_phone(order.secondary_phone)
     if not phone:
         raise PostExBookingError(
@@ -359,8 +379,8 @@ def _build_order_payload(order, connection, city_name, reference):
         "items": _piece_count(order),
         "orderType": connection.default_order_type or "Normal",
     }
-    if connection.pickup_address_code:
-        payload["pickupAddressCode"] = connection.pickup_address_code
+    if pickup_address_code:
+        payload["pickupAddressCode"] = pickup_address_code
     return payload
 
 
@@ -395,12 +415,16 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False, 
         not_connected = "Connect PostEx from the Integrations page first."
     if not connection:
         return [{"order_id": str(oid), "success": False, "error": not_connected} for oid in order_ids]
-    if not connection.pickup_address_code:
-        return [
-            {"order_id": str(oid), "success": False,
-             "error": "Set an active pickup address on the PostEx integration page first."}
-            for oid in order_ids
-        ]
+    # Through FynkTech's account, the store's own address on it (not the
+    # account's active one) - see store_pickup_code.
+    pickup_code = store_pickup_code(organization_id) if via_platform else connection.pickup_address_code
+    if not pickup_code:
+        no_pickup = (
+            "This store's PostEx pickup address isn't on FynkTech's account yet - approve its PostEx "
+            "request under OMS Couriers > Requests."
+            if via_platform else "Set an active pickup address on the PostEx integration page first."
+        )
+        return [{"order_id": str(oid), "success": False, "error": no_pickup} for oid in order_ids]
 
     try:
         get_cities(connection)
@@ -451,7 +475,7 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False, 
 
         try:
             reference = _next_reference(order, via_platform=via_platform)
-            payload = _build_order_payload(order, connection, city_name, reference)
+            payload = _build_order_payload(order, connection, city_name, reference, pickup_code)
         except PostExBookingError as exc:
             results.append({**base, "success": False, "error": str(exc)})
             continue
@@ -480,7 +504,7 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False, 
             _finalize_booking(
                 order, reference=reference, tracking_number=tracking_number, courier=courier,
                 connection=connection, status_label=str(dist.get("orderStatus") or "Unbooked"),
-                actor_user_id=actor_user_id, via_platform=via_platform,
+                actor_user_id=actor_user_id, via_platform=via_platform, pickup_address_code=pickup_code,
             )
             results.append({**base, "success": True})
         except Exception as exc:  # noqa: BLE001 - one order's failure must not lose the rest
@@ -497,7 +521,7 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False, 
 
 
 def _finalize_booking(order, *, reference, tracking_number, courier, connection, status_label, actor_user_id,
-                      via_platform=False):
+                      via_platform=False, pickup_address_code=""):
     """Saves the shipment row FIRST, so a failure in the local transition
     below never loses the tracking number. Then moves the order through
     Booking Pending to Ready to Print in one atomic block."""
@@ -509,7 +533,7 @@ def _finalize_booking(order, *, reference, tracking_number, courier, connection,
         reference=reference,
         tracking_number=tracking_number,
         status_label=status_label,
-        pickup_address_code=connection.pickup_address_code,
+        pickup_address_code=pickup_address_code or connection.pickup_address_code,
         is_active=True,
     )
     # Which account the order belongs to from here on - see "Booking
