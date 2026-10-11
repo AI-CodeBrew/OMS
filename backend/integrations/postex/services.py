@@ -246,13 +246,11 @@ def get_pickup_cities(connection):
 
     seen = set()
     cities = []
-    for row in client.fetch_operational_cities(connection.api_token, city_type="Pickup"):
+    for row in client.fetch_operational_cities(connection.api_token):
         if not isinstance(row, dict):
             continue
-        # Live answers carry booleans, the guide's sample shows "true"
-        # strings - and the filter above should already have done this.
-        flag = row.get("isPickupCity")
-        if flag is not None and str(flag).strip().lower() not in ("true", "1"):
+        # Live answers carry booleans, the guide's sample shows "true" strings.
+        if str(row.get("isPickupCity")).strip().lower() not in ("true", "1"):
             continue
         name = str(row.get("operationalCityName") or "").strip()
         key_name = _normalize_city_name(name)
