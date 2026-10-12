@@ -343,3 +343,35 @@ class OmsCourierEnrollmentDetailView(APIView):
             entity_id=str(enrollment.id),
         )
         return Response({"success": True, "courier": serialize_enrollment(enrollment)})
+
+
+class OmsCourierSyncView(APIView):
+    """POST -> pulls the latest status of this store's orders booked through
+    FynkTech's PostEx or BarqRaftar account, right now, instead of waiting
+    for the background poller. Only for a courier that is on and approved."""
+
+    permission_classes = [IsOrgAdmin]
+
+    def post(self, request, courier):
+        if courier == OmsCourierEnrollment.COURIER_POSTEX:
+            from .postex.services import poll_store_platform_statuses
+        elif courier == OmsCourierEnrollment.COURIER_BARQRAFTAR:
+            from .barqraftar.services import poll_store_platform_statuses
+        else:
+            return Response(
+                {"success": False, "error": "Sync is available for PostEx and BarqRaftar only."},
+                status=http_status.HTTP_404_NOT_FOUND,
+            )
+        if not OmsCourierEnrollment.is_enabled_for(request.organization_id, courier):
+            return Response(
+                {"success": False, "error": f"{COURIERS[courier]} isn't on and approved for this store."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        result = poll_store_platform_statuses(request.organization_id)
+        if result is None:
+            return Response(
+                {"success": False, "error": f"FynkTech's {COURIERS[courier]} account isn't connected."},
+                status=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        return Response({"success": True, "checked": result["checked"], "updated": result["updated"]})

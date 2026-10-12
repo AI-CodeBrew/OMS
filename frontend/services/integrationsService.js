@@ -306,6 +306,18 @@ class IntegrationsService {
     return data.courier;
   }
 
+  // Pulls the latest status of this store's PostEx / BarqRaftar orders from
+  // FynkTech's account right now -> { checked, updated }.
+  async syncOmsCourierCourier(courier) {
+    const response = await fetch(
+      `${apiConfig.baseUrl}/api/integrations/oms-courier/couriers/${encodeURIComponent(courier)}/sync/`,
+      { method: "POST", headers: authService.getAuthHeaders() }
+    );
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || data.detail || "Sync failed");
+    return data;
+  }
+
   // --- Webhook / warehouse-edit / finance requests (need super-admin OK
   // before they reach Smartlane - see SmartlaneRequestsView) ---
   async getOmsCourierRequests(type) {

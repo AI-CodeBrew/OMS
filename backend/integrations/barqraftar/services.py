@@ -1410,9 +1410,15 @@ def poll_barqraftar_statuses(organization_id, *, batch_size=50, limit=500, job=N
         current_organization_id.reset(context_token)
 
 
-def _poll_barqraftar_statuses_body(organization_id, connection, *, batch_size, limit, job=None):
+def _poll_barqraftar_statuses_body(organization_id, connection, *, batch_size, limit, job=None,
+                                   store_id=None):
+    """`store_id` narrows FynkTech's account to one store's Hub bookings -
+    see poll_store_platform_statuses."""
+    scope = _shipments_for(connection)
+    if store_id is not None:
+        scope = scope.filter(organization_id=store_id)
     shipments = list(
-        _shipments_for(connection)
+        scope
         .exclude(order__status__in=TERMINAL_STATUSES)
         .select_related("order")
         .order_by(F("last_checked_at").asc(nulls_first=True), "id")[:limit]
@@ -1483,12 +1489,38 @@ def _poll_barqraftar_statuses_body(organization_id, connection, *, batch_size, l
                 )
                 return {"checked": checked, "updated": updated, "cancelled": True}
 
-    connection.last_event_at = timezone.now()
-    connection.save(update_fields=["last_event_at"])
+    # One store's slice says nothing about the account as a whole.
+    if store_id is None:
+        connection.last_event_at = timezone.now()
+        connection.save(update_fields=["last_event_at"])
     logger.info(
         "barqraftar poll for org %s finished: checked %s, updated %s", organization_id, checked, updated
     )
     return {"checked": checked, "updated": updated}
+
+
+# A store's "Sync now" runs inside the request, so it asks about at most
+# this many of the store's shipments - oldest-checked first, so pressing it
+# again moves on to the rest.
+_STORE_SYNC_LIMIT = 200
+
+
+def poll_store_platform_statuses(store_id, *, limit=_STORE_SYNC_LIMIT):
+    """The OMS Courier page's "Sync now": FynkTech's BarqRaftar account
+    asked about one store's Hub bookings only, instead of waiting for the
+    background poller. None when FynkTech's account isn't connected."""
+    from core.context import current_organization_id
+
+    connection = platform_connection()
+    if connection is None:
+        return None
+    context_token = current_organization_id.set(connection.organization_id)
+    try:
+        return _poll_barqraftar_statuses_body(
+            connection.organization_id, connection, batch_size=50, limit=limit, store_id=store_id,
+        )
+    finally:
+        current_organization_id.reset(context_token)
 
 
 def run_barqraftar_sync(organization_id, job_id):

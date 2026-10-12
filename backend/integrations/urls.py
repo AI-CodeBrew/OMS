@@ -56,6 +56,11 @@ urlpatterns = [
         name="oms-courier-courier-options",
     ),
     path(
+        "oms-courier/couriers/<str:courier>/sync/",
+        oms_courier_views.OmsCourierSyncView.as_view(),
+        name="oms-courier-courier-sync",
+    ),
+    path(
         "oms-courier/options/",
         views.OmsCourierKycOptionsView.as_view(),
         name="oms-courier-kyc-options",
