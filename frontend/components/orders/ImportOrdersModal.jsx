@@ -10,6 +10,7 @@ import ImportDataEditorModal, { parseCsv, toCsv } from "./ImportDataEditorModal"
 const COLUMNS = [
   "Web OrderID",
   "Order Date",
+  "Booking Date",
   "Cod Amount",
   "Courier",
   "CN",
@@ -40,20 +41,39 @@ function csvCell(value) {
   return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
-function downloadUnmatchedCsv(rows) {
-  const header = UNMATCHED_CSV_COLUMNS.map(([, label]) => csvCell(label)).join(",");
-  const lines = rows.map((row) =>
-    UNMATCHED_CSV_COLUMNS.map(([key]) => csvCell(row[key])).join(",")
-  );
-  const blob = new Blob([[header, ...lines].join("\r\n")], { type: "text/csv;charset=utf-8;" });
+// One row per courier and status spelling the importer understands, so the
+// sample doubles as the reference for what to write in those columns.
+const SAMPLE_ROWS = [
+  ["#1001", "15/08/2026", "16/08/2026", "3749", "BarqRaftar", "BR123456789", "VIP", "Delivered", "INV-1001", "Paid", "250", "03001234567", "Black Hoodie"],
+  ["#1002", "15/08/2026", "16/08/2026", "2499", "PostEx", "PX987654321", "", "In Transit", "", "Unpaid", "200", "03111234567", "Cotton Shirt"],
+  ["#1003", "16/08/2026", "17/08/2026", "1999", "Smartlane", "SL555666777", "", "Out for Delivery", "", "Unpaid", "180", "", ""],
+  ["#1004", "16/08/2026", "17/08/2026", "4200", "TCS", "TCS111222333", "Repeat", "Returned", "", "Unpaid", "250", "", ""],
+  ["#1005", "17/08/2026", "", "1500", "Leopards", "", "", "Cancelled", "", "", "", "", ""],
+];
+
+function downloadCsv(fileName, header, rows) {
+  const lines = [header, ...rows].map((row) => row.map(csvCell).join(","));
+  const blob = new Blob([lines.join("\r\n")], { type: "text/csv;charset=utf-8;" });
   const url = window.URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = "unmatched_orders.csv";
+  link.download = fileName;
   document.body.appendChild(link);
   link.click();
   link.remove();
   window.URL.revokeObjectURL(url);
+}
+
+function downloadUnmatchedCsv(rows) {
+  downloadCsv(
+    "unmatched_orders.csv",
+    UNMATCHED_CSV_COLUMNS.map(([, label]) => label),
+    rows.map((row) => UNMATCHED_CSV_COLUMNS.map(([key]) => row[key]))
+  );
+}
+
+function downloadSampleCsv() {
+  downloadCsv("courier_sheet_sample.csv", [...COLUMNS, ...OPTIONAL_COLUMNS], SAMPLE_ROWS);
 }
 
 function Stat({ label, value, tone = "slate" }) {
@@ -229,12 +249,26 @@ export default function ImportOrdersModal({ open, onClose, onImported, stores = 
         </p>
 
         <div className="rounded-md border border-surface-border bg-surface/60 px-3 py-2">
-          <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
-            Expected columns
+          <div className="flex items-center justify-between">
+            <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+              Expected columns
+            </div>
+            <button
+              type="button"
+              onClick={downloadSampleCsv}
+              className="text-xs font-medium text-brand-600 hover:underline"
+            >
+              Download sample file
+            </button>
           </div>
           <div className="mt-1 text-xs text-slate-600">{COLUMNS.join(" · ")}</div>
           <div className="mt-1 text-[11px] text-slate-400">
             Optional fallback columns: {OPTIONAL_COLUMNS.join(" · ")}
+          </div>
+          <div className="mt-1 text-[11px] text-slate-400">
+            Courier: BarqRaftar · PostEx · Smartlane · TCS · Leopards · Trax · MNP (spacing and
+            case don&apos;t matter). Status: Delivered · Returned · Cancelled · In Transit · Out for
+            Delivery · Attempted. Dates: 15/08/2026 or 15 Aug 2026.
           </div>
         </div>
 

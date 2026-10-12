@@ -40,20 +40,70 @@ _DATE_FORMATS = (
     "%d %b %Y",
     "%Y-%m-%d %H:%M:%S",
     "%Y-%m-%d",
+    # What Excel writes when a hand-kept sheet is saved as CSV - day first,
+    # as everywhere in Pakistan.
+    "%d/%m/%Y %I:%M %p",
+    "%d/%m/%Y %H:%M:%S",
+    "%d/%m/%Y %H:%M",
+    "%d/%m/%Y",
+    "%d-%m-%Y",
 )
 
 # Courier status text -> our pipeline status. Matched case-insensitively
 # after whitespace collapsing.
 STATUS_MAP = {
     "return to shipper": "returned",
+    "returned to shipper": "returned",
     "returned": "returned",
+    "return": "returned",
     "return received": "returned",
     "rto": "returned",
+    "rts": "returned",
     "delivered": "delivered",
     "complete": "delivered",
     "completed": "delivered",
     "cancelled": "cancelled",
     "canceled": "cancelled",
+    "booked": "dispatched",
+    "dispatched": "dispatched",
+    "shipped": "dispatched",
+    "picked": "dispatched",
+    "picked up": "dispatched",
+    "in transit": "dispatched",
+    "intransit": "dispatched",
+    "out for delivery": "out_for_delivery",
+    "attempted": "attempt",
+    "delivery attempted": "attempt",
+    "delivery failed": "attempt",
+    "undelivered": "attempt",
+}
+
+# Statuses that only say "the parcel is moving". Unlike the final ones they
+# are often stale in an old sheet, so they may only move an order forward:
+# never back from a later stage, never over a final outcome.
+_IN_TRANSIT = {"dispatched", "out_for_delivery", "attempt"}
+_TRANSIT_RANK = {"dispatched": 1, "out_for_delivery": 2, "attempt": 2}
+
+# Courier sheets write the carrier every way ("Burq Raftar", "barq_raftar",
+# "POSTEX") - each would become its own Courier row, and only the canonical
+# BarqRaftar / PostEx rows are ones their pollers adopt. Keyed by the name's
+# letters alone; anything not listed is kept as written.
+_COURIER_CANONICAL = {
+    "postex": "PostEx",
+    "smartlane": "Smartlane",
+    "omscourier": "OMS Courier",
+    "tcs": "TCS",
+    "trax": "Trax",
+    "leopard": "Leopards",
+    "leopards": "Leopards",
+    "leopardscourier": "Leopards",
+    "mnp": "MNP",
+    "mandp": "MNP",
+    "lama": "Lama",
+    "dex": "DEX",
+    "fastex": "Fastex",
+    "qwqer": "Qwqer",
+    "tez": "Tez",
 }
 
 # Header -> internal key. Lower-cased and stripped before lookup so
@@ -71,6 +121,7 @@ COLUMN_ALIASES = {
     "cn": "cn",
     "consignment": "cn",
     "consignment number": "cn",
+    "consignment no": "cn",
     "tracking": "cn",
     "tags": "tags",
     "tag": "tags",
@@ -88,6 +139,8 @@ COLUMN_ALIASES = {
     "contact": "phone",
     "contact number": "phone",
     "contact no": "phone",
+    "consignee contact": "phone",
+    "consignee phone": "phone",
     "mobile": "phone",
     "mobile number": "phone",
     "mobile no": "phone",
@@ -97,7 +150,13 @@ COLUMN_ALIASES = {
     "products": "product_name",
     "item": "product_name",
     "item name": "product_name",
+    "line items": "product_name",
 }
+
+# The store's own order number. When a sheet carries one of these beside a
+# generic "Order ID", the generic one is the aggregator's internal id and
+# must not be matched against our orders.
+_WEB_ORDER_HEADERS = {"web orderid", "web order id"}
 
 
 def _clean(value):
@@ -131,6 +190,15 @@ def _parse_datetime(value):
     return None
 
 
+def _canonical_courier(name):
+    """'Burq Raftar' / 'barq_raftar' -> 'BarqRaftar'; unknown names as-is."""
+    name = _clean(name)
+    letters = re.sub(r"[^a-z]", "", name.lower())
+    if letters.startswith(("barq", "burq")):
+        return "BarqRaftar"
+    return _COURIER_CANONICAL.get(letters, name)
+
+
 def _normalize_phone(value):
     """Keeps only the last 10 digits, so '+92 300 1234567', '923001234567'
     and '03001234567' all compare equal regardless of country-code/leading
@@ -162,25 +230,41 @@ def parse_rows(file_obj):
     else:
         text = raw
 
-    reader = csv.DictReader(io.StringIO(text))
-    if not reader.fieldnames:
+    # A plain reader rather than DictReader: aggregator exports repeat
+    # headers ("Status", "Courier", ... once from the courier, again in a
+    # hand-updated block further right), and DictReader keeps only the last
+    # copy - blank cells included, which would wipe the earlier value.
+    reader = csv.reader(io.StringIO(text))
+    headers = next(reader, None)
+    if not headers:
         return [], ["The file appears to be empty."]
 
-    header_map = {}
-    for name in reader.fieldnames:
-        key = COLUMN_ALIASES.get((name or "").strip().lower())
+    names = [(name or "").strip().lower() for name in headers]
+    has_web_order = any(name in _WEB_ORDER_HEADERS for name in names)
+    columns = []
+    for index, name in enumerate(names):
+        key = COLUMN_ALIASES.get(name)
+        if key == "order_number" and has_web_order and name not in _WEB_ORDER_HEADERS:
+            continue
         if key:
-            header_map[name] = key
+            columns.append((index, key))
 
-    if "order_number" not in header_map.values():
+    if "order_number" not in {key for _index, key in columns}:
         return [], [
             "No order-number column found. Expected a column named "
             "'Web OrderID' (or 'Order No' / 'Order Number')."
         ]
 
     rows, errors = [], []
-    for line_number, raw_row in enumerate(reader, start=2):
-        row = {key: raw_row.get(name) for name, key in header_map.items()}
+    for line_number, cells in enumerate(reader, start=2):
+        if not any(cell.strip() for cell in cells):
+            continue
+        # Rightmost non-blank copy of a repeated column wins.
+        row = {}
+        for index, key in columns:
+            value = cells[index] if index < len(cells) else ""
+            if _clean(value):
+                row[key] = value
         numbers = _order_number_variants(row.get("order_number"))
         if not numbers:
             errors.append(f"Line {line_number}: missing order number")
@@ -193,7 +277,7 @@ def parse_rows(file_obj):
                 "order_date": _parse_datetime(row.get("order_date")),
                 "booking_date": _parse_datetime(row.get("booking_date")),
                 "cod_amount": _parse_decimal(row.get("cod_amount")),
-                "courier": _clean(row.get("courier")),
+                "courier": _canonical_courier(row.get("courier")),
                 "cn": _clean(row.get("cn")),
                 "tags": _clean(row.get("tags")),
                 "status": STATUS_MAP.get(
@@ -361,12 +445,21 @@ def _row_changes(row, order, courier_lookup):
     the sheet doesn't carry."""
     changes = {}
 
-    if row["status"] and order.status != row["status"]:
+    if _status_applies(row["status"], order.status):
         changes["status"] = row["status"]
         if row["status"] == "returned" and not order.returned_at:
             changes["returned_at"] = row["booking_date"] or timezone.now()
         if row["status"] == "delivered" and not order.delivered_at:
             changes["delivered_at"] = row["booking_date"] or timezone.now()
+    # Fill-only, like placed_at below: the booking is when the parcel left,
+    # for any order the sheet shows as having gone out.
+    final_status = changes.get("status", order.status)
+    if (
+        row["booking_date"]
+        and not order.dispatched_at
+        and final_status in _IN_TRANSIT | {"delivered", "returned"}
+    ):
+        changes["dispatched_at"] = row["booking_date"]
 
     if row["cn"] and order.tracking_number != row["cn"]:
         changes["tracking_number"] = row["cn"][:100]
@@ -395,12 +488,27 @@ def _row_changes(row, order, courier_lookup):
     return changes
 
 
+def _status_applies(incoming, current):
+    if not incoming or incoming == current:
+        return False
+    if incoming not in _IN_TRANSIT:
+        return True
+    if current in _PROTECTED:
+        return False
+    return _TRANSIT_RANK[incoming] > _TRANSIT_RANK.get(current, 0) or (
+        current in _IN_TRANSIT and _TRANSIT_RANK[incoming] == _TRANSIT_RANK[current]
+    )
+
+
 def _courier_lookup(organization_id, rows, create_missing):
     names = {row["courier"] for row in rows if row["courier"]}
-    existing = {
-        c.name.lower(): c
-        for c in Courier.all_objects.filter(organization_id=organization_id)
-    }
+    existing = {}
+    # An older import may have left "Burq Raftar" beside "BarqRaftar" - both
+    # resolve to the canonical key, and the canonically named row wins.
+    for c in Courier.all_objects.filter(organization_id=organization_id):
+        key = _canonical_courier(c.name).lower()
+        if key not in existing or c.name.lower() == key:
+            existing[key] = c
     if create_missing:
         for name in names:
             if name.lower() not in existing:
@@ -443,7 +551,12 @@ def run_import(organization_id, file_obj, *, dry_run=True, overwrite_final=False
 
     planned, protected, unchanged = [], [], 0
     for row, order, matched_via in matches:
-        if order.status in _PROTECTED and row["status"] and order.status != row["status"]:
+        if (
+            order.status in _PROTECTED
+            and row["status"]
+            and row["status"] not in _IN_TRANSIT
+            and order.status != row["status"]
+        ):
             if not overwrite_final:
                 protected.append(
                     {
