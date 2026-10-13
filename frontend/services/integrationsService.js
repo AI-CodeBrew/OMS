@@ -91,6 +91,19 @@ class IntegrationsService {
     return data;
   }
 
+  // One batch of "Push all statuses now" - post the previous batch's `next`
+  // as `after` until it comes back null.
+  async pushShopifyStatuses(after = "") {
+    const response = await fetch(`${apiConfig.baseUrl}${SHOPIFY_BASE}/push-statuses/`, {
+      method: "POST",
+      headers: authService.getAuthHeaders(),
+      body: JSON.stringify({ after }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Failed to push statuses to Shopify");
+    return data;
+  }
+
   async setWebhooksActive(enabled) {
     const response = await fetch(`${apiConfig.baseUrl}${SHOPIFY_BASE}/`, {
       method: "PATCH",

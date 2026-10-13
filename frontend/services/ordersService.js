@@ -264,11 +264,14 @@ class OrdersService {
 
   // Uploads a courier/settlement sheet. Defaults to a preview: nothing is
   // written unless apply is true, so the UI can show the diff first.
-  async importCsv(file, { apply = false, overwriteFinal = false, store = "" } = {}) {
+  // `courier` (barqraftar / postex / smartlane) marks the sheet as that
+  // courier's own portal export; without it it's the aggregator's sheet.
+  async importCsv(file, { apply = false, overwriteFinal = false, store = "", courier = "" } = {}) {
     const form = new FormData();
     form.append("file", file);
     // Dispatch Hub only: which of its stores the sheet is for.
     if (store) form.append("store", store);
+    if (courier) form.append("courier", courier);
     form.append("apply", apply ? "true" : "false");
     form.append("overwrite_final", overwriteFinal ? "true" : "false");
 

@@ -1005,6 +1005,9 @@ def _apply_fetched_status(shipment, row):
         shipment.status_label = status_label
     if logs:
         shipment.status_logs = logs
+    # BarqRaftar's own word ("Received at FC", "Return Requested") for the
+    # orders list's Sub Status - several of them land on one OMS status.
+    oms_services.record_courier_status(order, status_label)
 
     if not order.tracking_number and shipment.tracking_number:
         order.tracking_number = shipment.tracking_number

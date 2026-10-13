@@ -99,10 +99,15 @@ export const EDITABLE_STATUSES = new Set([
 // Actions dropdown from offering transitions the backend would reject.
 export const ACTIONS_BY_STATUS = {
   // Untouched inbox - CS picks the order up into Pending CC/COD (whichever
-  // matches its gateway) before working it.
+  // matches its gateway) before working it. An order already handled
+  // outside OMS can instead be marked straight to its outcome (backend:
+  // oms.services.set_outcome_by_hand).
   new: [
     { action: "acknowledge", label: "Start Processing" },
+    { action: "mark_delivered_by_hand", label: "Mark Delivered" },
+    { action: "mark_returned_by_hand", label: "Mark Returned" },
     { action: "cancel", label: "Cancel" },
+    { action: "mark_dispatched_by_hand", label: "Mark Dispatched" },
   ],
   pending_cc: [{ action: "confirm", label: "Confirm" }, { action: "cancel", label: "Cancel" }],
   pending_cod: [{ action: "confirm", label: "Confirm" }, { action: "cancel", label: "Cancel" }],

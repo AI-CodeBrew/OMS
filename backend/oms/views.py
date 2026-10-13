@@ -155,6 +155,16 @@ BULK_ACTIONS = {
     ),
     "retry_dispatch": lambda order, params, actor: services.retry_dispatch(order, actor_user_id=actor),
     "mark_delivered": lambda order, params, actor: services.mark_delivered(order, actor_user_id=actor),
+    # New orders handled outside OMS - see services.set_outcome_by_hand.
+    "mark_dispatched_by_hand": lambda order, params, actor: services.set_outcome_by_hand(
+        order, "dispatched", actor_user_id=actor
+    ),
+    "mark_delivered_by_hand": lambda order, params, actor: services.set_outcome_by_hand(
+        order, "delivered", actor_user_id=actor
+    ),
+    "mark_returned_by_hand": lambda order, params, actor: services.set_outcome_by_hand(
+        order, "returned", actor_user_id=actor
+    ),
     "cancel": lambda order, params, actor: services.cancel_order(
         order, reason=params.get("reason", ""), actor_user_id=actor
     ),
@@ -767,9 +777,19 @@ class OrderViewSet(viewsets.ModelViewSet):
     def import_csv(self, request):
         """Applies a courier/settlement sheet onto existing orders.
 
-        Defaults to a dry run - the caller must pass dry_run=false to
-        actually write, so the UI can show what would change first.
+        `courier` (smartlane / postex / barqraftar) says the sheet is that
+        courier's own portal export - see importers.COURIER_SHEETS; without
+        it the sheet is the courier aggregator's.
+
+        Defaults to a dry run - the caller must pass apply=true to actually
+        write, so the UI can show what would change first.
         """
+        courier = str(request.data.get("courier") or "").strip().lower()
+        if courier and courier not in importers.COURIER_SHEETS:
+            return Response(
+                {"detail": f"Unknown courier sheet {courier!r}."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         organization_id = request.organization_id
         if is_hub_request(request):
             # Order numbers are only unique per store, so a Hub import has
@@ -797,6 +817,8 @@ class OrderViewSet(viewsets.ModelViewSet):
                     upload,
                     dry_run=not _flag("apply"),
                     overwrite_final=_flag("overwrite_final"),
+                    courier=courier,
+                    actor_user_id=request.user_id,
                 ),
             )
         except UnicodeDecodeError:

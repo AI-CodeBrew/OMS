@@ -90,6 +90,11 @@ const EMPTY_FILTERS = { city: "", courier_id: "", gateway: "", date_from: "", da
 const CRITICAL_TAB = "critical";
 const TAB_STATUSES = STATUS_TABS.map((tab) => tab.value).filter((v) => v !== CRITICAL_TAB);
 const IN_TRANSIT_STATUSES = new Set(["dispatched"]);
+// Tabs after dispatch - where the courier's own word for where the parcel is
+// (its Sub Status) tells apart orders that share one of our statuses.
+const SUB_STATUS_TABS = new Set([
+  "dispatched", CRITICAL_TAB, "out_for_delivery", "attempt", "delivered", "cancelled", "returned",
+]);
 
 function isPlainTabQuery(queryParams) {
   return (
@@ -974,6 +979,7 @@ export default function OrdersPage() {
           onRaiseTicket={setTicketOrder}
           showStoreColumn={Boolean(user?.isDispatchHub)}
           showTransitColumn={activeStatus === CRITICAL_TAB}
+          showSubStatusColumn={SUB_STATUS_TABS.has(activeStatus)}
         />
 
         <Pagination

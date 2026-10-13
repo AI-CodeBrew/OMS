@@ -129,6 +129,9 @@ export default function IntegrationsPage() {
   const [gapReport, setGapReport] = useState(null);
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+  // "Push all statuses now": { done, total, failed } while it runs.
+  const [pushing, setPushing] = useState(null);
+  const stopPushRef = useRef(false);
   const pollRef = useRef(null);
 
   async function loadStatus() {
@@ -375,6 +378,49 @@ export default function IntegrationsPage() {
       setStatus((s) => ({ ...s, ...data }));
     } catch (err) {
       setError(err.message || "Failed to update setting");
+    }
+  }
+
+  // Status Push only sends a change as it happens - this sends the current
+  // status of every order once, a batch at a time (each batch is one short
+  // request), so orders that moved before it was turned on catch up too.
+  async function onPushAllStatuses() {
+    if (
+      !window.confirm(
+        "Push the current status of every order to Shopify? Shipped orders are marked fulfilled " +
+          "with their tracking number (customers are not emailed) and every order gets its status tag."
+      )
+    ) {
+      return;
+    }
+    setError("");
+    setNotice("");
+    stopPushRef.current = false;
+    let after = "";
+    let total = null;
+    let done = 0;
+    let failed = 0;
+    let errors = [];
+    setPushing({ done, total, failed });
+    try {
+      do {
+        const data = await integrationsService.pushShopifyStatuses(after);
+        if (data.total != null) total = data.total;
+        done += data.processed;
+        failed += data.failed;
+        errors = errors.concat(data.errors || []);
+        setPushing({ done, total, failed });
+        after = data.next;
+      } while (after && !stopPushRef.current);
+      const stopped = after ? " (stopped)" : "";
+      setNotice(
+        `Pushed ${done} order${done === 1 ? "" : "s"} to Shopify${stopped}.` +
+          (failed ? ` ${failed} failed - e.g. ${errors.slice(0, 2).join("; ")}` : "")
+      );
+    } catch (err) {
+      setError(err.message || "Failed to push statuses to Shopify");
+    } finally {
+      setPushing(null);
     }
   }
 
@@ -700,6 +746,52 @@ export default function IntegrationsPage() {
                 onChange={onTogglePushStatus}
                 title2="Off by default - when on, every status change (Dispatched/Delivered/Returned/Cancelled) creates a Shopify fulfillment (if a tracking number exists) and tags the Shopify order accordingly."
               />
+              {connected && status.push_status_to_shopify ? (
+                <div className="rounded-md border border-dashed border-surface-border px-3 py-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-xs text-slate-500">
+                      Orders that moved before this was on aren&apos;t on Shopify yet.
+                    </span>
+                    <Button
+                      variant="secondary"
+                      onClick={onPushAllStatuses}
+                      loading={Boolean(pushing)}
+                      className="shrink-0 px-2.5 py-1 text-xs"
+                    >
+                      Push all statuses now
+                    </Button>
+                  </div>
+                  {pushing ? (
+                    <div className="mt-2 space-y-1">
+                      <div className="flex items-center justify-between gap-2 text-xs text-slate-500">
+                        <span>
+                          Pushing… {pushing.done}
+                          {pushing.total != null ? ` of ${pushing.total}` : ""} order
+                          {pushing.total === 1 ? "" : "s"}
+                          {pushing.failed ? `, ${pushing.failed} failed` : ""}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            stopPushRef.current = true;
+                          }}
+                          className="shrink-0 font-medium text-red-600 hover:underline"
+                        >
+                          Stop
+                        </button>
+                      </div>
+                      {pushing.total ? (
+                        <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+                          <div
+                            className="h-full rounded-full bg-brand-500 transition-all"
+                            style={{ width: `${Math.min((pushing.done / pushing.total) * 100, 100)}%` }}
+                          />
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               <FeatureToggle
                 title="Real-time Webhooks"
                 description="Instant order-create/update listeners"

@@ -33,6 +33,9 @@ _SHOPIFY_STATUS_TAGS = {
     "ready_to_print": "OMS:Booked",
     "ready_to_pick": "OMS:Booked",
     "dispatched": "OMS:Dispatched",
+    # Still on the move - Shopify's own Delivery status says which stage.
+    "out_for_delivery": "OMS:Dispatched",
+    "attempt": "OMS:Dispatched",
     "delivered": "OMS:Delivered",
     "returned": "OMS:Returned",
     "cancelled": "OMS:Cancelled",
@@ -40,7 +43,9 @@ _SHOPIFY_STATUS_TAGS = {
 # Statuses at which the tracking number is trustworthy enough to push as a
 # Shopify fulfillment - before this it's either empty or (with the current
 # create_booking stub) a placeholder, not a real courier tracking number.
-_SHOPIFY_FULFILLMENT_STATUSES = {"ready_to_print", "ready_to_pick", "dispatched", "delivered"}
+_SHOPIFY_FULFILLMENT_STATUSES = {
+    "ready_to_print", "ready_to_pick", "dispatched", "out_for_delivery", "attempt", "delivered",
+}
 
 # OMS status -> Shopify's fixed Fulfillment Event `status` values, which
 # drive the "Delivery status" column on Shopify's own Orders list -
@@ -58,7 +63,7 @@ _SHOPIFY_SHIPMENT_STATUS = {
 }
 
 
-def sync_order_to_shopify(order):
+def sync_order_to_shopify(order, *, with_events=True):
     """Best-effort push of what the OMS pipeline now knows back onto the
     Shopify order it came from: fulfillment tracking number/courier, a
     Delivery-status timeline event (in_transit/out_for_delivery/
@@ -81,17 +86,22 @@ def sync_order_to_shopify(order):
     rewriting a live order's financial fields is a different, riskier
     operation than tagging and fulfilling it, so delivery-charge sync stays
     OMS-side only for now.
+
+    with_events=False leaves out the Delivery-status event - see
+    push_statuses_to_shopify. Returns what Shopify refused, as messages
+    (empty when all went through, or there was nothing to push).
     """
     if not order.shopify_order_id:
-        return
+        return []
     try:
         connection = ShopifyConnection.all_objects.get(
             organization_id=order.organization_id, is_connected=True, push_status_to_shopify=True
         )
     except ShopifyConnection.DoesNotExist:
-        return
+        return []
 
     args = (connection.shop_domain, connection.access_token, settings.SHOPIFY_API_VERSION)
+    errors = []
 
     if order.tracking_number and order.status in _SHOPIFY_FULFILLMENT_STATUSES and not order.shopify_fulfillment_id:
         try:
@@ -105,35 +115,90 @@ def sync_order_to_shopify(order):
             Order.all_objects.filter(pk=order.pk).update(
                 shopify_fulfillment_id=order.shopify_fulfillment_id
             )
-        except shopify_client.ShopifyAPIError:
-            pass  # already fulfilled, or Shopify-side issue - not fatal here
+        except shopify_client.ShopifyAPIError as exc:
+            # Already fulfilled on Shopify (by the courier's own app, say)
+            # isn't a failure - not fatal here either way.
+            if "No open fulfillment orders" not in str(exc):
+                errors.append(str(exc))
 
     # Delivery-status timeline - only meaningful once a fulfillment exists,
     # so this only fires for statuses reached after the block above (or a
     # prior sync) has already set shopify_fulfillment_id.
     shipment_status = _SHOPIFY_SHIPMENT_STATUS.get(order.status)
-    if shipment_status and order.shopify_fulfillment_id:
+    if with_events and shipment_status and order.shopify_fulfillment_id:
         try:
             shopify_client.create_fulfillment_event(
                 *args, order.shopify_order_id, order.shopify_fulfillment_id, shipment_status
             )
-        except shopify_client.ShopifyAPIError:
-            pass
+        except shopify_client.ShopifyAPIError as exc:
+            errors.append(str(exc))
 
     status_tag = _SHOPIFY_STATUS_TAGS.get(order.status)
     if status_tag or order.tag:
         try:
-            existing = [
+            # Read from Shopify itself, not our copy: an update replaces the
+            # order's whole tag list, and the rest of it is the merchant's
+            # (and other apps') - our copy never held those, so writing from
+            # it wiped them. Only our own OMS: tag is swapped.
+            current = [
                 t.strip()
-                for t in (order.customer_tags or "").split(",")
-                if t.strip() and not t.strip().startswith(_SHOPIFY_STATUS_TAG_PREFIX)
+                for t in shopify_client.fetch_order_tags(*args, order.shopify_order_id).split(",")
+                if t.strip()
             ]
+            existing = [t for t in current if not t.startswith(_SHOPIFY_STATUS_TAG_PREFIX)]
             merged = list(dict.fromkeys(existing + [t for t in (status_tag, order.tag) if t]))
-            shopify_client.update_order_tags(*args, order.shopify_order_id, ", ".join(merged))
-            order.customer_tags = ", ".join(merged)
+            if set(merged) != set(current):
+                shopify_client.update_order_tags(*args, order.shopify_order_id, ", ".join(merged))
+            order.customer_tags = ", ".join(merged)[:255]
             Order.all_objects.filter(pk=order.pk).update(customer_tags=order.customer_tags)
-        except shopify_client.ShopifyAPIError:
-            pass
+        except shopify_client.ShopifyAPIError as exc:
+            errors.append(str(exc))
+    return errors
+
+
+# The statuses "Push all statuses now" sends - each carries a Shopify tag or
+# a fulfillment (sync_order_to_shopify).
+_PUSHABLE_STATUSES = set(_SHOPIFY_STATUS_TAGS) | _SHOPIFY_FULFILLMENT_STATUSES
+
+
+def push_statuses_to_shopify(organization_id, *, after="", limit=10):
+    """One batch of the Shopify page's "Push all statuses now": what
+    sync_order_to_shopify sends on every status change, for orders that
+    reached their status before Status Push was turned on. The page calls
+    this again with `next` (the batch's last order id) until it's None.
+
+    No Delivery-status events: on old orders those could set off Shopify's
+    "out for delivery" / "delivered" emails to customers. The fulfillment
+    itself is created without notifying anyone (shopify_client.
+    create_fulfillment), and the status tag shows where each order is.
+    Shopify's ~2 requests/second limit is waited out rather than failed."""
+    orders = (
+        Order.all_objects.filter(
+            organization_id=organization_id,
+            shopify_order_id__isnull=False,
+            status__in=_PUSHABLE_STATUSES,
+        )
+        .select_related("courier")
+        .order_by("id")
+    )
+    total = None if after else orders.count()
+    if after:
+        orders = orders.filter(id__gt=after)
+    batch = list(orders[:limit])
+
+    failed = []
+    with shopify_client.wait_out_rate_limits():
+        for order in batch:
+            errors = sync_order_to_shopify(order, with_events=False)
+            if errors:
+                failed.append(f"{order.order_number}: {errors[0][:200]}")
+    return {
+        "total": total,
+        "processed": len(batch),
+        "failed": len(failed),
+        "errors": failed[:5],
+        "next": str(batch[-1].id) if len(batch) == limit else None,
+    }
 
 
 def _to_decimal(value):
@@ -191,6 +256,39 @@ def _shipping_total(shopify_order):
         (_to_decimal(line.get("price")) for line in shopify_order.get("shipping_lines") or []),
         Decimal("0"),
     )
+
+
+def _shopify_money(shopify_order):
+    """The order's money split so that Order.grand_total comes out as
+    Shopify's own total_price - what the customer pays, and what a courier
+    is told to collect:
+
+      total_amount     line items before discounts (total_line_items_price),
+                       the same as OMS's own subtotal once an order is edited
+      coupon_discount  what the discounts took off those items. Shopify's
+                       subtotal_price is already after discounts, so the
+                       earlier subtotal_price - total_discounts took them
+                       off twice
+      total_tax        only when charged on top - with taxes_included it's
+                       already inside the item prices
+      shipping_amount  everything else total_price adds: shipping after its
+                       own discounts (plus tips or duties, if a store has any)
+
+    A payload without total_price (older API versions) falls back to the
+    shipping lines."""
+    items_after_discounts = _to_decimal(shopify_order.get("subtotal_price"))
+    items = _to_decimal(shopify_order.get("total_line_items_price")) or items_after_discounts
+    tax = Decimal("0") if shopify_order.get("taxes_included") else _to_decimal(shopify_order.get("total_tax"))
+    if shopify_order.get("total_price") is not None:
+        shipping = _to_decimal(shopify_order.get("total_price")) - items_after_discounts - tax
+    else:
+        shipping = _shipping_total(shopify_order)
+    return {
+        "total_amount": items,
+        "coupon_discount": max(items - items_after_discounts, Decimal("0")),
+        "total_tax": tax,
+        "shipping_amount": max(shipping, Decimal("0")),
+    }
 
 
 def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
@@ -256,6 +354,8 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
     shopify_created_at = shopify_order.get("created_at")
     placed_at = parse_datetime(shopify_created_at) if shopify_created_at else None
 
+    money = _shopify_money(shopify_order)
+
     # Fields safe to refresh from Shopify on every sync. `status` is
     # deliberately NOT among them: it's our own pipeline state, advanced by
     # the CS/warehouse team, and re-syncing an order must never undo their
@@ -271,15 +371,7 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
         "fulfillment_status": fulfillment_status,
         "city": _truncate(shipping_address.get("city"), 100),
         "shop": _truncate(shop_label or "Shopify", 150),
-        # total_amount is the SUBTOTAL (line items before shipping/tax/
-        # discounts) - Order.grand_total adds the rest back on top. Mapping
-        # Shopify's total_price here instead would double-count shipping
-        # and tax once those are populated below, inflating the COD amount
-        # couriers are told to collect.
-        "total_amount": _to_decimal(shopify_order.get("subtotal_price")),
-        "shipping_amount": _shipping_total(shopify_order),
-        "total_tax": _to_decimal(shopify_order.get("total_tax")),
-        "coupon_discount": _to_decimal(shopify_order.get("total_discounts")),
+        **money,
         "tracking_number": _truncate(tracking_number, 100),
         "customer_email": _truncate(shopify_order.get("email"), 255),
         "address_line1": _truncate(shipping_address.get("address1"), 255),
@@ -476,6 +568,19 @@ def extract_smartlane_event(payload):
         str(payload.get("courier_status") or payload.get("state") or payload.get("status") or "")
     ).strip().lower().replace(" ", "_")
     return order_number, tracking_number, smartlane_status
+
+
+def smartlane_status_label(payload):
+    """Smartlane's own word for where the parcel is, for the orders list's
+    Sub Status (oms.services.record_courier_status) - the same field
+    extract_smartlane_event reads the status from, as written, with a bare
+    stage name made readable ("out_for_delivery" -> "Out For Delivery")."""
+    label = str(
+        payload.get("courier_status") or payload.get("state") or payload.get("status") or ""
+    ).strip()
+    if label == label.lower():
+        label = label.replace("_", " ").title()
+    return label
 
 
 def find_order_by_smartlane_reference(reference):
@@ -867,6 +972,7 @@ def _poll_smartlane_statuses_body(
             if order is None:
                 logger.debug("smartlane poll: row for %r matches no order we asked about", row_number)
                 continue
+            oms_services.record_courier_status(order, smartlane_status_label(row))
 
             # Keep the consignment number Smartlane assigned, which for a
             # real booking only becomes known after the fact. consignment
@@ -1047,6 +1153,7 @@ def _apply_platform_smartlane_row(order, consignment, raw_status, row, oms_servi
     Ready to Print, then the status), minus absorbing. Returns True if the
     order visibly changed."""
     changed = False
+    oms_services.record_courier_status(order, smartlane_status_label(row))
     if consignment and consignment != order.tracking_number:
         order.tracking_number = _truncate(consignment, 100)
         order.save(update_fields=["tracking_number", "updated_at"])

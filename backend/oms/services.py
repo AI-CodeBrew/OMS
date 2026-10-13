@@ -156,7 +156,9 @@ def _force_transition(order, to_status, *, actor_user_id=None, note="", extra_fi
     order straight to Booking Pending from wherever it's sitting locally,
     because the courier has already proven the booking is real (it was made
     directly on their portal, outside this app's own approve/assign/push
-    pipeline). Every other call site must keep going through _transition."""
+    pipeline) - and for set_outcome_by_hand, staff marking a New order they
+    handled outside OMS straight to its outcome. Every other call site must
+    keep going through _transition."""
     logger.warning(
         "order %s FORCED transition %s -> %s (bypassing ALLOWED_TRANSITIONS)",
         order.order_number, order.status, to_status,
@@ -429,6 +431,40 @@ def mark_returned_by_courier(order, *, reason="", actor_user_id=None):
     )
 
 
+# What staff can mark by hand on an order still in New, with the date each
+# one stamps - an order handled outside OMS (booked on a courier's own
+# portal, or delivered / returned before the store started using OMS), so it
+# never went through the pipeline here. Cancelling is cancel_order, already
+# a normal step from New.
+HAND_SET_OUTCOMES = {
+    "dispatched": "dispatched_at",
+    "delivered": "delivered_at",
+    "returned": "returned_at",
+}
+
+
+def set_outcome_by_hand(order, to_status, *, actor_user_id=None):
+    """New -> Dispatched / Delivered / Returned in one step, skipping the
+    pipeline in between (_force_transition): the parcel went out without
+    OMS, so there's no booking, printing or dispatch scan to walk through.
+    No stock is taken - nothing here ever reserved any for it."""
+    if to_status not in HAND_SET_OUTCOMES:
+        raise InvalidTransition(f"{to_status!r} can't be set by hand.")
+    if order.status != "new":
+        raise InvalidTransition(
+            f"Order {order.order_number} is {order.get_status_display()} - only New orders can "
+            "be marked by hand."
+        )
+    stamp = HAND_SET_OUTCOMES[to_status]
+    return _force_transition(
+        order,
+        to_status,
+        actor_user_id=actor_user_id,
+        note=f"Marked {dict(Order.STATUS_CHOICES)[to_status]} by hand from New",
+        extra_fields={} if getattr(order, stamp) else {stamp: timezone.now()},
+    )
+
+
 def book_with_courier(order, *, courier_id, tracking_number, actor_user_id=None):
     """Generic local bookkeeping for a courier integrated directly rather
     than through Smartlane: courier assignment, the booking_pending
@@ -692,7 +728,9 @@ def abandon_smartlane_booking(order, *, actor_user_id=None):
         "awaiting_assigning",
         actor_user_id=actor_user_id,
         note="Smartlane booking was never created - returned for re-push",
-        extra_fields={"courier_id": None, "tracking_number": "", "platform_reference": ""},
+        extra_fields={
+            "courier_id": None, "tracking_number": "", "platform_reference": "", "courier_status": "",
+        },
     )
 
 
@@ -789,6 +827,29 @@ def mark_delivery_attempt_failed(order, *, actor_user_id=None):
     never a manual action. Usually followed by another out_for_delivery/
     dispatch event as the courier retries, not an immediate return."""
     return _transition(order, "attempt", actor_user_id=actor_user_id)
+
+
+def record_courier_status(order, label):
+    """Keeps Order.courier_status - the courier's own word for where the
+    parcel is, the orders list's Sub Status - in step with what the courier
+    last reported. PostEx's, BarqRaftar's and Smartlane's pollers and
+    webhooks call it with every status they read; it only saves, and tells
+    open Orders pages, when the word changed. Returns whether it did."""
+    label = (label or "").strip()[:100]
+    if not label or label == order.courier_status:
+        return False
+    order.courier_status = label
+    order.save(update_fields=["courier_status", "updated_at"])
+    publish_event(
+        "order.updated",
+        {
+            "organization_id": str(order.organization_id),
+            "order_id": str(order.id),
+            "order_number": order.order_number,
+            "source": "courier_status",
+        },
+    )
+    return True
 
 
 def cancel_fulfillment(order, *, actor_user_id=None):

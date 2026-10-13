@@ -56,6 +56,23 @@ const CONFIRM_BY_ACTION = {
     result: "move back to Awaiting Dispatched",
   },
   mark_delivered: { title: "Mark delivered", button: "Mark Delivered", result: "be marked Delivered" },
+  // New orders handled outside OMS - straight to the outcome, no booking
+  // and no stock taken (oms.services.set_outcome_by_hand).
+  mark_delivered_by_hand: {
+    title: "Mark delivered",
+    button: "Mark Delivered",
+    result: "move from New straight to Delivered (no courier booking, no stock taken)",
+  },
+  mark_returned_by_hand: {
+    title: "Mark returned",
+    button: "Mark Returned",
+    result: "move from New straight to Returned (no courier booking, no stock taken)",
+  },
+  mark_dispatched_by_hand: {
+    title: "Mark dispatched",
+    button: "Mark Dispatched",
+    result: "move from New straight to Dispatched (no courier booking, no stock taken)",
+  },
   push_to_barqraftar: {
     title: "Book with BarqRaftar",
     button: "Book",

@@ -143,6 +143,16 @@ class Order(TenantScopedModel):
     # printing, cancelling and status sync all go through FynkTech's
     # account. Empty for a booking made through the store's own account.
     platform_reference = models.CharField(max_length=100, blank=True, default="", db_index=True)
+    # The courier's own word for where the parcel is - PostEx's "PostEx
+    # WareHouse", BarqRaftar's "Received at FC", Smartlane's courier status -
+    # as last reported (services.record_courier_status) or read off its
+    # sheet (importers.py). `status` lumps many of these together (every
+    # "still moving" one is Dispatched); the orders list shows this beside
+    # it as the Sub Status. db_default too, not just default: Django drops a
+    # plain default from the column once it's added, and then any code that
+    # doesn't know this field yet (an older deploy on the same database)
+    # fails every order INSERT on the NOT NULL.
+    courier_status = models.CharField(max_length=100, blank=True, default="", db_default="")
     # Last time integrations.services.poll_smartlane_statuses asked Smartlane
     # about this order - null means never checked. Drives the poll query's
     # ordering (never-checked/longest-since-checked first) so a broad "check
@@ -221,6 +231,11 @@ class Order(TenantScopedModel):
     # Courier or accounting invoice reference, imported from the courier's
     # settlement sheet rather than generated here.
     invoice_number = models.CharField(max_length=100, blank=True, default="")
+    # What the courier charged the store for this parcel, from its sheet
+    # (oms/importers.py). Kept apart from shipping_amount on purpose: that
+    # one is what the customer paid and counts towards the order total,
+    # which must stay the Shopify order's own. Null until a sheet says.
+    courier_charges = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     customer_type = models.CharField(max_length=50, blank=True, default="")
     expected_delivery_date = models.DateField(null=True, blank=True)
     # Free text, distinct from `courier` (this order's assigned courier) -

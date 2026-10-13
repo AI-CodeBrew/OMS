@@ -4,6 +4,7 @@ import hmac
 import json
 import logging
 import threading
+import uuid
 
 from django.conf import settings
 from django.http import JsonResponse
@@ -562,6 +563,7 @@ def smartlane_shipment_webhook(request, token):
                 )
                 order = None
             if order:
+                oms_services.record_courier_status(order, services.smartlane_status_label(payload))
                 if tracking_number and tracking_number != order.tracking_number:
                     order.tracking_number = tracking_number[:100]
                     order.save(update_fields=["tracking_number", "updated_at"])
@@ -667,6 +669,35 @@ def _mark_stale_job_failed(job):
     )
     job.finished_at = timezone.now()
     job.save(update_fields=["status", "error_message", "finished_at"])
+
+
+class ShopifyPushStatusesView(APIView):
+    """One batch of "Push all statuses now" (services.push_statuses_to_
+    shopify). The page posts {after: <the previous batch's next>} until next
+    comes back null - batches small enough to finish inside one request,
+    with no job left behind on the server to track or clean up."""
+
+    permission_classes = [IsOrgAdmin]
+
+    def post(self, request):
+        connection = ShopifyConnection.objects.filter(
+            organization_id=request.organization_id, is_connected=True
+        ).first()
+        if not connection:
+            return Response(
+                {"detail": "Not connected to Shopify yet"}, status=http_status.HTTP_400_BAD_REQUEST
+            )
+        if not connection.push_status_to_shopify:
+            return Response(
+                {"detail": "Turn on Status Push to Shopify first."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        after = str(request.data.get("after") or "")
+        try:
+            after = str(uuid.UUID(after)) if after else ""
+        except ValueError:
+            return Response({"detail": "Bad 'after' cursor."}, status=http_status.HTTP_400_BAD_REQUEST)
+        return Response(services.push_statuses_to_shopify(request.organization_id, after=after))
 
 
 class ShopifyGapView(APIView):

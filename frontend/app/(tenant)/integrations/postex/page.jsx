@@ -11,6 +11,7 @@ import ShipmentsTab from "./_components/ShipmentsTab";
 import PickupAddressesTab from "./_components/PickupAddressesTab";
 import CitiesTab from "./_components/CitiesTab";
 import { useIntegrationsHome } from "../../../../components/integrations/IntegrationsHome";
+import CourierSheetActions from "../../../../components/integrations/CourierSheetActions";
 
 const TABS = [
   { key: "shipments", label: "Shipments" },
@@ -105,16 +106,19 @@ export default function PostExIntegrationPage() {
         <span className="font-medium text-slate-700">PostEx</span>
       </nav>
 
-      <div className="mb-6 flex items-center gap-3">
-        <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-surface-border bg-white shadow-sm">
-          <PostExWordmark />
-        </span>
-        <div>
-          <h1 className="text-[22px] font-semibold text-slate-900">PostEx</h1>
-          <p className="text-sm text-slate-500">
-            Book orders, print airway bills and load sheets, and keep statuses in sync with your PostEx account.
-          </p>
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-surface-border bg-white shadow-sm">
+            <PostExWordmark />
+          </span>
+          <div>
+            <h1 className="text-[22px] font-semibold text-slate-900">PostEx</h1>
+            <p className="text-sm text-slate-500">
+              Book orders, print airway bills and load sheets, and keep statuses in sync with your PostEx account.
+            </p>
+          </div>
         </div>
+        <CourierSheetActions courier="postex" onNotice={setNotice} onError={setError} />
       </div>
 
       {error ? <p className="mb-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}

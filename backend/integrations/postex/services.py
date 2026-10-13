@@ -747,6 +747,9 @@ def _apply_fetched_status(shipment, row):
     if history:
         shipment.status_history = history
     shipment.save(update_fields=["last_checked_at", "last_payload", "status_label", "status_history", "updated_at"])
+    # PostEx's own word ("PostEx WareHouse", "En-Route to ...") for the
+    # orders list's Sub Status - most of them all land on Dispatched.
+    oms_services.record_courier_status(order, label)
 
     if not order.tracking_number and shipment.tracking_number:
         order.tracking_number = shipment.tracking_number

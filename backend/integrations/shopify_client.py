@@ -1,5 +1,7 @@
+import contextvars
 import re
 import time
+from contextlib import contextmanager
 
 import requests
 
@@ -10,6 +12,35 @@ class ShopifyAPIError(Exception):
 
 def _base_url(shop_domain, api_version):
     return f"https://{shop_domain}/admin/api/{api_version}"
+
+
+# Set inside wait_out_rate_limits(). The status-push writes below normally
+# fail fast on a 429 - they run inside the request that moved the order, and
+# a bulk action over many orders must not stall on Shopify's ~2 requests/
+# second - but a push meant to cover every order should wait its turn.
+_wait_out_rate_limits = contextvars.ContextVar("shopify_wait_out_rate_limits", default=False)
+
+
+@contextmanager
+def wait_out_rate_limits():
+    token = _wait_out_rate_limits.set(True)
+    try:
+        yield
+    finally:
+        _wait_out_rate_limits.reset(token)
+
+
+def _send(method, url, **kwargs):
+    """requests.request for the status-push writes: one try, or - inside
+    wait_out_rate_limits() - waiting out Shopify's 429s (Retry-After) the
+    way _get_with_backoff does for the order scans."""
+    tries = 5 if _wait_out_rate_limits.get() else 1
+    for attempt in range(tries):
+        resp = requests.request(method, url, timeout=15, **kwargs)
+        if resp.status_code != 429 or attempt == tries - 1:
+            return resp
+        time.sleep(float(resp.headers.get("Retry-After", 2)))
+    return resp
 
 
 def fetch_shop_info(shop_domain, access_token, api_version):
@@ -61,15 +92,30 @@ def update_order_tags(shop_domain, access_token, api_version, shopify_order_id, 
     url = f"{_base_url(shop_domain, api_version)}/orders/{shopify_order_id}.json"
     headers = {"X-Shopify-Access-Token": access_token, "Content-Type": "application/json"}
     payload = {"order": {"id": shopify_order_id, "tags": tags}}
-    resp = requests.put(url, json=payload, headers=headers, timeout=15)
+    resp = _send("PUT", url, json=payload, headers=headers)
     if not resp.ok:
         raise ShopifyAPIError(f"Failed to update tags on order {shopify_order_id}: {resp.status_code} {resp.text}")
     return resp.json()["order"]
 
 
+def fetch_order_tags(shop_domain, access_token, api_version, shopify_order_id):
+    """The order's tags as Shopify has them right now (comma-joined) - read
+    just before update_order_tags, which replaces the whole list, so the
+    merchant's own tags (and other apps') survive it."""
+    url = f"{_base_url(shop_domain, api_version)}/orders/{shopify_order_id}.json"
+    resp = _send(
+        "GET", url, headers={"X-Shopify-Access-Token": access_token}, params={"fields": "tags"}
+    )
+    if not resp.ok:
+        raise ShopifyAPIError(
+            f"Failed to read tags on order {shopify_order_id}: {resp.status_code} {resp.text}"
+        )
+    return (resp.json().get("order") or {}).get("tags") or ""
+
+
 def fetch_fulfillment_orders(shop_domain, access_token, api_version, shopify_order_id):
     url = f"{_base_url(shop_domain, api_version)}/orders/{shopify_order_id}/fulfillment_orders.json"
-    resp = requests.get(url, headers={"X-Shopify-Access-Token": access_token}, timeout=15)
+    resp = _send("GET", url, headers={"X-Shopify-Access-Token": access_token})
     if not resp.ok:
         raise ShopifyAPIError(
             f"Failed to fetch fulfillment orders for {shopify_order_id}: {resp.status_code} {resp.text}"
@@ -101,7 +147,7 @@ def create_fulfillment(
             "notify_customer": notify_customer,
         }
     }
-    resp = requests.post(url, json=payload, headers=headers, timeout=15)
+    resp = _send("POST", url, json=payload, headers=headers)
     if not resp.ok:
         raise ShopifyAPIError(
             f"Failed to create fulfillment for {shopify_order_id}: {resp.status_code} {resp.text}"
@@ -122,7 +168,7 @@ def create_fulfillment_event(shop_domain, access_token, api_version, shopify_ord
     )
     headers = {"X-Shopify-Access-Token": access_token, "Content-Type": "application/json"}
     payload = {"event": {"status": status}}
-    resp = requests.post(url, json=payload, headers=headers, timeout=15)
+    resp = _send("POST", url, json=payload, headers=headers)
     if not resp.ok:
         raise ShopifyAPIError(
             f"Failed to post fulfillment event ({status}) for order {shopify_order_id}: "

@@ -22,10 +22,14 @@ export default function OrdersTable({
   onRaiseTicket,
   showStoreColumn = false,
   showTransitColumn = false,
+  // The courier's own word for where the parcel is (Order.courier_status) -
+  // shown on the tabs after dispatch, where several of them share one status.
+  showSubStatusColumn = false,
 }) {
   const allSelected = orders.length > 0 && orders.every((o) => selectedIds.has(o.id));
   const someSelected = orders.some((o) => selectedIds.has(o.id));
-  const columnCount = (showStoreColumn ? 19 : 18) + (showTransitColumn ? 1 : 0);
+  const columnCount =
+    (showStoreColumn ? 19 : 18) + (showTransitColumn ? 1 : 0) + (showSubStatusColumn ? 1 : 0);
 
   return (
     <div className="max-h-[70vh] overflow-auto rounded-lg border border-surface-border bg-white">
@@ -51,6 +55,7 @@ export default function OrdersTable({
             <th className="w-56 px-3 py-2 pl-6">Product Name</th>
             <th className="w-28 px-3 py-2">City</th>
             <th className="w-24 px-3 py-2">Courier</th>
+            {showSubStatusColumn ? <th className="w-40 px-3 py-2">Sub Status</th> : null}
             {showTransitColumn ? <th className="w-24 px-3 py-2">In Transit</th> : null}
             <th className="w-32 px-3 py-2">Tracking ID (CN)</th>
             <th className="w-28 px-3 py-2 text-right">Delivery Charges</th>
@@ -144,6 +149,13 @@ export default function OrdersTable({
                     {order.dispatched_by_fynktech ? <FynkTechDispatchTag /> : null}
                   </div>
                 </td>
+                {showSubStatusColumn ? (
+                  <td className="px-3 py-1.5 text-slate-700">
+                    <div className="truncate" title={order.courier_status || undefined}>
+                      {order.courier_status || "—"}
+                    </div>
+                  </td>
+                ) : null}
                 {showTransitColumn ? (
                   <td className="whitespace-nowrap px-3 py-1.5 font-medium text-red-600">
                     {order.in_transit_days != null
@@ -153,7 +165,9 @@ export default function OrdersTable({
                 ) : null}
                 <td className="px-3 py-1.5 text-slate-500">{order.tracking_number || "—"}</td>
                 <td className="px-3 py-1.5 text-right text-slate-700">
-                  {order.shipping_amount != null ? order.shipping_amount : "—"}
+                  {/* The courier's charge once its sheet is imported (outside the
+                      order total), else the shipping on the order itself. */}
+                  {order.courier_charges ?? (order.shipping_amount != null ? order.shipping_amount : "—")}
                 </td>
                 <td className="px-3 py-1.5">
                   {order.tag ? (
@@ -165,7 +179,8 @@ export default function OrdersTable({
                   )}
                 </td>
                 <td className="px-3 py-1.5 text-right font-medium tabular-nums text-slate-900">
-                  {order.total_amount}
+                  {/* What the customer pays - total_amount is the items before discounts. */}
+                  {order.grand_total ?? order.total_amount}
                 </td>
                 <td className="px-3 py-1.5 text-right">
                   <button
