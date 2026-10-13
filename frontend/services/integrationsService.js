@@ -91,6 +91,19 @@ class IntegrationsService {
     return data;
   }
 
+  // One batch of "Push all statuses now" - post the previous batch's `next`
+  // as `after` until it comes back null.
+  async pushShopifyStatuses(after = "") {
+    const response = await fetch(`${apiConfig.baseUrl}${SHOPIFY_BASE}/push-statuses/`, {
+      method: "POST",
+      headers: authService.getAuthHeaders(),
+      body: JSON.stringify({ after }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Failed to push statuses to Shopify");
+    return data;
+  }
+
   async setWebhooksActive(enabled) {
     const response = await fetch(`${apiConfig.baseUrl}${SHOPIFY_BASE}/`, {
       method: "PATCH",
@@ -304,6 +317,18 @@ class IntegrationsService {
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || data.detail || "Failed to save");
     return data.courier;
+  }
+
+  // Pulls the latest status of this store's PostEx / BarqRaftar orders from
+  // FynkTech's account right now -> { checked, updated }.
+  async syncOmsCourierCourier(courier) {
+    const response = await fetch(
+      `${apiConfig.baseUrl}/api/integrations/oms-courier/couriers/${encodeURIComponent(courier)}/sync/`,
+      { method: "POST", headers: authService.getAuthHeaders() }
+    );
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || data.detail || "Sync failed");
+    return data;
   }
 
   // --- Webhook / warehouse-edit / finance requests (need super-admin OK

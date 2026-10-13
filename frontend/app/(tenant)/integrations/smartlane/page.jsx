@@ -6,6 +6,7 @@ import integrationsService from "../../../../services/integrationsService";
 import Button from "../../../../components/shared/Button";
 import PasswordInput from "../../../../components/shared/PasswordInput";
 import { useIntegrationsHome } from "../../../../components/integrations/IntegrationsHome";
+import CourierSheetActions from "../../../../components/integrations/CourierSheetActions";
 
 const EMPTY_FORM = { api_key: "", store_warehouse_code: "" };
 // Same convention as the Shopify integration page's sync job polling.
@@ -238,17 +239,20 @@ export default function SmartlaneIntegrationPage() {
         <span className="font-medium text-slate-700">Smartlane</span>
       </nav>
 
-      <div className="flex items-start gap-3">
-        <div className="rounded-lg bg-brand-50 p-2.5 text-brand-600">
-          <TruckIcon className="h-6 w-6" />
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex items-start gap-3">
+          <div className="rounded-lg bg-brand-50 p-2.5 text-brand-600">
+            <TruckIcon className="h-6 w-6" />
+          </div>
+          <div>
+            <h1 className="text-xl font-semibold text-slate-900">Smartlane</h1>
+            <p className="mt-1 text-sm text-slate-500">
+              Get real-time rates, create bookings, and receive live shipment tracking updates via
+              webhook.
+            </p>
+          </div>
         </div>
-        <div>
-          <h1 className="text-xl font-semibold text-slate-900">Smartlane</h1>
-          <p className="mt-1 text-sm text-slate-500">
-            Get real-time rates, create bookings, and receive live shipment tracking updates via
-            webhook.
-          </p>
-        </div>
+        <CourierSheetActions courier="smartlane" onNotice={setNotice} onError={setError} />
       </div>
 
       <div className="my-6 border-t border-surface-border" />

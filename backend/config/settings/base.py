@@ -167,27 +167,32 @@ SUPABASE_JWT_SECRET = env("SUPABASE_JWT_SECRET", required=True)
 # WebSocket push that tells an open Orders page a new order arrived
 # (core/realtime.py, core/consumers.py). Any standard redis:// URL works -
 # the oms-redis Fly app (backend/deploy/redis/fly.toml), Upstash, or a
-# local redis-server in dev.
-REDIS_URL = env("REDIS_URL", default="redis://localhost:6379")
+# local redis-server. Left blank (local development, by choice), there is
+# no Redis at all: the cache is skipped (core/redis_client._NoRedis) and the
+# WebSocket push runs in this one process's memory.
+REDIS_URL = env("REDIS_URL", default="")
 
-CHANNEL_LAYERS = {
-    "default": {
-        "BACKEND": "channels_redis.core.RedisChannelLayer",
-        "CONFIG": {
-            "hosts": [
-                {
-                    "address": REDIS_URL,
-                    # Fail fast if Redis is unreachable.
-                    "socket_connect_timeout": 2,
-                    # Must be None, not omitted. redis-py 8 defaults
-                    # socket_timeout to 5s, which races channels_redis
-                    # BZPOPMIN (also 5s) and drops every idle Orders socket.
-                    "socket_timeout": None,
-                }
-            ]
-        },
+if REDIS_URL:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {
+                "hosts": [
+                    {
+                        "address": REDIS_URL,
+                        # Fail fast if Redis is unreachable.
+                        "socket_connect_timeout": 2,
+                        # Must be None, not omitted. redis-py 8 defaults
+                        # socket_timeout to 5s, which races channels_redis
+                        # BZPOPMIN (also 5s) and drops every idle Orders socket.
+                        "socket_timeout": None,
+                    }
+                ]
+            },
+        }
     }
-}
+else:
+    CHANNEL_LAYERS = {"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
 
 
 AUTH_PASSWORD_VALIDATORS = [

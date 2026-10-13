@@ -50,6 +50,12 @@ export default function OrderItemsEditor({ order, draft, editing, onChange, onAc
     <div className="mt-6 space-y-4">
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
         <MoneyCell label={`Subtotal (${order.items.length} items)`} value={order.total_amount} />
+        {/* Only when there is one - Subtotal is before discounts, so without
+            these the Grand Total wouldn't add up on screen. */}
+        {Number(order.coupon_discount) > 0 ? (
+          <MoneyCell label="Discount" value={`-${order.coupon_discount}`} />
+        ) : null}
+        {Number(order.total_tax) > 0 ? <MoneyCell label="Tax" value={order.total_tax} /> : null}
         {MONEY_FIELDS.map(([field, label]) =>
           editing ? (
             <div key={field} className="rounded-md border border-surface-border bg-white p-2">

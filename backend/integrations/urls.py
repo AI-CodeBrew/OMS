@@ -13,6 +13,7 @@ urlpatterns = [
     path("shopify/test/", views.ShopifyTestConnectionView.as_view(), name="shopify-test-connection"),
     path("shopify/sync/", views.ShopifySyncView.as_view(), name="shopify-sync"),
     path("shopify/gaps/", views.ShopifyGapView.as_view(), name="shopify-gaps"),
+    path("shopify/push-statuses/", views.ShopifyPushStatusesView.as_view(), name="shopify-push-statuses"),
     path("webhooks/shopify/orders/", views.shopify_order_webhook, name="shopify-order-webhook"),
     path("webhooks/shopify/products/", views.shopify_product_webhook, name="shopify-product-webhook"),
     path("webhooks/shopify/inventory/", views.shopify_inventory_webhook, name="shopify-inventory-webhook"),
@@ -54,6 +55,11 @@ urlpatterns = [
         "oms-courier/couriers/<str:courier>/options/",
         oms_courier_views.OmsCourierEnrollmentOptionsView.as_view(),
         name="oms-courier-courier-options",
+    ),
+    path(
+        "oms-courier/couriers/<str:courier>/sync/",
+        oms_courier_views.OmsCourierSyncView.as_view(),
+        name="oms-courier-courier-sync",
     ),
     path(
         "oms-courier/options/",

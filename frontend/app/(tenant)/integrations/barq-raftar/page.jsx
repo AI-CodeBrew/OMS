@@ -12,6 +12,7 @@ import PickupAddressesTab from "./_components/PickupAddressesTab";
 import PaymentsTab from "./_components/PaymentsTab";
 import CitiesTab from "./_components/CitiesTab";
 import { useIntegrationsHome } from "../../../../components/integrations/IntegrationsHome";
+import CourierSheetActions from "../../../../components/integrations/CourierSheetActions";
 
 const TABS = [
   { key: "shipments", label: "Shipments" },
@@ -106,16 +107,19 @@ export default function BarqRaftarIntegrationPage() {
         <span className="font-medium text-slate-700">BarqRaftar</span>
       </nav>
 
-      <div className="mb-6 flex items-center gap-3">
-        <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-surface-border bg-white shadow-sm">
-          <TruckIcon className="h-6 w-6 text-red-600" />
-        </span>
-        <div>
-          <h1 className="text-[22px] font-semibold text-slate-900">BarqRaftar</h1>
-          <p className="text-sm text-slate-500">
-            Book, print, track and reconcile BarqRaftar shipments straight from your orders.
-          </p>
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-surface-border bg-white shadow-sm">
+            <TruckIcon className="h-6 w-6 text-red-600" />
+          </span>
+          <div>
+            <h1 className="text-[22px] font-semibold text-slate-900">BarqRaftar</h1>
+            <p className="text-sm text-slate-500">
+              Book, print, track and reconcile BarqRaftar shipments straight from your orders.
+            </p>
+          </div>
         </div>
+        <CourierSheetActions courier="barqraftar" onNotice={setNotice} onError={setError} />
       </div>
 
       {error ? (
