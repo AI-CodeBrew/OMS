@@ -27,8 +27,36 @@ logger = logging.getLogger(__name__)
 _pool = None
 
 
+class _NoRedis:
+    """Stands in for the client when REDIS_URL is blank - local development
+    runs without Redis on purpose. Every read is a miss and every write is
+    dropped, so the helpers below fall through to Postgres quietly instead
+    of waiting on a connection that isn't there and logging it each time.
+    `set` answers True so acquire_rebuild_lock lets the caller rebuild
+    straight away rather than waiting for a rebuild nobody will write."""
+
+    def get(self, *args, **kwargs):
+        return None
+
+    delete = eval = get
+
+    def set(self, *args, **kwargs):
+        return True
+
+    def incr(self, *args, **kwargs):
+        return 0
+
+    def scan_iter(self, *args, **kwargs):
+        return iter(())
+
+
+_NO_REDIS = _NoRedis()
+
+
 def get_redis_client():
     global _pool
+    if not settings.REDIS_URL:
+        return _NO_REDIS
     if _pool is None:
         _pool = redis.ConnectionPool.from_url(
             settings.REDIS_URL,
