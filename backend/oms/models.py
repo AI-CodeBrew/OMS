@@ -254,6 +254,10 @@ class Order(TenantScopedModel):
     # the store handling it itself. Cleared on withdrawal; ignored once the
     # order is booked (the Hub only shows it while the order is pre-booking).
     dispatch_requested_at = models.DateTimeField(null=True, blank=True)
+    # When the Dispatch Hub booked this order with a courier - FynkTech
+    # shipping it, whether or not the store sent it for dispatch. Cleared
+    # when the store books it itself. Behind the "by FynkTech" tag.
+    hub_dispatched_at = models.DateTimeField(null=True, blank=True)
 
     # --- Money breakdown. Grand total / amount receivable / owed-to-customer
     # are computed (see serializers.py), not stored, to avoid drift with

@@ -21,7 +21,9 @@ export const POSTEX_ACTIONS_BY_STATUS = {
   awaiting_assigning: [{ key: "push_to_postex", action: "push_to_postex", label: "Book with PostEx" }],
   ready_to_print: [PRINT_AIRWAY_BILL, PRINT_LOADSHEET],
   ready_to_pick: [PRINT_AIRWAY_BILL, PRINT_LOADSHEET],
-  awaiting_dispatched: [PRINT_LOADSHEET],
+  // Load sheet already made (that's how it got here) - a re-download is
+  // served from the saved copy.
+  awaiting_dispatched: [PRINT_AIRWAY_BILL, PRINT_LOADSHEET],
 };
 
 export const POSTEX_DOCUMENT_ACTIONS = new Set([PRINT_AIRWAY_BILL.action, PRINT_LOADSHEET.action]);

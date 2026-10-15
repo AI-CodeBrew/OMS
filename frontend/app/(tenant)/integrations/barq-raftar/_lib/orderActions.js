@@ -39,9 +39,11 @@ export const BARQRAFTAR_ACTIONS_BY_STATUS = {
     READY_FOR_PICKUP,
   ],
   ready_to_pick: [PRINT_LOADSHEET, READY_FOR_PICKUP],
-  // Packed and waiting for the rider - the usual moment to print the
-  // handover sheet.
-  awaiting_dispatched: [PRINT_LOADSHEET],
+  // Handed over and waiting for the rider - documents for a re-print.
+  awaiting_dispatched: [
+    { key: "print_barqraftar_labels", action: "print_barqraftar_labels", label: "Print BarqRaftar Labels" },
+    PRINT_LOADSHEET,
+  ],
 };
 
 // Books through FynkTech's own BarqRaftar account from the store's approved

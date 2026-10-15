@@ -32,6 +32,8 @@ _SHOPIFY_STATUS_TAG_PREFIX = "OMS:"
 _SHOPIFY_STATUS_TAGS = {
     "ready_to_print": "OMS:Booked",
     "ready_to_pick": "OMS:Booked",
+    # Handed over to the courier (load sheet made), not picked up yet.
+    "awaiting_dispatched": "OMS:Booked",
     "dispatched": "OMS:Dispatched",
     # Still on the move - Shopify's own Delivery status says which stage.
     "out_for_delivery": "OMS:Dispatched",
@@ -44,7 +46,8 @@ _SHOPIFY_STATUS_TAGS = {
 # Shopify fulfillment - before this it's either empty or (with the current
 # create_booking stub) a placeholder, not a real courier tracking number.
 _SHOPIFY_FULFILLMENT_STATUSES = {
-    "ready_to_print", "ready_to_pick", "dispatched", "out_for_delivery", "attempt", "delivered",
+    "ready_to_print", "ready_to_pick", "awaiting_dispatched", "dispatched", "out_for_delivery",
+    "attempt", "delivered",
 }
 
 # OMS status -> Shopify's fixed Fulfillment Event `status` values, which
@@ -291,6 +294,45 @@ def _shopify_money(shopify_order):
     }
 
 
+# Shopify financial statuses where the customer still pays the rest in
+# cash - the courier collects it. Anything else (paid, authorized, refunded,
+# ...) was paid online.
+_SHOPIFY_COD_FINANCIAL_STATUSES = {"", "pending", "partially_paid"}
+
+
+def _shopify_payment(shopify_order, money):
+    """payment_gateway / payment_status / amount_paid for a Shopify order,
+    so that Order.amount_receivable - what the order screen shows and the
+    COD every courier is told to collect - is what the customer still owes:
+
+      paid online      cc,  amount_paid = the whole total  -> receivable 0
+      partially paid   cod, amount_paid = total - Shopify's total_outstanding
+                       (the advance)                       -> the rest
+      pending (COD)    cod, amount_paid = 0                -> the whole total
+
+    Never touches the fields behind grand_total - `money` is only read."""
+    financial_status = shopify_order.get("financial_status") or ""
+    if shopify_order.get("total_price") is not None:
+        total = _to_decimal(shopify_order.get("total_price"))
+    else:
+        total = (
+            money["total_amount"] - money["coupon_discount"] + money["total_tax"] + money["shipping_amount"]
+        )
+    if financial_status not in _SHOPIFY_COD_FINANCIAL_STATUSES:
+        return {
+            "payment_gateway": "cc",
+            "payment_status": "paid" if financial_status == "paid" else "pending",
+            "amount_paid": total,
+        }
+    outstanding = shopify_order.get("total_outstanding")
+    paid = total - _to_decimal(outstanding) if outstanding is not None else Decimal("0")
+    return {
+        "payment_gateway": "cod",
+        "payment_status": "pending",
+        "amount_paid": min(max(paid, Decimal("0")), total),
+    }
+
+
 def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
     """Create or update an oms.Order from a Shopify order payload (webhook
     or REST sync - same shape either way). Runs outside normal
@@ -320,10 +362,7 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
     billing_phone = billing_address.get("phone") or ""
     secondary_phone = billing_phone if billing_phone and billing_phone != phone else ""
 
-    financial_status = shopify_order.get("financial_status") or ""
     shopify_fulfillment_status = shopify_order.get("fulfillment_status")
-    gateway = "cod" if financial_status in ("pending", "") else "cc"
-    payment_status = "paid" if financial_status == "paid" else "pending"
     fulfillment_status = "fulfilled" if shopify_fulfillment_status == "fulfilled" else "unfulfilled"
 
     fulfillment = _latest_fulfillment(shopify_order) or {}
@@ -355,6 +394,7 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
     placed_at = parse_datetime(shopify_created_at) if shopify_created_at else None
 
     money = _shopify_money(shopify_order)
+    payment = _shopify_payment(shopify_order, money)
 
     # Fields safe to refresh from Shopify on every sync. `status` is
     # deliberately NOT among them: it's our own pipeline state, advanced by
@@ -366,8 +406,7 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
         "customer_name": _truncate(customer_name, 255),
         "customer_phone": _truncate(phone, 50),
         "secondary_phone": _truncate(secondary_phone, 50),
-        "payment_gateway": gateway,
-        "payment_status": payment_status,
+        **payment,
         "fulfillment_status": fulfillment_status,
         "city": _truncate(shipping_address.get("city"), 100),
         "shop": _truncate(shop_label or "Shopify", 150),
@@ -738,9 +777,8 @@ def apply_smartlane_status(order, smartlane_status, *, tracking_number="", organ
 # Smartlane proves the booking is real (see absorb_untracked_smartlane_order).
 # city_issue/dispatch_issue are deliberately excluded - those are real local
 # exceptions a human flagged and must not be silently jumped past.
-# awaiting_dispatched is also excluded - unlike the rest, that status is
-# specifically the manually-processed (non-Smartlane) dispatch queue in this
-# app's actual usage, not something that should ever get absorbed.
+# awaiting_dispatched is also excluded - an order there is already booked
+# and handed over (its load sheet made), so there is nothing to absorb.
 _ABSORBABLE_STATUSES = {
     "new", "pending_cc", "pending_cod",
     "awaiting_assigning", "awaiting_approval", "approved",

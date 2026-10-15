@@ -145,7 +145,7 @@ export default function OrderDetailPanel({ orderId, couriers, bookingAccounts = 
       setWorking(true);
       setError("");
       (action === "print_barqraftar_loadsheet"
-        ? barqraftarService.printLoadSheet([orderId])
+        ? barqraftarService.printLoadSheet([orderId]).then(refreshAfterChange)
         : barqraftarService.printLabels([orderId]))
         .catch((err) => setError(err.message || "Print failed"))
         .finally(() => setWorking(false));
@@ -165,7 +165,9 @@ export default function OrderDetailPanel({ orderId, couriers, bookingAccounts = 
       }
       setWorking(true);
       setError("");
-      (isLoadSheet ? postexService.printLoadSheet([orderId]) : postexService.printAirwayBills([orderId]))
+      (isLoadSheet
+        ? postexService.printLoadSheet([orderId]).then(refreshAfterChange)
+        : postexService.printAirwayBills([orderId]))
         .catch((err) => setError(err.message || "Print failed"))
         .finally(() => setWorking(false));
       return;

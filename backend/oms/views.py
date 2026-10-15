@@ -119,6 +119,31 @@ def _hub_push_to_smartlane(order, params, actor):
     )
 
 
+_BOOKING_ACTIONS = {
+    "push_to_smartlane", "push_to_postex", "push_to_postex_oms", "push_to_barqraftar", "push_to_barqraftar_oms",
+}
+
+
+def _record_hub_booking(request, action_name, results):
+    """Stamps Order.hub_dispatched_at on the orders a booking action just
+    booked from the Dispatch Hub (the "by FynkTech" tag), and clears it
+    when the store books one itself. Runs after the booking, so it tells
+    the open Orders pages once per store rather than through each order's
+    own event."""
+    from core.events import publish_event
+
+    if action_name not in _BOOKING_ACTIONS:
+        return
+    booked = [r["order_id"] for r in results if r.get("success")]
+    if not booked:
+        return
+    rows = Order.objects.filter(id__in=booked, **org_filter(request))
+    stores = set(rows.values_list("organization_id", flat=True))
+    rows.update(hub_dispatched_at=timezone.now() if is_hub_request(request) else None)
+    for organization_id in stores:
+        publish_event("order.updated", {"organization_id": str(organization_id), "source": "hub_dispatch"})
+
+
 SEARCHABLE_FIELDS = {
     "order_number": "order_number__icontains",
     "customer_name": "customer_name__icontains",
@@ -316,7 +341,9 @@ class OrderViewSet(viewsets.ModelViewSet):
     def _build_tab_list_payload(self, request, organization_id, tab_status, page_size):
         qs = self._base_order_qs(organization_id)
         if tab_status != "all":
-            qs = qs.filter(status=tab_status)
+            # Same filter list() applies - Booking Pending and Awaiting
+            # Dispatched go by the courier's status too, not only the order's.
+            qs = self._apply_filters(qs, {"status": tab_status})
         total = qs.count()
         rows = list(qs[:page_size])
         probability_map = services.get_probability_map(
@@ -360,7 +387,12 @@ class OrderViewSet(viewsets.ModelViewSet):
             + F("shipping_amount")
             + F("express_stitching_amount")
         )
-        money = queryset.aggregate(grand_total_sum=Sum(grand_total_expr), paid_sum=Sum("amount_paid"))
+        # COD orders only - a Shopify order paid online carries its whole
+        # total as amount_paid (integrations.services._shopify_payment),
+        # which would read as cash collected.
+        money = queryset.filter(payment_gateway="cod").aggregate(
+            grand_total_sum=Sum(grand_total_expr), paid_sum=Sum("amount_paid")
+        )
         grand_total_sum = money["grand_total_sum"] or 0
         paid_sum = money["paid_sum"] or 0
         pending_receivable = max(grand_total_sum - paid_sum, 0)
@@ -421,6 +453,17 @@ class OrderViewSet(viewsets.ModelViewSet):
             if status_list == ["critical"]:
                 # Not a real status - in transit too long, longest first.
                 qs = services.critical_transit_orders(qs).order_by("_in_transit_since")
+            elif status_list == ["booking_pending"] and not params.get("status_exact"):
+                # The Orders tab: plus booked orders the courier still calls
+                # queue / Unbooked / Pending (those also stay in Ready to
+                # Print). status_exact asks for the plain status.
+                qs = services.booking_pending_orders(qs)
+            elif status_list == ["awaiting_dispatched"] and not params.get("status_exact"):
+                # The Orders tab: load sheet made, or the courier already
+                # says Awaiting Pickup / Booked / ready (those also stay in
+                # Ready to Print). status_exact asks for the plain status -
+                # the Packing page's "Packed".
+                qs = services.awaiting_dispatch_orders(qs)
             else:
                 qs = qs.filter(status__in=status_list)
             if status_list == ["ready_to_print"]:
@@ -719,6 +762,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         for row in rows:
             counts[row["status"]] = row["count"]
         counts["all"] = sum(counts.values())
+        services.with_courier_tab_counts(counts, qs)
         return Response(self._with_critical_count(counts, qs))
 
     @action(detail=False, methods=["get"])
@@ -1128,6 +1172,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                 {"order_id": order_id, "success": False, "error": "Not found"}
                 for order_id in missing
             ]
+            _record_hub_booking(request, action_name, results)
             return Response({"results": results})
 
         handler = BULK_ACTIONS.get(action_name)
@@ -1215,6 +1260,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                     }
                 )
 
+        _record_hub_booking(request, action_name, results)
         return Response({"results": results})
 
     def _resolve_scan_org(self, request, order_number):
@@ -1544,10 +1590,8 @@ class OrderViewSet(viewsets.ModelViewSet):
                 content_type="application/pdf",
                 actor_user_id=request.user_id,
             )
-            # Downloading no longer transitions the order - it stays
-            # visibly "Ready to Print" through as many downloads as
-            # needed, only a real dispatch signal moves it on. See
-            # ALLOWED_TRANSITIONS.
+            # A date range names no orders, so none are moved to Awaiting
+            # Dispatched - only a sheet for selected orders does that.
             return HttpResponse(pdf_bytes, content_type="application/pdf")
 
         orders = list(
@@ -1580,6 +1624,10 @@ class OrderViewSet(viewsets.ModelViewSet):
                 actor_user_id=request.user_id,
             )
             pdf_parts.append(pdf_bytes)
+            # Handed over - out of Ready to Print, into Awaiting Dispatched.
+            services.mark_orders_handed_over(
+                org_orders, actor_user_id=request.user_id, note="Smartlane load sheet",
+            )
 
         return HttpResponse(self._merge_pdfs(pdf_parts), content_type="application/pdf")
 

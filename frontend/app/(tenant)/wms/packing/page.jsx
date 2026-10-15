@@ -47,6 +47,9 @@ export default function PackingPage() {
     try {
       const data = await ordersService.list({
         status: statusTab,
+        // The plain status - the Orders page's Awaiting Dispatched tab also
+        // lists unpacked orders the courier calls Booked / Awaiting Pickup.
+        status_exact: 1,
         page,
         page_size: pageSize,
         search: appliedSearch || undefined,

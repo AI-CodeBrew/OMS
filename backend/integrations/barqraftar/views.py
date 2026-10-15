@@ -594,6 +594,7 @@ class BarqRaftarLoadSheetView(APIView):
 
     def post(self, request):
         from core.models import Organization
+        from oms import services as oms_services
 
         from . import loadsheet
 
@@ -625,6 +626,10 @@ class BarqRaftarLoadSheetView(APIView):
                 content=pdf_bytes, actor_user_id=request.user_id, kind="loadsheet",
             )
             pdf_parts.append(pdf_bytes)
+            # Handed over - out of Ready to Print, into Awaiting Dispatched.
+            oms_services.mark_orders_handed_over(
+                [s.order for s in shipments], actor_user_id=request.user_id, note="BarqRaftar load sheet",
+            )
         return HttpResponse(_merge_pdfs(pdf_parts), content_type="application/pdf")
 
 

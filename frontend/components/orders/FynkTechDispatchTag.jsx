@@ -1,7 +1,7 @@
-// Marks an order booked through FynkTech's own courier account - by the
-// Dispatch Hub, or by the store itself through OMS Courier
-// (order.dispatched_by_fynktech) - so a store that also ships some orders
-// with its own courier can tell the two apart at a glance.
+// Marks an order FynkTech shipped from the Dispatch Hub
+// (order.dispatched_by_fynktech) - so a store that also ships orders itself
+// can tell the two apart at a glance. Shown under the Fulfillment status in
+// the orders list; the Courier column names only the courier.
 // `onDark` is for the brand-coloured strip in the order detail panel.
 export default function FynkTechDispatchTag({ onDark = false }) {
   return (

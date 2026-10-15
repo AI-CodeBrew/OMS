@@ -183,9 +183,9 @@ class OrderSerializer(serializers.ModelSerializer):
     )
     placed_at = serializers.SerializerMethodField()
     in_transit_days = serializers.SerializerMethodField()
-    # Booked through FynkTech's own courier account (Order.
-    # platform_reference) - by the Dispatch Hub or by the store through OMS
-    # Courier - rather than with the store's own: the "by FynkTech" tag.
+    # Booked from the Dispatch Hub (Order.hub_dispatched_at) - FynkTech
+    # ships it, whether or not the store sent it for dispatch. The "by
+    # FynkTech" tag. A store's own OMS Courier booking doesn't get it.
     dispatched_by_fynktech = serializers.SerializerMethodField()
 
     class Meta:
@@ -302,7 +302,11 @@ class OrderSerializer(serializers.ModelSerializer):
         return entry[key] if entry else None
 
     def get_dispatched_by_fynktech(self, order):
-        return bool(order.platform_reference)
+        # Not once the booking was undone and the order is back before
+        # booking (Booking Pending's "Not booked - retry").
+        from .services import DISPATCH_REQUESTABLE_STATUSES
+
+        return bool(order.hub_dispatched_at) and order.status not in DISPATCH_REQUESTABLE_STATUSES
 
     def get_cancelled_pct(self, order):
         return self._probability(order, "cancelled_pct")
