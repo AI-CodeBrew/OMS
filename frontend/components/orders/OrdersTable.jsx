@@ -127,7 +127,16 @@ export default function OrdersTable({
                     minute: "2-digit",
                   })}
                 </td>
-                <td className="px-3 py-1.5 capitalize text-slate-700">{order.fulfillment_status}</td>
+                <td className="px-3 py-1.5 text-slate-700">
+                  <div className="capitalize">{order.fulfillment_status}</div>
+                  {/* Who ships it - kept off the Courier column, which names
+                      only the courier. */}
+                  {order.dispatched_by_fynktech ? (
+                    <div className="mt-0.5">
+                      <FynkTechDispatchTag />
+                    </div>
+                  ) : null}
+                </td>
                 <td className="px-3 py-1.5 capitalize text-slate-700">{order.payment_status}</td>
                 <td className="px-3 py-1.5 text-slate-700">{order.shop || "—"}</td>
                 <td className="px-3 py-1.5 pl-6 text-slate-700">
@@ -144,10 +153,7 @@ export default function OrdersTable({
                 </td>
                 <td className="px-3 py-1.5 text-slate-700">{order.city || "—"}</td>
                 <td className="px-3 py-1.5 text-slate-700">
-                  <div className="flex items-center gap-1.5">
-                    <span className="truncate">{order.courier_name || "—"}</span>
-                    {order.dispatched_by_fynktech ? <FynkTechDispatchTag /> : null}
-                  </div>
+                  <div className="truncate">{order.courier_name || "—"}</div>
                 </td>
                 {showSubStatusColumn ? (
                   <td className="px-3 py-1.5 text-slate-700">

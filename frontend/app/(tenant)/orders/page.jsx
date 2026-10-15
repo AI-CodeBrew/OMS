@@ -36,6 +36,7 @@ import {
   STATUS_TABS,
   connectedBookingAccounts,
   isBookingAccountCourier,
+  orderInTab,
 } from "../../../components/orders/statusConfig";
 // BarqRaftar's own service/status-store/action-list - kept inside its own
 // feature folder rather than the shared services/ files above; see that
@@ -90,9 +91,10 @@ const EMPTY_FILTERS = { city: "", courier_id: "", gateway: "", date_from: "", da
 const CRITICAL_TAB = "critical";
 const TAB_STATUSES = STATUS_TABS.map((tab) => tab.value).filter((v) => v !== CRITICAL_TAB);
 const IN_TRANSIT_STATUSES = new Set(["dispatched"]);
-// Tabs after dispatch - where the courier's own word for where the parcel is
-// (its Sub Status) tells apart orders that share one of our statuses.
+// Tabs from booking on - where the courier's own word for where the parcel
+// is (its Sub Status) tells apart orders that share one of our statuses.
 const SUB_STATUS_TABS = new Set([
+  "booking_pending", "ready_to_print", "ready_to_pick", "awaiting_dispatched",
   "dispatched", CRITICAL_TAB, "out_for_delivery", "attempt", "delivered", "cancelled", "returned",
 ]);
 
@@ -123,7 +125,7 @@ function applyPatchToList(list, freshOrder, view) {
   // for the next reload to say.
   const matchesTab = onCriticalTab
     ? IN_TRANSIT_STATUSES.has(freshOrder.status)
-    : view.activeStatus === "all" || freshOrder.status === view.activeStatus;
+    : orderInTab(freshOrder, view.activeStatus);
   const noOtherFilters =
     !view.appliedSearch && Object.values(view.appliedFilters).every((v) => !v);
   const idx = list.findIndex((o) => o.id === freshOrder.id);
@@ -560,25 +562,32 @@ export default function OrdersPage() {
 
   const availableActions = useMemo(() => {
     if (selectedOrders.length === 0) return [];
-    const statuses = new Set(selectedOrders.map((o) => o.status));
-    if (statuses.size > 1) return [];
-    const [status] = statuses;
     // Each courier's own actions are only offered when a selected order was
     // booked with it. Where the plain Print Loadsheet / Print Airway Bill are
     // on offer they already ask which courier (see PrintByCourierModal), so
     // the couriers' own copies of those documents are left out as duplicates;
     // in statuses without the plain ones (Ready to Pick, ...) they stay.
-    const actions = forOrdersBookingAccounts(
-      withPostExActions(
-        status,
-        withBarqRaftarActions(
-          status, ACTIONS_BY_STATUS[status] || [], barqraftarConnected, barqraftarOmsConnected
+    const actionsFor = (status) =>
+      forOrdersBookingAccounts(
+        withPostExActions(
+          status,
+          withBarqRaftarActions(
+            status, ACTIONS_BY_STATUS[status] || [], barqraftarConnected, barqraftarOmsConnected
+          ),
+          postexConnected,
+          postexOmsConnected
         ),
-        postexConnected,
-        postexOmsConnected
-      ),
-      selectedOrders,
-      ["print_loadsheet", "print_airway_bill"]
+        selectedOrders,
+        ["print_loadsheet", "print_airway_bill"]
+      );
+    // Booking Pending and Awaiting Dispatched list orders of more than one
+    // status (Ready to Print beside them) - a mixed selection gets the
+    // actions every one of its statuses offers.
+    const keyOf = (a) => a.key || a.action;
+    const [first, ...rest] = Array.from(new Set(selectedOrders.map((o) => o.status))).map(actionsFor);
+    const actions = rest.reduce(
+      (common, list) => common.filter((a) => list.some((b) => keyOf(b) === keyOf(a))),
+      first
     );
     const covered = new Set();
     if (actions.some((a) => a.action === "print_airway_bill")) {
@@ -651,6 +660,8 @@ export default function OrdersPage() {
         await (isLoadSheet
           ? barqraftarService.printLoadSheet(orderIds)
           : barqraftarService.printLabels(orderIds));
+        // A load sheet moves its orders on to Awaiting Dispatched.
+        if (isLoadSheet) await reloadAfterChange();
       } catch (err) {
         setError(err.message || "Print failed");
       } finally {
@@ -674,6 +685,7 @@ export default function OrdersPage() {
       beginLoading(isLoadSheet ? "Preparing PostEx load sheet" : "Preparing PostEx airway bills");
       try {
         await (isLoadSheet ? postexService.printLoadSheet(orderIds) : postexService.printAirwayBills(orderIds));
+        if (isLoadSheet) await reloadAfterChange();
       } catch (err) {
         setError(err.message || "Print failed");
       } finally {
@@ -1037,11 +1049,9 @@ export default function OrdersPage() {
         request={printRequest}
         accounts={printAccounts}
         onClose={() => setPrintRequest(null)}
-        onPrinted={(kind, account) => {
-          // Same refresh the Smartlane load sheet always did after a download.
-          if (kind === "loadsheet" && (account === "smartlane" || account === "oms_courier")) {
-            reloadAfterChange();
-          }
+        onPrinted={(kind) => {
+          // Any courier's load sheet moves its orders on to Awaiting Dispatched.
+          if (kind === "loadsheet") reloadAfterChange();
         }}
       />
       <AirwayBillFilterModal

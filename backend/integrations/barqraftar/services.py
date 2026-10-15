@@ -783,7 +783,9 @@ def mark_ready_for_pickup(organization_id, order_ids):
     action (see oms/views.py's bulk_action). Returns the same per-order
     result shape as the generic bulk-action loop. Doesn't change the OMS
     order's own status - Ready to Print/Ready to Pick stay as they are
-    until BarqRaftar reports a pickup (status 3), via the poller/webhook."""
+    until its load sheet is made or BarqRaftar reports a pickup (status 3).
+    Its Sub Status becomes Awaiting Pickup, which lists it under Awaiting
+    Dispatched too."""
     from oms.models import Order
 
     orders_by_id = {
@@ -834,6 +836,8 @@ def mark_ready_for_pickup(organization_id, order_ids):
 
 def _mark_ready_for_pickup_chunks(connection, to_mark):
     """mark_ready_for_pickup's BarqRaftar calls for one account."""
+    from oms import services as oms_services
+
     results = []
     for start in range(0, len(to_mark), 50):
         chunk = to_mark[start:start + 50]
@@ -861,6 +865,9 @@ def _mark_ready_for_pickup_chunks(connection, to_mark):
                 shipment.status_code = 2
                 shipment.status_label = _CODE_TO_LABEL[2]
                 shipment.save(update_fields=["status_code", "status_label", "updated_at"])
+                # Sub Status now, rather than on the poller's next pass - it
+                # puts the order in the Awaiting Dispatched tab.
+                oms_services.record_courier_status(order, _CODE_TO_LABEL[2])
                 results.append({"order_id": oid, "order_number": order.order_number, "success": True})
             else:
                 results.append({

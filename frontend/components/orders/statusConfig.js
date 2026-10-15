@@ -12,6 +12,8 @@ export const STATUS_TABS = [
   { value: "booking_pending", label: "Booking Pending", tone: "amber" },
   { value: "ready_to_print", label: "Ready to Print", tone: "indigo" },
   { value: "ready_to_pick", label: "Ready to Pick", tone: "indigo" },
+  // Booking Pending and Awaiting Dispatched also list booked orders by what
+  // the courier calls them - see orderInTab below.
   { value: "awaiting_dispatched", label: "Awaiting Dispatched", tone: "indigo" },
   { value: "dispatched", label: "Dispatched", tone: "indigo" },
   // Not a real status: Dispatched (courier "In Transit") orders that have
@@ -36,6 +38,36 @@ export const STATUS_LABELS = STATUS_TABS.reduce(
   // them, still need their names.
   { pending_cc: "Pending CC", pending_cod: "Pending COD" }
 );
+
+// Same lists as the backend's QUEUE_COURIER_STATUSES /
+// AWAITING_PICKUP_COURIER_STATUSES (oms/services.py) - the courier's own
+// word, the Sub Status, compared case-insensitively. Booking Pending also
+// lists booked orders the courier calls queue / Unbooked / Pending, and
+// Awaiting Dispatched those it calls Awaiting Pickup / Booked / ready
+// besides every order whose load sheet is made; both kinds stay in Ready to
+// Print too until their load sheet is made (backend:
+// oms.services.booking_pending_orders / awaiting_dispatch_orders).
+const ON_SHELF_STATUSES = new Set(["ready_to_print", "ready_to_pick"]);
+const QUEUE_COURIER_STATUSES = new Set(["queue", "queued", "unbooked", "pending"]);
+const AWAITING_PICKUP_COURIER_STATUSES = new Set(["awaiting pickup", "awaiting_pickup", "booked", "ready"]);
+
+// Whether `order` belongs on status tab `tab` - the client-side twin of the
+// backend's tab filter, for patching live updates in. "critical" is
+// time-dependent and handled by the orders page itself.
+export function orderInTab(order, tab) {
+  if (tab === "all") return true;
+  const courierStatus = (order.courier_status || "").trim().toLowerCase();
+  const onShelf = ON_SHELF_STATUSES.has(order.status);
+  if (tab === "booking_pending") {
+    return order.status === "booking_pending" || (onShelf && QUEUE_COURIER_STATUSES.has(courierStatus));
+  }
+  if (tab === "awaiting_dispatched") {
+    return (
+      order.status === "awaiting_dispatched" || (onShelf && AWAITING_PICKUP_COURIER_STATUSES.has(courierStatus))
+    );
+  }
+  return order.status === tab;
+}
 
 export const SEARCH_FIELDS = [
   { value: "order_number", label: "Order Name" },
@@ -125,8 +157,13 @@ export const ACTIONS_BY_STATUS = {
     { key: "generate_picklist", action: "generate_picklist", label: "Generate Picklist", disabled: true },
     { key: "apply_tag", action: "apply_tag", label: "Apply Tag", disabled: true },
   ],
+  // Handed to the courier (its load sheet made, or the courier reports it
+  // Booked / Awaiting Pickup) and waiting for the rider. The documents stay
+  // on offer here for a re-print - the Batch page keeps every one as well.
   awaiting_dispatched: [
     { key: "dispatch", action: "dispatch", label: "Dispatch" },
+    { key: "print_loadsheet", action: "print_loadsheet", label: "Print Loadsheet" },
+    { key: "print_airway_bill", action: "print_airway_bill", label: "Print Airway Bill" },
     { key: "mark_dispatch_issue", action: "mark_dispatch_issue", label: "Mark dispatch issue" },
     { key: "cancel_fulfillment", action: "cancel_fulfillment", label: "Cancel Fulfillment" },
     { key: "cancel", action: "cancel", label: "Cancel" },
@@ -151,11 +188,11 @@ export const ACTIONS_BY_STATUS = {
   // return a document rather than mutate state. print_loadsheet needs a
   // courier param (OrderActionModal's FIELD_BY_ACTION) because Smartlane's load sheet
   // api is one courier per call; print_airway_bill needs none.
-  // Manual Dispatch/Ready to Pick are both fallbacks for when Smartlane's
-  // webhook/poller hasn't reported real progress yet - the order
-  // otherwise stays here (visibly "Ready to Print") through as many
-  // loadsheet/airway-bill downloads as needed, since printing a document
-  // is no longer itself a transition (see oms.services.ALLOWED_TRANSITIONS).
+  // Manual Dispatch/Ready to Pick are both fallbacks for when the courier
+  // hasn't reported real progress yet. An order stays here (visibly
+  // "Ready to Print") through as many airway-bill downloads as needed;
+  // generating its load sheet hands it over and moves it on to Awaiting
+  // Dispatched (backend: oms.services.mark_handed_over).
   ready_to_print: [
     { key: "print_loadsheet", action: "print_loadsheet", label: "Print Loadsheet" },
     { key: "print_airway_bill", action: "print_airway_bill", label: "Print Airway Bill" },

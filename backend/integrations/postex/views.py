@@ -692,6 +692,8 @@ class PostExLoadSheetView(APIView):
     required_module = "oms"
 
     def post(self, request):
+        from oms import services as oms_services
+
         order_ids = request.data.get("order_ids") or []
         if not order_ids:
             return Response({"detail": "order_ids is required"}, status=http_status.HTTP_400_BAD_REQUEST)
@@ -737,6 +739,12 @@ class PostExLoadSheetView(APIView):
                     content=pdf_bytes, actor_user_id=request.user_id, kind="loadsheet",
                 )
                 pdf_parts.append(pdf_bytes)
+
+            # Every one of them is on a load sheet now - handed over, so out
+            # of Ready to Print and into Awaiting Dispatched.
+            oms_services.mark_orders_handed_over(
+                [s.order for s in shipments], actor_user_id=request.user_id, note="PostEx load sheet",
+            )
         return HttpResponse(_merge_pdfs(pdf_parts), content_type="application/pdf")
 
 

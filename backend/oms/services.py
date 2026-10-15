@@ -102,13 +102,12 @@ ALLOWED_TRANSITIONS = {
     # abandon_smartlane_booking, which verifies with Smartlane first.
     "booking_pending": {"ready_to_print", "awaiting_assigning", "cancelled"},
     # An order stays here - visibly "Ready to Print" - through as many
-    # loadsheet/airway-bill downloads as needed. Nothing about printing a
-    # document is itself a dispatch signal any more, so downloading alone
-    # no longer advances it; moving to Ready to Pick is now an explicit
-    # manual action (see services.mark_ready_to_pick), same as a real
-    # dispatch (courier pickup reported by Smartlane, or the manual
-    # Dispatch action) moving it straight to Dispatched instead.
-    "ready_to_print": {"ready_to_pick", "dispatched", "cancelled"},
+    # airway-bill downloads as needed. Generating its load sheet hands the
+    # parcel to the courier, which moves it on to Awaiting Dispatched (see
+    # mark_handed_over). Ready to Pick is an explicit manual action
+    # (mark_ready_to_pick), and a real dispatch (courier pickup, or the
+    # manual Dispatch action) moves it straight to Dispatched.
+    "ready_to_print": {"ready_to_pick", "awaiting_dispatched", "dispatched", "cancelled"},
     "ready_to_pick": {"awaiting_dispatched", "dispatched", "cancelled"},
     "awaiting_dispatched": {"dispatched", "dispatch_issue", "cancelled"},
     "dispatch_issue": {"awaiting_dispatched", "cancelled"},
@@ -749,6 +748,86 @@ def mark_ready_to_pick(order, *, actor_user_id=None):
     return _transition(order, "ready_to_pick", actor_user_id=actor_user_id)
 
 
+# Booked with a courier but still on our shelf - no load sheet yet.
+ON_SHELF_STATUSES = ("ready_to_print", "ready_to_pick")
+
+# The courier's own word (Order.courier_status, the Sub Status) for a
+# parcel it has booked but nobody has handed over yet, and for one handed
+# over and waiting for the rider. Compared case-insensitively.
+QUEUE_COURIER_STATUSES = ("queue", "queued", "unbooked", "pending")
+AWAITING_PICKUP_COURIER_STATUSES = ("awaiting pickup", "awaiting_pickup", "booked", "ready")
+
+
+def _courier_status_in(words):
+    condition = Q()
+    for word in words:
+        condition |= Q(courier_status__iexact=word)
+    return condition
+
+
+def booking_pending_orders(qs):
+    """The Booking Pending tab: every order still waiting on its booking
+    (status booking_pending), plus those on the shelf that the courier
+    still calls queue / Unbooked / Pending - which stay in Ready to Print
+    too, until their load sheet is made."""
+    return qs.filter(
+        Q(status="booking_pending")
+        | (Q(status__in=ON_SHELF_STATUSES) & _courier_status_in(QUEUE_COURIER_STATUSES))
+    )
+
+
+def awaiting_dispatch_orders(qs):
+    """The Awaiting Dispatched tab: every order whose load sheet is made
+    (status awaiting_dispatched), plus those still on the shelf that the
+    courier already calls Awaiting Pickup / Booked / ready - which stay in
+    Ready to Print too, until their load sheet is made."""
+    return qs.filter(
+        Q(status="awaiting_dispatched")
+        | (Q(status__in=ON_SHELF_STATUSES) & _courier_status_in(AWAITING_PICKUP_COURIER_STATUSES))
+    )
+
+
+def with_courier_tab_counts(counts, qs):
+    """Overwrites counts' Booking Pending and Awaiting Dispatched with what
+    those tabs list (above), rather than the plain status count. `all` must
+    already be summed - these overlap Ready to Print."""
+    counts["booking_pending"] = booking_pending_orders(qs).count()
+    counts["awaiting_dispatched"] = awaiting_dispatch_orders(qs).count()
+    return counts
+
+
+def mark_handed_over(order, *, actor_user_id=None, note=""):
+    """Ready to Print -> Awaiting Dispatched: the parcel has been handed to
+    the courier and waits for its rider. Called when its load sheet is
+    generated (any courier) - only that takes an order out of Ready to
+    Print. What the courier reports (Unbooked, Booked, Awaiting Pickup,
+    ...) only decides which of the Booking Pending / Awaiting Dispatched
+    tabs also list it (booking_pending_orders / awaiting_dispatch_orders).
+
+    Returns whether the order moved. Anything not in ON_SHELF_STATUSES
+    (already further along, or not booked yet) is left where it is."""
+    if order.status == "booking_pending" and order.tracking_number:
+        advance_booking_confirmed(order, actor_user_id=actor_user_id)
+    if order.status not in ON_SHELF_STATUSES:
+        return False
+    _transition(order, "awaiting_dispatched", actor_user_id=actor_user_id, note=note)
+    return True
+
+
+def mark_orders_handed_over(orders, *, actor_user_id=None, note=""):
+    """mark_handed_over for every order a load sheet was just generated
+    for. Best-effort: the sheet is already made, so one order that can't
+    move must not fail the download. Returns how many moved."""
+    moved = 0
+    for order in orders:
+        try:
+            if mark_handed_over(order, actor_user_id=actor_user_id, note=note):
+                moved += 1
+        except InvalidTransition:
+            logger.info("order %s not moved to Awaiting Dispatched (at %s)", order.order_number, order.status)
+    return moved
+
+
 def dispatch_order(order, *, tracking_number="", actor_user_id=None):
     """One-click "Dispatch" from the detail panel/Actions menu - unlike
     scan_dispatch (which requires the order already be Awaiting Dispatched,
@@ -1151,4 +1230,4 @@ def compute_order_counts(organization_id):
     for row in rows:
         counts[row["status"]] = row["count"]
     counts["all"] = sum(counts.values())
-    return counts
+    return with_courier_tab_counts(counts, Order.objects.filter(organization_id=organization_id))
