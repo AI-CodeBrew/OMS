@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "next lint",
     "env:local": "node scripts/switch-env.mjs local",
-    "env:live": "node scripts/switch-env.mjs live"
+    "env:live": "node scripts/switch-env.mjs live",
+    "env:testing": "node scripts/switch-env.mjs testing"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",

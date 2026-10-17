@@ -3,6 +3,7 @@ oms/services.py) so OMS can call straight into it - the stock check that
 gates Ready to Print lives here, not in an HTTP handler."""
 
 from django.db import transaction
+from django.db.models import F
 from django.utils import timezone
 
 from .models import StockItem, StockMovement, Warehouse
@@ -307,9 +308,19 @@ def import_skus_from_orders(*, organization_id, warehouse):
 
 @transaction.atomic
 def adjust_stock(*, organization_id, stock_item, delta, actor_user_id=None, note=""):
-    """Manual correction (stock count, damage, receiving new inventory)."""
+    """Manual correction (stock count, damage, receiving new inventory).
+
+    For a Shopify-linked row the delta is also queued for "Push to
+    Shopify" - added with F() so it can't race a push that's clearing the
+    delta it already sent (see integrations.services.
+    push_stock_changes_to_shopify)."""
     stock_item.quantity += delta
     stock_item.save(update_fields=["quantity", "updated_at"])
+    if stock_item.shopify_inventory_item_id:
+        StockItem.all_objects.filter(pk=stock_item.pk).update(
+            pending_shopify_delta=F("pending_shopify_delta") + delta
+        )
+        stock_item.refresh_from_db(fields=["pending_shopify_delta"])
     movement = StockMovement.objects.create(
         organization_id=organization_id,
         stock_item=stock_item,
@@ -339,3 +350,44 @@ def adjust_stock(*, organization_id, stock_item, delta, actor_user_id=None, note
     except Exception:
         pass
     return movement
+
+
+@transaction.atomic
+def rename_stock_item(*, organization_id, stock_item, product_name, actor_user_id=None):
+    """Edits the product name from the Adjust popup. For a Shopify-linked
+    row the rename is queued for "Push to Shopify", remembering the name it
+    replaces for the confirmation summary; renaming back to that original
+    name cancels the pending rename instead of pushing a no-op."""
+    item = StockItem.all_objects.select_for_update().get(pk=stock_item.pk, organization_id=organization_id)
+    old_name = item.product_name
+    if product_name == old_name:
+        return item
+
+    item.product_name = product_name
+    update_fields = ["product_name", "updated_at"]
+    if item.shopify_inventory_item_id:
+        if not item.pending_shopify_name:
+            item.previous_shopify_name = old_name
+        if product_name == item.previous_shopify_name:
+            item.pending_shopify_name = ""
+            item.previous_shopify_name = ""
+        else:
+            item.pending_shopify_name = product_name
+        update_fields += ["pending_shopify_name", "previous_shopify_name"]
+    item.save(update_fields=update_fields)
+
+    try:
+        from core.rbac import write_audit_log
+
+        write_audit_log(
+            organization_id=organization_id,
+            action="wms.stock_rename",
+            summary=f"Renamed {item.sku or item.id}: {old_name!r} -> {product_name!r}",
+            actor_user_id=actor_user_id,
+            entity_type="stock_item",
+            entity_id=str(item.id),
+            metadata={"sku": item.sku, "from": old_name, "to": product_name},
+        )
+    except Exception:
+        pass
+    return item

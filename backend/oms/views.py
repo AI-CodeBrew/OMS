@@ -493,7 +493,24 @@ class OrderViewSet(viewsets.ModelViewSet):
             # a single search, same comma convention `status` above
             # already uses for its own multi-value filter.
             terms = [t.strip() for t in search.split(",") if t.strip()]
-            if terms:
+            if terms and search_field == "all":
+                # The orders page's single search box: a term matches if it
+                # appears in any of these, so nobody has to pick a field.
+                condition = Q()
+                for term in terms:
+                    condition |= (
+                        Q(order_number__icontains=term)
+                        | Q(customer_name__icontains=term)
+                        | Q(customer_phone__icontains=term)
+                        | Q(tracking_number__icontains=term)
+                        | Q(city__icontains=term)
+                        | Q(items__product_name__icontains=term)
+                        | Q(items__barcode__icontains=term)
+                    )
+                    if term.isdigit():
+                        condition |= Q(supabase_order_no=int(term))
+                qs = qs.filter(condition).distinct()
+            elif terms:
                 lookup = SEARCHABLE_FIELDS.get(search_field, SEARCHABLE_FIELDS["order_number"])
                 condition = Q()
                 for term in terms:

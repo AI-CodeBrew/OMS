@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from "react";
 import Dropdown from "../shared/Dropdown";
 import Button from "../shared/Button";
-import { SEARCH_FIELDS } from "./statusConfig";
 import ordersService from "../../services/ordersService";
 
 const SORT_OPTIONS = [
@@ -15,33 +14,26 @@ const SORT_OPTIONS = [
 export default function OrdersToolbar({
   search,
   onSearchChange,
-  searchField,
-  onSearchFieldChange,
   onSubmitSearch,
   filtersOpen,
   onToggleFilters,
   selectedCount,
   availableActions,
+  noActionsReason = "",
+  onRaiseTicket,
   onAction,
   onRefresh,
   refreshing,
   sortBy,
   onSortChange,
 }) {
-  const fieldLabel = SEARCH_FIELDS.find((f) => f.value === searchField)?.label || "Order Name";
-
-  // Product-name autocomplete - only relevant when searching by product,
-  // and only for the last comma-separated term (matches the multi-term
-  // search convention the input already supports).
+  // Product-name autocomplete for the last comma-separated term (matches
+  // the multi-term search convention the input already supports).
   const [suggestions, setSuggestions] = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const debounceRef = useRef(null);
 
   useEffect(() => {
-    if (searchField !== "product_name") {
-      setSuggestions([]);
-      return undefined;
-    }
     const term = search.split(",").pop().trim();
     if (debounceRef.current) clearTimeout(debounceRef.current);
     if (!term) {
@@ -53,7 +45,7 @@ export default function OrdersToolbar({
       setSuggestions(results);
     }, 300);
     return () => clearTimeout(debounceRef.current);
-  }, [search, searchField]);
+  }, [search]);
 
   function pickSuggestion(name) {
     const terms = search.split(",");
@@ -72,19 +64,19 @@ export default function OrdersToolbar({
           width above it. */}
       <form
         onSubmit={onSubmitSearch}
-        className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap"
+        className="flex w-full items-center sm:w-auto"
       >
-        <div className="relative w-full sm:w-64">
+        <div className="relative min-w-0 flex-1 sm:w-72 sm:flex-none">
           <input
             value={search}
             onChange={(e) => onSearchChange(e.target.value)}
             onFocus={() => setShowSuggestions(true)}
             onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
-            placeholder="Search — separate multiple with commas"
-            title="Separate multiple values with commas, e.g. 87364,7386473,8343"
-            className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
+            placeholder="Search order, customer, phone, product…"
+            title="Searches order no., customer, phone, product, SKU, tracking and city. Separate multiple values with commas, e.g. 87364,7386473,8343"
+            className="w-full rounded-l-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
           />
-          {searchField === "product_name" && showSuggestions && suggestions.length > 0 ? (
+          {showSuggestions && suggestions.length > 0 ? (
             <ul className="absolute z-20 mt-1 w-full rounded-md border border-surface-border bg-white py-1 shadow-lg">
               {suggestions.map((name) => (
                 <li key={name}>
@@ -101,19 +93,7 @@ export default function OrdersToolbar({
             </ul>
           ) : null}
         </div>
-        <Dropdown
-          trigger={
-            <span className="inline-flex items-center gap-1 rounded-md border border-surface-border px-3 py-2 text-sm text-slate-600">
-              {fieldLabel} <span className="text-xs">▾</span>
-            </span>
-          }
-          items={SEARCH_FIELDS.map((f) => ({
-            key: f.value,
-            label: f.label,
-            onClick: () => onSearchFieldChange(f.value),
-          }))}
-        />
-        <Button type="submit" variant="secondary">
+        <Button type="submit" variant="secondary" className="-ml-px shrink-0 rounded-l-none">
           Search
         </Button>
       </form>
@@ -139,12 +119,25 @@ export default function OrdersToolbar({
             Actions {selectedCount > 0 ? `(${selectedCount})` : ""} <span className="text-xs">▾</span>
           </span>
         }
-        items={availableActions.map((a) => ({
-          key: a.key || a.action,
-          label: a.label,
-          disabled: a.disabled,
-          onClick: () => onAction(a.action),
-        }))}
+        items={[
+          ...(availableActions.length > 0
+            ? availableActions.map((a) => ({
+                key: a.key || a.action,
+                label: a.label,
+                disabled: a.disabled,
+                onClick: () => onAction(a.action),
+              }))
+            : [{ key: "none", label: noActionsReason || "No actions available", disabled: true }]),
+          // Not a status change, so it's offered for any status - but a
+          // ticket is about one order.
+          { key: "divider", divider: true },
+          {
+            key: "raise_ticket",
+            label: selectedCount === 1 ? "Raise ticket" : "Raise ticket (select one order)",
+            disabled: selectedCount !== 1,
+            onClick: onRaiseTicket,
+          },
+        ]}
       />
 
       <Dropdown

@@ -1,9 +1,23 @@
 "use client";
 
 import Checkbox from "../shared/Checkbox";
-import OrderRowMenu from "./OrderRowMenu";
 import FynkTechDispatchTag from "./FynkTechDispatchTag";
 import { formatPakPhone } from "../../lib/formatPhone";
+import { STATUS_LABELS, STATUS_TABS } from "./statusConfig";
+
+// Badge colours for the Status column, by the same tone the status tabs use.
+const TONE_BADGE = {
+  blue: "bg-blue-50 text-blue-700",
+  amber: "bg-amber-50 text-amber-700",
+  indigo: "bg-indigo-50 text-indigo-700",
+  green: "bg-green-50 text-green-700",
+  red: "bg-red-50 text-red-700",
+};
+const STATUS_TONE = Object.fromEntries(STATUS_TABS.map((tab) => [tab.value, tab.tone]));
+
+function statusLabel(status) {
+  return STATUS_LABELS[status] || String(status || "").replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
 
 // Mirrors oms.services.DISPATCH_REQUESTABLE_STATUSES - the flag only means
 // something until a courier booking exists.
@@ -17,9 +31,7 @@ export default function OrdersTable({
   selectedIds,
   onToggleSelect,
   onToggleSelectAll,
-  onRowAction,
   onOpenDetail,
-  onRaiseTicket,
   showStoreColumn = false,
   showTransitColumn = false,
   // The courier's own word for where the parcel is (Order.courier_status) -
@@ -29,7 +41,7 @@ export default function OrdersTable({
   const allSelected = orders.length > 0 && orders.every((o) => selectedIds.has(o.id));
   const someSelected = orders.some((o) => selectedIds.has(o.id));
   const columnCount =
-    (showStoreColumn ? 19 : 18) + (showTransitColumn ? 1 : 0) + (showSubStatusColumn ? 1 : 0);
+    (showStoreColumn ? 18 : 17) + (showTransitColumn ? 1 : 0) + (showSubStatusColumn ? 1 : 0);
 
   return (
     <div className="max-h-[70vh] overflow-auto rounded-lg border border-surface-border bg-white">
@@ -50,8 +62,9 @@ export default function OrdersTable({
             <th className="w-32 px-3 py-2">Contact</th>
             <th className="w-40 px-3 py-2">Date &amp; Time</th>
             <th className="w-24 px-3 py-2">Fulfillment</th>
-            <th className="w-24 px-3 py-2">Pay. Status</th>
-            <th className="w-28 px-3 py-2">Shop</th>
+            <th className="w-36 px-3 py-2">Status</th>
+            <th className="w-24 px-3 py-2">Payment</th>
+            <th className="w-28 px-3 py-2">Store</th>
             <th className="w-56 px-3 py-2 pl-6">Product Name</th>
             <th className="w-28 px-3 py-2">City</th>
             <th className="w-24 px-3 py-2">Courier</th>
@@ -61,8 +74,6 @@ export default function OrdersTable({
             <th className="w-28 px-3 py-2 text-right">Delivery Charges</th>
             <th className="w-20 px-3 py-2">Tag</th>
             <th className="w-24 px-3 py-2 text-right">Amount</th>
-            <th className="w-20 px-3 py-2" />
-            <th className="w-10 px-3 py-2" />
           </tr>
         </thead>
         <tbody className="text-sm">
@@ -80,8 +91,27 @@ export default function OrdersTable({
             </tr>
           ) : (
             orders.map((order) => (
-              <tr key={order.id} className="border-b border-surface-border last:border-0 hover:bg-surface/60">
-                <td className="px-3 py-1.5">
+              <tr
+                key={order.id}
+                role="button"
+                tabIndex={0}
+                title="Click to open order details"
+                onClick={() => {
+                  // Selecting text in a cell (to copy a phone or tracking
+                  // number) shouldn't open the order.
+                  if (window.getSelection()?.toString()) return;
+                  onOpenDetail(order.id);
+                }}
+                onKeyDown={(e) => {
+                  if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
+                    e.preventDefault();
+                    onOpenDetail(order.id);
+                  }
+                }}
+                className="cursor-pointer border-b border-surface-border last:border-0 hover:bg-surface/60 focus:outline-none focus-visible:bg-surface"
+              >
+                {/* The checkbox keeps its own click. */}
+                <td className="px-3 py-1.5" onClick={(e) => e.stopPropagation()}>
                   <Checkbox checked={selectedIds.has(order.id)} onChange={() => onToggleSelect(order.id)} />
                 </td>
                 {showStoreColumn ? (
@@ -137,6 +167,16 @@ export default function OrdersTable({
                     </div>
                   ) : null}
                 </td>
+                <td className="px-3 py-1.5">
+                  <span
+                    className={`inline-block max-w-full truncate rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                      TONE_BADGE[STATUS_TONE[order.status]] || "bg-slate-100 text-slate-700"
+                    }`}
+                    title={statusLabel(order.status)}
+                  >
+                    {statusLabel(order.status)}
+                  </span>
+                </td>
                 <td className="px-3 py-1.5 capitalize text-slate-700">{order.payment_status}</td>
                 <td className="px-3 py-1.5 text-slate-700">{order.shop || "—"}</td>
                 <td className="px-3 py-1.5 pl-6 text-slate-700">
@@ -187,18 +227,6 @@ export default function OrdersTable({
                 <td className="px-3 py-1.5 text-right font-medium tabular-nums text-slate-900">
                   {/* What the customer pays - total_amount is the items before discounts. */}
                   {order.grand_total ?? order.total_amount}
-                </td>
-                <td className="px-3 py-1.5 text-right">
-                  <button
-                    type="button"
-                    onClick={() => onOpenDetail(order.id)}
-                    className="rounded px-2 py-1 text-xs font-medium text-brand-600 hover:bg-surface"
-                  >
-                    Details
-                  </button>
-                </td>
-                <td className="px-3 py-1.5 text-right">
-                  <OrderRowMenu order={order} onAction={onRowAction} onRaiseTicket={onRaiseTicket} />
                 </td>
               </tr>
             ))

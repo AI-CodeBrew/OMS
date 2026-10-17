@@ -8,6 +8,7 @@ import Pagination from "../../../components/shared/Pagination";
 import StockAdjustModal from "../../../components/wms/StockAdjustModal";
 import NewStockItemModal from "../../../components/wms/NewStockItemModal";
 import WarehouseSetupCard from "../../../components/wms/WarehouseSetupCard";
+import ShopifyPushModal from "../../../components/wms/ShopifyPushModal";
 
 const STOCK_FILTERS = [
   { value: "", label: "All Stock" },
@@ -48,6 +49,7 @@ export default function WmsPage() {
   const [importing, setImporting] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [notice, setNotice] = useState("");
+  const [pushOpen, setPushOpen] = useState(false);
 
   const loadWarehouses = useCallback(async () => {
     try {
@@ -91,7 +93,7 @@ export default function WmsPage() {
       const result = await wmsService.importSkusFromOrders();
       setNotice(
         result.created > 0
-          ? `Imported ${result.created} SKU${result.created === 1 ? "" : "s"} at zero quantity — enter real counts with Adjust.`
+          ? `Imported ${result.created} SKU${result.created === 1 ? "" : "s"} at zero quantity — click a product to enter real counts.`
           : `Nothing new to import — all ${result.total_skus} SKUs from your orders are already listed.`
       );
       await load();
@@ -103,7 +105,7 @@ export default function WmsPage() {
   }
 
   async function onSyncShopify() {
-    if (!window.confirm("Sync stock from Shopify? Quantities here are replaced with Shopify's on-hand counts.")) {
+    if (!window.confirm("Sync stock from Shopify? Quantities here are replaced with Shopify's on-hand counts (plus any adjustments not yet pushed to Shopify).")) {
       return;
     }
     setSyncing(true);
@@ -149,6 +151,25 @@ export default function WmsPage() {
           <div className="flex gap-2">
             <Button variant="secondary" onClick={onSyncShopify} loading={syncing}>
               Sync from Shopify
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => setPushOpen(true)}
+              disabled={!summary.pending_shopify_count}
+              title={
+                summary.pending_shopify_count
+                  ? `${summary.pending_shopify_count} ${
+                      summary.pending_shopify_count === 1 ? "product has" : "products have"
+                    } changes not yet on Shopify`
+                  : "All name and stock changes made here are on Shopify"
+              }
+            >
+              Push to Shopify
+              {summary.pending_shopify_count > 0 ? (
+                <span className="ml-1.5 rounded-full bg-brand-800 px-1.5 text-[11px] font-semibold leading-5 text-white">
+                  {summary.pending_shopify_count}
+                </span>
+              ) : null}
             </Button>
             <Button variant="secondary" onClick={onImportSkus} loading={importing}>
               Import SKUs from Orders
@@ -206,8 +227,17 @@ export default function WmsPage() {
               className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap"
             >
               <input
+                type="search"
                 value={search}
-                onChange={(e) => setSearch(e.target.value)}
+                onChange={(e) => {
+                  setSearch(e.target.value);
+                  // Emptying the box (typing it away or the ✕) brings the
+                  // full list back without another Search click.
+                  if (!e.target.value.trim() && appliedSearch) {
+                    setAppliedSearch("");
+                    setPage(1);
+                  }
+                }}
                 placeholder="Search SKU or product"
                 className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500 sm:w-64"
               />
@@ -223,6 +253,11 @@ export default function WmsPage() {
                   type="button"
                   onClick={() => {
                     setStockFilter(f.value);
+                    // "All Stock" means everything - clear any search too.
+                    if (!f.value) {
+                      setSearch("");
+                      setAppliedSearch("");
+                    }
                     setPage(1);
                   }}
                   className={`rounded-md border px-3 py-1.5 text-sm font-medium transition ${
@@ -247,19 +282,18 @@ export default function WmsPage() {
                   <th className="px-3 py-2 text-right">On Hand</th>
                   <th className="px-3 py-2 text-right">Reorder At</th>
                   <th className="px-3 py-2 text-left">Status</th>
-                  <th className="px-3 py-2" />
                 </tr>
               </thead>
               <tbody>
                 {loading && stock.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="px-3 py-6 text-center text-slate-500">
+                    <td colSpan={6} className="px-3 py-6 text-center text-slate-500">
                       Loading…
                     </td>
                   </tr>
                 ) : stock.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="px-3 py-6 text-center text-slate-500">
+                    <td colSpan={6} className="px-3 py-6 text-center text-slate-500">
                       No stock items yet. Add one, or they&apos;ll be created automatically the
                       first time an order consumes a SKU.
                     </td>
@@ -268,12 +302,36 @@ export default function WmsPage() {
                   stock.map((item) => (
                     <tr
                       key={item.id}
-                      className={`border-b border-surface-border last:border-0 ${
-                        item.is_negative ? "bg-red-50/60" : ""
+                      role="button"
+                      tabIndex={0}
+                      title="Click to edit"
+                      onClick={() => setAdjusting(item)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setAdjusting(item);
+                        }
+                      }}
+                      className={`cursor-pointer border-b border-surface-border last:border-0 focus:outline-none focus-visible:bg-surface ${
+                        item.is_negative ? "bg-red-50/60 hover:bg-red-100/60" : "hover:bg-surface"
                       }`}
                     >
                       <td className="px-3 py-2 font-medium text-slate-800">{item.sku || "—"}</td>
-                      <td className="px-3 py-2 text-slate-600">{item.product_name || "—"}</td>
+                      <td className="px-3 py-2 text-slate-600">
+                        {item.product_name || "—"}
+                        {item.has_pending_shopify_push ? (
+                          <span
+                            title={item.shopify_push_error || "Changed here, not yet pushed to Shopify"}
+                            className={`ml-2 rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                              item.shopify_push_error
+                                ? "bg-red-100 text-red-700"
+                                : "bg-brand-100 text-brand-800"
+                            }`}
+                          >
+                            {item.shopify_push_error ? "Push failed" : "Pending push"}
+                          </span>
+                        ) : null}
+                      </td>
                       <td className="px-3 py-2 text-slate-600">{item.warehouse_name}</td>
                       <td
                         className={`px-3 py-2 text-right font-semibold tabular-nums ${
@@ -300,15 +358,6 @@ export default function WmsPage() {
                           </span>
                         )}
                       </td>
-                      <td className="px-3 py-2 text-right">
-                        <button
-                          type="button"
-                          onClick={() => setAdjusting(item)}
-                          className="text-sm font-medium text-brand-700 hover:underline"
-                        >
-                          Adjust
-                        </button>
-                      </td>
                     </tr>
                   ))
                 )}
@@ -320,6 +369,7 @@ export default function WmsPage() {
             page={page}
             pageSize={pageSize}
             count={count}
+            itemLabel="products"
             maxPageSize={500}
             onPageChange={setPage}
             onPageSizeChange={(size) => {
@@ -338,12 +388,20 @@ export default function WmsPage() {
           await load();
         }}
       />
+      <ShopifyPushModal
+        open={pushOpen}
+        onClose={() => setPushOpen(false)}
+        onPushed={load}
+      />
       <NewStockItemModal
         open={newItemOpen}
         warehouses={warehouses}
+        shopifyConnected={Boolean(summary.shopify_connected)}
         onClose={() => setNewItemOpen(false)}
-        onCreated={async () => {
+        onCreated={async (message, isWarning) => {
           setNewItemOpen(false);
+          setError(isWarning ? message : "");
+          setNotice(isWarning ? "" : message || "");
           await load();
         }}
       />

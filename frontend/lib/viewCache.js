@@ -31,7 +31,8 @@ export function dashboardRangeFor(days) {
 }
 
 export function dashboardPresetKeys() {
-  return [7, 30, 90, null].map((days) => dashboardKey(dashboardRangeFor(days)));
+  // Keep in step with QUICK_RANGES on the dashboard page.
+  return [1, 2, 7, 14, 30, 90, null].map((days) => dashboardKey(dashboardRangeFor(days)));
 }
 
 export function getCachedOrdersList(key) {
