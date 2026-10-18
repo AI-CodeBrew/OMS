@@ -5,11 +5,11 @@
 export const STATUS_TABS = [
   { value: "all", label: "All", tone: "neutral" },
   { value: "new", label: "New", tone: "blue" },
-  { value: "awaiting_approval", label: "Awaiting Approval", tone: "amber" },
-  { value: "city_issue", label: "City Issue", tone: "amber" },
+  { value: "awaiting_approval", label: "Awaiting Confirmation", tone: "amber" },
   { value: "approved", label: "Approved", tone: "indigo" },
-  { value: "awaiting_assigning", label: "Awaiting Assigning", tone: "amber" },
-  { value: "booking_pending", label: "Booking Pending", tone: "amber" },
+  { value: "awaiting_assigning", label: "Assigning Courier", tone: "amber" },
+  { value: "city_issue", label: "City Issue", tone: "amber" },
+  { value: "booking_pending", label: "Awaiting Booking", tone: "amber" },
   { value: "ready_to_print", label: "Ready to Print", tone: "indigo" },
   { value: "ready_to_pick", label: "Ready to Pick", tone: "indigo" },
   // Booking Pending and Awaiting Dispatched also list booked orders by what
@@ -141,13 +141,13 @@ export const ACTIONS_BY_STATUS = {
     { action: "mark_dispatched_by_hand", label: "Mark Dispatched" },
     { action: "mark_delivered_by_hand", label: "Mark Delivered" },
     { action: "mark_returned_by_hand", label: "Mark Returned" },
-    { action: "cancel", label: "Cancel" },
+    { action: "cancel", label: "Cancel Order" },
   ],
-  pending_cc: [{ action: "confirm", label: "Confirm" }, { action: "cancel", label: "Cancel" }],
-  pending_cod: [{ action: "confirm", label: "Confirm" }, { action: "cancel", label: "Cancel" }],
-  city_issue: [{ action: "resolve_city_issue", label: "Resolve city issue" }, { action: "cancel", label: "Cancel" }],
-  awaiting_assigning: [{ action: "assign_courier", label: "Assign courier" }, { action: "cancel", label: "Cancel" }],
-  awaiting_approval: [{ action: "approve", label: "Approve" }, { action: "cancel", label: "Cancel" }],
+  pending_cc: [{ action: "confirm", label: "Confirm" }, { action: "cancel", label: "Cancel Order" }],
+  pending_cod: [{ action: "confirm", label: "Confirm" }, { action: "cancel", label: "Cancel Order" }],
+  city_issue: [{ action: "resolve_city_issue", label: "Resolve city issue" }, { action: "cancel", label: "Cancel Order" }],
+  awaiting_assigning: [{ action: "assign_courier", label: "Assign courier" }, { action: "cancel", label: "Cancel Order" }],
+  awaiting_approval: [{ action: "approve", label: "Approve" }, { action: "cancel", label: "Cancel Order" }],
   approved: [
     { key: "dispatch", action: "dispatch", label: "Dispatch" },
     { key: "invoice_n_dispatch", action: "dispatch", label: "Invoice N Dispatch" },
@@ -157,7 +157,7 @@ export const ACTIONS_BY_STATUS = {
     { key: "generate_picklist", action: "generate_picklist", label: "Generate Picklist", disabled: true },
     { key: "apply_tag", action: "apply_tag", label: "Apply Tag", disabled: true },
     { key: "cancel_fulfillment", action: "cancel_fulfillment", label: "Cancel Fulfillment" },
-    { key: "cancel", action: "cancel", label: "Cancel" },
+    { key: "cancel", action: "cancel", label: "Cancel Order" },
   ],
   // Handed to the courier (its load sheet made, or the courier reports it
   // Booked / Awaiting Pickup) and waiting for the rider. The documents stay
@@ -168,7 +168,7 @@ export const ACTIONS_BY_STATUS = {
     { key: "print_airway_bill", action: "print_airway_bill", label: "Print Airway Bill" },
     { key: "mark_dispatch_issue", action: "mark_dispatch_issue", label: "Mark dispatch issue" },
     { key: "cancel_fulfillment", action: "cancel_fulfillment", label: "Cancel Fulfillment" },
-    { key: "cancel", action: "cancel", label: "Cancel" },
+    { key: "cancel", action: "cancel", label: "Cancel Order" },
   ],
   // Reached from awaiting_assigning by pushing the order to Smartlane
   // instead of assigning a manual courier - a real consignment number
@@ -182,7 +182,7 @@ export const ACTIONS_BY_STATUS = {
   // cancelling is terminal.
   booking_pending: [
     { key: "abandon_booking", action: "abandon_booking", label: "Not booked - retry" },
-    { key: "cancel", action: "cancel", label: "Cancel" },
+    { key: "cancel", action: "cancel", label: "Cancel Order" },
   ],
   // loadsheet/airway bill are handled client-side (see orders/page.jsx's
   // startAction/runAction) by fetching a printable document - Smartlane's
@@ -200,13 +200,13 @@ export const ACTIONS_BY_STATUS = {
     { key: "print_airway_bill", action: "print_airway_bill", label: "Print Airway Bill" },
     { key: "mark_ready_to_pick", action: "mark_ready_to_pick", label: "Ready to Pick" },
     { key: "dispatch", action: "dispatch", label: "Dispatch" },
-    { key: "cancel", action: "cancel", label: "Cancel" },
+    { key: "cancel", action: "cancel", label: "Cancel Order" },
   ],
   ready_to_pick: [
     { key: "queue_for_dispatch", action: "queue_for_dispatch", label: "Awaiting Dispatching" },
-    { key: "cancel", action: "cancel", label: "Cancel" },
+    { key: "cancel", action: "cancel", label: "Cancel Order" },
   ],
-  dispatch_issue: [{ action: "retry_dispatch", label: "Retry dispatch" }, { action: "cancel", label: "Cancel" }],
+  dispatch_issue: [{ action: "retry_dispatch", label: "Retry dispatch" }, { action: "cancel", label: "Cancel Order" }],
   dispatched: [{ action: "mark_delivered", label: "Mark delivered" }],
   // Smartlane-reported sub-stages of dispatched - same manual fallback
   // available, since staff may need to mark delivered by hand regardless

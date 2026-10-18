@@ -16,3 +16,5 @@ daphne
 # into one label PDF - see integrations/barqraftar/views.py's
 # BarqRaftarLabelsView. Not used anywhere else.
 pypdf
+# Timezone data for zoneinfo (CSV export's Pakistan time) - python:slim on Fly has none.
+tzdata

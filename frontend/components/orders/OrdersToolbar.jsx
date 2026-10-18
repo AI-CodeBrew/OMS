@@ -15,8 +15,6 @@ export default function OrdersToolbar({
   search,
   onSearchChange,
   onSubmitSearch,
-  filtersOpen,
-  onToggleFilters,
   selectedCount,
   availableActions,
   noActionsReason = "",
@@ -97,10 +95,6 @@ export default function OrdersToolbar({
           Search
         </Button>
       </form>
-
-      <Button variant="secondary" onClick={onToggleFilters} className={filtersOpen ? "ring-2 ring-brand-200" : ""}>
-        Add Filters
-      </Button>
 
       <Button variant="secondary" disabled title="Coming soon">
         Saved Filters

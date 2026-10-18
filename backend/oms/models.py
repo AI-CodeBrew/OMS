@@ -50,8 +50,8 @@ class Order(TenantScopedModel):
         ("pending_cc", "Pending CC"),
         ("pending_cod", "Pending COD"),
         ("city_issue", "City Issue"),
-        ("awaiting_assigning", "Awaiting Assigning"),
-        ("awaiting_approval", "Awaiting Approval"),
+        ("awaiting_assigning", "Assigning Courier"),
+        ("awaiting_approval", "Awaiting Confirmation"),
         ("approved", "Approved"),
         # Reached from awaiting_assigning when a courier booking is pushed
         # to Smartlane (see services.push_order_to_smartlane) - parallel
@@ -60,7 +60,7 @@ class Order(TenantScopedModel):
         # number synchronously (see smartlane_client.create_booking) - it
         # only arrives later via /track polling or the webhook - so an
         # order sits here, with no tracking_number yet, until one does.
-        ("booking_pending", "Booking Pending"),
+        ("booking_pending", "Awaiting Booking"),
         ("ready_to_print", "Ready to Print"),
         ("ready_to_pick", "Ready to Pick"),
         ("dispatch_issue", "Dispatch Issue"),

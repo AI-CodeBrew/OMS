@@ -524,7 +524,7 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False, 
         if order.status != "awaiting_assigning":
             results.append({
                 "order_id": str(order_id), "order_number": order.order_number, "success": False,
-                "error": f"Order {order.order_number} is {order.get_status_display()}, not Awaiting Assigning.",
+                "error": f"Order {order.order_number} is {order.get_status_display()}, not Assigning Courier.",
             })
             continue
 

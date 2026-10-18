@@ -67,16 +67,19 @@ class StockItem(TenantScopedModel):
     # manual adjustments, not an absolute target: Shopify deducts its own
     # orders as they're placed, so pushing our absolute count would undo
     # those. Only tracked for Shopify-linked rows.
-    pending_shopify_delta = models.IntegerField(default=0)
+    # db_default as well as default: the columns get a real database
+    # default, so code from before these fields (still running mid-deploy)
+    # can keep inserting rows without them.
+    pending_shopify_delta = models.IntegerField(default=0, db_default=0)
     # The rename to push ("" = none) and the name it replaces, kept for the
     # confirmation summary's "from -> to".
-    pending_shopify_name = models.CharField(max_length=255, blank=True, default="")
-    previous_shopify_name = models.CharField(max_length=255, blank=True, default="")
+    pending_shopify_name = models.CharField(max_length=255, blank=True, default="", db_default="")
+    previous_shopify_name = models.CharField(max_length=255, blank=True, default="", db_default="")
     # Claimed while a push is sending this row, so a double click or a
     # second tab can't send the same delta twice. A stale claim (a request
     # that died mid-push) expires - see integrations.services.PUSH_CLAIM_TIMEOUT.
     shopify_push_started_at = models.DateTimeField(null=True, blank=True)
-    shopify_push_error = models.CharField(max_length=500, blank=True, default="")
+    shopify_push_error = models.CharField(max_length=500, blank=True, default="", db_default="")
     last_pushed_to_shopify_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:

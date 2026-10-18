@@ -2,6 +2,7 @@ import csv
 import io
 import logging
 from datetime import timedelta
+from zoneinfo import ZoneInfo
 
 from django.db.models import Count, F, OuterRef, Prefetch, Q, Subquery, Sum
 from django.db.models.functions import Coalesce, TruncDate
@@ -1835,16 +1836,23 @@ class OrderViewSet(viewsets.ModelViewSet):
                 "Amount Paid",
                 "Grand Total",
                 "Amount Receivable",
-                "Order Date",
-                "Dispatched At",
-                "Delivered At",
-                "Returned At",
-                "Created At",
+                "Order Date & Time (PKT)",
+                "Dispatched At (PKT)",
+                "Delivered At (PKT)",
+                "Returned At (PKT)",
+                "Created At (PKT)",
                 "Item Product Name",
                 "Item Barcode",
                 "Item Quantity",
                 "Item Unit Price",
             ]
+
+            # Date and time, in Pakistan time - the server runs in UTC,
+            # so a plain .date() put early-morning orders on the day before.
+            pkt = ZoneInfo("Asia/Karachi")
+
+            def when(value):
+                return value.astimezone(pkt).strftime("%Y-%m-%d %H:%M") if value else ""
 
             def rows():
                 yield header
@@ -1871,11 +1879,11 @@ class OrderViewSet(viewsets.ModelViewSet):
                         str(order.amount_paid),
                         str(order.grand_total),
                         str(order.amount_receivable),
-                        (order.placed_at or order.created_at).date().isoformat(),
-                        order.dispatched_at.date().isoformat() if order.dispatched_at else "",
-                        order.delivered_at.date().isoformat() if order.delivered_at else "",
-                        order.returned_at.date().isoformat() if order.returned_at else "",
-                        order.created_at.date().isoformat(),
+                        when(order.placed_at or order.created_at),
+                        when(order.dispatched_at),
+                        when(order.delivered_at),
+                        when(order.returned_at),
+                        when(order.created_at),
                     ]
                     items = list(order.items.all())
                     if not items:

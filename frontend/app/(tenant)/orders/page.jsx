@@ -25,7 +25,6 @@ import Button from "../../../components/shared/Button";
 import Pagination from "../../../components/shared/Pagination";
 import OrderStatusTabs from "../../../components/orders/OrderStatusTabs";
 import OrdersToolbar from "../../../components/orders/OrdersToolbar";
-import OrdersFilterPanel from "../../../components/orders/OrdersFilterPanel";
 import OrdersTable from "../../../components/orders/OrdersTable";
 import CsvExportButton from "../../../components/orders/CsvExportButton";
 import DateRangeFilter from "../../../components/orders/DateRangeFilter";
@@ -191,7 +190,6 @@ export default function OrdersPage() {
   }));
   const fromDashboard = searchParams.get("from") === "dashboard";
   const dashboardGroup = searchParams.get("group") || "";
-  const [filtersOpen, setFiltersOpen] = useState(false);
 
   const [orders, setOrders] = useState([]);
   const [orderCount, setOrderCount] = useState(0);
@@ -865,11 +863,6 @@ export default function OrdersPage() {
     setAppliedSearch(search);
   }
 
-  function onQuickFilter(patch) {
-    setFilters((f) => ({ ...f, ...patch }));
-    setAppliedFilters((f) => ({ ...f, ...patch }));
-  }
-
   return (
     <div>
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -953,8 +946,6 @@ export default function OrdersPage() {
             if (!value.trim() && appliedSearch) setAppliedSearch("");
           }}
           onSubmitSearch={onSubmitSearch}
-          filtersOpen={filtersOpen}
-          onToggleFilters={() => setFiltersOpen((o) => !o)}
           selectedCount={selectedIds.size}
           availableActions={availableActions}
           noActionsReason={noActionsReason}
@@ -992,20 +983,6 @@ export default function OrdersPage() {
           </div>
         ) : null}
 
-        {filtersOpen ? (
-          <OrdersFilterPanel
-            filters={filters}
-            onChange={setFilters}
-            couriers={couriers}
-            stores={user?.isDispatchHub ? hubStoreOptions || [] : null}
-            onApply={() => setAppliedFilters(filters)}
-            onClear={() => {
-              setFilters(EMPTY_FILTERS);
-              setAppliedFilters(EMPTY_FILTERS);
-            }}
-          />
-        ) : null}
-
         {selectedIds.size > 0 ? (
           <div className="mb-3 flex items-center justify-between rounded-md border border-brand-200 bg-brand-50 px-4 py-2">
             <span className="text-sm font-medium text-brand-900">
@@ -1021,19 +998,7 @@ export default function OrdersPage() {
                   <Button onClick={() => sendForDispatch(false)}>Send for dispatch</Button>
                 )
               ) : null}
-              {availableActions.filter((a) => !a.disabled).slice(0, 4).map((a) => (
-                <Button
-                  key={a.key || a.action}
-                  variant="secondary"
-                  disabled={a.disabled}
-                  onClick={() => startAction(a.action, Array.from(selectedIds), true)}
-                >
-                  {a.label}
-                </Button>
-              ))}
-              {availableActions.length === 0 && !inDispatchHub ? (
-                <span className="text-xs text-brand-700">{noActionsReason}</span>
-              ) : null}
+              {/* Every action is in the toolbar's Actions menu. */}
             </div>
           </div>
         ) : null}

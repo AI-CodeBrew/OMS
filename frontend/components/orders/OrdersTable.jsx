@@ -41,7 +41,7 @@ export default function OrdersTable({
   const allSelected = orders.length > 0 && orders.every((o) => selectedIds.has(o.id));
   const someSelected = orders.some((o) => selectedIds.has(o.id));
   const columnCount =
-    (showStoreColumn ? 18 : 17) + (showTransitColumn ? 1 : 0) + (showSubStatusColumn ? 1 : 0);
+    (showStoreColumn ? 16 : 15) + (showTransitColumn ? 1 : 0) + (showSubStatusColumn ? 1 : 0);
 
   return (
     <div className="max-h-[70vh] overflow-auto rounded-lg border border-surface-border bg-white">
@@ -63,17 +63,15 @@ export default function OrdersTable({
             <th className="w-40 px-3 py-2">Date &amp; Time</th>
             <th className="w-24 px-3 py-2">Fulfillment</th>
             <th className="w-36 px-3 py-2">Status</th>
-            <th className="w-24 px-3 py-2">Payment</th>
-            <th className="w-28 px-3 py-2">Store</th>
-            <th className="w-56 px-3 py-2 pl-6">Product Name</th>
+            <th className="w-28 px-3 py-2">Store Name</th>
             <th className="w-28 px-3 py-2">City</th>
             <th className="w-24 px-3 py-2">Courier</th>
             {showSubStatusColumn ? <th className="w-40 px-3 py-2">Sub Status</th> : null}
             {showTransitColumn ? <th className="w-24 px-3 py-2">In Transit</th> : null}
             <th className="w-32 px-3 py-2">Tracking ID (CN)</th>
-            <th className="w-28 px-3 py-2 text-right">Delivery Charges</th>
             <th className="w-20 px-3 py-2">Tag</th>
             <th className="w-24 px-3 py-2 text-right">Amount</th>
+            <th className="w-28 px-3 py-2">Payment Status</th>
           </tr>
         </thead>
         <tbody className="text-sm">
@@ -177,20 +175,7 @@ export default function OrdersTable({
                     {statusLabel(order.status)}
                   </span>
                 </td>
-                <td className="px-3 py-1.5 capitalize text-slate-700">{order.payment_status}</td>
                 <td className="px-3 py-1.5 text-slate-700">{order.shop || "—"}</td>
-                <td className="px-3 py-1.5 pl-6 text-slate-700">
-                  {order.items && order.items.length > 0 ? (
-                    <div
-                      className="truncate"
-                      title={order.items.map((i) => i.product_name).join(", ")}
-                    >
-                      {order.items.map((i) => i.product_name).join(", ")}
-                    </div>
-                  ) : (
-                    "—"
-                  )}
-                </td>
                 <td className="px-3 py-1.5 text-slate-700">{order.city || "—"}</td>
                 <td className="px-3 py-1.5 text-slate-700">
                   <div className="truncate">{order.courier_name || "—"}</div>
@@ -210,11 +195,6 @@ export default function OrdersTable({
                   </td>
                 ) : null}
                 <td className="px-3 py-1.5 text-slate-500">{order.tracking_number || "—"}</td>
-                <td className="px-3 py-1.5 text-right text-slate-700">
-                  {/* The courier's charge once its sheet is imported (outside the
-                      order total), else the shipping on the order itself. */}
-                  {order.courier_charges ?? (order.shipping_amount != null ? order.shipping_amount : "—")}
-                </td>
                 <td className="px-3 py-1.5">
                   {order.tag ? (
                     <span className="rounded-full bg-brand-50 px-2 py-0.5 text-[11px] font-medium text-brand-700">
@@ -228,6 +208,7 @@ export default function OrdersTable({
                   {/* What the customer pays - total_amount is the items before discounts. */}
                   {order.grand_total ?? order.total_amount}
                 </td>
+                <td className="px-3 py-1.5 capitalize text-slate-700">{order.payment_status}</td>
               </tr>
             ))
           )}
