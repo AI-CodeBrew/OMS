@@ -2,6 +2,7 @@ import csv
 import io
 import logging
 from datetime import timedelta
+from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 
 from django.db.models import Count, F, OuterRef, Prefetch, Q, Subquery, Sum
@@ -32,10 +33,12 @@ from core.redis_client import (
 )
 from core.scoping import is_hub_request, org_filter
 from integrations.barqraftar.exceptions import BarqRaftarBookingError
+from integrations.models import ShopifyConnection
 from integrations.postex.exceptions import PostExBookingError
+from integrations.services import InventorySyncError, create_order_on_shopify
 from wms.services import InsufficientStock
 
-from . import importers, order_importer, services
+from . import csv_report, importers, order_importer, services
 from .models import (
     Courier,
     Order,
@@ -618,14 +621,20 @@ class OrderViewSet(viewsets.ModelViewSet):
         organization_id, error = self._resolve_target_org(request)
         if error:
             return error
+        # "Also create on Shopify": Shopify numbers the order. Otherwise a
+        # blank order number gets the one after the store's newest order.
+        on_shopify = str(request.data.get("create_on_shopify") or "").lower() in ("true", "1")
         serializer = self.get_serializer(data=request.data)
+        serializer.fields["order_number"].required = False
+        serializer.fields["order_number"].allow_blank = True
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+        if not on_shopify and not str(data.get("order_number") or "").strip():
+            data["order_number"] = services.next_order_number(organization_id)
 
         # Everything a courier booking needs - the same columns the import
         # template requires (see order_importer.REQUIRED_COLUMNS).
         required = {
-            "order_number": "Order number",
             "customer_name": "Customer name",
             "customer_phone": "Phone",
             "address_line1": "Address",
@@ -647,7 +656,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                 {"detail": "Please fill in: " + ", ".join(missing)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if Order.all_objects.filter(
+        if not on_shopify and Order.all_objects.filter(
             organization_id=organization_id, order_number=data["order_number"]
         ).exists():
             return Response(
@@ -666,8 +675,32 @@ class OrderViewSet(viewsets.ModelViewSet):
         placed_at = order_importer._parse_order_date(str(request.data.get("order_date") or "").strip())
         if placed_at:
             extra_fields["placed_at"] = placed_at
+        # A flat amount off the items (the form's Discount) - stored as the
+        # order's coupon discount, the same field Shopify's discounts fill.
+        try:
+            discount = Decimal(str(request.data.get("discount") or 0))
+        except InvalidOperation:
+            discount = Decimal("-1")
+        items_total = sum(Decimal(str(i.get("unit_price") or 0)) * (i.get("quantity") or 0) for i in items)
+        if discount < 0 or discount > items_total:
+            return Response(
+                {"detail": "Discount must be between 0 and the products total."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if discount:
+            extra_fields["coupon_discount"] = discount
 
         def _do_create():
+            if on_shopify:
+                return create_order_on_shopify(
+                    organization_id,
+                    customer_name=data["customer_name"],
+                    customer_phone=data.get("customer_phone", ""),
+                    items=items,
+                    extra_fields=extra_fields,
+                    note=str(request.data.get("notes") or "").strip(),
+                    actor_user_id=request.user_id,
+                )
             return services.create_order(
                 organization_id=organization_id,
                 order_number=data["order_number"],
@@ -682,13 +715,34 @@ class OrderViewSet(viewsets.ModelViewSet):
         # this one specific org - narrow it for the write itself so
         # TenantScopedModel writes (and anything _apply_transition-style
         # that reads `.objects` right back) land correctly.
-        order = (
-            _do_create()
-            if not is_hub_request(request)
-            else _with_tenant_context(organization_id, _do_create)
-        )
+        try:
+            order = (
+                _do_create()
+                if not is_hub_request(request)
+                else _with_tenant_context(organization_id, _do_create)
+            )
+        except InventorySyncError as exc:
+            # Shopify refused it (or isn't connected) - nothing was created.
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         output = self.get_serializer(order)
         return Response(output.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=["get"], url_path="new-order-info")
+    def new_order_info(self, request):
+        """What the Manual Order form needs before it opens: whether the
+        store can create the order on Shopify too, and the order number it
+        gets otherwise."""
+        organization_id = request.organization_id
+        if is_hub_request(request):
+            organization_id = request.query_params.get("organization_id")
+            if str(organization_id) not in request.organization_ids:
+                return Response({"shopify_connected": False, "next_order_number": ""})
+        return Response({
+            "shopify_connected": ShopifyConnection.all_objects.filter(
+                organization_id=organization_id, is_connected=True
+            ).exists(),
+            "next_order_number": services.next_order_number(organization_id),
+        })
 
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -1805,46 +1859,82 @@ class OrderViewSet(viewsets.ModelViewSet):
 
             filename = "orders_smartlane.csv"
         else:
-            # "All" - key order fields exported, one row per line item.
-            # Order-level fields repeat across an order's rows.
-            # An order with no items still gets one row with blank item columns.
-            # NOTE: Postal Code, CNIC, Address Line 2, Customer Type,
-            # Fulfillment Status, Order Source, Secondary Phone, Country,
-            # Coupon/Gift Card/Loyalty/Wallet/Tax/Donation amounts, and
-            # Item Vendor/Discount/Weight are intentionally excluded from the
-            # CSV export. All data is still stored in the database.
-            queryset = queryset.prefetch_related(items_prefetch)
+            # "All" - one row per line item. Order-level fields repeat across
+            # an order's rows; an order with no items still gets one row,
+            # with the item columns blank.
+            # select_related/prefetch/annotations: every column below comes
+            # from these, never a query per order - a big export is
+            # thousands of orders.
+            from integrations.barqraftar.models import BarqRaftarShipment
+            from integrations.postex.models import PostExShipment
+
+            last_event = OrderStatusEvent.all_objects.filter(order=OuterRef("pk")).order_by("-created_at")
+            last_note = OrderNote.all_objects.filter(order=OuterRef("pk")).order_by("-created_at")
+            queryset = (
+                queryset.select_related("courier", "organization")
+                .prefetch_related(
+                    items_prefetch,
+                    Prefetch(
+                        "postex_shipments",
+                        queryset=PostExShipment.all_objects.filter(**org_kwargs).order_by("-booked_at"),
+                    ),
+                    Prefetch(
+                        "barqraftar_shipments",
+                        queryset=BarqRaftarShipment.all_objects.filter(**org_kwargs).order_by("-booked_at"),
+                    ),
+                )
+                .annotate(
+                    _last_event_to=Subquery(last_event.values("to_status")[:1]),
+                    _last_event_note=Subquery(last_event.values("note")[:1]),
+                    _last_event_at=Subquery(last_event.values("created_at")[:1]),
+                    _last_note_body=Subquery(last_note.values("body")[:1]),
+                    _last_note_at=Subquery(last_note.values("created_at")[:1]),
+                )
+            )
+            # Looked up now, not inside rows(): Supabase Auth is a network
+            # call per store, and the generator runs after this view returns.
+            owners = csv_report.client_names(
+                set(queryset.order_by().values_list("organization_id", flat=True).distinct())
+            )
+            status_labels = dict(Order.STATUS_CHOICES)
             header = [
-                "Order Number",
-                "Status",
+                # OMS Order ID identifies an order on its own - one per order,
+                # across every store - so count/dedupe on it. The Shopify
+                # order number is the store's, and two stores can both
+                # have #1176.
+                "OMS Order ID",
+                "Shopify Order ID",
+                "Client Name",
+                "Store Name",
+                "Order Date (PKT)",
+                "OMS Sync Date (PKT)",
                 "Customer Name",
-                "Customer Phone",
-                "Customer Email",
-                "Address Line 1",
+                "Phone",
+                "Email",
+                "Address",
                 "City",
-                "Customer Tags",
-                "Payment Gateway",
-                "Payment Status",
-                "Shop",
-                "Courier Status",
+                "Product Name",
+                "SKU Code",
+                "Quantity",
+                "Payment Type",
+                "Unit Price",
+                "Delivery Amount",
+                "Discount",
+                "Subtotal",
+                "Total Receivable",
+                "Customer Note",
+                "Order Status",
+                "Order Tags (Courier)",
+                "Last Update",
+                "Courier Name",
                 "Tracking Number",
-                "Issue Note",
-                "Return Reason",
-                "Shipping Type",
-                "Total Amount",
-                "Shipping Amount",
-                "Amount Paid",
-                "Grand Total",
-                "Amount Receivable",
-                "Order Date & Time (PKT)",
-                "Dispatched At (PKT)",
+                "Booked At (PKT)",
+                "Actual Weight (Courier)",
+                "Picked At (PKT)",
+                "Returning At (PKT)",
                 "Delivered At (PKT)",
-                "Returned At (PKT)",
-                "Created At (PKT)",
-                "Item Product Name",
-                "Item Barcode",
-                "Item Quantity",
-                "Item Unit Price",
+                "Returned At Warehouse (PKT)",
+                "Proofs",
             ]
 
             # Date and time, in Pakistan time - the server runs in UTC,
@@ -1857,45 +1947,59 @@ class OrderViewSet(viewsets.ModelViewSet):
             def rows():
                 yield header
                 for order in queryset.iterator(chunk_size=500):
-                    order_fields = [
+                    discount = (
+                        order.coupon_discount + order.gift_card_discount
+                        + order.loyalty_amount + order.wallet_amount
+                    )
+                    before_items = [
+                        order.supabase_order_no or "",
                         order.order_number,
-                        order.get_status_display(),
+                        owners.get(order.organization_id, ""),
+                        order.organization.name,
+                        # Shopify's own order time; a manual order has none,
+                        # so it falls back to when it was entered here.
+                        when(order.placed_at or order.created_at),
+                        when(order.created_at),
                         order.customer_name,
                         order.customer_phone,
                         order.customer_email,
-                        order.address_line1,
+                        ", ".join(filter(None, [order.address_line1, order.address_line2])),
                         order.city,
-                        order.customer_tags,
-                        order.payment_gateway,
-                        order.payment_status,
-                        order.shop,
+                    ]
+                    after_items = [
+                        str(order.shipping_amount),
+                        str(discount),
+                        str(order.total_amount),
+                        str(order.amount_receivable),
+                        order.customer_note,
+                        order.get_status_display(),
+                        order.tag,
+                        csv_report.last_update(order, status_labels, when),
                         order.courier.name if order.courier_id else "",
                         order.tracking_number,
-                        order.issue_note,
-                        order.return_reason,
-                        order.shipping_type,
-                        str(order.total_amount),
-                        str(order.shipping_amount),
-                        str(order.amount_paid),
-                        str(order.grand_total),
-                        str(order.amount_receivable),
-                        when(order.placed_at or order.created_at),
+                        when(order.booked_at),
+                        csv_report.courier_weight(order),
+                        # Dispatched is the courier picking the parcel up
+                        # (PostEx "Picked by PostEx", BarqRaftar "Picked Up").
                         when(order.dispatched_at),
+                        when(order.return_in_progress_at),
                         when(order.delivered_at),
-                        when(order.returned_at),
-                        when(order.created_at),
+                        when(order.return_received_at),
+                        csv_report.courier_proofs(order),
                     ]
+                    payment = order.get_payment_gateway_display()
                     items = list(order.items.all())
                     if not items:
-                        yield order_fields + ["", "", "", ""]
+                        yield before_items + ["", "", "", payment, ""] + after_items
                         continue
                     for item in items:
-                        yield order_fields + [
+                        yield before_items + [
                             item.product_name,
                             item.barcode,
                             item.quantity,
+                            payment,
                             str(item.unit_price),
-                        ]
+                        ] + after_items
 
             filename = "orders_all.csv"
 

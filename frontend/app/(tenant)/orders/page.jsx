@@ -205,6 +205,8 @@ export default function OrdersPage() {
   const [sortBy, setSortBy] = useState("date"); // "date" | "oms_id" | "store_id"
 
   const [newOrderOpen, setNewOrderOpen] = useState(false);
+  // The order a row's "Recreate order" copies into the Manual Order form.
+  const [recreateFrom, setRecreateFrom] = useState(null);
   const [importOpen, setImportOpen] = useState(false);
   const [importOrdersOpen, setImportOrdersOpen] = useState(false);
   const [hubStoreOptions, setHubStoreOptions] = useState(null);
@@ -1013,6 +1015,10 @@ export default function OrdersPage() {
           showStoreColumn={Boolean(user?.isDispatchHub)}
           showTransitColumn={activeStatus === CRITICAL_TAB}
           showSubStatusColumn={SUB_STATUS_TABS.has(activeStatus)}
+          onRecreate={(order) => {
+            setRecreateFrom(order);
+            setNewOrderOpen(true);
+          }}
         />
 
         <Pagination
@@ -1027,7 +1033,15 @@ export default function OrdersPage() {
         />
       </div>
 
-      <NewOrderModal open={newOrderOpen} onClose={() => setNewOrderOpen(false)} onCreated={reloadAfterChange} />
+      <NewOrderModal
+        open={newOrderOpen}
+        recreateFrom={recreateFrom}
+        onClose={() => {
+          setNewOrderOpen(false);
+          setRecreateFrom(null);
+        }}
+        onCreated={reloadAfterChange}
+      />
       <ImportOrdersModal
         stores={user?.isDispatchHub ? hubStoreOptions || [] : null}
         open={importOpen}

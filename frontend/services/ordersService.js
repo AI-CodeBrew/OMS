@@ -113,6 +113,19 @@ class OrdersService {
     return data;
   }
 
+  // Whether the store can also create a manual order on Shopify, and the
+  // order number it gets otherwise (the one after the newest order).
+  async getNewOrderInfo() {
+    const response = await fetch(`${apiConfig.baseUrl}${API_ENDPOINTS.oms.orders}new-order-info/`, {
+      headers: authService.getAuthHeaders(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.detail || "Failed to load order details");
+    }
+    return data;
+  }
+
   async create(order) {
     const response = await fetch(`${apiConfig.baseUrl}${API_ENDPOINTS.oms.orders}`, {
       method: "POST",

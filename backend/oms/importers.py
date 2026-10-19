@@ -1550,6 +1550,10 @@ def _apply_planned(organization_id, planned, *, source, actor_user_id=None):
         for key, value in changes.items():
             setattr(order, key, value)
             fields.add(key)
+        # bulk_update skips Order.save(), which normally stamps this.
+        if order.tracking_number and not order.booked_at:
+            order.booked_at = now
+            fields.add("booked_at")
         order.updated_at = now
     orders = list({order.id: order for order, _changes, _via in planned}.values())
     note = f"Imported from {source} sheet"

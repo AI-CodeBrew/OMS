@@ -559,6 +559,35 @@ def find_variant_by_sku(shop_domain, access_token, api_version, sku):
     return None
 
 
+def find_variant_id_by_sku(shop_domain, access_token, api_version, sku):
+    """The numeric id of the variant with exactly this SKU, or None - what
+    a REST order line item needs to be the real product (its stock goes
+    down on Shopify) rather than a free-text one."""
+    data = graphql(
+        shop_domain, access_token, api_version,
+        """query($q: String!) {
+          productVariants(first: 5, query: $q) { nodes { sku legacyResourceId } }
+        }""",
+        {"q": f'sku:"{sku}"'},
+    )
+    for node in (data.get("productVariants") or {}).get("nodes", []):
+        if (node.get("sku") or "") == sku:
+            return int(node["legacyResourceId"])
+    return None
+
+
+def create_order(shop_domain, access_token, api_version, order):
+    """POST /orders.json - Shopify gives it the store's next order number.
+    Returns the created order in the same REST shape the order webhook and
+    sync deliver, so it can go straight through upsert_order_from_shopify."""
+    url = f"{_base_url(shop_domain, api_version)}/orders.json"
+    headers = {"X-Shopify-Access-Token": access_token, "Content-Type": "application/json"}
+    resp = _send("POST", url, json={"order": order}, headers=headers)
+    if not resp.ok:
+        raise ShopifyAPIError(f"Shopify refused the order: {resp.status_code} {resp.text[:400]}")
+    return resp.json()["order"]
+
+
 def upload_product_image(shop_domain, access_token, api_version, *, filename, content_type, content):
     """Uploads one image to Shopify's staging storage and returns the
     resourceUrl productCreate's media takes as originalSource - the

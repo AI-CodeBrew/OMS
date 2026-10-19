@@ -1,6 +1,7 @@
 "use client";
 
 import Checkbox from "../shared/Checkbox";
+import Dropdown from "../shared/Dropdown";
 import FynkTechDispatchTag from "./FynkTechDispatchTag";
 import { formatPakPhone } from "../../lib/formatPhone";
 import { STATUS_LABELS, STATUS_TABS } from "./statusConfig";
@@ -37,11 +38,13 @@ export default function OrdersTable({
   // The courier's own word for where the parcel is (Order.courier_status) -
   // shown on the tabs after dispatch, where several of them share one status.
   showSubStatusColumn = false,
+  // Row ⋮ menu: opens the Manual Order form pre-filled from this order.
+  onRecreate,
 }) {
   const allSelected = orders.length > 0 && orders.every((o) => selectedIds.has(o.id));
   const someSelected = orders.some((o) => selectedIds.has(o.id));
   const columnCount =
-    (showStoreColumn ? 16 : 15) + (showTransitColumn ? 1 : 0) + (showSubStatusColumn ? 1 : 0);
+    (showStoreColumn ? 17 : 16) + (showTransitColumn ? 1 : 0) + (showSubStatusColumn ? 1 : 0);
 
   return (
     <div className="max-h-[70vh] overflow-auto rounded-lg border border-surface-border bg-white">
@@ -72,6 +75,7 @@ export default function OrdersTable({
             <th className="w-20 px-3 py-2">Tag</th>
             <th className="w-24 px-3 py-2 text-right">Amount</th>
             <th className="w-28 px-3 py-2">Payment Status</th>
+            <th className="w-10 px-2 py-2" aria-label="Actions" />
           </tr>
         </thead>
         <tbody className="text-sm">
@@ -209,6 +213,23 @@ export default function OrdersTable({
                   {order.grand_total ?? order.total_amount}
                 </td>
                 <td className="px-3 py-1.5 capitalize text-slate-700">{order.payment_status}</td>
+                {/* stopPropagation: the row's own click opens the order -
+                    and the menu, though portalled, still bubbles to it. */}
+                <td className="px-2 py-1.5 text-right" onClick={(e) => e.stopPropagation()}>
+                  <Dropdown
+                    align="right"
+                    trigger={
+                      <button
+                        type="button"
+                        aria-label="Order actions"
+                        className="rounded px-2 py-1 text-slate-400 hover:bg-surface hover:text-slate-700"
+                      >
+                        ⋮
+                      </button>
+                    }
+                    items={[{ key: "recreate", label: "Recreate order", onClick: () => onRecreate?.(order) }]}
+                  />
+                </td>
               </tr>
             ))
           )}

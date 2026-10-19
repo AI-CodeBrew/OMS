@@ -4,7 +4,7 @@ from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
-from django.db import OperationalError, connections
+from django.db import OperationalError, connections, transaction
 from django.db.models import F
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
@@ -342,12 +342,15 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
     context."""
     shopify_order_id = shopify_order["id"]
     customer = shopify_order.get("customer") or {}
+    shipping_address = shopify_order.get("shipping_address") or {}
+    # Orders created from OMS (create_order_on_shopify) carry no customer
+    # record when there's no email - the name is on the address.
     customer_name = (
         " ".join(filter(None, [customer.get("first_name"), customer.get("last_name")])).strip()
+        or (shipping_address.get("name") or "").strip()
         or shopify_order.get("email")
         or "Unknown"
     )
-    shipping_address = shopify_order.get("shipping_address") or {}
     billing_address = shopify_order.get("billing_address") or {}
     # order.phone/customer.phone are frequently null - guest/COD checkouts
     # (the common case here) only carry a contact number on the address,
@@ -417,8 +420,9 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
         "address_line2": _truncate(shipping_address.get("address2"), 255),
         "postal_code": _truncate(shipping_address.get("zip"), 50),
         "country": _truncate(shipping_address.get("country"), 100),
-        "order_source": "Storefront",
+        "order_source": "Manual" if _is_oms_manual(shopify_order) else "Storefront",
         "placed_at": placed_at,
+        "customer_note": shopify_order.get("note") or "",
     }
 
     # The carrier Shopify recorded on the fulfillment ("TCS", "Leopards",
@@ -460,17 +464,36 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
             order.save(update_fields=["status", "delivered_at", "updated_at"])
 
     # Line items can change between webhook deliveries (edited orders) -
-    # full replace is simpler and safer than diffing.
-    OrderItem.all_objects.filter(order=order).delete()
-    for line_item in shopify_order.get("line_items", []):
-        OrderItem.all_objects.create(
-            organization_id=organization_id,
-            order=order,
-            product_name=_truncate(line_item.get("title") or "Item", 255),
-            quantity=line_item.get("quantity") or 1,
-            unit_price=_to_decimal(line_item.get("price")),
-            barcode=_truncate(line_item.get("sku"), 100),
-        )
+    # full replace is simpler and safer than diffing. Done in one
+    # transaction holding the order's row lock: Shopify often sends
+    # orders/create and orders/updated within the same second (or a webhook
+    # lands mid-sync), and two unlocked replaces interleaved their deletes
+    # and inserts, leaving a line item stored twice.
+    # Weights Shopify doesn't send back (an order made in OMS has them from
+    # its form) are carried over to the replacement rows, by SKU + name.
+    with transaction.atomic():
+        Order.all_objects.select_for_update().filter(pk=order.pk).first()
+        old_items = OrderItem.all_objects.filter(order=order)
+        weights = {
+            (item.barcode, item.product_name): item.weight_grams
+            for item in old_items
+            if item.weight_grams
+        }
+        old_items.delete()
+        new_items = []
+        for line_item in shopify_order.get("line_items", []):
+            product_name = _truncate(line_item.get("title") or "Item", 255)
+            barcode = _truncate(line_item.get("sku"), 100)
+            new_items.append(OrderItem(
+                organization_id=organization_id,
+                order=order,
+                product_name=product_name,
+                quantity=line_item.get("quantity") or 1,
+                unit_price=_to_decimal(line_item.get("price")),
+                barcode=barcode,
+                weight_grams=weights.get((barcode, product_name)),
+            ))
+        OrderItem.all_objects.bulk_create(new_items)
 
     publish_event(
         "order.created" if created else "order.updated",
@@ -482,6 +505,137 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
         },
     )
     return order, created
+
+
+# Tag on every order create_order_on_shopify makes, so later webhooks for
+# it still know it was booked by hand in OMS rather than at the checkout.
+_OMS_MANUAL_TAG = "OMS Manual"
+
+
+def _is_oms_manual(shopify_order):
+    tags = [t.strip() for t in (shopify_order.get("tags") or "").split(",")]
+    return _OMS_MANUAL_TAG in tags
+
+
+def create_order_on_shopify(
+    organization_id, *, customer_name, customer_phone, items, extra_fields=None, note="", actor_user_id=None
+):
+    """Manual Order with "Also create on Shopify": creates the order on the
+    connected store first - Shopify gives it the store's next order number -
+    then stores it here through the same upsert the order webhook uses, so
+    it carries shopify_order_id and that webhook (which may well land
+    first) updates this one row instead of making a second. From there it
+    is an ordinary Shopify order: status push, courier booking, and so on.
+
+    Line items whose SKU is a product on Shopify are that product (Shopify
+    takes its stock down, as at checkout); any other is a custom line item.
+    Raises InventorySyncError with Shopify's message if it refuses."""
+    extra = dict(extra_fields or {})
+    connection, args = _connected_shopify(organization_id)
+
+    first_name, _, last_name = customer_name.strip().partition(" ")
+    address = {
+        "first_name": first_name,
+        "last_name": last_name,
+        "name": customer_name.strip(),
+        "address1": extra.get("address_line1", ""),
+        "address2": extra.get("address_line2", ""),
+        "city": extra.get("city", ""),
+        "zip": extra.get("postal_code", ""),
+        "country": "Pakistan",
+        "phone": customer_phone,
+    }
+    prepaid = extra.get("payment_gateway") == "cc"
+    shipping = Decimal(str(extra.get("shipping_amount") or 0))
+    discount = Decimal(str(extra.get("coupon_discount") or 0))
+
+    with shopify_client.wait_out_rate_limits():
+        try:
+            line_items = []
+            for item in items:
+                sku = (item.get("barcode") or "").strip()
+                variant_id = shopify_client.find_variant_id_by_sku(*args, sku) if sku else None
+                line = {"quantity": item["quantity"], "price": str(item["unit_price"])}
+                if variant_id:
+                    line["variant_id"] = variant_id
+                else:
+                    line.update(title=item["product_name"], sku=sku, requires_shipping=True)
+                if item.get("weight_grams"):
+                    line["grams"] = item["weight_grams"]
+                line_items.append(line)
+
+            total = sum(Decimal(str(i["unit_price"])) * i["quantity"] for i in items) + shipping - discount
+            payload = {
+                "line_items": line_items,
+                "shipping_address": address,
+                "billing_address": address,
+                "shipping_lines": [{"title": "Shipping", "code": "Shipping", "price": str(shipping)}],
+                # Phone goes on the address only: a customer record with a
+                # phone that another customer already has is rejected.
+                "email": extra.get("customer_email", ""),
+                "financial_status": "paid" if prepaid else "pending",
+                "inventory_behaviour": "decrement_obeying_policy",
+                "send_receipt": False,
+                "send_fulfillment_receipt": False,
+                "note": note,
+                "tags": _OMS_MANUAL_TAG,
+            }
+            if discount:
+                # Comes back as the order's coupon_discount through
+                # _shopify_money, like a checkout discount would.
+                payload["discount_codes"] = [
+                    {"code": "OMS Discount", "amount": str(discount), "type": "fixed_amount"}
+                ]
+            if prepaid:
+                payload["transactions"] = [{"kind": "sale", "status": "success", "amount": str(total)}]
+            if extra.get("placed_at"):
+                payload["processed_at"] = extra["placed_at"].isoformat()
+            if not payload["email"]:
+                del payload["email"]
+            created = shopify_client.create_order(*args, payload)
+        except shopify_client.ShopifyAPIError as exc:
+            raise InventorySyncError(str(exc)[:500]) from exc
+
+    order, _ = upsert_order_from_shopify(
+        organization_id, created, shop_label=connection.shop_name or connection.shop_domain
+    )
+
+    # What the form knows that Shopify's copy doesn't hold.
+    updates = {}
+    if extra.get("secondary_phone"):
+        updates["secondary_phone"] = extra["secondary_phone"][:50]
+    if updates:
+        Order.all_objects.filter(pk=order.pk).update(**updates)
+    # By SKU first: a product line item comes back under the product's own
+    # title on Shopify, not the name typed in the form.
+    by_sku = {(i.get("barcode") or "").strip(): i.get("weight_grams") for i in items if i.get("barcode")}
+    by_name = {i["product_name"]: i.get("weight_grams") for i in items}
+    for item in OrderItem.all_objects.filter(order=order, weight_grams__isnull=True):
+        weight = (by_sku.get(item.barcode) if item.barcode else None) or by_name.get(item.product_name)
+        if weight:
+            item.weight_grams = weight
+            item.save(update_fields=["weight_grams"])
+    if note:
+        from oms.models import OrderNote
+
+        OrderNote.all_objects.create(organization_id=organization_id, order=order, kind="note", body=note)
+
+    try:
+        from core.rbac import write_audit_log
+
+        write_audit_log(
+            organization_id=organization_id,
+            action="oms.shopify_order_create",
+            summary=f"Created order {order.order_number} on Shopify ({connection.shop_domain})",
+            actor_user_id=actor_user_id,
+            entity_type="order",
+            entity_id=str(order.id),
+            metadata={"shopify_order_id": created.get("id")},
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    order.refresh_from_db()
+    return order
 
 
 # How Smartlane's reported states map onto our pipeline. Anything not
