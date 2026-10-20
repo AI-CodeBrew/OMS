@@ -1,4 +1,5 @@
 import logging
+import re
 from datetime import timedelta
 from decimal import Decimal
 
@@ -64,6 +65,27 @@ def create_order(*, organization_id, order_number, customer_name, customer_phone
         },
     )
     return order
+
+
+def next_order_number(organization_id):
+    """The number after this store's newest order - "#1176" -> "#1177",
+    "PB-0099" -> "PB-0100" - for a manual order on a store that doesn't
+    get its numbers from Shopify. Skips any number already taken; "1"
+    for a store with no numbered orders yet."""
+    newest = (
+        Order.all_objects.filter(organization_id=organization_id)
+        .order_by("-created_at")
+        .values_list("order_number", flat=True)
+        .first()
+    )
+    match = re.match(r"^(.*?)(\d+)$", newest or "")
+    prefix, digits = (match.group(1), match.group(2)) if match else ("", "0")
+    number = int(digits)
+    while True:
+        number += 1
+        candidate = f"{prefix}{str(number).zfill(len(digits))}"
+        if not Order.all_objects.filter(organization_id=organization_id, order_number=candidate).exists():
+            return candidate
 
 
 # --- Status pipeline -------------------------------------------------------

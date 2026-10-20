@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
+import { useRouter, useSearchParams } from "next/navigation";
 import ordersService from "../../../services/ordersService";
 import { connectOrdersSocket } from "../../../lib/ordersSocket";
 import {
@@ -14,6 +15,8 @@ import {
   setCachedDashboard,
 } from "../../../lib/viewCache";
 import { warmupViewsInBackground } from "../../../lib/warmupViews";
+import DateRangeFilter from "../../../components/orders/DateRangeFilter";
+import Dropdown from "../../../components/shared/Dropdown";
 
 // recharts is a large library - loading it on demand instead of eagerly
 // means the KPI cards and header below render immediately on the very
@@ -45,27 +48,68 @@ const KPI_GROUPS = [
   { key: "returned", label: "Returned", statuses: ["returned"], color: "#f97316" },
 ];
 
+// Keep the day counts in step with dashboardPresetKeys (lib/viewCache.js),
+// which warms each of these in the background.
 const QUICK_RANGES = [
+  { key: "1", label: "1 Day", days: 1 },
+  { key: "2", label: "2 Days", days: 2 },
   { key: "7", label: "1 Week", days: 7 },
+  { key: "14", label: "2 Weeks", days: 14 },
   { key: "30", label: "30 Days", days: 30 },
   { key: "90", label: "90 Days", days: 90 },
   { key: "all", label: "All Time", days: null },
 ];
 
-function KpiCard({ label, value, color }) {
+function KpiCard({ label, value, color, onClick }) {
   return (
-    <div className="rounded-lg border border-surface-border bg-white p-4">
+    <button
+      type="button"
+      onClick={onClick}
+      title={`Show these orders`}
+      className="rounded-lg border border-surface-border bg-white p-4 text-left transition hover:border-brand-300 hover:shadow-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-200"
+    >
       <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</p>
       <p className="mt-1.5 text-2xl font-semibold" style={{ color }}>
         {value == null ? "—" : value.toLocaleString()}
       </p>
-    </div>
+    </button>
   );
 }
 
+// useSearchParams needs a Suspense boundary above it for Next's build.
 export default function DashboardPage() {
-  const [activeRange, setActiveRange] = useState("30");
-  const [customRange, setCustomRange] = useState(null);
+  return (
+    <Suspense fallback={null}>
+      <Dashboard />
+    </Suspense>
+  );
+}
+
+function Dashboard() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  // The range lives in the URL too, so coming back from Orders (its ← arrow
+  // is a browser Back) lands on the same range rather than the default.
+  const [activeRange, setActiveRange] = useState(() =>
+    QUICK_RANGES.some((r) => r.key === searchParams.get("range")) ? searchParams.get("range") : "7"
+  );
+  const [customRange, setCustomRange] = useState(() => {
+    const date_from = searchParams.get("date_from") || "";
+    const date_to = searchParams.get("date_to") || "";
+    return date_from || date_to ? { date_from, date_to } : null;
+  });
+
+  function rememberRange(query) {
+    router.replace(`/dashboard?${new URLSearchParams(query).toString()}`, { scroll: false });
+  }
+
+  function openOrders(group) {
+    const query = new URLSearchParams({ from: "dashboard", group: group.label });
+    if (group.statuses) query.set("status", group.statuses.join(","));
+    if (params.date_from) query.set("date_from", params.date_from);
+    if (params.date_to) query.set("date_to", params.date_to);
+    router.push(`/orders?${query.toString()}`);
+  }
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -75,7 +119,7 @@ export default function DashboardPage() {
   const params = useMemo(() => {
     if (customRange) return customRange;
     const preset = QUICK_RANGES.find((r) => r.key === activeRange);
-    return dashboardRangeFor(preset ? preset.days : 30);
+    return dashboardRangeFor(preset ? preset.days : 7);
   }, [activeRange, customRange]);
 
   const isPreset = !customRange;
@@ -170,23 +214,43 @@ export default function DashboardPage() {
           <p className="mt-1 text-sm text-slate-500">Order activity and COD collection overview.</p>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
-          {QUICK_RANGES.map((r) => (
-            <button
-              key={r.key}
-              type="button"
-              onClick={() => {
+          <Dropdown
+            align="right"
+            trigger={
+              <span
+                className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium ${
+                  customRange
+                    ? "border-surface-border bg-white text-slate-500"
+                    : "border-brand-800 bg-brand-800 text-white"
+                }`}
+              >
+                {customRange ? "Quick range" : QUICK_RANGES.find((r) => r.key === activeRange)?.label}
+                <span className="text-xs">▾</span>
+              </span>
+            }
+            items={QUICK_RANGES.map((r) => ({
+              key: r.key,
+              label: !customRange && activeRange === r.key ? `✓ ${r.label}` : r.label,
+              onClick: () => {
                 setCustomRange(null);
                 setActiveRange(r.key);
-              }}
-              className={`rounded-md border px-3 py-1.5 text-sm font-medium transition ${
-                !customRange && activeRange === r.key
-                  ? "border-brand-800 bg-brand-800 text-white"
-                  : "border-surface-border bg-white text-slate-600 hover:bg-surface"
-              }`}
-            >
-              {r.label}
-            </button>
-          ))}
+                rememberRange({ range: r.key });
+              },
+            }))}
+          />
+          <DateRangeFilter
+            dateFrom={customRange?.date_from}
+            dateTo={customRange?.date_to}
+            onApplyDateRange={(date_from, date_to) => {
+              if (!date_from && !date_to) return;
+              setCustomRange({ date_from: date_from || "", date_to: date_to || "" });
+              rememberRange({ date_from: date_from || "", date_to: date_to || "" });
+            }}
+            onClearDateRange={() => {
+              setCustomRange(null);
+              rememberRange({ range: activeRange });
+            }}
+          />
         </div>
       </div>
 
@@ -194,7 +258,7 @@ export default function DashboardPage() {
 
       <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         {(loading ? KPI_GROUPS.map((k) => ({ ...k, value: null })) : kpis).map((k) => (
-          <KpiCard key={k.key} label={k.label} value={k.value} color={k.color} />
+          <KpiCard key={k.key} label={k.label} value={k.value} color={k.color} onClick={() => openOrders(k)} />
         ))}
       </div>
 

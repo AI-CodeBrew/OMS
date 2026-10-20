@@ -143,22 +143,51 @@ class OrganizationModule(models.Model):
 
 
 class OrganizationAuditLog(TenantScopedModel):
-    """Org-wide activity log for the org admin Logs tab."""
+    """Org-wide activity log for the org admin Logs tab and, across every
+    store, the super admin's Logs tab (core.activity_log_service)."""
 
+    ROLE_STORE_ADMIN = "store_admin"
+    ROLE_STORE_USER = "store_user"
+    ROLE_SUPER_ADMIN = "super_admin"
+    ROLE_SYSTEM = "system"
+    ROLE_CHOICES = [
+        (ROLE_STORE_ADMIN, "Store admin"),
+        (ROLE_STORE_USER, "Store user"),
+        (ROLE_SUPER_ADMIN, "FynkTech"),
+        (ROLE_SYSTEM, "System"),
+    ]
+
+    # Null for something the super admin did on the platform itself (e.g. on
+    # the Tickets or Invoices tab) that names no store - only the super
+    # admin's Logs tab shows those; TenantManager never matches them.
+    organization = models.ForeignKey(
+        "core.Organization", on_delete=models.CASCADE, related_name="+", null=True, blank=True
+    )
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     actor_user_id = models.UUIDField(null=True, blank=True)
     actor_email = models.CharField(max_length=255, blank=True, default="")
+    actor_role = models.CharField(max_length=20, choices=ROLE_CHOICES, blank=True, default="")
     action = models.CharField(max_length=64)
+    # orders|wms|integrations|team|finance|support|store|other - see
+    # activity_log_service.category_for.
+    category = models.CharField(max_length=20, blank=True, default="")
     entity_type = models.CharField(max_length=64, blank=True, default="")
     entity_id = models.CharField(max_length=64, blank=True, default="")
     summary = models.CharField(max_length=500)
     metadata = models.JSONField(default=dict, blank=True)
+    # Where it came from - the request that caused it, when there was one.
+    ip_address = models.CharField(max_length=64, blank=True, default="")
+    user_agent = models.CharField(max_length=300, blank=True, default="")
+    request_method = models.CharField(max_length=8, blank=True, default="")
+    request_path = models.CharField(max_length=255, blank=True, default="")
+    status_code = models.PositiveSmallIntegerField(null=True, blank=True)
 
     class Meta:
         db_table = '"core"."organization_audit_logs"'
         ordering = ["-created_at"]
         indexes = [
             models.Index(fields=["organization", "-created_at"], name="core_audit_org_created"),
+            models.Index(fields=["-created_at"], name="core_audit_created"),
         ]
 
     def __str__(self):

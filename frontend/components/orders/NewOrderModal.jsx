@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Modal from "../shared/Modal";
 import Button from "../shared/Button";
@@ -21,10 +21,40 @@ const emptyForm = () => ({
   secondary_phone: "",
   customer_email: "",
   address_line1: "",
+  // Not on the form - carried over when recreating an order that has them.
+  address_line2: "",
+  postal_code: "",
   city: "",
   shipping_amount: "0",
+  discount: "0",
   notes: "",
   items: [{ ...EMPTY_ITEM }],
+});
+
+// "Recreate order": the same customer and products as `order`, as a new
+// order (today's date, its own number) - everything stays editable.
+const formFromOrder = (order) => ({
+  ...emptyForm(),
+  payment_gateway: order.payment_gateway || "cod",
+  customer_name: order.customer_name || "",
+  customer_phone: order.customer_phone || "",
+  secondary_phone: order.secondary_phone || "",
+  customer_email: order.customer_email || "",
+  address_line1: order.address_line1 || "",
+  address_line2: order.address_line2 || "",
+  postal_code: order.postal_code || "",
+  city: order.city || "",
+  shipping_amount: String(order.shipping_amount ?? "0"),
+  notes: `Recreated from order ${order.order_number}`,
+  items: (order.items || []).length
+    ? order.items.map((item) => ({
+        product_name: item.product_name || "",
+        barcode: item.barcode || "",
+        quantity: item.quantity || 1,
+        unit_price: String(item.unit_price ?? ""),
+        weight_grams: item.weight_grams ? String(item.weight_grams) : "",
+      }))
+    : [{ ...EMPTY_ITEM }],
 });
 
 const INPUT =
@@ -90,17 +120,53 @@ const UploadIcon = (
  * the same editable grid as the courier-sheet import before anything is
  * created).
  */
-export default function NewOrderModal({ open, onClose, onCreated }) {
+export default function NewOrderModal({ open, recreateFrom = null, onClose, onCreated }) {
   const [view, setView] = useState("methods"); // "methods" | "manual"
   const [form, setForm] = useState(emptyForm);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
   const [csvFile, setCsvFile] = useState(null);
   const [importFile, setImportFile] = useState(null); // handed to ImportNewOrdersModal
+  const [shopifyConnected, setShopifyConnected] = useState(false);
+  const [onShopify, setOnShopify] = useState(false);
   const fileRef = useRef(null);
+
+  // Shopify numbers an order created there; otherwise the form starts with
+  // the number after the store's newest order (still editable).
+  async function openManual() {
+    setView("manual");
+    try {
+      const info = await ordersService.getNewOrderInfo();
+      setShopifyConnected(Boolean(info.shopify_connected));
+      setOnShopify(Boolean(info.shopify_connected));
+      setForm((f) => (f.order_number ? f : { ...f, order_number: info.next_order_number || "" }));
+    } catch {
+      // Leaves the number blank - the server fills one in on create.
+    }
+  }
+
+  // Straight to the filled-in form. The full order is fetched because a
+  // list row may not carry every field the form copies.
+  useEffect(() => {
+    if (!open || !recreateFrom) return;
+    let cancelled = false;
+    setForm(formFromOrder(recreateFrom));
+    openManual();
+    ordersService
+      .get(recreateFrom.id)
+      .then((order) => {
+        if (!cancelled) setForm((f) => ({ ...formFromOrder(order), order_number: f.order_number }));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, recreateFrom]);
 
   function resetAll() {
     setView("methods");
+    setOnShopify(false);
     setForm(emptyForm());
     setError("");
     setCsvFile(null);
@@ -137,7 +203,8 @@ export default function NewOrderModal({ open, onClose, onCreated }) {
     (sum, item) => sum + (Number(item.quantity) || 0) * (Number(item.unit_price) || 0),
     0
   );
-  const grandTotal = itemsTotal + (Number(form.shipping_amount) || 0);
+  const discount = Number(form.discount) || 0;
+  const grandTotal = itemsTotal + (Number(form.shipping_amount) || 0) - discount;
 
   async function onSubmit(e) {
     e.preventDefault();
@@ -145,7 +212,8 @@ export default function NewOrderModal({ open, onClose, onCreated }) {
     setError("");
     try {
       await ordersService.create({
-        order_number: form.order_number.trim(),
+        create_on_shopify: onShopify,
+        order_number: onShopify ? "" : form.order_number.trim(),
         order_date: form.order_date,
         payment_gateway: form.payment_gateway,
         customer_name: form.customer_name.trim(),
@@ -153,8 +221,11 @@ export default function NewOrderModal({ open, onClose, onCreated }) {
         secondary_phone: form.secondary_phone.trim(),
         customer_email: form.customer_email.trim(),
         address_line1: form.address_line1.trim(),
+        address_line2: form.address_line2.trim(),
+        postal_code: form.postal_code.trim(),
         city: form.city.trim(),
         shipping_amount: form.shipping_amount || 0,
+        discount: form.discount || 0,
         notes: form.notes.trim(),
         items: form.items.map((item) => ({
           product_name: item.product_name.trim(),
@@ -219,7 +290,7 @@ export default function NewOrderModal({ open, onClose, onCreated }) {
         {errorBox}
         <h3 className="mb-5 text-center text-2xl font-normal text-slate-700">Booking Methods</h3>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <MethodCard title="Book Manual" icon={PlusIcon} onClick={() => setView("manual")} />
+          <MethodCard title="Book Manual" icon={PlusIcon} onClick={openManual} />
           <MethodCard title="Download Sample File" icon={DownloadIcon} onClick={downloadSample} />
         </div>
 
@@ -244,14 +315,41 @@ export default function NewOrderModal({ open, onClose, onCreated }) {
   }
 
   return (
-    <Modal open={open} onClose={close} title="Book manual order" width="max-w-3xl">
+    <Modal
+      open={open}
+      onClose={close}
+      title={recreateFrom ? `Recreate order ${recreateFrom.order_number}` : "Book manual order"}
+      width="max-w-3xl"
+    >
       {errorBox}
       <form onSubmit={onSubmit} className="space-y-5">
+        {shopifyConnected ? (
+          <label className="flex items-start gap-2 rounded-md border border-surface-border bg-surface px-3 py-2.5">
+            <input
+              type="checkbox"
+              checked={onShopify}
+              onChange={(e) => setOnShopify(e.target.checked)}
+              className="mt-0.5"
+            />
+            <span>
+              <span className="block text-sm font-medium text-slate-800">Also create on Shopify</span>
+              <span className="block text-xs text-slate-500">
+                Creates the order on your store, which gives it the next order number. Products whose
+                SKU is on Shopify are taken from its stock there.
+              </span>
+            </span>
+          </label>
+        ) : null}
+
         <section>
           <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Order</h4>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <Field label="Order number" required>
-              <input required value={form.order_number} onChange={updateField("order_number")} className={INPUT} />
+            <Field label="Order number" required={!onShopify}>
+              {onShopify ? (
+                <input disabled value="Assigned by Shopify" className={`${INPUT} bg-surface text-slate-500`} />
+              ) : (
+                <input required value={form.order_number} onChange={updateField("order_number")} className={INPUT} />
+              )}
             </Field>
             <Field label="Order date" required>
               <input
@@ -431,22 +529,34 @@ export default function NewOrderModal({ open, onClose, onCreated }) {
               className={INPUT}
             />
           </Field>
-          <Field label="Notes" className="sm:col-span-2">
+          <Field label="Discount">
+            <input
+              type="number"
+              step="0.01"
+              min="0"
+              max={itemsTotal || undefined}
+              value={form.discount}
+              onChange={updateField("discount")}
+              className={INPUT}
+            />
+          </Field>
+          <Field label="Notes">
             <input value={form.notes} onChange={updateField("notes")} className={INPUT} />
           </Field>
         </section>
 
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-surface-border pt-4">
           <div className="text-sm text-slate-600">
-            Items {itemsTotal.toFixed(2)} + shipping {(Number(form.shipping_amount) || 0).toFixed(2)} ={" "}
+            Items {itemsTotal.toFixed(2)} + shipping {(Number(form.shipping_amount) || 0).toFixed(2)}
+            {discount ? ` − discount ${discount.toFixed(2)}` : ""} ={" "}
             <span className="font-semibold text-slate-900">{grandTotal.toFixed(2)}</span>
           </div>
           <div className="flex gap-2">
-            <Button type="button" variant="secondary" onClick={() => setView("methods")}>
-              Back
+            <Button type="button" variant="secondary" onClick={recreateFrom ? close : () => setView("methods")}>
+              {recreateFrom ? "Cancel" : "Back"}
             </Button>
             <Button type="submit" loading={creating}>
-              Create order
+              {onShopify ? "Create order & push to Shopify" : "Create order"}
             </Button>
           </div>
         </div>

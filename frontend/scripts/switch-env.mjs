@@ -8,10 +8,11 @@ const profile = process.argv[2];
 const profiles = {
   local: ".env.local.local-backends",
   live: ".env.local.live-backends",
+  testing: ".env.local.testing",
 };
 
 if (!profiles[profile]) {
-  console.error(`Usage: node scripts/switch-env.mjs <local|live>`);
+  console.error(`Usage: node scripts/switch-env.mjs <local|live|testing>`);
   process.exit(1);
 }
 

@@ -62,6 +62,26 @@ class StockItem(TenantScopedModel):
     # Shopify variant yet.
     shopify_inventory_item_id = models.BigIntegerField(null=True, blank=True)
 
+    # Local edits waiting for "Push to Shopify" (see integrations.services.
+    # push_stock_changes_to_shopify). Stock is tracked as the net of unpushed
+    # manual adjustments, not an absolute target: Shopify deducts its own
+    # orders as they're placed, so pushing our absolute count would undo
+    # those. Only tracked for Shopify-linked rows.
+    # db_default as well as default: the columns get a real database
+    # default, so code from before these fields (still running mid-deploy)
+    # can keep inserting rows without them.
+    pending_shopify_delta = models.IntegerField(default=0, db_default=0)
+    # The rename to push ("" = none) and the name it replaces, kept for the
+    # confirmation summary's "from -> to".
+    pending_shopify_name = models.CharField(max_length=255, blank=True, default="", db_default="")
+    previous_shopify_name = models.CharField(max_length=255, blank=True, default="", db_default="")
+    # Claimed while a push is sending this row, so a double click or a
+    # second tab can't send the same delta twice. A stale claim (a request
+    # that died mid-push) expires - see integrations.services.PUSH_CLAIM_TIMEOUT.
+    shopify_push_started_at = models.DateTimeField(null=True, blank=True)
+    shopify_push_error = models.CharField(max_length=500, blank=True, default="", db_default="")
+    last_pushed_to_shopify_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         db_table = '"wms"."stock_items"'
         constraints = [
@@ -88,6 +108,10 @@ class StockItem(TenantScopedModel):
     @property
     def is_low(self):
         return 0 <= self.quantity <= self.reorder_level
+
+    @property
+    def has_pending_shopify_push(self):
+        return bool(self.pending_shopify_delta or self.pending_shopify_name)
 
 
 class StockMovement(TenantScopedModel):

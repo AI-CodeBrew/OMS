@@ -25,7 +25,6 @@ import Button from "../../../components/shared/Button";
 import Pagination from "../../../components/shared/Pagination";
 import OrderStatusTabs from "../../../components/orders/OrderStatusTabs";
 import OrdersToolbar from "../../../components/orders/OrdersToolbar";
-import OrdersFilterPanel from "../../../components/orders/OrdersFilterPanel";
 import OrdersTable from "../../../components/orders/OrdersTable";
 import CsvExportButton from "../../../components/orders/CsvExportButton";
 import DateRangeFilter from "../../../components/orders/DateRangeFilter";
@@ -33,6 +32,7 @@ import {
   ACTIONS_BY_STATUS,
   BOOKING_ACCOUNTS,
   SMARTLANE_LOAD_SHEET_COURIERS,
+  STATUS_LABELS,
   STATUS_TABS,
   connectedBookingAccounts,
   isBookingAccountCourier,
@@ -174,11 +174,22 @@ export default function OrdersPage() {
 
   const [activeStatus, setActiveStatusState] = useState(() => searchParams.get("status") || "all");
   const [search, setSearch] = useState("");
-  const [searchField, setSearchField] = useState("order_number");
   const [appliedSearch, setAppliedSearch] = useState("");
-  const [filters, setFilters] = useState(EMPTY_FILTERS);
-  const [appliedFilters, setAppliedFilters] = useState(EMPTY_FILTERS);
-  const [filtersOpen, setFiltersOpen] = useState(false);
+  // A dashboard card links here with its date range (and its statuses as
+  // the tab) - read once on arrival; after that the date filter is the
+  // user's to change.
+  const [filters, setFilters] = useState(() => ({
+    ...EMPTY_FILTERS,
+    date_from: searchParams.get("date_from") || "",
+    date_to: searchParams.get("date_to") || "",
+  }));
+  const [appliedFilters, setAppliedFilters] = useState(() => ({
+    ...EMPTY_FILTERS,
+    date_from: searchParams.get("date_from") || "",
+    date_to: searchParams.get("date_to") || "",
+  }));
+  const fromDashboard = searchParams.get("from") === "dashboard";
+  const dashboardGroup = searchParams.get("group") || "";
 
   const [orders, setOrders] = useState([]);
   const [orderCount, setOrderCount] = useState(0);
@@ -194,6 +205,8 @@ export default function OrdersPage() {
   const [sortBy, setSortBy] = useState("date"); // "date" | "oms_id" | "store_id"
 
   const [newOrderOpen, setNewOrderOpen] = useState(false);
+  // The order a row's "Recreate order" copies into the Manual Order form.
+  const [recreateFrom, setRecreateFrom] = useState(null);
   const [importOpen, setImportOpen] = useState(false);
   const [importOrdersOpen, setImportOrdersOpen] = useState(false);
   const [hubStoreOptions, setHubStoreOptions] = useState(null);
@@ -231,6 +244,11 @@ export default function OrdersPage() {
     const params = new URLSearchParams(searchParams.toString());
     if (status === "all") params.delete("status");
     else params.set("status", status);
+    // Picking a tab leaves the dashboard card's view (its label would no
+    // longer be true); the date filter it set stays as the user's filter.
+    params.delete("group");
+    params.delete("date_from");
+    params.delete("date_to");
     router.replace(`/orders${params.toString() ? `?${params.toString()}` : ""}`);
   }
 
@@ -238,10 +256,12 @@ export default function OrdersPage() {
     () => ({
       status: activeStatus === "all" ? undefined : activeStatus,
       search: appliedSearch || undefined,
-      search_field: appliedSearch ? searchField : undefined,
+      // One box searches order no., customer, phone, product, SKU,
+      // tracking and city at once (backend: search_field "all").
+      search_field: appliedSearch ? "all" : undefined,
       ...appliedFilters,
     }),
-    [activeStatus, appliedSearch, searchField, appliedFilters]
+    [activeStatus, appliedSearch, appliedFilters]
   );
 
   // Client-side sort of the current page — server always returns data in its
@@ -602,6 +622,17 @@ export default function OrdersPage() {
     return actions.filter((a) => !covered.has(a.action));
   }, [selectedOrders, barqraftarConnected, barqraftarOmsConnected, postexConnected, postexOmsConnected]);
 
+  // Why the Actions menu is empty, so it says so instead of opening blank:
+  // a status with no actions (Delivered, Cancelled, ...) or a mix of
+  // statuses with none in common.
+  const noActionsReason = useMemo(() => {
+    if (selectedOrders.length === 0 || availableActions.length > 0) return "";
+    const labels = Array.from(new Set(selectedOrders.map((o) => STATUS_LABELS[o.status] || o.status)));
+    return labels.length === 1
+      ? `No actions for ${labels[0]} orders`
+      : `No action fits all of: ${labels.join(", ")} - select orders of one status`;
+  }, [selectedOrders, availableActions]);
+
   // The couriers the picker offers: whichever this org can print for.
   const printAccounts = useMemo(
     () => [
@@ -834,18 +865,31 @@ export default function OrdersPage() {
     setAppliedSearch(search);
   }
 
-  function onQuickFilter(patch) {
-    setFilters((f) => ({ ...f, ...patch }));
-    setAppliedFilters((f) => ({ ...f, ...patch }));
-  }
-
   return (
     <div>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h1 className="text-[28px] font-semibold leading-8 text-slate-900">
-            {user?.isDispatchHub ? "Dispatch Hub Orders" : "Local Orders"}
-          </h1>
+          <div className="flex items-center gap-2">
+            {fromDashboard ? (
+              <button
+                type="button"
+                // Back keeps the dashboard's range; a link opened on its own
+                // has nothing to go back to.
+                onClick={() => (window.history.length > 1 ? router.back() : router.push("/dashboard"))}
+                aria-label="Back to dashboard"
+                title="Back to dashboard"
+                className="-ml-1 rounded-md p-1 text-slate-500 hover:bg-surface hover:text-slate-900"
+              >
+                <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+                </svg>
+              </button>
+            ) : null}
+            <h1 className="text-[28px] font-semibold leading-8 text-slate-900">
+              {user?.isDispatchHub ? "Dispatch Hub Orders" : "Local Orders"}
+              {dashboardGroup ? <span className="text-slate-400"> · {dashboardGroup}</span> : null}
+            </h1>
+          </div>
           <p className="mt-1 text-sm text-slate-500">
             {counts == null
               ? "Loading orders…"
@@ -898,16 +942,23 @@ export default function OrdersPage() {
 
         <OrdersToolbar
           search={search}
-          onSearchChange={setSearch}
-          searchField={searchField}
-          onSearchFieldChange={setSearchField}
+          onSearchChange={(value) => {
+            setSearch(value);
+            // Emptying the box brings every order back without another click.
+            if (!value.trim() && appliedSearch) setAppliedSearch("");
+          }}
           onSubmitSearch={onSubmitSearch}
-          filtersOpen={filtersOpen}
-          onToggleFilters={() => setFiltersOpen((o) => !o)}
           selectedCount={selectedIds.size}
           availableActions={availableActions}
+          noActionsReason={noActionsReason}
+          onRaiseTicket={() => setTicketOrder(selectedOrders[0])}
           onAction={(action) => startAction(action, Array.from(selectedIds), true)}
-          onRefresh={reloadAfterChange}
+          onRefresh={() => {
+            // A real page reload, like the browser's - the cached view is
+            // dropped first so the reload can't paint stale rows from it.
+            invalidateViewCache();
+            window.location.reload();
+          }}
           refreshing={loading}
           sortBy={sortBy}
           onSortChange={setSortBy}
@@ -934,20 +985,6 @@ export default function OrdersPage() {
           </div>
         ) : null}
 
-        {filtersOpen ? (
-          <OrdersFilterPanel
-            filters={filters}
-            onChange={setFilters}
-            couriers={couriers}
-            stores={user?.isDispatchHub ? hubStoreOptions || [] : null}
-            onApply={() => setAppliedFilters(filters)}
-            onClear={() => {
-              setFilters(EMPTY_FILTERS);
-              setAppliedFilters(EMPTY_FILTERS);
-            }}
-          />
-        ) : null}
-
         {selectedIds.size > 0 ? (
           <div className="mb-3 flex items-center justify-between rounded-md border border-brand-200 bg-brand-50 px-4 py-2">
             <span className="text-sm font-medium text-brand-900">
@@ -963,19 +1000,7 @@ export default function OrdersPage() {
                   <Button onClick={() => sendForDispatch(false)}>Send for dispatch</Button>
                 )
               ) : null}
-              {availableActions.slice(0, 4).map((a) => (
-                <Button
-                  key={a.key || a.action}
-                  variant="secondary"
-                  disabled={a.disabled}
-                  onClick={() => startAction(a.action, Array.from(selectedIds), true)}
-                >
-                  {a.label}
-                </Button>
-              ))}
-              {availableActions.length === 0 && !inDispatchHub ? (
-                <span className="text-xs text-brand-700">Mixed statuses - clear selection to act</span>
-              ) : null}
+              {/* Every action is in the toolbar's Actions menu. */}
             </div>
           </div>
         ) : null}
@@ -986,12 +1011,14 @@ export default function OrdersPage() {
           selectedIds={selectedIds}
           onToggleSelect={onToggleSelect}
           onToggleSelectAll={onToggleSelectAll}
-          onRowAction={(action, order) => startAction(action, [order.id])}
           onOpenDetail={setDetailOrderId}
-          onRaiseTicket={setTicketOrder}
           showStoreColumn={Boolean(user?.isDispatchHub)}
           showTransitColumn={activeStatus === CRITICAL_TAB}
           showSubStatusColumn={SUB_STATUS_TABS.has(activeStatus)}
+          onRecreate={(order) => {
+            setRecreateFrom(order);
+            setNewOrderOpen(true);
+          }}
         />
 
         <Pagination
@@ -1006,7 +1033,15 @@ export default function OrdersPage() {
         />
       </div>
 
-      <NewOrderModal open={newOrderOpen} onClose={() => setNewOrderOpen(false)} onCreated={reloadAfterChange} />
+      <NewOrderModal
+        open={newOrderOpen}
+        recreateFrom={recreateFrom}
+        onClose={() => {
+          setNewOrderOpen(false);
+          setRecreateFrom(null);
+        }}
+        onCreated={reloadAfterChange}
+      />
       <ImportOrdersModal
         stores={user?.isDispatchHub ? hubStoreOptions || [] : null}
         open={importOpen}

@@ -17,6 +17,8 @@ class StockItemSerializer(serializers.ModelSerializer):
     # definition shared by every consumer.
     is_negative = serializers.BooleanField(read_only=True)
     is_low = serializers.BooleanField(read_only=True)
+    shopify_linked = serializers.SerializerMethodField()
+    has_pending_shopify_push = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = StockItem
@@ -30,9 +32,29 @@ class StockItemSerializer(serializers.ModelSerializer):
             "reorder_level",
             "is_negative",
             "is_low",
+            "shopify_linked",
+            "has_pending_shopify_push",
+            "pending_shopify_delta",
+            "pending_shopify_name",
+            "previous_shopify_name",
+            "shopify_push_error",
+            "last_pushed_to_shopify_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "updated_at"]
+        # Push-tracking fields are written only by wms.services (adjust/
+        # rename) and the push itself, never directly by a client.
+        read_only_fields = [
+            "id",
+            "pending_shopify_delta",
+            "pending_shopify_name",
+            "previous_shopify_name",
+            "shopify_push_error",
+            "last_pushed_to_shopify_at",
+            "updated_at",
+        ]
+
+    def get_shopify_linked(self, obj):
+        return obj.shopify_inventory_item_id is not None
 
 
 class StockMovementSerializer(serializers.ModelSerializer):

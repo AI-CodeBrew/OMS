@@ -4,7 +4,7 @@ from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
-from django.db import OperationalError, connections
+from django.db import OperationalError, connections, transaction
 from django.db.models import F
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
@@ -342,12 +342,15 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
     context."""
     shopify_order_id = shopify_order["id"]
     customer = shopify_order.get("customer") or {}
+    shipping_address = shopify_order.get("shipping_address") or {}
+    # Orders created from OMS (create_order_on_shopify) carry no customer
+    # record when there's no email - the name is on the address.
     customer_name = (
         " ".join(filter(None, [customer.get("first_name"), customer.get("last_name")])).strip()
+        or (shipping_address.get("name") or "").strip()
         or shopify_order.get("email")
         or "Unknown"
     )
-    shipping_address = shopify_order.get("shipping_address") or {}
     billing_address = shopify_order.get("billing_address") or {}
     # order.phone/customer.phone are frequently null - guest/COD checkouts
     # (the common case here) only carry a contact number on the address,
@@ -417,8 +420,9 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
         "address_line2": _truncate(shipping_address.get("address2"), 255),
         "postal_code": _truncate(shipping_address.get("zip"), 50),
         "country": _truncate(shipping_address.get("country"), 100),
-        "order_source": "Storefront",
+        "order_source": "Manual" if _is_oms_manual(shopify_order) else "Storefront",
         "placed_at": placed_at,
+        "customer_note": shopify_order.get("note") or "",
     }
 
     # The carrier Shopify recorded on the fulfillment ("TCS", "Leopards",
@@ -460,17 +464,36 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
             order.save(update_fields=["status", "delivered_at", "updated_at"])
 
     # Line items can change between webhook deliveries (edited orders) -
-    # full replace is simpler and safer than diffing.
-    OrderItem.all_objects.filter(order=order).delete()
-    for line_item in shopify_order.get("line_items", []):
-        OrderItem.all_objects.create(
-            organization_id=organization_id,
-            order=order,
-            product_name=_truncate(line_item.get("title") or "Item", 255),
-            quantity=line_item.get("quantity") or 1,
-            unit_price=_to_decimal(line_item.get("price")),
-            barcode=_truncate(line_item.get("sku"), 100),
-        )
+    # full replace is simpler and safer than diffing. Done in one
+    # transaction holding the order's row lock: Shopify often sends
+    # orders/create and orders/updated within the same second (or a webhook
+    # lands mid-sync), and two unlocked replaces interleaved their deletes
+    # and inserts, leaving a line item stored twice.
+    # Weights Shopify doesn't send back (an order made in OMS has them from
+    # its form) are carried over to the replacement rows, by SKU + name.
+    with transaction.atomic():
+        Order.all_objects.select_for_update().filter(pk=order.pk).first()
+        old_items = OrderItem.all_objects.filter(order=order)
+        weights = {
+            (item.barcode, item.product_name): item.weight_grams
+            for item in old_items
+            if item.weight_grams
+        }
+        old_items.delete()
+        new_items = []
+        for line_item in shopify_order.get("line_items", []):
+            product_name = _truncate(line_item.get("title") or "Item", 255)
+            barcode = _truncate(line_item.get("sku"), 100)
+            new_items.append(OrderItem(
+                organization_id=organization_id,
+                order=order,
+                product_name=product_name,
+                quantity=line_item.get("quantity") or 1,
+                unit_price=_to_decimal(line_item.get("price")),
+                barcode=barcode,
+                weight_grams=weights.get((barcode, product_name)),
+            ))
+        OrderItem.all_objects.bulk_create(new_items)
 
     publish_event(
         "order.created" if created else "order.updated",
@@ -482,6 +505,137 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
         },
     )
     return order, created
+
+
+# Tag on every order create_order_on_shopify makes, so later webhooks for
+# it still know it was booked by hand in OMS rather than at the checkout.
+_OMS_MANUAL_TAG = "OMS Manual"
+
+
+def _is_oms_manual(shopify_order):
+    tags = [t.strip() for t in (shopify_order.get("tags") or "").split(",")]
+    return _OMS_MANUAL_TAG in tags
+
+
+def create_order_on_shopify(
+    organization_id, *, customer_name, customer_phone, items, extra_fields=None, note="", actor_user_id=None
+):
+    """Manual Order with "Also create on Shopify": creates the order on the
+    connected store first - Shopify gives it the store's next order number -
+    then stores it here through the same upsert the order webhook uses, so
+    it carries shopify_order_id and that webhook (which may well land
+    first) updates this one row instead of making a second. From there it
+    is an ordinary Shopify order: status push, courier booking, and so on.
+
+    Line items whose SKU is a product on Shopify are that product (Shopify
+    takes its stock down, as at checkout); any other is a custom line item.
+    Raises InventorySyncError with Shopify's message if it refuses."""
+    extra = dict(extra_fields or {})
+    connection, args = _connected_shopify(organization_id)
+
+    first_name, _, last_name = customer_name.strip().partition(" ")
+    address = {
+        "first_name": first_name,
+        "last_name": last_name,
+        "name": customer_name.strip(),
+        "address1": extra.get("address_line1", ""),
+        "address2": extra.get("address_line2", ""),
+        "city": extra.get("city", ""),
+        "zip": extra.get("postal_code", ""),
+        "country": "Pakistan",
+        "phone": customer_phone,
+    }
+    prepaid = extra.get("payment_gateway") == "cc"
+    shipping = Decimal(str(extra.get("shipping_amount") or 0))
+    discount = Decimal(str(extra.get("coupon_discount") or 0))
+
+    with shopify_client.wait_out_rate_limits():
+        try:
+            line_items = []
+            for item in items:
+                sku = (item.get("barcode") or "").strip()
+                variant_id = shopify_client.find_variant_id_by_sku(*args, sku) if sku else None
+                line = {"quantity": item["quantity"], "price": str(item["unit_price"])}
+                if variant_id:
+                    line["variant_id"] = variant_id
+                else:
+                    line.update(title=item["product_name"], sku=sku, requires_shipping=True)
+                if item.get("weight_grams"):
+                    line["grams"] = item["weight_grams"]
+                line_items.append(line)
+
+            total = sum(Decimal(str(i["unit_price"])) * i["quantity"] for i in items) + shipping - discount
+            payload = {
+                "line_items": line_items,
+                "shipping_address": address,
+                "billing_address": address,
+                "shipping_lines": [{"title": "Shipping", "code": "Shipping", "price": str(shipping)}],
+                # Phone goes on the address only: a customer record with a
+                # phone that another customer already has is rejected.
+                "email": extra.get("customer_email", ""),
+                "financial_status": "paid" if prepaid else "pending",
+                "inventory_behaviour": "decrement_obeying_policy",
+                "send_receipt": False,
+                "send_fulfillment_receipt": False,
+                "note": note,
+                "tags": _OMS_MANUAL_TAG,
+            }
+            if discount:
+                # Comes back as the order's coupon_discount through
+                # _shopify_money, like a checkout discount would.
+                payload["discount_codes"] = [
+                    {"code": "OMS Discount", "amount": str(discount), "type": "fixed_amount"}
+                ]
+            if prepaid:
+                payload["transactions"] = [{"kind": "sale", "status": "success", "amount": str(total)}]
+            if extra.get("placed_at"):
+                payload["processed_at"] = extra["placed_at"].isoformat()
+            if not payload["email"]:
+                del payload["email"]
+            created = shopify_client.create_order(*args, payload)
+        except shopify_client.ShopifyAPIError as exc:
+            raise InventorySyncError(str(exc)[:500]) from exc
+
+    order, _ = upsert_order_from_shopify(
+        organization_id, created, shop_label=connection.shop_name or connection.shop_domain
+    )
+
+    # What the form knows that Shopify's copy doesn't hold.
+    updates = {}
+    if extra.get("secondary_phone"):
+        updates["secondary_phone"] = extra["secondary_phone"][:50]
+    if updates:
+        Order.all_objects.filter(pk=order.pk).update(**updates)
+    # By SKU first: a product line item comes back under the product's own
+    # title on Shopify, not the name typed in the form.
+    by_sku = {(i.get("barcode") or "").strip(): i.get("weight_grams") for i in items if i.get("barcode")}
+    by_name = {i["product_name"]: i.get("weight_grams") for i in items}
+    for item in OrderItem.all_objects.filter(order=order, weight_grams__isnull=True):
+        weight = (by_sku.get(item.barcode) if item.barcode else None) or by_name.get(item.product_name)
+        if weight:
+            item.weight_grams = weight
+            item.save(update_fields=["weight_grams"])
+    if note:
+        from oms.models import OrderNote
+
+        OrderNote.all_objects.create(organization_id=organization_id, order=order, kind="note", body=note)
+
+    try:
+        from core.rbac import write_audit_log
+
+        write_audit_log(
+            organization_id=organization_id,
+            action="oms.shopify_order_create",
+            summary=f"Created order {order.order_number} on Shopify ({connection.shop_domain})",
+            actor_user_id=actor_user_id,
+            entity_type="order",
+            entity_id=str(order.id),
+            metadata={"shopify_order_id": created.get("id")},
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    order.refresh_from_db()
+    return order
 
 
 # How Smartlane's reported states map onto our pipeline. Anything not
@@ -1687,9 +1841,14 @@ def _upsert_stock_item_from_shopify(organization_id, warehouse, *, shopify_inven
         item.product_name = name
         update_fields.append("product_name")
 
-    delta = quantity - item.quantity
+    # Manual adjustments not yet pushed to Shopify (see
+    # push_stock_changes_to_shopify) aren't in Shopify's count yet - keep
+    # them on top of it, or a sync would silently wipe them from the
+    # on-hand figure while they still wait in the push queue.
+    target = quantity + item.pending_shopify_delta
+    delta = target - item.quantity
     if delta != 0:
-        item.quantity = quantity
+        item.quantity = target
         update_fields.append("quantity")
 
     if update_fields:
@@ -1699,7 +1858,7 @@ def _upsert_stock_item_from_shopify(organization_id, warehouse, *, shopify_inven
             organization_id=organization_id,
             stock_item=item,
             delta=delta,
-            balance_after=quantity,
+            balance_after=target,
             reason="shopify_sync",
             note="Shopify inventory sync",
         )
@@ -1871,3 +2030,416 @@ def sync_stock_items_from_shopify_product_payload(organization_id, payload):
             shopify_inventory_item_id=item_id, sku=meta["sku"], name=meta["name"],
             quantity=quantity_by_item_id.get(item_id, 0),
         )
+
+
+# --- WMS -> Shopify ("Push to Shopify" on the Inventory page) ---
+
+# A claim older than this belongs to a request that died mid-push (worker
+# restart, timeout) - it's released rather than blocking the row forever.
+PUSH_CLAIM_TIMEOUT = timedelta(minutes=5)
+
+
+class PushConflict(Exception):
+    """The confirmed summary no longer matches what would be pushed - rows
+    already being pushed elsewhere, or edited since the popup opened."""
+
+
+def _connected_shopify(organization_id):
+    connection = ShopifyConnection.objects.filter(
+        organization_id=organization_id, is_connected=True
+    ).first()
+    if not connection:
+        raise InventorySyncError("Connect Shopify from the Integrations page first.")
+    return connection, (connection.shop_domain, connection.access_token, settings.SHOPIFY_API_VERSION)
+
+
+def pending_push_queryset(organization_id):
+    """Shopify-linked stock rows with a rename or stock delta waiting for
+    Push to Shopify."""
+    from django.db.models import Q
+
+    from wms.models import StockItem
+
+    return StockItem.all_objects.filter(
+        organization_id=organization_id, shopify_inventory_item_id__isnull=False
+    ).filter(~Q(pending_shopify_delta=0) | ~Q(pending_shopify_name=""))
+
+
+def _shopify_totals(args, inventory_item_ids):
+    """{inventory_item_id: available summed across locations} - the same
+    consolidation sync_inventory_from_shopify uses."""
+    totals = {}
+    for start in range(0, len(inventory_item_ids), 100):
+        for level in shopify_client.fetch_inventory_levels(*args, inventory_item_ids[start : start + 100]):
+            available = level.get("available")
+            if available is not None:
+                item_id = level.get("inventory_item_id")
+                totals[item_id] = totals.get(item_id, 0) + available
+    return totals
+
+
+def pending_shopify_changes(organization_id):
+    """What "Push to Shopify" would send right now, for the confirmation
+    popup. Each row's `expected` is echoed back by the push so it can
+    refuse if anything changed after the user reviewed it. Shopify's live
+    counts are fetched (batched, only for the pending rows) so the stock
+    line shows the real before/after on Shopify; if that fails the summary
+    still renders, just without those numbers."""
+    _connection, args = _connected_shopify(organization_id)
+    items = list(pending_push_queryset(organization_id).order_by("product_name", "sku"))
+
+    live, live_error, totals = True, "", {}
+    stock_ids = [i.shopify_inventory_item_id for i in items if i.pending_shopify_delta]
+    if stock_ids:
+        try:
+            totals = _shopify_totals(args, stock_ids)
+        except Exception as exc:  # noqa: BLE001 - preview still useful without live counts
+            live, live_error = False, str(exc)[:300]
+
+    claim_cutoff = timezone.now() - PUSH_CLAIM_TIMEOUT
+    changes = []
+    for item in items:
+        lines = []
+        if item.pending_shopify_name:
+            lines.append({
+                "type": "title",
+                "label": "Product name changed",
+                "from": item.previous_shopify_name,
+                "to": item.pending_shopify_name,
+            })
+        if item.pending_shopify_delta:
+            before = totals.get(item.shopify_inventory_item_id) if live else None
+            increase = item.pending_shopify_delta > 0
+            lines.append({
+                "type": "stock_increase" if increase else "stock_decrease",
+                "label": "Stock added (manual adjustment)" if increase else "Stock removed (manual adjustment)",
+                "delta": item.pending_shopify_delta,
+                "from": before,
+                "to": before + item.pending_shopify_delta if before is not None else None,
+            })
+        changes.append({
+            "id": str(item.id),
+            "sku": item.sku,
+            "product_name": item.product_name,
+            "wms_quantity": item.quantity,
+            "expected": {"delta": item.pending_shopify_delta, "name": item.pending_shopify_name},
+            "changes": lines,
+            "last_error": item.shopify_push_error,
+            "in_progress": bool(item.shopify_push_started_at and item.shopify_push_started_at > claim_cutoff),
+        })
+    return {"changes": changes, "live": live, "live_error": live_error}
+
+
+def _shopify_title_for(name, context):
+    """WMS names a variant row "<product> - <variant>" (see
+    shopify_client.iter_variant_skus), but on Shopify that's a product
+    title shared by every variant plus the variant's own title - so the
+    product title is only derivable when that suffix is kept."""
+    if context["has_only_default_variant"]:
+        return name
+    suffix = f" - {context['variant_title']}"
+    if name.endswith(suffix) and name[: -len(suffix)].strip():
+        return name[: -len(suffix)].strip()
+    raise shopify_client.ShopifyAPIError(
+        f'This SKU is the "{context["variant_title"]}" variant of a multi-variant product - '
+        f'keep the name ending in "{suffix}" so the product title can be updated'
+    )
+
+
+def _push_one_item(item, args, primary_location_id):
+    """Sends one row's pending rename and/or stock delta. Returns
+    (pushed_name, pushed_delta, lines, errors) - each change succeeds or
+    fails on its own, so a rejected rename doesn't hold back the stock."""
+    name, delta = item.pending_shopify_name, item.pending_shopify_delta
+    pushed_name, pushed_delta, lines, errors = None, 0, [], []
+
+    try:
+        context = shopify_client.fetch_inventory_item_context(*args, item.shopify_inventory_item_id)
+        if context is None:
+            raise shopify_client.ShopifyAPIError("This product no longer exists on Shopify")
+    except Exception as exc:  # noqa: BLE001 - reported per row, kept for retry
+        message = str(exc)[:300]
+        if name:
+            lines.append({"type": "title", "success": False, "error": message})
+        if delta:
+            lines.append({"type": "stock", "success": False, "error": message})
+        return None, 0, lines, [message]
+
+    if name:
+        try:
+            title = _shopify_title_for(name, context)[:255]
+            if title != context["product_title"]:
+                shopify_client.update_product_title(*args, context["product_id"], title)
+            pushed_name = name
+            lines.append({"type": "title", "success": True})
+        except Exception as exc:  # noqa: BLE001
+            message = str(exc)[:300]
+            errors.append(f"Name: {message}")
+            lines.append({"type": "title", "success": False, "error": message})
+
+    if delta:
+        location_ids = [level["location_id"] for level in context["levels"] if level["location_id"]]
+        if primary_location_id in location_ids:
+            location_id = primary_location_id
+        else:
+            location_id = location_ids[0] if location_ids else None
+        try:
+            if location_id is None:
+                raise shopify_client.ShopifyAPIError("Not stocked at any Shopify location")
+            shopify_client.adjust_inventory_level(
+                *args,
+                inventory_item_id=item.shopify_inventory_item_id,
+                location_id=location_id,
+                adjustment=delta,
+            )
+            pushed_delta = delta
+            lines.append({"type": "stock", "success": True})
+        except Exception as exc:  # noqa: BLE001
+            message = str(exc)[:300]
+            errors.append(f"Stock: {message}")
+            lines.append({"type": "stock", "success": False, "error": message})
+
+    return pushed_name, pushed_delta, lines, errors
+
+
+def push_stock_changes_to_shopify(organization_id, expected_changes, *, actor_user_id=None):
+    """One batch of "Push to Shopify". `expected_changes` is
+    [{id, delta, name}] exactly as the confirmation popup showed them
+    (pending_shopify_changes' `expected`); the page sends the confirmed
+    list a few rows at a time, the same way "Push all statuses now" does,
+    so no request runs long against Shopify's ~2 requests/second.
+
+    Rows are claimed up front, so a double click or second tab can't send
+    a delta twice, and the whole batch is refused (PushConflict) if any
+    row changed since it was reviewed. Afterwards only what actually went
+    through is cleared - and by subtracting the pushed delta rather than
+    zeroing it, so an adjustment made while the push was in flight stays
+    pending. Failures keep their pending change for a retry.
+    """
+    from django.db import transaction
+
+    from wms.models import StockItem
+
+    connection, args = _connected_shopify(organization_id)
+    wanted = {}
+    for change in expected_changes:
+        try:
+            wanted[str(change["id"])] = (int(change.get("delta") or 0), str(change.get("name") or ""))
+        except (AttributeError, KeyError, TypeError, ValueError):
+            raise PushConflict("Malformed change list - reopen Push to Shopify and try again.")
+    if not wanted:
+        return {"results": [], "pushed": 0, "failed": 0}
+
+    now = timezone.now()
+    with transaction.atomic():
+        rows = {
+            str(row.id): row
+            for row in StockItem.all_objects.select_for_update().filter(
+                organization_id=organization_id, id__in=list(wanted), shopify_inventory_item_id__isnull=False
+            )
+        }
+        for item_id, (delta, name) in wanted.items():
+            row = rows.get(item_id)
+            if (
+                row is None
+                or not (delta or name)
+                or (row.pending_shopify_delta, row.pending_shopify_name) != (delta, name)
+            ):
+                raise PushConflict("Some changes were edited since you opened the summary - review them again.")
+            if row.shopify_push_started_at and row.shopify_push_started_at > now - PUSH_CLAIM_TIMEOUT:
+                raise PushConflict("These changes are already being pushed - wait for that push to finish.")
+        StockItem.all_objects.filter(id__in=list(rows)).update(shopify_push_started_at=now)
+
+    try:
+        primary_location_id = shopify_client.fetch_shop_info(*args).get("primary_location_id")
+    except Exception:  # noqa: BLE001 - fall back to the item's first stocked location
+        primary_location_id = None
+
+    results, reconcile = [], []
+    with shopify_client.wait_out_rate_limits():
+        for item_id in wanted:
+            item = rows[item_id]
+            try:
+                pushed_name, pushed_delta, lines, errors = _push_one_item(item, args, primary_location_id)
+            except Exception as exc:  # noqa: BLE001 - never leave a row claimed
+                pushed_name, pushed_delta, lines, errors = None, 0, [], [str(exc)[:300]]
+
+            with transaction.atomic():
+                fresh = StockItem.all_objects.select_for_update().get(pk=item.pk)
+                fresh.shopify_push_started_at = None
+                if pushed_name is not None and fresh.pending_shopify_name == pushed_name:
+                    fresh.pending_shopify_name = ""
+                    fresh.previous_shopify_name = ""
+                fresh.pending_shopify_delta -= pushed_delta
+                if pushed_name is not None or pushed_delta:
+                    fresh.last_pushed_to_shopify_at = timezone.now()
+                fresh.shopify_push_error = "; ".join(errors)[:500]
+                fresh.save(update_fields=[
+                    "shopify_push_started_at", "pending_shopify_name", "previous_shopify_name",
+                    "pending_shopify_delta", "last_pushed_to_shopify_at", "shopify_push_error", "updated_at",
+                ])
+            if pushed_delta:
+                reconcile.append(fresh)
+            results.append({
+                "id": item_id,
+                "sku": item.sku,
+                "product_name": item.product_name,
+                "success": not errors,
+                "changes": lines,
+                "errors": errors,
+            })
+
+    # Re-read Shopify's totals for what was just adjusted, so the on-hand
+    # figure here matches Shopify (plus anything still pending) even if an
+    # inventory webhook landed between the adjust and the pending update.
+    if reconcile:
+        try:
+            from wms.services import get_default_warehouse
+
+            warehouse = get_default_warehouse(organization_id)
+            totals = _shopify_totals(args, [i.shopify_inventory_item_id for i in reconcile])
+            for item in reconcile:
+                if warehouse and item.warehouse_id == warehouse.id and item.shopify_inventory_item_id in totals:
+                    _upsert_stock_item_from_shopify(
+                        organization_id, warehouse,
+                        shopify_inventory_item_id=item.shopify_inventory_item_id,
+                        sku=item.sku, name=item.product_name,
+                        quantity=totals[item.shopify_inventory_item_id],
+                    )
+        except Exception:  # noqa: BLE001 - the push itself succeeded; the next sync reconciles
+            logger.exception("Post-push inventory reconcile failed for org %s", organization_id)
+
+    pushed = sum(1 for r in results if r["success"])
+    try:
+        from core.rbac import write_audit_log
+
+        write_audit_log(
+            organization_id=organization_id,
+            action="wms.shopify_push",
+            summary=f"Pushed {pushed} of {len(results)} inventory change(s) to Shopify ({connection.shop_domain})",
+            actor_user_id=actor_user_id,
+            entity_type="stock_item",
+            entity_id="",
+            metadata={"results": [{k: r[k] for k in ("sku", "success", "errors")} for r in results]},
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    return {"results": results, "pushed": pushed, "failed": len(results) - pushed}
+
+
+MAX_PRODUCT_IMAGES = 10
+MAX_PRODUCT_IMAGE_BYTES = 5 * 1024 * 1024
+PRODUCT_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+
+
+def create_stock_item_on_shopify(
+    organization_id, *, sku, name, price, quantity, reorder_level=0, images=(), actor_user_id=None
+):
+    """"Add Stock Item" with "Also create on Shopify": creates an active
+    single-variant product (name, SKU, price, images) on the connected
+    store, then the WMS row linked to it in the default warehouse - the one
+    every Shopify sync writes to.
+
+    The opening quantity goes out the same way Push to Shopify sends stock
+    (queued as a pending delta, then adjusted at the primary location), so
+    if that step fails the product still exists and the row just shows
+    "Push failed" for a retry from the Push button. Returns (item, warning).
+    """
+    from wms.models import StockItem, StockMovement
+    from wms.services import get_default_warehouse
+
+    connection, args = _connected_shopify(organization_id)
+    warehouse = get_default_warehouse(organization_id)
+    if not warehouse:
+        raise InventorySyncError("Set up a warehouse first (WMS page).")
+    if StockItem.all_objects.filter(organization_id=organization_id, sku=sku).exists():
+        raise InventorySyncError(f'SKU "{sku}" is already in your inventory - every product needs its own SKU.')
+    if len(images) > MAX_PRODUCT_IMAGES:
+        raise InventorySyncError(f"Add at most {MAX_PRODUCT_IMAGES} images.")
+    for image in images:
+        if image.content_type not in PRODUCT_IMAGE_TYPES:
+            raise InventorySyncError(f"{image.name}: use a JPG, PNG, WEBP or GIF image.")
+        if image.size > MAX_PRODUCT_IMAGE_BYTES:
+            raise InventorySyncError(f"{image.name} is larger than 5 MB.")
+
+    with shopify_client.wait_out_rate_limits():
+        try:
+            existing = shopify_client.find_variant_by_sku(*args, sku)
+            if existing:
+                raise InventorySyncError(
+                    f'SKU "{sku}" is already used on Shopify by "{existing["product_title"]}" - '
+                    "sync from Shopify instead, or pick another SKU."
+                )
+            sources = [
+                shopify_client.upload_product_image(
+                    *args, filename=image.name, content_type=image.content_type, content=image.read()
+                )
+                for image in images
+            ]
+            created = shopify_client.create_product(*args, title=name, sku=sku, price=price, image_sources=sources)
+        except shopify_client.ShopifyAPIError as exc:
+            raise InventorySyncError(str(exc)[:500]) from exc
+
+        # update_or_create: on live, Shopify's products/create webhook can
+        # land first and create this row at zero.
+        item, _ = StockItem.all_objects.update_or_create(
+            organization_id=organization_id,
+            warehouse=warehouse,
+            shopify_inventory_item_id=created["inventory_item_id"],
+            defaults={
+                "sku": sku,
+                "product_name": name,
+                "reorder_level": reorder_level,
+                "quantity": quantity,
+                "pending_shopify_delta": quantity,
+            },
+        )
+        StockMovement.all_objects.create(
+            organization_id=organization_id,
+            stock_item=item,
+            delta=quantity,
+            balance_after=quantity,
+            reason="initial",
+            note="Opening stock - product created on Shopify",
+            actor_user_id=actor_user_id,
+        )
+
+        warning = ""
+        if quantity:
+            try:
+                location_id = shopify_client.fetch_shop_info(*args).get("primary_location_id")
+                shopify_client.activate_inventory_at_location(
+                    *args, inventory_item_id=created["inventory_item_id"], location_id=location_id
+                )
+                shopify_client.adjust_inventory_level(
+                    *args, inventory_item_id=created["inventory_item_id"], location_id=location_id,
+                    adjustment=quantity,
+                )
+                StockItem.all_objects.filter(pk=item.pk).update(
+                    pending_shopify_delta=F("pending_shopify_delta") - quantity,
+                    last_pushed_to_shopify_at=timezone.now(),
+                    shopify_push_error="",
+                )
+            except Exception as exc:  # noqa: BLE001 - product exists; stock stays queued for Push
+                warning = (
+                    "The product was created on Shopify, but its opening stock couldn't be set "
+                    f"({str(exc)[:200]}). Use Push to Shopify to retry."
+                )
+                StockItem.all_objects.filter(pk=item.pk).update(shopify_push_error=f"Stock: {str(exc)[:480]}")
+        item.refresh_from_db()
+
+    try:
+        from core.rbac import write_audit_log
+
+        write_audit_log(
+            organization_id=organization_id,
+            action="wms.shopify_product_create",
+            summary=f'Created "{name}" ({sku}) on Shopify ({connection.shop_domain}) with {quantity} in stock',
+            actor_user_id=actor_user_id,
+            entity_type="stock_item",
+            entity_id=str(item.id),
+            metadata={"sku": sku, "price": str(price), "images": len(images), "product_id": created["product_id"]},
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    return item, warning

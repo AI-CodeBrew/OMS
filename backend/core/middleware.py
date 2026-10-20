@@ -8,6 +8,7 @@ from .context import (
     current_is_super_admin,
     current_organization_id,
     current_organization_ids,
+    current_request_meta,
     current_user_id,
 )
 from .jwt_utils import InvalidSupabaseToken, decode_supabase_jwt
@@ -192,33 +193,100 @@ class TenantMiddleware:
         admin_token = current_is_super_admin.set(
             request.is_super_admin and not request.acting_as_org
         )
+        request_meta = self._request_meta(request)
+        meta_token = current_request_meta.set(request_meta)
+        audit = self._should_audit(request)
+        body = None
+        if audit:
+            from .activity_log_service import capture_body
+
+            body = capture_body(request)
         try:
             response = self.get_response(request)
-            if request.acting_as_org and request.method in MUTATING_METHODS:
-                self._audit_acting_request(request, response)
+            if audit and not request_meta.get("audited"):
+                self._audit_request(request, response, body)
             return response
         finally:
             current_organization_id.reset(org_token)
             current_organization_ids.reset(orgs_token)
             current_user_id.reset(user_token)
             current_is_super_admin.reset(admin_token)
+            current_request_meta.reset(meta_token)
 
     @staticmethod
-    def _audit_acting_request(request, response):
-        from .rbac import write_audit_log
+    def _request_meta(request):
+        from .models import OrganizationAuditLog as Log
 
-        org_ids = request.organization_ids or (
-            [request.organization_id] if request.organization_id else []
+        if request.is_super_admin:
+            role = Log.ROLE_SUPER_ADMIN
+        elif request.is_org_admin:
+            role = Log.ROLE_STORE_ADMIN
+        elif request.user_id:
+            role = Log.ROLE_STORE_USER
+        else:
+            role = Log.ROLE_SYSTEM  # webhooks - Shopify, couriers
+        return {
+            "user_id": request.user_id,
+            "email": request.auth_email or "",
+            "role": role,
+            "ip": get_client_ip(request),
+            "user_agent": request.META.get("HTTP_USER_AGENT", ""),
+            "method": request.method,
+            "path": request.path,
+            "audited": False,
+        }
+
+    @staticmethod
+    def _should_audit(request):
+        from .activity_log_service import SKIP_PATHS
+
+        return (
+            request.method in MUTATING_METHODS
+            and bool(request.user_id)
+            and request.path.startswith("/api/")
+            and not request.path.startswith(SKIP_PATHS)
         )
-        for org_id in org_ids:
-            try:
-                write_audit_log(
+
+    @staticmethod
+    def _audit_request(request, response, body):
+        """One row per store the request touched, for a create/edit/delete
+        no service wrote its own audit row for. A super admin's admin-panel
+        request lands on the store it names, or on no store at all."""
+        from .activity_log_service import category_for, describe_request, sanitize_body
+        from .models import Organization, OrganizationAuditLog
+
+        try:
+            action, summary, entity_type, entity_id = describe_request(request, body)
+            if request.organization_ids:
+                org_ids = request.organization_ids
+            elif request.organization_id:
+                org_ids = [request.organization_id]
+            elif entity_type == "organization" and Organization.objects.filter(id=entity_id).exists():
+                org_ids = [entity_id]
+            else:
+                org_ids = [None]
+            status_code = getattr(response, "status_code", None)
+            meta = current_request_meta.get() or {}
+            metadata = {"body": sanitize_body(body)} if body is not None else {}
+            if request.organization_ids:
+                metadata["dispatch_hub"] = True
+            for org_id in org_ids:
+                OrganizationAuditLog.all_objects.create(
                     organization_id=org_id,
-                    action="super_admin_action",
-                    summary=f"Super admin: {request.method} {request.path}",
                     actor_user_id=request.user_id,
-                    actor_email=request.auth_email,
-                    metadata={"status": getattr(response, "status_code", None)},
+                    actor_email=(request.auth_email or "")[:255],
+                    actor_role=meta.get("role", ""),
+                    action=action,
+                    category=category_for(action, request.path),
+                    entity_type=entity_type[:64],
+                    entity_id=entity_id[:64],
+                    summary=summary[:500],
+                    metadata=metadata,
+                    ip_address=meta.get("ip", "")[:64],
+                    user_agent=meta.get("user_agent", "")[:300],
+                    request_method=request.method,
+                    request_path=request.path[:255],
+                    status_code=status_code,
                 )
-            except Exception:
-                logger.exception("Failed to write super-admin audit log")
+        except Exception:
+            logger.exception("Failed to write request audit log for %s %s", request.method, request.path)

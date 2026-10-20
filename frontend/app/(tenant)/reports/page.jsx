@@ -40,7 +40,7 @@ const ORDER_TILES = [
   { key: "total_orders", label: "Total Orders" },
   { key: "new", label: "New" },
   { key: "pending", label: "Pending" },
-  { key: "awaiting_assigning", label: "Awaiting Assigning" },
+  { key: "awaiting_assigning", label: "Assigning Courier" },
   { key: "ready_to_print", label: "Ready to Print" },
   { key: "dispatched", label: "Dispatched" },
   { key: "delivered", label: "Delivered", tone: "green" },

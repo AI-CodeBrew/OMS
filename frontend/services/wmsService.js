@@ -86,10 +86,42 @@ class WmsService {
     });
   }
 
-  async adjustStock(id, { delta, note = "" }) {
+  // delta and/or product_name - omit either to leave it unchanged.
+  async adjustStock(id, { delta, note = "", product_name } = {}) {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.stockAdjust(id)}`, {
       method: "POST",
-      body: JSON.stringify({ delta, note }),
+      body: JSON.stringify({ delta, note, product_name }),
+    });
+  }
+
+  // Push to Shopify: the confirmation summary, then the confirmed
+  // changes sent back in small batches (each row's `expected` values).
+  async shopifyPendingChanges() {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.stockShopifyPending}`);
+  }
+
+  // Multipart (images), so the JSON Content-Type from getAuthHeaders is
+  // dropped and the browser sets the multipart boundary itself.
+  async createStockItemOnShopify({ sku, product_name, price, quantity, reorder_level = 0, images = [] }) {
+    const body = new FormData();
+    body.append("sku", sku);
+    body.append("product_name", product_name);
+    body.append("price", price);
+    body.append("quantity", quantity);
+    body.append("reorder_level", reorder_level);
+    images.forEach((file) => body.append("images", file));
+    const { "Content-Type": _json, ...headers } = authService.getAuthHeaders();
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.stockCreateOnShopify}`, {
+      method: "POST",
+      headers,
+      body,
+    });
+  }
+
+  async pushChangesToShopify(changes) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.stockPushShopify}`, {
+      method: "POST",
+      body: JSON.stringify({ changes }),
     });
   }
 

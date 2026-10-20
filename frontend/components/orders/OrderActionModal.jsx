@@ -28,9 +28,9 @@ const CONFIRM_BY_ACTION = {
   acknowledge: {
     title: "Start processing",
     button: "Start Processing",
-    result: "move to Awaiting Assigning",
+    result: "move to Assigning Courier",
   },
-  confirm: { title: "Confirm order(s)", button: "Confirm", result: "move to Awaiting Assigning" },
+  confirm: { title: "Confirm order(s)", button: "Confirm", result: "move to Assigning Courier" },
   approve: { title: "Approve order(s)", button: "Approve", result: "move to Approved" },
   dispatch: { title: "Dispatch order(s)", button: "Dispatch", result: "be marked Dispatched" },
   cancel_fulfillment: {
@@ -42,7 +42,7 @@ const CONFIRM_BY_ACTION = {
     title: "Not booked - retry",
     button: "Retry",
     result:
-      "be checked with Smartlane, and go back to Awaiting Assigning if the booking doesn't exist there",
+      "be checked with Smartlane, and go back to Assigning Courier if the booking doesn't exist there",
   },
   mark_ready_to_pick: { title: "Ready to Pick", button: "Ready to Pick", result: "move to Ready to Pick" },
   queue_for_dispatch: {

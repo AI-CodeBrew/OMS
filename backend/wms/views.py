@@ -1,5 +1,6 @@
 import csv
 
+from django.db import transaction
 from django.db.models import Count, F, Q, Sum
 from django.db.models.functions import TruncDate
 from django.http import StreamingHttpResponse
@@ -11,6 +12,8 @@ from rest_framework.response import Response
 
 from core.permissions import RequireModule
 from core.scoping import org_filter
+from integrations.models import ShopifyConnection
+from integrations.services import pending_push_queryset
 from oms import services as oms_services
 from oms.models import Order
 
@@ -107,6 +110,10 @@ class StockItemViewSet(viewsets.ModelViewSet):
                 "units_dispatched": abs(dispatched),
                 "units_restocked": restocked,
                 "manual_adjustments": movements.filter(reason="manual_adjustment").count(),
+                "pending_shopify_count": pending_push_queryset(request.organization_id).count(),
+                "shopify_connected": ShopifyConnection.objects.filter(
+                    organization_id=request.organization_id, is_connected=True
+                ).exists(),
             }
         )
 
@@ -171,25 +178,150 @@ class StockItemViewSet(viewsets.ModelViewSet):
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
         return Response(result)
 
+    @action(detail=False, methods=["get"], url_path="shopify-pending")
+    def shopify_pending(self, request):
+        """The confirmation summary for Push to Shopify - every rename and
+        stock adjustment that hasn't reached Shopify yet."""
+        from integrations.services import InventorySyncError, pending_shopify_changes
+
+        try:
+            return Response(pending_shopify_changes(request.organization_id))
+        except InventorySyncError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=False, methods=["post"], url_path="create-on-shopify")
+    def create_on_shopify(self, request):
+        """Add Stock Item with "Also create on Shopify" - multipart, so
+        product images can come along. Name, SKU, price and quantity are
+        required; images are optional."""
+        from decimal import Decimal, InvalidOperation
+
+        from integrations.services import InventorySyncError, create_stock_item_on_shopify
+
+        data = request.data
+        sku = (data.get("sku") or "").strip()
+        name = (data.get("product_name") or "").strip()
+        if not sku or not name:
+            return Response({"detail": "Product name and SKU are required"}, status=status.HTTP_400_BAD_REQUEST)
+        if len(sku) > 100 or len(name) > 255:
+            return Response({"detail": "SKU or product name is too long"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            price = Decimal(str(data.get("price") or "")).quantize(Decimal("0.01"))
+        except InvalidOperation:
+            return Response({"detail": "Enter a valid price"}, status=status.HTTP_400_BAD_REQUEST)
+        if price <= 0:
+            return Response({"detail": "Price must be more than zero"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            quantity = int(data.get("quantity"))
+            reorder_level = int(data.get("reorder_level") or 0)
+        except (TypeError, ValueError):
+            return Response({"detail": "Quantity must be a whole number"}, status=status.HTTP_400_BAD_REQUEST)
+        if quantity < 0 or reorder_level < 0:
+            return Response({"detail": "Quantity cannot be negative"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            item, warning = create_stock_item_on_shopify(
+                request.organization_id,
+                sku=sku,
+                name=name,
+                price=price,
+                quantity=quantity,
+                reorder_level=reorder_level,
+                images=request.FILES.getlist("images"),
+                actor_user_id=request.user_id,
+            )
+        except InventorySyncError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            {"item": self.get_serializer(item).data, "warning": warning},
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=False, methods=["post"], url_path="push-shopify")
+    def push_shopify(self, request):
+        """Sends one batch of confirmed changes (the summary's `expected`
+        values, as {id, delta, name}) - the opposite direction to
+        sync-shopify above, which only ever imports."""
+        from integrations.services import (
+            InventorySyncError,
+            PushConflict,
+            push_stock_changes_to_shopify,
+        )
+
+        changes = request.data.get("changes")
+        if not isinstance(changes, list) or not changes:
+            return Response({"detail": "changes is required"}, status=status.HTTP_400_BAD_REQUEST)
+        if len(changes) > 25:
+            return Response(
+                {"detail": "Send at most 25 changes per request"}, status=status.HTTP_400_BAD_REQUEST
+            )
+        try:
+            result = push_stock_changes_to_shopify(
+                request.organization_id, changes, actor_user_id=request.user_id
+            )
+        except InventorySyncError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except PushConflict as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+        return Response(result)
+
     @action(detail=True, methods=["post"])
     def adjust(self, request, pk=None):
+        """Stock delta and/or a product rename from the Adjust popup - at
+        least one is required. Both are saved together or not at all."""
         stock_item = self.get_object()
-        try:
-            delta = int(request.data.get("delta"))
-        except (TypeError, ValueError):
-            return Response(
-                {"detail": "delta must be a whole number"}, status=status.HTTP_400_BAD_REQUEST
-            )
-        if delta == 0:
-            return Response({"detail": "delta cannot be zero"}, status=status.HTTP_400_BAD_REQUEST)
 
-        services.adjust_stock(
-            organization_id=request.organization_id,
-            stock_item=stock_item,
-            delta=delta,
-            actor_user_id=request.user_id,
-            note=(request.data.get("note") or "")[:255],
-        )
+        raw_delta = request.data.get("delta")
+        delta = None
+        if raw_delta not in (None, ""):
+            try:
+                delta = int(raw_delta)
+            except (TypeError, ValueError):
+                return Response(
+                    {"detail": "delta must be a whole number"}, status=status.HTTP_400_BAD_REQUEST
+                )
+            if delta == 0:
+                return Response({"detail": "delta cannot be zero"}, status=status.HTTP_400_BAD_REQUEST)
+
+        product_name = request.data.get("product_name")
+        if product_name is not None:
+            product_name = str(product_name).strip()
+            if not product_name:
+                return Response(
+                    {"detail": "Product name cannot be blank"}, status=status.HTTP_400_BAD_REQUEST
+                )
+            if len(product_name) > 255:
+                return Response(
+                    {"detail": "Product name is too long (255 characters max)"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if product_name == stock_item.product_name:
+                product_name = None
+
+        if delta is None and product_name is None:
+            return Response(
+                {"detail": "Enter a quantity or change the product name"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            if product_name is not None:
+                services.rename_stock_item(
+                    organization_id=request.organization_id,
+                    stock_item=stock_item,
+                    product_name=product_name,
+                    actor_user_id=request.user_id,
+                )
+                stock_item.refresh_from_db()
+            if delta is not None:
+                services.adjust_stock(
+                    organization_id=request.organization_id,
+                    stock_item=stock_item,
+                    delta=delta,
+                    actor_user_id=request.user_id,
+                    note=(request.data.get("note") or "")[:255],
+                )
+        stock_item.refresh_from_db()
         return Response(self.get_serializer(stock_item).data)
 
 

@@ -2,6 +2,7 @@ import uuid
 
 from django.db import models
 from django.db.models.expressions import RawSQL
+from django.utils import timezone
 
 from core.models import TenantScopedModel
 
@@ -50,8 +51,8 @@ class Order(TenantScopedModel):
         ("pending_cc", "Pending CC"),
         ("pending_cod", "Pending COD"),
         ("city_issue", "City Issue"),
-        ("awaiting_assigning", "Awaiting Assigning"),
-        ("awaiting_approval", "Awaiting Approval"),
+        ("awaiting_assigning", "Assigning Courier"),
+        ("awaiting_approval", "Awaiting Confirmation"),
         ("approved", "Approved"),
         # Reached from awaiting_assigning when a courier booking is pushed
         # to Smartlane (see services.push_order_to_smartlane) - parallel
@@ -60,7 +61,7 @@ class Order(TenantScopedModel):
         # number synchronously (see smartlane_client.create_booking) - it
         # only arrives later via /track polling or the webhook - so an
         # order sits here, with no tracking_number yet, until one does.
-        ("booking_pending", "Booking Pending"),
+        ("booking_pending", "Awaiting Booking"),
         ("ready_to_print", "Ready to Print"),
         ("ready_to_pick", "Ready to Pick"),
         ("dispatch_issue", "Dispatch Issue"),
@@ -164,6 +165,15 @@ class Order(TenantScopedModel):
     smartlane_checked_at = models.DateTimeField(null=True, blank=True)
     issue_note = models.CharField(max_length=255, blank=True, default="")
     return_reason = models.CharField(max_length=255, blank=True, default="")
+    # The note the customer left at checkout (Shopify's order `note`),
+    # refreshed on every Shopify sync. Distinct from issue_note, which is
+    # our own team's.
+    customer_note = models.TextField(blank=True, default="", db_default="")
+    # When this order first got a tracking number - the courier booking
+    # actually landing, whichever path set it (direct booking, Smartlane's
+    # late consignment number, Shopify's fulfillment, a sheet import). Set
+    # in save() below, never cleared.
+    booked_at = models.DateTimeField(null=True, blank=True)
 
     # When the order was actually placed (Shopify's order created_at for
     # synced orders). Distinct from `created_at` (TenantScopedModel's
@@ -308,6 +318,17 @@ class Order(TenantScopedModel):
 
     def __str__(self):
         return self.order_number
+
+    def save(self, *args, **kwargs):
+        # Stamped here rather than at each booking call site - a tracking
+        # number arrives through a dozen paths, and every one saves the
+        # order. A save limited to update_fields gets booked_at added to it.
+        if self.tracking_number and not self.booked_at:
+            self.booked_at = timezone.now()
+            update_fields = kwargs.get("update_fields")
+            if update_fields is not None:
+                kwargs["update_fields"] = {*update_fields, "booked_at"}
+        super().save(*args, **kwargs)
 
     @property
     def grand_total(self):
