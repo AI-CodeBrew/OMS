@@ -40,6 +40,11 @@ const NAV = [
     match: (path) => path.startsWith("/admin/oms-courier") || path.startsWith("/admin/smartlane"),
   },
   {
+    href: "/admin/logs",
+    label: "Logs",
+    match: (path) => path.startsWith("/admin/logs"),
+  },
+  {
     href: "/admin/tickets",
     label: "Tickets",
     match: (path) => path.startsWith("/admin/tickets"),
@@ -52,6 +57,11 @@ const PLATFORM_ACCOUNT_PAGES = ["barq-raftar", "postex", "smartlane"].map(
 
 function isPlatformAccountPage(path) {
   return PLATFORM_ACCOUNT_PAGES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
+}
+
+// Pages that need more than the panel's usual reading width.
+function isWidePage(path) {
+  return isPlatformAccountPage(path) || path.startsWith("/admin/logs");
 }
 
 function SuperAdminShell({ children }) {
@@ -118,7 +128,7 @@ function SuperAdminShell({ children }) {
             were built for. */}
         <div
           className={`mx-auto px-6 py-8 ${
-            isPlatformAccountPage(pathname) ? "max-w-7xl" : "max-w-5xl"
+            isWidePage(pathname) ? "max-w-7xl" : "max-w-5xl"
           }`}
         >
           {children}

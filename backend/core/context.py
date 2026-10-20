@@ -14,6 +14,15 @@ current_is_super_admin = contextvars.ContextVar("current_is_super_admin", defaul
 # rather than a single org. None (not an empty list) when not in hub mode.
 current_organization_ids = contextvars.ContextVar("current_organization_ids", default=None)
 
+# Who is behind the current request and where it came from - set by
+# TenantMiddleware, read by rbac.write_audit_log so every audit row knows
+# its actor, role, IP and device without each call site passing them.
+# A dict (mutable on purpose): write_audit_log flips "audited" so the
+# middleware knows not to add its own generic row for the same request.
+# None outside a request (pollers, management commands) - those rows are
+# written as "system".
+current_request_meta = contextvars.ContextVar("current_request_meta", default=None)
+
 
 @contextmanager
 def tenant_context(organization_id):

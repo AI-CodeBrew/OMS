@@ -35,6 +35,12 @@ urlpatterns = [
         admin_views.dispatch_hub_store_detail,
         name="admin-dispatch-hub-store-detail",
     ),
+    path("admin/activity-logs/", admin_views.activity_logs, name="admin-activity-logs"),
+    path(
+        "admin/activity-logs/summary/",
+        admin_views.activity_logs_summary,
+        name="admin-activity-logs-summary",
+    ),
     # Lives in the integrations app but is mounted here on purpose: the
     # /api/core/admin/ prefix is what AdminIPAllowlistMiddleware matches.
     path("admin/smartlane/", include("integrations.admin_urls")),
