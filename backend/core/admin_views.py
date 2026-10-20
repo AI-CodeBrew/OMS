@@ -149,11 +149,3 @@ def activity_logs(request):
     """Every store's activity log, newest first - see
     activity_log_service.list_activity for the filters."""
     return Response({"success": True, **activity_log_service.list_activity(request.query_params)})
-
-
-@api_view(["GET"])
-@permission_classes([IsSuperAdmin])
-def activity_logs_summary(request):
-    """Per-store and per-category counts for the Logs tab's store list and
-    filter chips - same filters as activity_logs."""
-    return Response({"success": True, **activity_log_service.activity_summary(request.query_params)})

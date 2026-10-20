@@ -49,13 +49,14 @@ class TeamService {
     });
   }
 
-  listAuditLogs({ from, to, page = 1, pageSize = 50 } = {}) {
-    const params = new URLSearchParams();
-    if (from) params.set("from", from);
-    if (to) params.set("to", to);
-    if (page) params.set("page", String(page));
-    if (pageSize) params.set("page_size", String(pageSize));
-    const qs = params.toString();
+  // This store's Logs. params: {from, to, q, entity_type, entity_id,
+  // order, page, page_size} - same as the super admin's activity logs.
+  listAuditLogs(params = {}) {
+    const search = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== "") search.set(key, String(value));
+    });
+    const qs = search.toString();
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.auditLogs}${qs ? `?${qs}` : ""}`);
   }
 }

@@ -1,7 +1,7 @@
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 
-from . import team_service
+from . import activity_log_service, team_service
 from .permissions import IsOrgAdmin
 from .team_service import TeamAdminError
 
@@ -77,11 +77,13 @@ def team_member_detail(request, user_id):
 @api_view(["GET"])
 @permission_classes([IsOrgAdmin])
 def audit_logs(request):
-    data = team_service.list_audit_logs(
-        organization_id=request.organization_id,
-        date_from=request.query_params.get("from") or request.query_params.get("date_from"),
-        date_to=request.query_params.get("to") or request.query_params.get("date_to"),
-        page=request.query_params.get("page") or 1,
-        page_size=request.query_params.get("page_size") or 50,
-    )
-    return Response({"success": True, **data})
+    """The store's own Logs tab - same rows and filters as the super
+    admin's (activity_log_service.list_activity), locked to this store."""
+    if not request.organization_id:
+        return Response({"success": True, "count": 0, "page": 1, "page_size": 50, "results": []})
+    params = {
+        key: request.query_params.get(key)
+        for key in ("from", "to", "q", "entity_type", "entity_id", "order", "page", "page_size")
+    }
+    params["organization"] = request.organization_id
+    return Response({"success": True, **activity_log_service.list_activity(params)})

@@ -27,7 +27,7 @@ from django.db.models import F
 from django.db.utils import OperationalError
 from django.utils import timezone
 
-from core.context import tenant_context
+from core.context import audit_source, tenant_context
 from core.events import publish_event
 from core.platform_service import (
     is_platform_organization,
@@ -931,6 +931,7 @@ def _advance_to_dispatch_substate(order, target, tracking_number=""):
     return True
 
 
+@audit_source("BarqRaftar")
 def apply_barqraftar_status(order, shipment, status_code, *, tracking_number="", actor_user_id=None):
     """Applies one BarqRaftar status id to one order - shared by the
     webhook and the poller (via _apply_fetched_status below) so a status

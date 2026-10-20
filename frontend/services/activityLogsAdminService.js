@@ -24,17 +24,10 @@ async function request(url) {
 }
 
 class ActivityLogsAdminService {
-  // Cross-org. params: {organization (id or "platform"), actor, category,
-  // outcome, q, from, to, order ("asc" for playback), page, page_size}.
+  // Cross-org. params: {organization (store id, or "platform"), q, from,
+  // to, entity_type + entity_id (one order's history), order ("asc"), page, page_size}.
   list(params = {}) {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.activityLogs}${buildQuery(params)}`);
-  }
-
-  // Same filters - totals, per-day counts, per-store counts, top people.
-  summary(params = {}) {
-    return request(
-      `${apiConfig.baseUrl}${API_ENDPOINTS.admin.activityLogsSummary}${buildQuery(params)}`
-    );
   }
 }
 

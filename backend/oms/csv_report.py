@@ -1,43 +1,7 @@
 """Lookups behind the "All" orders CSV (OrderViewSet.export) that aren't a
-plain Order field: the store owner's name, what the courier reported
-(weight, proof of delivery), and the order's latest log line."""
-import logging
+plain Order field: what the courier reported (weight, proof of delivery)
+and the order's latest log line."""
 import re
-from concurrent.futures import ThreadPoolExecutor
-
-from core import supabase_admin
-from core.models import Membership
-
-logger = logging.getLogger(__name__)
-
-
-def client_names(organization_ids):
-    """{organization_id: owner name} - the store's first org admin, as
-    Supabase Auth knows them (Django keeps no user names). Their full name
-    when they set one, else their email. One Auth call per store, not per
-    order; a failed lookup just leaves that store's cell blank."""
-    owners = {}
-    for membership in (
-        Membership.objects.filter(organization_id__in=organization_ids, role="org_admin")
-        .order_by("created_at")
-    ):
-        owners.setdefault(membership.organization_id, membership.user_id)
-    if not owners:
-        return {}
-
-    def fetch(item):
-        organization_id, user_id = item
-        try:
-            user = supabase_admin.get_user(user_id) or {}
-        except Exception:  # noqa: BLE001 - a missing name must not fail the export
-            logger.warning("csv export: no owner name for org %s", organization_id)
-            return organization_id, ""
-        meta = user.get("user_metadata") or {}
-        name = meta.get("full_name") or meta.get("name") or user.get("email") or ""
-        return organization_id, name
-
-    with ThreadPoolExecutor(max_workers=min(8, len(owners))) as pool:
-        return dict(pool.map(fetch, owners.items()))
 
 
 def _latest_shipment(order):

@@ -9,7 +9,7 @@ from django.db.models import F
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
-from core.context import tenant_context
+from core.context import audit_source, tenant_context
 from core.events import publish_event
 from core.platform_service import is_platform_organization
 from oms.models import Courier, Order, OrderItem
@@ -333,6 +333,7 @@ def _shopify_payment(shopify_order, money):
     }
 
 
+@audit_source("Shopify")
 def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
     """Create or update an oms.Order from a Shopify order payload (webhook
     or REST sync - same shape either way). Runs outside normal
@@ -436,12 +437,22 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
         )
         shopify_fields["courier_id"] = courier.id
 
+    # A fulfillment with no tracking number (or none at all - e.g. a store
+    # whose token can't create fulfillments, so OMS's tracking never reaches
+    # Shopify) must not erase the one OMS booked: our own status-tag push
+    # fires orders/updated, which used to blank it on every booked order.
+    update_fields = dict(shopify_fields)
+    if not update_fields["tracking_number"]:
+        del update_fields["tracking_number"]
+
     order, created = Order.all_objects.update_or_create(
         organization_id=organization_id,
         shopify_order_id=shopify_order_id,
-        defaults=shopify_fields,
+        defaults=update_fields,
         create_defaults={**shopify_fields, "status": pipeline_status},
     )
+
+    previous_status = order.status
 
     # Outcomes Shopify genuinely knows better than our pipeline does -
     # applied on update too, but only ever moving an order forward, never
@@ -463,6 +474,29 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
             order.delivered_at = order.delivered_at or timezone.now()
             order.save(update_fields=["status", "delivered_at", "updated_at"])
 
+    # Part of the order's history on the Logs tabs - attributed to Shopify
+    # by @audit_source.
+    if created or order.status != previous_status:
+        from core.rbac import write_audit_log
+
+        labels = dict(Order.STATUS_CHOICES)
+        try:
+            write_audit_log(
+                organization_id=organization_id,
+                action="order.received" if created else "order.status_change",
+                summary=(
+                    f"Order {order.order_number} received from Shopify"
+                    if created
+                    else f"Order {order.order_number}: {labels.get(previous_status, previous_status)}"
+                    f" → {labels.get(order.status, order.status)}"
+                ),
+                entity_type="order",
+                entity_id=str(order.id),
+                metadata={"order_number": order.order_number, "to_status": order.status},
+            )
+        except Exception:
+            logger.warning("audit log for Shopify order %s failed", order.order_number, exc_info=True)
+
     # Line items can change between webhook deliveries (edited orders) -
     # full replace is simpler and safer than diffing. Done in one
     # transaction holding the order's row lock: Shopify often sends
@@ -482,7 +516,15 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
         old_items.delete()
         new_items = []
         for line_item in shopify_order.get("line_items", []):
-            product_name = _truncate(line_item.get("title") or "Item", 255)
+            title = line_item.get("title") or "Item"
+            # The variant is part of what was bought - "Pack of 2" x1 is two
+            # units in the parcel - so it goes into the name every screen,
+            # waybill and courier booking prints. Same "Title - Variant"
+            # shape as WMS stock items (sync_stock_items_from_shopify_product_payload).
+            variant = (line_item.get("variant_title") or "").strip()
+            product_name = _truncate(
+                f"{title} - {variant}" if variant and variant != "Default Title" else title, 255
+            )
             barcode = _truncate(line_item.get("sku"), 100)
             new_items.append(OrderItem(
                 organization_id=organization_id,
@@ -491,7 +533,9 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
                 quantity=line_item.get("quantity") or 1,
                 unit_price=_to_decimal(line_item.get("price")),
                 barcode=barcode,
-                weight_grams=weights.get((barcode, product_name)),
+                # Rows saved before variants were in the name are keyed
+                # by the bare title.
+                weight_grams=weights.get((barcode, product_name)) or weights.get((barcode, title[:255])),
             ))
         OrderItem.all_objects.bulk_create(new_items)
 
@@ -862,6 +906,7 @@ def _advance_to_dispatch_substate(order, target, tracking_number=""):
     return True
 
 
+@audit_source("Smartlane")
 def apply_smartlane_status(order, smartlane_status, *, tracking_number="", organization_id, row=None):
     """Applies one Smartlane status to one order. Shared by the webhook and
     the poller so a status seen either way can never produce a different
