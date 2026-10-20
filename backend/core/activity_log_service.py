@@ -18,12 +18,12 @@ import json
 import re
 from datetime import datetime, time
 
-from django.db.models import Count, Max, Q
+from django.db.models import Q
 from django.urls import Resolver404, resolve
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 
-from .models import Organization, OrganizationAuditLog
+from .models import OrganizationAuditLog
 
 CATEGORIES = ["orders", "wms", "integrations", "team", "finance", "support", "store", "other"]
 
@@ -275,6 +275,15 @@ def describe_request(request, body):
             summary = f"Bulk {str(body['action']).replace('_', ' ')} on orders"
         elif url_name == "order-detail" and body.get("status"):
             summary = f"{summary} - status set to {body['status']}"
+        elif request.method in ("PATCH", "PUT") and entity_id:
+            # "Edited order #1042: phone, address line1" - what changed.
+            fields = [
+                str(k).replace("_", " ")
+                for k in body
+                if not str(k).endswith("id") and not _SECRET_KEY.search(str(k))
+            ]
+            if fields:
+                summary = f"{summary}: {', '.join(fields[:6])}{' …' if len(fields) > 6 else ''}"
         elif url_name == "admin-organization-detail" and body.get("confirm_name"):
             # The org (and its own log) is gone by now - keep its name here.
             summary = f"{summary} {body['confirm_name']}"
@@ -319,6 +328,12 @@ def _filtered(params):
     if category:
         qs = qs.filter(category=category)
 
+    # One record's whole history - e.g. every log of one order.
+    if params.get("entity_id"):
+        qs = qs.filter(entity_id=params["entity_id"])
+        if params.get("entity_type"):
+            qs = qs.filter(entity_type=params["entity_type"])
+
     outcome = params.get("outcome") or ""
     if outcome == "failed":
         qs = qs.filter(status_code__gte=400)
@@ -345,8 +360,20 @@ def _filtered(params):
     return qs
 
 
+def actor_display(r):
+    """Who made the change, as the Logs tabs print it: the courier or
+    Shopify when one of them did, else the person's email."""
+    via = (r.metadata or {}).get("via")
+    if via:
+        return via
+    if r.actor_email:
+        return r.actor_email
+    return "System"
+
+
 def _row(r):
     return {
+        "actor": actor_display(r),
         "id": str(r.id),
         "organization_id": str(r.organization_id) if r.organization_id else None,
         "organization_name": r.organization.name if r.organization_id else "FynkTech panel",
@@ -372,8 +399,8 @@ def _row(r):
 def list_activity(params):
     """params: organization (uuid or "platform"), actor (store|store_admin|
     store_user|super_admin|system), category, outcome (ok|failed), q,
-    from, to, order (desc|asc - asc is what playback reads), page,
-    page_size (max 500)."""
+    from, to, entity_type + entity_id (one record's history), order
+    (desc|asc - asc for a history), page, page_size (max 500)."""
     qs = _filtered(params).select_related("organization")
     qs = qs.order_by("created_at" if params.get("order") == "asc" else "-created_at")
     try:
@@ -388,47 +415,4 @@ def list_activity(params):
         "page": page,
         "page_size": page_size,
         "results": [_row(r) for r in qs[start : start + page_size]],
-    }
-
-
-def activity_summary(params):
-    """Per-store and per-category counts for the Logs tab's store list and
-    category chips - same filters as list_activity (store excepted for the
-    per-store list, so the sidebar always shows every store)."""
-    qs = _filtered(params)
-    without_store = _filtered({**params, "organization": ""})
-
-    per_store = {
-        row["organization_id"]: row
-        for row in without_store.values("organization_id").annotate(
-            events=Count("id"),
-            last_at=Max("created_at"),
-            fynktech=Count("id", filter=Q(actor_role=OrganizationAuditLog.ROLE_SUPER_ADMIN)),
-        )
-    }
-    stores = []
-    for org in Organization.objects.filter(is_platform=False).order_by("name"):
-        row = per_store.get(org.id) or {}
-        stores.append(
-            {
-                "organization_id": str(org.id),
-                "name": org.name,
-                "is_active": org.is_active,
-                "events": row.get("events", 0),
-                "fynktech": row.get("fynktech", 0),
-                "last_at": row["last_at"].isoformat() if row.get("last_at") else None,
-            }
-        )
-    platform = per_store.get(None)
-    stores.sort(key=lambda s: (-s["events"], s["name"].lower()))
-
-    categories = {
-        row["category"] or "other": row["n"]
-        for row in qs.values("category").annotate(n=Count("id"))
-    }
-
-    return {
-        "stores": stores,
-        "platform_events": platform["events"] if platform else 0,
-        "categories": categories,
     }

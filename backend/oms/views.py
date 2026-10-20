@@ -1891,11 +1891,6 @@ class OrderViewSet(viewsets.ModelViewSet):
                     _last_note_at=Subquery(last_note.values("created_at")[:1]),
                 )
             )
-            # Looked up now, not inside rows(): Supabase Auth is a network
-            # call per store, and the generator runs after this view returns.
-            owners = csv_report.client_names(
-                set(queryset.order_by().values_list("organization_id", flat=True).distinct())
-            )
             status_labels = dict(Order.STATUS_CHOICES)
             header = [
                 # OMS Order ID identifies an order on its own - one per order,
@@ -1954,7 +1949,9 @@ class OrderViewSet(viewsets.ModelViewSet):
                     before_items = [
                         order.supabase_order_no or "",
                         order.order_number,
-                        owners.get(order.organization_id, ""),
+                        # The client is the store itself (Playback, One
+                        # Stations, ...) - the business FynkTech serves.
+                        order.organization.name,
                         order.organization.name,
                         # Shopify's own order time; a manual order has none,
                         # so it falls back to when it was entered here.

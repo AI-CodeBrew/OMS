@@ -95,25 +95,9 @@ export default function OrdersTable({
             orders.map((order) => (
               <tr
                 key={order.id}
-                role="button"
-                tabIndex={0}
-                title="Click to open order details"
-                onClick={() => {
-                  // Selecting text in a cell (to copy a phone or tracking
-                  // number) shouldn't open the order.
-                  if (window.getSelection()?.toString()) return;
-                  onOpenDetail(order.id);
-                }}
-                onKeyDown={(e) => {
-                  if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
-                    e.preventDefault();
-                    onOpenDetail(order.id);
-                  }
-                }}
-                className="cursor-pointer border-b border-surface-border last:border-0 hover:bg-surface/60 focus:outline-none focus-visible:bg-surface"
+                className="border-b border-surface-border last:border-0 hover:bg-surface/60"
               >
-                {/* The checkbox keeps its own click. */}
-                <td className="px-3 py-1.5" onClick={(e) => e.stopPropagation()}>
+                <td className="px-3 py-1.5">
                   <Checkbox checked={selectedIds.has(order.id)} onChange={() => onToggleSelect(order.id)} />
                 </td>
                 {showStoreColumn ? (
@@ -124,11 +108,18 @@ export default function OrdersTable({
                   </td>
                 ) : null}
                 <td className="px-3 py-1.5 text-slate-700">{order.supabase_order_no ?? "—"}</td>
+                {/* The store's order number is what opens the order - the
+                    rest of the row stays free for selecting and copying. */}
                 <td className="px-3 py-1.5">
                   <div className="flex items-center gap-1">
-                    <span className="truncate font-semibold text-slate-900" title={order.order_number}>
+                    <button
+                      type="button"
+                      onClick={() => onOpenDetail(order.id)}
+                      title={`Open order ${order.order_number}`}
+                      className="truncate font-semibold text-brand-600 hover:text-brand-700 hover:underline focus:outline-none focus-visible:underline"
+                    >
                       {String(order.order_number ?? "").replace(/^#/, "")}
-                    </span>
+                    </button>
                     {order.dispatch_requested_at && DISPATCH_REQUESTABLE.has(order.status) ? (
                       <span
                         className="shrink-0 rounded bg-amber-100 px-1 text-xs text-amber-700"
@@ -213,9 +204,7 @@ export default function OrdersTable({
                   {order.grand_total ?? order.total_amount}
                 </td>
                 <td className="px-3 py-1.5 capitalize text-slate-700">{order.payment_status}</td>
-                {/* stopPropagation: the row's own click opens the order -
-                    and the menu, though portalled, still bubbles to it. */}
-                <td className="px-2 py-1.5 text-right" onClick={(e) => e.stopPropagation()}>
+                <td className="px-2 py-1.5 text-right">
                   <Dropdown
                     align="right"
                     trigger={

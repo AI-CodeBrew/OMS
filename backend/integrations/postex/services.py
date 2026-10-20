@@ -29,7 +29,7 @@ from django.db.models import F
 from django.db.utils import OperationalError
 from django.utils import timezone
 
-from core.context import tenant_context
+from core.context import audit_source, tenant_context
 from core.events import publish_event
 from core.platform_service import (
     is_platform_organization,
@@ -674,6 +674,7 @@ def _advance_to_dispatch_substate(order, target, tracking_number=""):
     return True
 
 
+@audit_source("PostEx")
 def apply_postex_status(order, stage, *, tracking_number="", actor_user_id=None):
     """Applies one PostEx stage to one order. Only ever moves an order
     forward. Raises oms.services.InvalidTransition for the caller to

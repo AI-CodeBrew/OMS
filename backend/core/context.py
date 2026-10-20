@@ -1,4 +1,5 @@
 import contextvars
+import functools
 from contextlib import contextmanager
 
 # Set once per request by TenantMiddleware, read by TenantScopedModel's
@@ -22,6 +23,29 @@ current_organization_ids = contextvars.ContextVar("current_organization_ids", de
 # None outside a request (pollers, management commands) - those rows are
 # written as "system".
 current_request_meta = contextvars.ContextVar("current_request_meta", default=None)
+
+# Which outside system is behind what's happening - "PostEx", "BarqRaftar",
+# "Smartlane", "Shopify" - set by @audit_source on the functions that apply
+# their updates, so the audit rows written meanwhile say the courier (not
+# whoever pressed Sync, or nobody) made the change.
+current_audit_source = contextvars.ContextVar("current_audit_source", default="")
+
+
+def audit_source(name):
+    """Decorator: audit rows written inside the call are attributed to `name`."""
+
+    def decorate(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            token = current_audit_source.set(name)
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                current_audit_source.reset(token)
+
+        return wrapper
+
+    return decorate
 
 
 @contextmanager

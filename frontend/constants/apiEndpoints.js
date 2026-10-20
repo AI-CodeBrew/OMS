@@ -46,9 +46,8 @@ export const API_ENDPOINTS = {
     smartlaneRequests: "/api/core/admin/smartlane/requests/",
     smartlaneRequestApprove: (id) => `/api/core/admin/smartlane/requests/${id}/approve/`,
     smartlaneRequestReject: (id) => `/api/core/admin/smartlane/requests/${id}/reject/`,
-    // Every store's activity log (the Logs tab) + its header numbers.
+    // Every store's activity log (the Logs tab).
     activityLogs: "/api/core/admin/activity-logs/",
-    activityLogsSummary: "/api/core/admin/activity-logs/summary/",
     tickets: "/api/core/admin/tickets/",
     ticket: (id) => `/api/core/admin/tickets/${id}/`,
     ticketResolve: (id) => `/api/core/admin/tickets/${id}/resolve/`,

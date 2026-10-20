@@ -48,11 +48,14 @@ def write_audit_log(
     entity_type="",
     entity_id="",
     metadata=None,
+    status_code=None,
 ):
+    """status_code marks a failure the Logs tabs should flag - e.g. 502 for
+    an upstream service (Shopify, a courier) refusing the call."""
     if not organization_id:
         return None
     from .activity_log_service import category_for
-    from .context import current_request_meta
+    from .context import current_audit_source, current_request_meta
 
     # Inside a request, fill in whoever made it and where from - most call
     # sites only pass what they know (often no email, never an IP) - and
@@ -64,21 +67,31 @@ def write_audit_log(
             actor_email = request_meta.get("email") or ""
         actor_user_id = actor_user_id or request_meta.get("user_id")
     path = request_meta.get("path", "")
+    role = request_meta.get("role") or OrganizationAuditLog.ROLE_SYSTEM
+    metadata = dict(metadata or {})
+    # A courier's or Shopify's update made the change - it is the actor,
+    # even when a person's "Sync now" is what fetched it (their email
+    # stays on the row).
+    source = current_audit_source.get()
+    if source:
+        metadata["via"] = source
+        role = OrganizationAuditLog.ROLE_SYSTEM
     return OrganizationAuditLog.objects.create(
         organization_id=organization_id,
         actor_user_id=actor_user_id or None,
         actor_email=(actor_email or "")[:255],
-        actor_role=request_meta.get("role") or OrganizationAuditLog.ROLE_SYSTEM,
+        actor_role=role,
         action=action,
         category=category_for(action, path),
         entity_type=(entity_type or "")[:64],
         entity_id=str(entity_id or "")[:64],
         summary=(summary or "")[:500],
-        metadata=metadata or {},
+        metadata=metadata,
         ip_address=request_meta.get("ip", "")[:64],
         user_agent=request_meta.get("user_agent", "")[:300],
         request_method=request_meta.get("method", "")[:8],
         request_path=path[:255],
+        status_code=status_code,
     )
 
 

@@ -1,8 +1,5 @@
 import re
-from datetime import datetime
 
-from django.utils.dateparse import parse_datetime
-from django.utils import timezone
 from django.utils.text import slugify
 
 from . import supabase_admin
@@ -50,20 +47,6 @@ def normalize_staff_username(username):
 def build_staff_email(organization, username):
     local = normalize_staff_username(username)
     return f"{local}@{staff_email_domain(organization)}"
-
-
-def _parse_bound(value):
-    if not value:
-        return None
-    dt = parse_datetime(value)
-    if dt is None:
-        try:
-            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        except ValueError:
-            return None
-    if timezone.is_naive(dt):
-        dt = timezone.make_aware(dt, timezone.get_current_timezone())
-    return dt
 
 
 def _coerce_modules(modules=None, module=None):
@@ -352,40 +335,3 @@ def remove_team_member(
         metadata={"user_id": str(user_id)},
     )
     return {"success": True}
-
-
-def list_audit_logs(*, organization_id, date_from=None, date_to=None, page=1, page_size=50):
-    from .models import OrganizationAuditLog
-
-    qs = OrganizationAuditLog.objects.filter(organization_id=organization_id)
-    dt_from = _parse_bound(date_from)
-    if dt_from:
-        qs = qs.filter(created_at__gte=dt_from)
-    dt_to = _parse_bound(date_to)
-    if dt_to:
-        qs = qs.filter(created_at__lte=dt_to)
-
-    page = max(1, int(page or 1))
-    page_size = min(100, max(1, int(page_size or 50)))
-    total = qs.count()
-    start = (page - 1) * page_size
-    rows = qs[start : start + page_size]
-    return {
-        "count": total,
-        "page": page,
-        "page_size": page_size,
-        "results": [
-            {
-                "id": str(r.id),
-                "actor_user_id": str(r.actor_user_id) if r.actor_user_id else None,
-                "actor_email": r.actor_email,
-                "action": r.action,
-                "entity_type": r.entity_type,
-                "entity_id": r.entity_id,
-                "summary": r.summary,
-                "metadata": r.metadata or {},
-                "created_at": r.created_at.isoformat(),
-            }
-            for r in rows
-        ],
-    }

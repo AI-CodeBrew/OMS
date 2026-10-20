@@ -18,10 +18,12 @@ Smartlane webhook/poller's tracking-only branch) and order.status_changed
 caching or WebSockets exist.
 """
 
+import json
 import logging
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
+from rest_framework.utils.encoders import JSONEncoder
 
 from .events import subscribe
 from .redis_client import invalidate_order_view_cache, next_counts_version, set_cached_counts
@@ -89,7 +91,10 @@ def _serialize_order(order_id):
         from oms.serializers import OrderSerializer
 
         order = Order.all_objects.select_related("courier", "parent_order").get(id=order_id)
-        return OrderSerializer(order).data
+        # Round-trip through JSON: the serializer's output still holds raw
+        # UUID/Decimal/datetime objects, which the Redis channel layer's
+        # msgpack can't encode - group_send then failed on every push.
+        return json.loads(json.dumps(OrderSerializer(order).data, cls=JSONEncoder))
     except Exception:
         logger.warning("order serialize-for-push failed for order %s", order_id, exc_info=True)
         return None
