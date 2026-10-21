@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { create } from "zustand";
+import { invalidateViewCache } from "../lib/viewCache";
 
 const STORAGE_KEY = "oms_auth";
 // sessionStorage, so each browser tab can act as a different store.
@@ -123,6 +124,23 @@ export const useAuthStore = create((set, get) => ({
     return (user.modules || []).includes(moduleKey);
   },
 }));
+
+/** Whose data the screens are showing: the signed-in user, their org, and
+ * the store a super admin is operating. Changes on login, logout, and
+ * entering/leaving a store. */
+export function accountKey(state) {
+  const { user, actingStore } = state;
+  if (!user) return "";
+  const acting = actingStore ? `${actingStore.hub ? "hub" : actingStore.platform ? "platform" : ""}:${actingStore.id || ""}` : "";
+  return `${user.id}|${user.organization_id || ""}|${acting}`;
+}
+
+// Orders/Dashboard payloads are cached in memory per tab (lib/viewCache),
+// so without this, logging out and into another account showed the
+// previous account's orders until a page refresh.
+useAuthStore.subscribe((state, prev) => {
+  if (accountKey(state) !== accountKey(prev)) invalidateViewCache();
+});
 
 /** The user as tenant screens should see them: a super admin operating a
  * store acts as its org admin; operating the Dispatch Hub acts as an org

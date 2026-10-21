@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import financeService from "../services/financeService";
+import useAuthStore, { accountKey } from "./authStore";
 
 // Shared across every place that needs to know/gate on "has this store
 // saved its bank details yet" - fetched at most once per session instead
@@ -38,5 +39,10 @@ const useBankDetailsStore = create((set, get) => ({
     set({ details: details || null });
   },
 }));
+
+// Bank details belong to one store - fetch them again for the next account.
+useAuthStore.subscribe((state, prev) => {
+  if (accountKey(state) !== accountKey(prev)) useBankDetailsStore.setState({ details: undefined });
+});
 
 export default useBankDetailsStore;

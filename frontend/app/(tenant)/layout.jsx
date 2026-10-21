@@ -12,6 +12,7 @@ import {
   canAccessPath,
   getActiveModule,
   getDefaultModuleHref,
+  getVisibleModules,
 } from "../../components/layout/moduleNav";
 import useAuthStore, { useEffectiveUser } from "../../store/authStore";
 import authService, {
@@ -21,6 +22,8 @@ import authService, {
 } from "../../services/authService";
 import healthService from "../../services/healthService";
 
+const LAST_MODULE_KEY = "oms.lastModule";
+
 function TenantShell({ children }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -28,7 +31,36 @@ function TenantShell({ children }) {
   const actingStore = useAuthStore((s) => s.actingStore);
   const activeModule = getActiveModule(pathname);
   const [sidebarExpanded, setSidebarExpanded] = useState(false);
+  const [lastModule, setLastModule] = useState(null);
   const superAdminWithoutStore = user?.role === "super_admin" && !actingStore;
+
+  // Shared pages (Integrations, Logs, Report, Batch, Tickets, Settings)
+  // belong to no module, so they keep showing the sidebar - and header tab -
+  // of whichever module (OMS/WMS/Financify) the user came from, instead of
+  // an empty sidebar with no way back to Dashboard/All Orders.
+  const visibleModules = getVisibleModules(user);
+  const isProductModule = visibleModules.some((m) => m.key === activeModule);
+  const navModule = isProductModule
+    ? activeModule
+    : visibleModules.find((m) => m.key === lastModule)?.key || visibleModules[0]?.key || activeModule;
+
+  useEffect(() => {
+    try {
+      setLastModule(window.sessionStorage.getItem(LAST_MODULE_KEY));
+    } catch {
+      // Storage blocked - fall back to the first visible module.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isProductModule) return;
+    setLastModule(activeModule);
+    try {
+      window.sessionStorage.setItem(LAST_MODULE_KEY, activeModule);
+    } catch {
+      // Storage blocked - remembered for this tab's session only.
+    }
+  }, [activeModule, isProductModule]);
 
   useEffect(() => {
     if (!user || !pathname) return;
@@ -67,10 +99,10 @@ function TenantShell({ children }) {
       <LoadingOverlay />
       <CriticalOrdersAlert />
       <ActingStoreBanner />
-      <TenantHeader activeModule={activeModule} />
+      <TenantHeader activeModule={navModule} />
       <div className="flex">
         <ModuleSidebar
-          activeModule={activeModule}
+          activeModule={navModule}
           expanded={sidebarExpanded}
           onToggle={() => setSidebarExpanded((e) => !e)}
         />
