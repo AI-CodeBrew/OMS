@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import ProtectedRoute from "../../components/shared/ProtectedRoute";
 import LoadingOverlay from "../../components/shared/LoadingOverlay";
@@ -16,6 +16,7 @@ import {
 } from "../../components/layout/moduleNav";
 import useAuthStore, { useEffectiveUser } from "../../store/authStore";
 import authService, {
+  ACCESS_REVOKED_CODE,
   ORG_SUSPENDED_CODE,
   ORG_SUSPENDED_MESSAGE,
   setLoginNotice,
@@ -23,6 +24,18 @@ import authService, {
 import healthService from "../../services/healthService";
 
 const LAST_MODULE_KEY = "oms.lastModule";
+
+function accessSignature({ role, modules }) {
+  return `${role}|${[...(modules || [])].sort().join(",")}`;
+}
+
+// True when the backend's live access (Membership row) differs from the
+// stored user's JWT snapshot - an admin changed this person's role/modules.
+function accessChanged(storedUser, access) {
+  if (!storedUser || !access) return false;
+  const storedRole = storedUser.role === "org_admin" ? "org_admin" : "org_user";
+  return accessSignature({ role: storedRole, modules: storedUser.modules }) !== accessSignature(access);
+}
 
 function TenantShell({ children }) {
   const pathname = usePathname();
@@ -78,15 +91,31 @@ function TenantShell({ children }) {
   // when it happened is signed out with the reason, rather than left on
   // pages that all fail.
   const signedInAsTenant = Boolean(user) && user.role !== "super_admin";
+  // Last live access a refresh was already tried for - if Supabase's token
+  // still disagrees afterwards, don't refresh again on every navigation.
+  const refreshedFor = useRef("");
   useEffect(() => {
     if (!signedInAsTenant) return undefined;
     let cancelled = false;
-    healthService.getProtectedHealth().catch(async (err) => {
-      if (cancelled || err.code !== ORG_SUSPENDED_CODE) return;
-      setLoginNotice(ORG_SUSPENDED_MESSAGE);
-      await authService.logout();
-      router.replace("/login");
-    });
+    healthService
+      .getProtectedHealth()
+      .then(async (data) => {
+        // Role/modules changed by an admin: pick up the new token now, so
+        // the sidebar, header tabs and route guard follow without a re-login.
+        const access = data?.access;
+        if (cancelled || !accessChanged(useAuthStore.getState().user, access)) return;
+        const signature = accessSignature(access);
+        if (refreshedFor.current === signature) return;
+        refreshedFor.current = signature;
+        await authService.refreshUser().catch(() => null);
+      })
+      .catch(async (err) => {
+        if (cancelled) return;
+        if (err.code !== ORG_SUSPENDED_CODE && err.code !== ACCESS_REVOKED_CODE) return;
+        setLoginNotice(err.code === ORG_SUSPENDED_CODE ? ORG_SUSPENDED_MESSAGE : err.message);
+        await authService.logout();
+        router.replace("/login");
+      });
     return () => {
       cancelled = true;
     };

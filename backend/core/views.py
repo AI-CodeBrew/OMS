@@ -57,6 +57,14 @@ def health_protected(request):
             "user_id": request.user_id,
             "organization_id": request.organization_id,
             "role": role,
+            # Live access from the Membership row (TenantMiddleware), so the
+            # frontend can tell its JWT snapshot is stale and refresh it.
+            "access": None
+            if getattr(request, "is_super_admin", False)
+            else {
+                "role": "org_admin" if request.is_org_admin else "org_user",
+                "modules": list(request.modules or []),
+            },
             "timestamp": timezone.now().isoformat(),
         }
     )

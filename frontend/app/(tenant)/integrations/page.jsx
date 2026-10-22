@@ -15,8 +15,6 @@ import {
   ShopifyLogo,
   SmartlaneLogo,
 } from "../../../components/integrations/IntegrationLogos";
-import { useBankDetailsGate } from "../../../lib/useBankDetailsGate";
-import BankDetailsModal from "../../../components/billing/BankDetailsModal";
 
 function CheckDot({ children }) {
   return (
@@ -192,10 +190,8 @@ function HeroGraphic() {
 export default function IntegrationsOverviewPage() {
   const router = useRouter();
   const [connectedMap, setConnectedMap] = useState({});
-  const { requireBankDetails, modalProps } = useBankDetailsGate();
-
   function onConnect(href) {
-    requireBankDetails(() => router.push(href));
+    router.push(href);
   }
 
   useEffect(() => {
@@ -263,8 +259,6 @@ export default function IntegrationsOverviewPage() {
           />
         ))}
       </div>
-
-      <BankDetailsModal {...modalProps} />
     </div>
   );
 }

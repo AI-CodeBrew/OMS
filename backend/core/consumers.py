@@ -16,6 +16,14 @@ from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from .jwt_utils import InvalidSupabaseToken, decode_supabase_jwt
 from .middleware import resolve_active_org_id
 
+
+def _is_member(organization_id, user_id):
+    from .models import Membership
+
+    return bool(user_id) and Membership.objects.filter(
+        organization_id=organization_id, user_id=user_id
+    ).exists()
+
 logger = logging.getLogger(__name__)
 
 
@@ -43,8 +51,8 @@ class OrgOrdersConsumer(AsyncJsonWebsocketConsumer):
             except InvalidSupabaseToken:
                 claims = None
             if claims:
+                # Never user_metadata - the user can write that themselves.
                 app_meta = claims.get("app_metadata") or {}
-                user_meta = claims.get("user_metadata") or {}
                 if app_meta.get("role") == "super_admin":
                     if unquote(params.get("hub", "")) == "1":
                         from .dispatch_hub_service import active_hub_organization_ids
@@ -58,8 +66,14 @@ class OrgOrdersConsumer(AsyncJsonWebsocketConsumer):
                 else:
                     # Same suspended/removed-org gate as TenantMiddleware.
                     organization_id = await sync_to_async(resolve_active_org_id)(
-                        app_meta.get("organization_id") or user_meta.get("organization_id")
+                        app_meta.get("organization_id")
                     )
+                    # Same Membership gate as TenantMiddleware - a removed
+                    # member's still-unexpired token gets no live feed.
+                    if organization_id and not await sync_to_async(_is_member)(
+                        organization_id, claims.get("sub")
+                    ):
+                        organization_id = None
                     organization_ids = [organization_id] if organization_id else []
 
         if not organization_ids:

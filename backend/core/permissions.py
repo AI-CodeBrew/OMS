@@ -1,6 +1,7 @@
 from rest_framework.permissions import BasePermission
 
 from .models import OrganizationModule
+from .rbac import org_module_for
 
 
 class IsAuthenticatedTenant(BasePermission):
@@ -23,6 +24,25 @@ class IsOrgAdmin(BasePermission):
             and getattr(request, "organization_id", None)
             and getattr(request, "is_org_admin", False)
         )
+
+
+class CanManageTeam(BasePermission):
+    """Org admins manage every staff login; WMS staff may manage Returns
+    Associate logins only (team_views narrows what they can touch)."""
+
+    message = "Organization admin or WMS access required."
+
+    def has_permission(self, request, view):
+        if IsOrgAdmin().has_permission(request, view):
+            return True
+        organization_id = getattr(request, "organization_id", None)
+        if not (getattr(request, "user_id", None) and organization_id):
+            return False
+        if "wms" not in (getattr(request, "modules", None) or []):
+            return False
+        return OrganizationModule.objects.filter(
+            organization_id=organization_id, module="wms", is_enabled=True
+        ).exists()
 
 
 class IsSuperAdmin(BasePermission):
@@ -72,7 +92,10 @@ class RequireAnyModule(BasePermission):
     without opening up the rest of OrderViewSet - create, bulk actions,
     export - which stay oms-only).
 
-    Set `required_any_module = ("oms", "wms")` on the view/viewset.
+    Set `required_any_module = ("oms", "wms")` on the view/viewset. A
+    staff-only role like "returns" (Returns Associate) is checked against
+    the org module it rides on (rbac.org_module_for) - org admins never
+    hold it, so it only ever lets in staff with that role.
     """
 
     message = "Your organization does not have access to this module."
@@ -90,7 +113,9 @@ class RequireAnyModule(BasePermission):
         user_modules = getattr(request, "modules", None) or []
         for module in required_modules:
             org_ok = OrganizationModule.objects.filter(
-                organization_id=organization_id, module=module, is_enabled=True
+                organization_id=organization_id,
+                module=org_module_for(module),
+                is_enabled=True,
             ).exists()
             if not org_ok:
                 continue

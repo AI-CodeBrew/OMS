@@ -6,6 +6,8 @@ import Link from "next/link";
 import {
   SIDEBAR_ITEMS,
   HUB_SIDEBAR_ITEMS,
+  RETURNS_ASSOCIATE_SIDEBAR_ITEMS,
+  isReturnsAssociate,
   SETTINGS_ITEM,
   LOGS_ITEM,
   INTEGRATIONS_ITEM,
@@ -148,7 +150,12 @@ export default function ModuleSidebar({ activeModule, expanded, onToggle }) {
   const user = useEffectiveUser();
   const isOrgAdmin =
     user?.role === "org_admin" || user?.isOrgAdmin === true || user?.role === "super_admin";
-  const items = user?.isDispatchHub ? HUB_SIDEBAR_ITEMS : SIDEBAR_ITEMS[activeModule] || [];
+  const returnsAssociate = isReturnsAssociate(user);
+  const items = user?.isDispatchHub
+    ? HUB_SIDEBAR_ITEMS
+    : returnsAssociate
+      ? RETURNS_ASSOCIATE_SIDEBAR_ITEMS
+      : SIDEBAR_ITEMS[activeModule] || [];
   const ItemComponent = expanded ? FullLink : RailIcon;
   const asideRef = useRef(null);
 
@@ -205,12 +212,16 @@ export default function ModuleSidebar({ activeModule, expanded, onToggle }) {
             />
           </>
         ) : null}
-        <ItemComponent item={REPORT_ITEM} active={pathname === REPORT_ITEM.href} />
-        <ItemComponent item={BATCH_ITEM} active={pathname === BATCH_ITEM.href} />
-        <ItemComponent
-          item={TICKETS_ITEM}
-          active={pathname === TICKETS_ITEM.href || pathname.startsWith(`${TICKETS_ITEM.href}/`)}
-        />
+        {!returnsAssociate ? (
+          <>
+            <ItemComponent item={REPORT_ITEM} active={pathname === REPORT_ITEM.href} />
+            <ItemComponent item={BATCH_ITEM} active={pathname === BATCH_ITEM.href} />
+            <ItemComponent
+              item={TICKETS_ITEM}
+              active={pathname === TICKETS_ITEM.href || pathname.startsWith(`${TICKETS_ITEM.href}/`)}
+            />
+          </>
+        ) : null}
         {!user?.isDispatchHub ? (
           <ItemComponent item={SETTINGS_ITEM} active={pathname === SETTINGS_ITEM.href} />
         ) : null}

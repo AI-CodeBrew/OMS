@@ -32,7 +32,22 @@ export const STAFF_MODULE_OPTIONS = [
   { key: "oms", label: "OMS" },
   { key: "wms", label: "WMS" },
   { key: "finance", label: "Financify" },
+  // A WMS role rather than a module of its own: Returns Desk + Packing
+  // only. Exclusive - never combined with the other options.
+  { key: "returns", label: "Returns Associate", hint: "WMS · Returns Desk & Packing only", exclusive: true },
 ];
+
+export const RETURNS_ASSOCIATE = "returns";
+
+// Staff whose only role is Returns Associate. Admins never are.
+export function isReturnsAssociate(user) {
+  if (!user || user.isDispatchHub) return false;
+  const isAdmin = user.role === "org_admin" || user.isOrgAdmin || user.role === "super_admin";
+  const modules = Array.isArray(user.modules) ? user.modules : [];
+  return !isAdmin && modules.includes(RETURNS_ASSOCIATE);
+}
+
+const RETURNS_ASSOCIATE_PREFIXES = ["/returns", "/wms/packing", "/settings"];
 
 // Pinned at the bottom of the sidebar regardless of active module.
 export const SETTINGS_ITEM = {
@@ -124,6 +139,9 @@ export function getVisibleModules(user) {
   if (user.isDispatchHub) {
     return [{ key: "oms", label: "Dispatch Hub", href: "/dashboard" }];
   }
+  if (isReturnsAssociate(user)) {
+    return [{ key: "wms", label: "WMS", href: "/returns" }];
+  }
   const isAdmin = user.role === "org_admin" || user.isOrgAdmin || user.role === "super_admin";
   const modules = Array.isArray(user.modules) ? user.modules : [];
   const hasProduct = (key) => {
@@ -150,6 +168,9 @@ export function canAccessPath(user, pathname) {
   if (!user) return false;
   if (user.isDispatchHub) {
     return HUB_ALLOWED_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+  }
+  if (isReturnsAssociate(user)) {
+    return RETURNS_ASSOCIATE_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
   }
   if (pathname === "/settings" || pathname.startsWith("/settings/")) return true;
   if (pathname === "/tickets" || pathname.startsWith("/tickets/")) return true;
@@ -221,6 +242,13 @@ export const SIDEBAR_ITEMS = {
 // minus anything genuinely single-store (WMS inventory/packing, the
 // disabled Financify stubs). Used instead of SIDEBAR_ITEMS[activeModule]
 // whenever user.isDispatchHub (see ModuleSidebar).
+// A Returns Associate's whole sidebar (see ModuleSidebar), in place of
+// SIDEBAR_ITEMS.wms - Inventory and the rest of WMS stay off-limits.
+export const RETURNS_ASSOCIATE_SIDEBAR_ITEMS = [
+  { label: "Returns Desk", href: "/returns", icon: UndoIcon },
+  { label: "Packing", href: "/wms/packing", icon: PackageIcon },
+];
+
 export const HUB_SIDEBAR_ITEMS = [
   { label: "Dashboard", href: "/dashboard", icon: DashboardIcon },
   { label: "All Orders", href: "/orders", icon: GridIcon },

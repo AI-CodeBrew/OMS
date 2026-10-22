@@ -8,6 +8,11 @@ export const ORG_SUSPENDED_CODE = "organization_suspended";
 export const ORG_SUSPENDED_MESSAGE =
   "Your organization's account has been suspended. Please contact the FynkTech team.";
 
+// Also mirrors core/middleware.py: the login still works but its access to
+// this store was removed (deleted from the team) - signed out like a
+// suspended org.
+export const ACCESS_REVOKED_CODE = "access_revoked";
+
 // Shown on the login page when the token can no longer be renewed (see
 // lib/sessionGuard.js).
 export const SESSION_EXPIRED_MESSAGE =
@@ -99,6 +104,22 @@ class AuthService {
     const { data } = await supabase.auth.getSession();
     if (!data.session) return null;
 
+    const user = buildUser(data.session);
+    useAuthStore.getState().setSession({
+      accessToken: data.session.access_token,
+      refreshToken: data.session.refresh_token,
+      user,
+    });
+    useTenantStore.getState().syncFromAuth();
+    return user;
+  }
+
+  // Fetches a fresh token so app_metadata changed by an admin (role,
+  // modules) reaches the stored user without signing out and back in.
+  async refreshUser() {
+    const supabase = getSupabaseBrowserClient();
+    const { data, error } = await supabase.auth.refreshSession();
+    if (error || !data?.session) return null;
     const user = buildUser(data.session);
     useAuthStore.getState().setSession({
       accessToken: data.session.access_token,

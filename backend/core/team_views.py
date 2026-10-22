@@ -2,16 +2,25 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 
 from . import activity_log_service, team_service
-from .permissions import IsOrgAdmin
+from .permissions import CanManageTeam, IsOrgAdmin
+from .rbac import RETURNS_ASSOCIATE
 from .team_service import TeamAdminError
 
 
+def _limit_to_modules(request):
+    """Org admins manage every staff login; WMS staff only Returns
+    Associates (see CanManageTeam)."""
+    if getattr(request, "is_super_admin", False) or getattr(request, "is_org_admin", False):
+        return None
+    return (RETURNS_ASSOCIATE,)
+
+
 @api_view(["GET", "POST"])
-@permission_classes([IsOrgAdmin])
+@permission_classes([CanManageTeam])
 def team_members(request):
     org_id = request.organization_id
     if request.method == "GET":
-        data = team_service.list_team(org_id)
+        data = team_service.list_team(org_id, limit_to_modules=_limit_to_modules(request))
         return Response({"success": True, **data})
 
     body = request.data or {}
@@ -25,6 +34,7 @@ def team_members(request):
             module=body.get("module"),
             actor_user_id=request.user_id,
             actor_email=getattr(request, "auth_email", "") or "",
+            limit_to_modules=_limit_to_modules(request),
         )
     except TeamAdminError as exc:
         return Response(
@@ -35,7 +45,7 @@ def team_members(request):
 
 
 @api_view(["PATCH", "DELETE"])
-@permission_classes([IsOrgAdmin])
+@permission_classes([CanManageTeam])
 def team_member_detail(request, user_id):
     org_id = request.organization_id
     if request.method == "DELETE":
@@ -45,6 +55,7 @@ def team_member_detail(request, user_id):
                 user_id=user_id,
                 actor_user_id=request.user_id,
                 actor_email=getattr(request, "auth_email", "") or "",
+                limit_to_modules=_limit_to_modules(request),
             )
         except TeamAdminError as exc:
             return Response(
@@ -65,6 +76,7 @@ def team_member_detail(request, user_id):
             password=body.get("password") if "password" in body else None,
             actor_user_id=request.user_id,
             actor_email=getattr(request, "auth_email", "") or "",
+            limit_to_modules=_limit_to_modules(request),
         )
     except TeamAdminError as exc:
         return Response(

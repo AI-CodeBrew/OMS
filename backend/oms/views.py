@@ -238,10 +238,16 @@ class OrderViewSet(viewsets.ModelViewSet):
     # work for those two pages specifically. Everything else on this
     # viewset (create, update, bulk actions, export, ...) stays oms-only.
     required_any_module = ("oms", "wms")
+    # A Returns Associate (staff role "returns") only works Returns Desk and
+    # Packing, which need nothing beyond the order list and returns summary.
+    returns_associate_actions = ("list", "returns_summary")
     pagination_class = OrderPagination
 
     def get_permissions(self):
-        if self.action in ("list", "returns_summary", "warmup", "counts", "dashboard"):
+        if self.action in self.returns_associate_actions:
+            self.required_any_module = ("oms", "wms", "returns")
+            return [RequireAnyModule()]
+        if self.action in ("warmup", "counts", "dashboard"):
             return [RequireAnyModule()]
         return super().get_permissions()
 

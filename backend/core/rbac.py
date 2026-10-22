@@ -3,7 +3,19 @@
 from .models import Organization, OrganizationAuditLog, OrganizationModule
 
 
-STAFF_MODULES = ("oms", "wms", "finance")
+STAFF_MODULES = ("oms", "wms", "finance", "returns")
+
+# Returns Associate: a staff role, not an org module of its own - it rides
+# on the org's WMS entitlement but only opens Returns Desk and Packing (see
+# RequireAnyModule's callers in wms/oms views). Never combined with others.
+RETURNS_ASSOCIATE = "returns"
+
+# Which OrganizationModule a staff module needs enabled.
+STAFF_MODULE_ORG_MODULE = {"returns": "wms"}
+
+
+def org_module_for(staff_module):
+    return STAFF_MODULE_ORG_MODULE.get(staff_module, staff_module)
 
 
 def enabled_modules_for_org(organization_id):
@@ -22,7 +34,7 @@ def resolve_modules_for_membership(*, role, allowed_modules, organization_id):
     seen = set()
     modules = []
     for m in allowed_modules or []:
-        if m in STAFF_MODULES and m in enabled and m not in seen:
+        if m in STAFF_MODULES and org_module_for(m) in enabled and m not in seen:
             seen.add(m)
             modules.append(m)
     return modules

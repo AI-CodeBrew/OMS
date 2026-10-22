@@ -10,7 +10,7 @@ import tenantsService from "../../../../../services/tenantsService";
 function moduleLabel(modules) {
   const list = modules || [];
   if (!list.length) return "no modules";
-  return list.join(", ");
+  return list.map((m) => (m === "returns" ? "returns associate" : m)).join(", ");
 }
 
 function MemberRow({ member, isStaff, onEdit }) {

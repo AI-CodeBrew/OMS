@@ -33,8 +33,12 @@ function formatDate(value) {
 function describeOutcome(entry) {
   if (entry.condition === "bad") return "Marked damaged — not added to inventory";
   const restocked = entry.restocked || [];
-  if (restocked.length === 0) return "Received — no tracked SKUs";
-  return `Received — ${restocked.map((r) => `${r.sku} +${r.quantity}`).join(", ")}`;
+  const missed = entry.not_restocked || [];
+  const parts = restocked.map((r) => `${r.sku || r.product_name} +${r.quantity}`);
+  // Lines with no stock item to put back on (no SKU, no unique name match).
+  if (missed.length) parts.push(`not in inventory: ${missed.join(", ")}`);
+  if (parts.length === 0) return "Received — no tracked SKUs";
+  return `Received — ${parts.join("; ")}`;
 }
 
 function bucketParams(bucket) {

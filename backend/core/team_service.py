@@ -5,8 +5,10 @@ from django.utils.text import slugify
 from . import supabase_admin
 from .models import Membership, Organization
 from .rbac import (
+    RETURNS_ASSOCIATE,
     STAFF_MODULES,
     enabled_modules_for_org,
+    org_module_for,
     resolve_modules_for_membership,
     write_audit_log,
 )
@@ -64,6 +66,34 @@ def _coerce_modules(modules=None, module=None):
     return [str(m).strip() for m in items if m and str(m).strip()]
 
 
+def _validate_requested_modules(requested, organization_id):
+    if not requested:
+        raise TeamAdminError(
+            "Select at least one module (OMS, WMS, Financify, or Returns Associate)"
+        )
+    for m in requested:
+        if m not in STAFF_MODULES:
+            raise TeamAdminError("Modules must be oms, wms, finance, and/or returns")
+    if RETURNS_ASSOCIATE in requested and len(set(requested)) > 1:
+        raise TeamAdminError("Returns Associate cannot be combined with other modules")
+    enabled = enabled_modules_for_org(organization_id)
+    for m in requested:
+        if org_module_for(m) not in enabled:
+            raise TeamAdminError(
+                f"Module '{org_module_for(m)}' is not enabled for this organization"
+            )
+
+
+def _check_manageable(modules, limit_to_modules):
+    """limit_to_modules=None: no limit (org admin). Otherwise every module
+    must be in it - WMS staff pass ("returns",) to manage only Returns
+    Associates."""
+    if limit_to_modules is None:
+        return
+    if not modules or any(m not in limit_to_modules for m in modules):
+        raise TeamAdminError("You can only manage Returns Associate logins", 403)
+
+
 def _serialize_member(membership, email=None):
     local = ""
     if email and "@" in email:
@@ -78,13 +108,18 @@ def _serialize_member(membership, email=None):
     }
 
 
-def list_team(organization_id):
+def list_team(organization_id, limit_to_modules=None):
     """Staff only — org admins are not listed in the team table."""
     organization = Organization.objects.filter(id=organization_id).first()
     memberships = (
         Membership.objects.filter(organization_id=organization_id, role="org_user")
         .order_by("created_at")
     )
+    if limit_to_modules is not None:
+        memberships = [
+            m for m in memberships
+            if m.allowed_modules and all(x in limit_to_modules for x in m.allowed_modules)
+        ]
     from .organization_admin_service import _emails_for_user_ids
 
     email_map = _emails_for_user_ids([m.user_id for m in memberships])
@@ -106,6 +141,7 @@ def invite_team_member(
     module=None,
     actor_user_id=None,
     actor_email="",
+    limit_to_modules=None,
 ):
     password = password or ""
     if len(password) < 8:
@@ -120,16 +156,8 @@ def invite_team_member(
     email = build_staff_email(organization, local)
 
     requested = _coerce_modules(modules=modules, module=module)
-    if not requested:
-        raise TeamAdminError("Select at least one module (OMS, WMS, or Financify)")
-    for m in requested:
-        if m not in STAFF_MODULES:
-            raise TeamAdminError("Modules must be oms, wms, and/or finance")
-
-    enabled = enabled_modules_for_org(organization_id)
-    for m in requested:
-        if m not in enabled:
-            raise TeamAdminError(f"Module '{m}' is not enabled for this organization")
+    _validate_requested_modules(requested, organization_id)
+    _check_manageable(requested, limit_to_modules)
 
     resolved = resolve_modules_for_membership(
         role="org_user",
@@ -212,6 +240,7 @@ def update_team_member(
     password=None,
     actor_user_id=None,
     actor_email="",
+    limit_to_modules=None,
 ):
     membership = (
         Membership.objects.select_related("organization")
@@ -220,21 +249,15 @@ def update_team_member(
     )
     if not membership:
         raise TeamAdminError("Member not found", 404)
+    _check_manageable(membership.allowed_modules, limit_to_modules)
 
     organization = membership.organization
     resolved = list(membership.allowed_modules or [])
     modules_provided = modules is not None or module is not None
     if modules_provided:
         requested = _coerce_modules(modules=modules, module=module)
-        if not requested:
-            raise TeamAdminError("Select at least one module (OMS, WMS, or Financify)")
-        for m in requested:
-            if m not in STAFF_MODULES:
-                raise TeamAdminError("Modules must be oms, wms, and/or finance")
-        enabled = enabled_modules_for_org(organization_id)
-        for m in requested:
-            if m not in enabled:
-                raise TeamAdminError(f"Module '{m}' is not enabled for this organization")
+        _validate_requested_modules(requested, organization_id)
+        _check_manageable(requested, limit_to_modules)
         resolved = resolve_modules_for_membership(
             role="org_user",
             allowed_modules=requested,
@@ -299,29 +322,39 @@ def remove_team_member(
     user_id,
     actor_user_id=None,
     actor_email="",
+    limit_to_modules=None,
 ):
     membership = Membership.objects.filter(
         organization_id=organization_id, user_id=user_id, role="org_user"
     ).first()
     if not membership:
         raise TeamAdminError("Member not found", 404)
+    _check_manageable(membership.allowed_modules, limit_to_modules)
     if str(actor_user_id) == str(user_id):
         raise TeamAdminError("Cannot remove yourself")
 
     membership_id = str(membership.id)
     membership.delete()
 
+    # Staff logins exist only for this team, so the login itself goes -
+    # otherwise the email/password would still sign in. Kept (claims
+    # cleared) only if it is somehow still a member of another store.
     try:
-        supabase_admin.update_user(
-            str(user_id),
-            app_metadata={
-                "organization_id": None,
-                "organization_name": None,
-                "role": "org_user",
-                "modules": [],
-            },
-        )
+        if Membership.objects.filter(user_id=user_id).exists():
+            supabase_admin.update_user(
+                str(user_id),
+                app_metadata={
+                    "organization_id": None,
+                    "organization_name": None,
+                    "role": "org_user",
+                    "modules": [],
+                },
+            )
+        else:
+            supabase_admin.delete_user(str(user_id))
     except SupabaseAdminError:
+        # The Membership is already gone, and TenantMiddleware refuses any
+        # request without one, so a failed cleanup grants nothing.
         pass
 
     write_audit_log(

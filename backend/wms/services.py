@@ -52,6 +52,53 @@ def _order_line_requirements(order):
     return required, unmatched
 
 
+def _return_lines(order, warehouse):
+    """A returned order's units as [(stock_item, quantity)], plus the names
+    of lines that match no stock item.
+
+    By SKU first, as everywhere else. A line with no SKU (most Shopify
+    stores leave it blank) falls back to its exact product name - but only
+    when exactly one stock item in the warehouse has that name, so a
+    returned unit is never put back on the wrong row. Returns only: booking
+    (consume_for_order/check_order_stock) still matches by SKU alone, since
+    name-matched shortages there would start warning on/blocking bookings.
+    """
+    required, no_sku = _order_line_requirements(order)
+    lines = []
+    for sku, need in required.items():
+        item, _ = StockItem.objects.get_or_create(
+            organization_id=order.organization_id,
+            warehouse=warehouse,
+            sku=sku,
+            defaults={"product_name": need["product_name"]},
+        )
+        lines.append((item, need["quantity"]))
+
+    by_name = {}
+    for item in order.items.all():
+        if not (item.barcode or "").strip():
+            name = (item.product_name or "").strip()
+            by_name[name] = by_name.get(name, 0) + item.quantity
+    unmatched = []
+    for name, quantity in by_name.items():
+        candidates = (
+            list(
+                StockItem.objects.filter(
+                    organization_id=order.organization_id,
+                    warehouse=warehouse,
+                    product_name__iexact=name,
+                )[:2]
+            )
+            if name
+            else []
+        )
+        if len(candidates) == 1:
+            lines.append((candidates[0], quantity))
+        else:
+            unmatched.append(name or "(unnamed item)")
+    return lines, unmatched
+
+
 def check_order_stock(order, warehouse=None):
     """Read-only availability check. Returns a list of shortage dicts -
     empty means everything is in stock. Never mutates anything, so the UI
@@ -133,7 +180,9 @@ def consume_for_order(order, *, force=False, actor_user_id=None, warehouse=None)
 
 
 @transaction.atomic
-def restock_from_return(order, *, condition, actor_user_id=None, actor_email="", warehouse=None, note=""):
+def restock_from_return(
+    order, *, condition, actor_user_id=None, actor_email="", warehouse=None, note="", unmatched=None
+):
     """Records a returns-desk scan outcome. Idempotent per order via
     order.return_received_at - it's stamped for both outcomes below, so a
     second scan of the same parcel (good or bad) is caught here rather
@@ -145,6 +194,9 @@ def restock_from_return(order, *, condition, actor_user_id=None, actor_email="",
     condition - it deliberately never touches StockItem/StockMovement,
     since a damaged unit isn't sellable stock and adding it back would
     misrepresent what's actually available to dispatch.
+
+    Pass a list as `unmatched` to get the names of lines that matched no
+    stock item (see _return_lines) - those are received but not restocked.
 
     Returns None if the order was already received (either outcome) -
     the caller should treat that the same as any other scan failure.
@@ -170,21 +222,18 @@ def restock_from_return(order, *, condition, actor_user_id=None, actor_email="",
     if condition == "good":
         warehouse = warehouse or get_default_warehouse(order.organization_id)
         if warehouse is not None:
-            required, _unmatched = _order_line_requirements(order)
-            for sku, need in required.items():
-                item, _ = StockItem.objects.get_or_create(
-                    organization_id=order.organization_id,
-                    warehouse=warehouse,
-                    sku=sku,
-                    defaults={"product_name": need["product_name"]},
-                )
-                item.quantity += need["quantity"]
+            lines, not_matched = _return_lines(order, warehouse)
+            if unmatched is not None:
+                unmatched.extend(not_matched)
+            for item, quantity in lines:
+                item.quantity += quantity
                 item.save(update_fields=["quantity", "updated_at"])
+                _queue_shopify_delta(item, quantity)
                 movements.append(
                     StockMovement.objects.create(
                         organization_id=order.organization_id,
                         stock_item=item,
-                        delta=need["quantity"],
+                        delta=quantity,
                         balance_after=item.quantity,
                         reason="return_restock",
                         order_number=order.order_number,
@@ -306,6 +355,19 @@ def import_skus_from_orders(*, organization_id, warehouse):
     return {"created": len(created), "skipped": len(seen) - len(created), "total_skus": len(seen)}
 
 
+def _queue_shopify_delta(stock_item, delta):
+    """For a Shopify-linked row, queue `delta` for "Push to Shopify". Shopify
+    sync (integrations.services) sets quantity = Shopify's + this pending
+    delta, so without it the next sync or inventory webhook would wipe the
+    change. Added with F() so it can't race a push clearing what it sent."""
+    if not stock_item.shopify_inventory_item_id:
+        return
+    StockItem.all_objects.filter(pk=stock_item.pk).update(
+        pending_shopify_delta=F("pending_shopify_delta") + delta
+    )
+    stock_item.refresh_from_db(fields=["pending_shopify_delta"])
+
+
 @transaction.atomic
 def adjust_stock(*, organization_id, stock_item, delta, actor_user_id=None, note=""):
     """Manual correction (stock count, damage, receiving new inventory).
@@ -316,11 +378,7 @@ def adjust_stock(*, organization_id, stock_item, delta, actor_user_id=None, note
     push_stock_changes_to_shopify)."""
     stock_item.quantity += delta
     stock_item.save(update_fields=["quantity", "updated_at"])
-    if stock_item.shopify_inventory_item_id:
-        StockItem.all_objects.filter(pk=stock_item.pk).update(
-            pending_shopify_delta=F("pending_shopify_delta") + delta
-        )
-        stock_item.refresh_from_db(fields=["pending_shopify_delta"])
+    _queue_shopify_delta(stock_item, delta)
     movement = StockMovement.objects.create(
         organization_id=organization_id,
         stock_item=stock_item,

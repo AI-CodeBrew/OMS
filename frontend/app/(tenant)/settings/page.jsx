@@ -6,7 +6,7 @@ import { getSupabaseBrowserClient } from "../../../lib/supabaseClient";
 import Button from "../../../components/shared/Button";
 import PasswordInput from "../../../components/shared/PasswordInput";
 import GreenTick from "../../../components/shared/GreenTick";
-import { STAFF_MODULE_OPTIONS } from "../../../components/layout/moduleNav";
+import { RETURNS_ASSOCIATE, STAFF_MODULE_OPTIONS } from "../../../components/layout/moduleNav";
 import teamService from "../../../services/teamService";
 import storesService from "../../../services/storesService";
 import { invalidateViewCache } from "../../../lib/viewCache";
@@ -50,8 +50,8 @@ function AccountTab({ user }) {
     e.preventDefault();
     setPasswordError("");
     setPasswordStatus("");
-    if (password.length < 6) {
-      setPasswordError("Password must be at least 6 characters");
+    if (password.length < 8) {
+      setPasswordError("Password must be at least 8 characters");
       return;
     }
     if (password !== confirmPassword) {
@@ -144,17 +144,24 @@ function moduleLabels(modules) {
     .join(", ");
 }
 
-function ModuleToggles({ value, onChange }) {
+function ModuleToggles({ value, onChange, options = STAFF_MODULE_OPTIONS }) {
   function toggle(key) {
     const set = new Set(value || []);
     if (set.has(key)) set.delete(key);
-    else set.add(key);
+    else {
+      // Returns Associate is a role on its own - turning it on clears the
+      // other modules, and turning any other module on clears it.
+      const exclusive = STAFF_MODULE_OPTIONS.filter((o) => o.exclusive).map((o) => o.key);
+      if (exclusive.includes(key)) set.clear();
+      else exclusive.forEach((k) => set.delete(k));
+      set.add(key);
+    }
     onChange(STAFF_MODULE_OPTIONS.map((o) => o.key).filter((k) => set.has(k)));
   }
 
   return (
     <div className="flex flex-wrap gap-2">
-      {STAFF_MODULE_OPTIONS.map((opt) => {
+      {options.map((opt) => {
         const on = (value || []).includes(opt.key);
         return (
           <button
@@ -162,6 +169,7 @@ function ModuleToggles({ value, onChange }) {
             type="button"
             onClick={() => toggle(opt.key)}
             aria-pressed={on}
+            title={opt.hint}
             className={`rounded-md border px-3 py-1.5 text-sm font-medium transition ${
               on
                 ? "border-brand-600 bg-brand-600 text-white"
@@ -173,11 +181,22 @@ function ModuleToggles({ value, onChange }) {
           </button>
         );
       })}
+      {options.filter((o) => o.hint).map((o) => (
+        <p key={o.key} className="w-full text-xs text-slate-500">
+          {o.label}: {o.hint}
+        </p>
+      ))}
     </div>
   );
 }
 
-function RoleAccessTab() {
+// associatesOnly: a WMS staff member's view - they can create and manage
+// Returns Associate logins only (the backend enforces the same limit).
+function RoleAccessTab({ associatesOnly = false }) {
+  const defaultModules = associatesOnly ? [RETURNS_ASSOCIATE] : ["oms"];
+  const moduleOptions = associatesOnly
+    ? STAFF_MODULE_OPTIONS.filter((o) => o.key === RETURNS_ASSOCIATE)
+    : STAFF_MODULE_OPTIONS;
   const [members, setMembers] = useState([]);
   const [emailDomain, setEmailDomain] = useState("");
   const [loading, setLoading] = useState(true);
@@ -186,7 +205,7 @@ function RoleAccessTab() {
   const [invite, setInvite] = useState({
     username: "",
     password: "",
-    modules: ["oms"],
+    modules: defaultModules,
   });
   const [inviting, setInviting] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -226,7 +245,7 @@ function RoleAccessTab() {
     setSuccess("");
     try {
       const created = await teamService.inviteMember(invite);
-      setInvite({ username: "", password: "", modules: ["oms"] });
+      setInvite({ username: "", password: "", modules: defaultModules });
       const login = created?.member?.email || `${invite.username}@${emailDomain}`;
       setSuccess(`Team member added. Login: ${login}`);
       await load();
@@ -242,6 +261,7 @@ function RoleAccessTab() {
     setEditForm({
       modules: [...(member.allowed_modules || [])],
       username: member.username || (member.email || "").split("@")[0] || "",
+      originalUsername: member.username || (member.email || "").split("@")[0] || "",
       password: "",
     });
     setError("");
@@ -258,7 +278,12 @@ function RoleAccessTab() {
     setSuccess("");
     try {
       const payload = { modules: editForm.modules };
-      if (editForm.username) payload.username = editForm.username;
+      // Only when edited - re-sending it rebuilds the login as
+      // username@org-domain, which would undo an email the member changed
+      // themselves from their Account tab.
+      if (editForm.username && editForm.username !== editForm.originalUsername) {
+        payload.username = editForm.username;
+      }
       if (editForm.password) payload.password = editForm.password;
       await teamService.updateMember(userId, payload);
       setEditingId(null);
@@ -312,7 +337,9 @@ function RoleAccessTab() {
         onSubmit={onInvite}
         className="space-y-4 rounded-lg border border-surface-border bg-white p-6"
       >
-        <h2 className="text-sm font-semibold text-slate-900">Add team member</h2>
+        <h2 className="text-sm font-semibold text-slate-900">
+          {associatesOnly ? "Add Returns Associate" : "Add team member"}
+        </h2>
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="block text-sm">
             <span className="mb-1 block text-slate-600">Username</span>
@@ -354,6 +381,7 @@ function RoleAccessTab() {
           </p>
           <ModuleToggles
             value={invite.modules}
+            options={moduleOptions}
             onChange={(modules) => setInvite((f) => ({ ...f, modules }))}
           />
         </div>
@@ -364,7 +392,9 @@ function RoleAccessTab() {
 
       <div className="overflow-hidden rounded-lg border border-surface-border bg-white">
         <div className="border-b border-surface-border px-5 py-3">
-          <h2 className="text-sm font-semibold text-slate-800">Organization users</h2>
+          <h2 className="text-sm font-semibold text-slate-800">
+            {associatesOnly ? "Returns Associates" : "Organization users"}
+          </h2>
         </div>
         {loading ? (
           <p className="px-5 py-6 text-sm text-slate-500">Loading…</p>
@@ -420,6 +450,7 @@ function RoleAccessTab() {
                       </p>
                       <ModuleToggles
                         value={editForm.modules}
+                        options={moduleOptions}
                         onChange={(modules) => setEditForm((f) => ({ ...f, modules }))}
                       />
                     </div>
@@ -654,6 +685,10 @@ export default function SettingsPage() {
   const user = useEffectiveUser();
   const isOrgAdmin =
     user?.role === "org_admin" || user?.isOrgAdmin === true;
+  // WMS staff manage Returns Associate logins (only those).
+  const canManageAssociates =
+    !isOrgAdmin && Array.isArray(user?.modules) && user.modules.includes("wms");
+  const showRbac = isOrgAdmin || canManageAssociates;
   const searchParams = useSearchParams();
   const [tab, setTab] = useState(() => searchParams.get("tab") || "account");
 
@@ -685,7 +720,7 @@ export default function SettingsPage() {
             Stores
           </button>
         ) : null}
-        {isOrgAdmin ? (
+        {showRbac ? (
           <button
             type="button"
             onClick={() => setTab("rbac")}
@@ -702,7 +737,7 @@ export default function SettingsPage() {
       <div className="mt-6">
         {tab === "account" ? <AccountTab user={user} /> : null}
         {tab === "stores" && isOrgAdmin ? <StoresTab /> : null}
-        {tab === "rbac" && isOrgAdmin ? <RoleAccessTab /> : null}
+        {tab === "rbac" && showRbac ? <RoleAccessTab associatesOnly={!isOrgAdmin} /> : null}
       </div>
     </div>
   );

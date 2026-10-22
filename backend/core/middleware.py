@@ -29,6 +29,13 @@ ACT_AS_HEADER = "HTTP_X_ACT_AS_ORGANIZATION"
 HUB_HEADER = "HTTP_X_DISPATCH_HUB"
 MUTATING_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 
+# The login is valid but its Membership in this store is gone (removed from
+# the team, or the store taken away) - see the membership gate below.
+ACCESS_REVOKED_CODE = "access_revoked"
+ACCESS_REVOKED_MESSAGE = (
+    "Your access to this store has been removed. Please contact your store admin."
+)
+
 ORG_SUSPENDED_CODE = "organization_suspended"
 ORG_SUSPENDED_MESSAGE = (
     "Your organization's account has been suspended. Please contact the FynkTech team."
@@ -112,16 +119,16 @@ class TenantMiddleware:
             except InvalidSupabaseToken:
                 claims = None
             if claims:
+                # app_metadata only: user_metadata is writable by the user
+                # themselves (supabase.auth.updateUser), so nothing that
+                # decides access may ever be read from it.
                 app_meta = claims.get("app_metadata") or {}
-                user_meta = claims.get("user_metadata") or {}
                 request.user_id = claims.get("sub")
                 request.auth_email = claims.get("email") or ""
                 role = app_meta.get("role") or ""
                 request.is_super_admin = role == "super_admin"
                 request.is_org_admin = role == "org_admin"
-                request.organization_id = (
-                    app_meta.get("organization_id") or user_meta.get("organization_id")
-                )
+                request.organization_id = app_meta.get("organization_id")
                 modules = app_meta.get("modules")
                 if isinstance(modules, list):
                     request.modules = [str(m) for m in modules if m]
@@ -151,6 +158,45 @@ class TenantMiddleware:
                     "code": ORG_SUSPENDED_CODE,
                 },
                 status=403,
+            )
+
+        # The JWT's role/modules are a snapshot from sign-in and stay valid
+        # until it expires (an hour by default), so a removed or downgraded
+        # member would keep their old access that long. The Membership row
+        # is the live truth: no row, no access; and role/modules come from
+        # it, not the token. Store-switch paths do their own Membership
+        # checks and must stay reachable to move to another store.
+        if (
+            request.organization_id
+            and request.user_id
+            and not request.is_super_admin
+            and not request.path.startswith(STORE_SWITCH_PREFIXES)
+        ):
+            from .models import Membership
+            from .rbac import resolve_modules_for_membership
+
+            membership = (
+                Membership.objects.filter(
+                    organization_id=request.organization_id, user_id=request.user_id
+                )
+                .only("role", "allowed_modules")
+                .first()
+            )
+            if membership is None:
+                return JsonResponse(
+                    {
+                        "success": False,
+                        "detail": ACCESS_REVOKED_MESSAGE,
+                        "error": ACCESS_REVOKED_MESSAGE,
+                        "code": ACCESS_REVOKED_CODE,
+                    },
+                    status=403,
+                )
+            request.is_org_admin = membership.role == "org_admin"
+            request.modules = resolve_modules_for_membership(
+                role=membership.role,
+                allowed_modules=membership.allowed_modules,
+                organization_id=request.organization_id,
             )
 
         act_as = request.META.get(ACT_AS_HEADER)

@@ -10,7 +10,7 @@ from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 
-from core.permissions import RequireModule
+from core.permissions import RequireAnyModule, RequireModule
 from core.scoping import org_filter
 from integrations.models import ShopifyConnection
 from integrations.services import pending_push_queryset
@@ -420,8 +420,14 @@ def _receive_return(order, raw_identifier, *, condition, actor_user_id, actor_em
             "order_number": order.order_number,
         }
 
+    unmatched = []
     movements = services.restock_from_return(
-        order, condition=condition, actor_user_id=actor_user_id, actor_email=actor_email, note=note
+        order,
+        condition=condition,
+        actor_user_id=actor_user_id,
+        actor_email=actor_email,
+        note=note,
+        unmatched=unmatched,
     )
     if movements is None:
         return {"success": False, "reason": "Already received", "order_number": order.order_number}
@@ -432,9 +438,17 @@ def _receive_return(order, raw_identifier, *, condition, actor_user_id, actor_em
         "order_number": order.order_number,
         "condition": "good",
         "restocked": [
-            {"sku": m.stock_item.sku, "quantity": m.delta, "balance": m.balance_after}
+            {
+                "sku": m.stock_item.sku,
+                "product_name": m.stock_item.product_name,
+                "quantity": m.delta,
+                "balance": m.balance_after,
+            }
             for m in movements
         ],
+        # Received, but no stock item to put these back on - the desk shows
+        # them so nobody assumes inventory moved.
+        "not_restocked": unmatched,
     }
 
 
@@ -445,8 +459,9 @@ class ReturnRestockView(viewsets.ViewSet):
     customer, the goods physically arrive at the warehouse later, and
     only that second event should move inventory."""
 
-    permission_classes = [RequireModule]
-    required_module = "wms"
+    # Also the Returns Associate's page (staff role "returns").
+    permission_classes = [RequireAnyModule]
+    required_any_module = ("wms", "returns")
 
     @action(detail=False, methods=["post"], url_path="lookup")
     def lookup(self, request):
@@ -554,8 +569,9 @@ class PackingView(viewsets.ViewSet):
     deducting again here would double-count.
     """
 
-    permission_classes = [RequireModule]
-    required_module = "wms"
+    # Also the Returns Associate's page (staff role "returns").
+    permission_classes = [RequireAnyModule]
+    required_any_module = ("wms", "returns")
 
     @action(detail=False, methods=["post"], url_path="scan")
     def scan(self, request):

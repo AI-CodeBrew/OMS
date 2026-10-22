@@ -5,8 +5,13 @@ import { useRouter } from "next/navigation";
 import Button from "../../../components/shared/Button";
 import InteractiveGrid from "../../../components/shared/InteractiveGrid";
 import PasswordInput from "../../../components/shared/PasswordInput";
-import authService, { ORG_SUSPENDED_CODE, takeLoginNotice } from "../../../services/authService";
+import authService, {
+  ACCESS_REVOKED_CODE,
+  ORG_SUSPENDED_CODE,
+  takeLoginNotice,
+} from "../../../services/authService";
 import healthService from "../../../services/healthService";
+import { isReturnsAssociate } from "../../../components/layout/moduleNav";
 
 function LogoMark({ className = "h-10 w-10" }) {
   return (
@@ -55,9 +60,10 @@ export default function LoginPage() {
       // Prove JWT works: protected health call before navigating. Also where
       // a suspended organization is caught - Supabase still signs them in.
       await healthService.getProtectedHealth();
-      router.replace("/dashboard");
+      // A Returns Associate has no Dashboard - straight to their desk.
+      router.replace(isReturnsAssociate(data.user) ? "/returns" : "/dashboard");
     } catch (err) {
-      if (err.code === ORG_SUSPENDED_CODE) {
+      if (err.code === ORG_SUSPENDED_CODE || err.code === ACCESS_REVOKED_CODE) {
         await authService.logout();
       }
       setError(err.message || "Login failed");
