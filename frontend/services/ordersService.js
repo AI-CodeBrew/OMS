@@ -38,6 +38,31 @@ class OrdersService {
     return data.results || [];
   }
 
+  // Dispatch Hub's Products picker: the distinct products in the given
+  // stores' orders ({store, status, q}) -
+  // {results: [{product_name, order_count}], truncated}.
+  async storeProducts(params) {
+    const response = await fetch(
+      `${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderStoreProducts}${buildQuery(params)}`,
+      { headers: authService.getAuthHeaders() }
+    );
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Failed to load products");
+    return data;
+  }
+
+  // The Critical Orders page's cards: {reasons: [{key, label, description,
+  // count}]}. A reason's orders come from list({critical_reason: key}).
+  async criticalSummary(params = {}) {
+    const response = await fetch(
+      `${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderCriticalSummary}${buildQuery(params)}`,
+      { headers: authService.getAuthHeaders() }
+    );
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Failed to load critical orders");
+    return data;
+  }
+
   async dashboard(params = {}) {
     const response = await fetch(
       `${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderDashboard}${buildQuery(params)}`,
@@ -126,6 +151,18 @@ class OrdersService {
     return data;
   }
 
+  // The couriers' city list - only these spellings pass Approve.
+  async getCityNames() {
+    const response = await fetch(`${apiConfig.baseUrl}${API_ENDPOINTS.oms.cities}`, {
+      headers: authService.getAuthHeaders(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.detail || "Failed to load cities");
+    }
+    return data.cities || [];
+  }
+
   async create(order) {
     const response = await fetch(`${apiConfig.baseUrl}${API_ENDPOINTS.oms.orders}`, {
       method: "POST",
@@ -171,6 +208,21 @@ class OrdersService {
       method: "POST",
       headers: authService.getAuthHeaders(),
       body: JSON.stringify({ order_number: orderNumber, tracking_number: trackingNumber }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.detail || "Scan failed");
+    }
+    return data;
+  }
+
+  // Assigning Courier's Scan: a parcel's barcode (tracking or order number)
+  // marks it Packed. Returns { success, reason, order_number } either way.
+  async scanPack({ code }) {
+    const response = await fetch(`${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderScanPack}`, {
+      method: "POST",
+      headers: authService.getAuthHeaders(),
+      body: JSON.stringify({ code }),
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {

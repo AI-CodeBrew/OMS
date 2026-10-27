@@ -1,43 +1,55 @@
-// `tone` groups each status into a category for OrderStatusTabs' left-edge
-// accent stripe (blue = fresh/queue, amber = needs action, indigo = moving
-// through fulfillment, green = success, red = terminal/negative) - purely
-// visual, doesn't affect filtering/routing.
+// The Orders page's cards (backend: oms.services.WORKFLOW_CARD_STATUSES) -
+// each lists several statuses, so its value is "card:<name>", never a bare
+// status. `tone` is OrderStatusTabs' left-edge accent stripe (blue = fresh,
+// amber = needs action, indigo = moving through fulfillment, green =
+// success, red = terminal/negative) - purely visual.
 export const STATUS_TABS = [
-  { value: "all", label: "All", tone: "neutral" },
-  { value: "new", label: "New", tone: "blue" },
-  { value: "awaiting_approval", label: "Awaiting Confirmation", tone: "amber" },
-  { value: "approved", label: "Approved", tone: "indigo" },
-  { value: "awaiting_assigning", label: "Assigning Courier", tone: "amber" },
-  { value: "city_issue", label: "City Issue", tone: "amber" },
-  { value: "booking_pending", label: "Awaiting Booking", tone: "amber" },
-  { value: "ready_to_print", label: "Ready to Print", tone: "indigo" },
-  { value: "ready_to_pick", label: "Ready to Pick", tone: "indigo" },
-  // Booking Pending and Awaiting Dispatched also list booked orders by what
-  // the courier calls them - see orderInTab below.
-  { value: "awaiting_dispatched", label: "Awaiting Dispatched", tone: "indigo" },
-  { value: "dispatched", label: "Dispatched", tone: "indigo" },
-  // Not a real status: Dispatched (courier "In Transit") orders that have
-  // been there for more than 3 days (backend: oms.services.
-  // critical_transit_orders) - they stay in Dispatched too. Computed fresh,
-  // so it is never cached - see orders/page.jsx.
-  { value: "critical", label: "Critical Orders", tone: "red" },
-  { value: "out_for_delivery", label: "Out for Delivery", tone: "indigo" },
-  { value: "attempt", label: "Delivery Attempt Failed", tone: "amber" },
-  { value: "cancelled", label: "Cancelled", tone: "red" },
-  { value: "returned", label: "Returned", tone: "red" },
-  { value: "delivered", label: "Delivered", tone: "green" },
+  { value: "all", label: "All Orders", tone: "neutral" },
+  { value: "card:awaiting_confirmation", label: "Awaiting Confirmation", tone: "blue" },
+  { value: "card:approved", label: "Approved", tone: "indigo" },
+  { value: "card:assigning_courier", label: "Assigning Courier", tone: "amber" },
+  { value: "card:dispatched", label: "Dispatched", tone: "indigo" },
+  { value: "card:undelivered", label: "Undelivered", tone: "amber" },
+  { value: "card:delivered", label: "Delivered", tone: "green" },
+  { value: "card:return_in_transit", label: "Return in Transit", tone: "red" },
+  { value: "card:returned", label: "Returned", tone: "red" },
+  { value: "card:cancelled", label: "Cancelled", tone: "red" },
 ];
 
-export const STATUS_LABELS = STATUS_TABS.reduce(
-  (acc, tab) => {
-    acc[tab.value] = tab.label;
-    return acc;
-  },
-  // No longer tabs - nothing new enters them (New goes straight to Awaiting
-  // Assigning) - but orders already there, and order logs that mention
-  // them, still need their names.
-  { pending_cc: "Pending CC", pending_cod: "Pending COD" }
-);
+export const ASSIGNING_COURIER_TAB = "card:assigning_courier";
+
+// A card's tab entry by the card name an order carries (order.workflow_card).
+export function cardTab(card) {
+  return STATUS_TABS.find((tab) => tab.value === `card:${card}`) || null;
+}
+
+// Every status's own name - order logs, the detail header, imports. Same
+// labels as the backend's Order.STATUS_CHOICES.
+export const STATUS_LABELS = {
+  new: "New",
+  pending_cc: "Pending CC",
+  pending_cod: "Pending COD",
+  city_issue: "City Issue",
+  awaiting_assigning: "Approved (Awaiting Courier)",
+  awaiting_approval: "Awaiting Confirmation",
+  approved: "Approved",
+  booking_pending: "Awaiting Booking",
+  ready_to_print: "Ready to Print",
+  ready_to_pick: "Ready to Pick",
+  dispatch_issue: "Dispatch Issue",
+  awaiting_dispatched: "Awaiting Dispatched",
+  dispatched: "Dispatched",
+  out_for_delivery: "Out for Delivery",
+  attempt: "Delivery Attempt Failed",
+  delivered: "Delivered",
+  cancelled: "Cancelled",
+  returned: "Returned",
+  // Not a status - Critical Orders has its own page.
+  critical: "Critical Orders",
+};
+
+// Cancel Order's reasons - one has to be picked.
+export const CANCEL_REASONS = ["Customer Cancelled", "On Seller Request", "Order Price Issue", "Fake/Test Order"];
 
 // Same lists as the backend's QUEUE_COURIER_STATUSES /
 // AWAITING_PICKUP_COURIER_STATUSES (oms/services.py) - the courier's own
@@ -46,20 +58,24 @@ export const STATUS_LABELS = STATUS_TABS.reduce(
 // Awaiting Dispatched those it calls Awaiting Pickup / Booked / ready
 // besides every order whose load sheet is made; both kinds stay in Ready to
 // Print too until their load sheet is made (backend:
-// oms.services.booking_pending_orders / awaiting_dispatch_orders).
+// oms.services.booking_pending_orders / awaiting_dispatch_orders). No
+// longer tabs, but a dashboard or old link can still open them.
 const ON_SHELF_STATUSES = new Set(["ready_to_print", "ready_to_pick"]);
 const QUEUE_COURIER_STATUSES = new Set(["queue", "queued", "unbooked", "pending"]);
 const AWAITING_PICKUP_COURIER_STATUSES = new Set(["awaiting pickup", "awaiting_pickup", "booked", "ready"]);
 
-// Whether `order` belongs on status tab `tab` - the client-side twin of the
+// Whether `order` belongs on tab `tab` - the client-side twin of the
 // backend's tab filter, for patching live updates in. "critical" is
 // time-dependent and handled by the orders page itself.
 export function orderInTab(order, tab) {
   if (tab === "all") return true;
+  // A card: the backend says which one the order is under.
+  if (tab.startsWith("card:")) return `card:${order.workflow_card}` === tab;
   // A dashboard card opens several statuses at once ("pending_cc,city_issue,...").
   if (tab.includes(",")) return tab.split(",").includes(order.status);
   const courierStatus = (order.courier_status || "").trim().toLowerCase();
   const onShelf = ON_SHELF_STATUSES.has(order.status);
+  if (tab === "new") return order.status === "new" || order.status === "awaiting_approval";
   if (tab === "booking_pending") {
     return order.status === "booking_pending" || (onShelf && QUEUE_COURIER_STATUSES.has(courierStatus));
   }
@@ -129,25 +145,50 @@ export const EDITABLE_STATUSES = new Set([
   "awaiting_assigning",
 ]);
 
+// Assigning Courier's own three, offered first for any selection that is
+// all in that card (whatever each order's own status there) - the orders
+// page puts the statuses' print/load-sheet actions after them.
+export const ASSIGNING_COURIER_ACTIONS = [
+  { key: "cancel", action: "cancel", label: "Cancel Order" },
+  { key: "change_courier", action: "change_courier", label: "Change Courier" },
+  { key: "edit_order", action: "edit_order", label: "Edit Order" },
+];
+
 // Per-status, which bulk/row actions make sense - keeps OrderRowMenu and the
 // Actions dropdown from offering transitions the backend would reject.
+export const REVERT_ACTION = { action: "revert_status", label: "Revert to previous status" };
+
 export const ACTIONS_BY_STATUS = {
   // Untouched inbox - CS picks the order up into Pending CC/COD (whichever
   // matches its gateway) before working it. An order already handled
   // outside OMS can instead be marked straight to its outcome (backend:
   // oms.services.set_outcome_by_hand).
   new: [
-    { action: "acknowledge", label: "Start Processing" },
+    { action: "acknowledge", label: "Approve" },
+    { action: "approve", label: "Approve (ship without booking)" },
     { action: "mark_dispatched_by_hand", label: "Mark Dispatched" },
     { action: "mark_delivered_by_hand", label: "Mark Delivered" },
     { action: "mark_returned_by_hand", label: "Mark Returned" },
     { action: "cancel", label: "Cancel Order" },
   ],
-  pending_cc: [{ action: "confirm", label: "Confirm" }, { action: "cancel", label: "Cancel Order" }],
-  pending_cod: [{ action: "confirm", label: "Confirm" }, { action: "cancel", label: "Cancel Order" }],
-  city_issue: [{ action: "resolve_city_issue", label: "Resolve city issue" }, { action: "cancel", label: "Cancel Order" }],
-  awaiting_assigning: [{ action: "assign_courier", label: "Assign courier" }, { action: "cancel", label: "Cancel Order" }],
-  awaiting_approval: [{ action: "approve", label: "Approve" }, { action: "cancel", label: "Cancel Order" }],
+  // Revert (to the status the order came from) is offered on every status
+  // before a courier booking exists - the order detail names the status,
+  // e.g. "Revert to Pending COD" (backend: oms.services.previous_status).
+  pending_cc: [{ action: "confirm", label: "Confirm" }, REVERT_ACTION, { action: "cancel", label: "Cancel Order" }],
+  pending_cod: [{ action: "confirm", label: "Confirm" }, REVERT_ACTION, { action: "cancel", label: "Cancel Order" }],
+  // Approve here re-checks an order whose city was fixed by Edit Order.
+  city_issue: [
+    { action: "resolve_city_issue", label: "Resolve city issue" },
+    { action: "acknowledge", label: "Approve" },
+    REVERT_ACTION,
+    { action: "cancel", label: "Cancel Order" },
+  ],
+  awaiting_assigning: [
+    { action: "assign_courier", label: "Assign courier" },
+    REVERT_ACTION,
+    { action: "cancel", label: "Cancel Order" },
+  ],
+  awaiting_approval: [{ action: "approve", label: "Approve" }, REVERT_ACTION, { action: "cancel", label: "Cancel Order" }],
   approved: [
     { key: "dispatch", action: "dispatch", label: "Dispatch" },
     { key: "invoice_n_dispatch", action: "dispatch", label: "Invoice N Dispatch" },
@@ -157,6 +198,7 @@ export const ACTIONS_BY_STATUS = {
     { key: "generate_picklist", action: "generate_picklist", label: "Generate Picklist", disabled: true },
     { key: "apply_tag", action: "apply_tag", label: "Apply Tag", disabled: true },
     { key: "cancel_fulfillment", action: "cancel_fulfillment", label: "Cancel Fulfillment" },
+    { key: "revert_status", ...REVERT_ACTION },
     { key: "cancel", action: "cancel", label: "Cancel Order" },
   ],
   // Handed to the courier (its load sheet made, or the courier reports it

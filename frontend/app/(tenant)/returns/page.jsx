@@ -7,50 +7,52 @@ import Button from "../../../components/shared/Button";
 import Pagination from "../../../components/shared/Pagination";
 import DateRangeFilter from "../../../components/orders/DateRangeFilter";
 import ScanPanel from "../../../components/wms/ScanPanel";
+import ReturnBreakdownModal from "../../../components/wms/ReturnBreakdownModal";
 import { SEARCH_FIELDS } from "../../../components/orders/statusConfig";
 
-// Every returned order ends up in exactly one of these three buckets -
-// "" (all) plus the two that make up a handled parcel: good (restocked)
-// and bad (damaged, never touches inventory). Drives both the summary
-// cards and the table filter, so a card click and its badge always agree.
-const BUCKETS = [
-  { value: "", label: "All" },
-  { value: "in_progress", label: "Return in Progress" },
-  { value: "awaiting", label: "Awaiting Scan" },
-  { value: "received", label: "Received" },
-  { value: "damaged", label: "Damaged" },
-];
-
-const CONDITION_OPTIONS = [
-  { value: "good", label: "Good", tone: "success" },
-  { value: "bad", label: "Bad", tone: "danger" },
-];
+// Every return is in exactly one of three buckets - "" (Total) is all of
+// them: Awaiting Scan (the courier says returned, not scanned in yet),
+// Received (scanned in), Not Received (Return in Transit - the courier is
+// still bringing it back). Drives both the summary cards and the table
+// filter, so a card click and its badge always agree.
 
 function formatDate(value) {
   return value ? new Date(value).toLocaleString() : "—";
 }
 
+// "3 good · 1 damaged · 1 lost" - a received parcel's count.
+function breakdownText(breakdown) {
+  if (!breakdown?.length) return "";
+  const t = breakdown.reduce(
+    (acc, l) => ({ good: acc.good + l.good, damaged: acc.damaged + l.damaged, lost: acc.lost + l.lost }),
+    { good: 0, damaged: 0, lost: 0 }
+  );
+  return [
+    `${t.good} good`,
+    t.damaged ? `${t.damaged} damaged` : "",
+    t.lost ? `${t.lost} lost` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
 function describeOutcome(entry) {
-  if (entry.condition === "bad") return "Marked damaged — not added to inventory";
   const restocked = entry.restocked || [];
   const missed = entry.not_restocked || [];
   const parts = restocked.map((r) => `${r.sku || r.product_name} +${r.quantity}`);
   // Lines with no stock item to put back on (no SKU, no unique name match).
   if (missed.length) parts.push(`not in inventory: ${missed.join(", ")}`);
-  if (parts.length === 0) return "Received — no tracked SKUs";
-  return `Received — ${parts.join("; ")}`;
+  const counted = breakdownText(entry.breakdown);
+  const stock = parts.length ? `restocked ${parts.join("; ")}` : "nothing restocked";
+  return `Received${counted ? ` (${counted})` : ""} — ${stock}`;
 }
 
 function bucketParams(bucket) {
-  // "Return in Progress" isn't status="returned" yet (Smartlane has just
-  // reported the courier is bringing it back) - drop the page's default
-  // status filter and switch to the return_in_progress flag instead.
-  if (bucket === "in_progress")
-    return { status: undefined, return_in_progress: "yes", received: undefined, return_condition: undefined };
-  if (bucket === "awaiting") return { received: "no", return_condition: undefined };
-  if (bucket === "received") return { received: "yes", return_condition: "good" };
-  if (bucket === "damaged") return { received: "yes", return_condition: "bad" };
-  return { received: undefined, return_condition: undefined };
+  if (bucket === "not_received") return { status: "card:return_in_transit", received: undefined };
+  if (bucket === "awaiting") return { status: "returned", received: "no" };
+  if (bucket === "received") return { status: "returned", received: "yes" };
+  // Total: returned, or still on the way back.
+  return { status: "card:all_returns", received: undefined };
 }
 
 function SummaryCard({ label, value, tone = "default", hint, active = false, onClick }) {
@@ -105,6 +107,8 @@ export default function ReturnsPage() {
   const [bulkBusy, setBulkBusy] = useState(null);
   const [rowBusyId, setRowBusyId] = useState(null);
   const [notice, setNotice] = useState("");
+  // The parcel being counted in the receive popup: { orderNumber, lines }.
+  const [receiving, setReceiving] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -118,7 +122,6 @@ export default function ReturnsPage() {
     try {
       const [data, summaryData] = await Promise.all([
         ordersService.list({
-          status: "returned",
           page,
           page_size: pageSize,
           ...bucketParams(bucket),
@@ -152,11 +155,13 @@ export default function ReturnsPage() {
     setPage(1);
   }
 
-  const isInProgress = bucket === "in_progress";
+  const isInProgress = bucket === "not_received";
   // Nothing here has reached status="returned" yet, so there's nothing to
   // scan/receive - the bulk select/receive UI only applies to the other
   // buckets, which are all real "returned" rows.
-  const pendingRows = isInProgress ? [] : orders.filter((o) => !o.return_received_at);
+  // Only parcels the courier has returned can be received - Total also
+  // lists ones still on the way back.
+  const pendingRows = isInProgress ? [] : orders.filter((o) => o.status === "returned" && !o.return_received_at);
   const selectedRows = orders.filter((o) => selectedIds.has(o.id));
   const allPendingSelected =
     pendingRows.length > 0 && pendingRows.every((o) => selectedIds.has(o.id));
@@ -174,18 +179,31 @@ export default function ReturnsPage() {
     setSelectedIds(allPendingSelected ? new Set() : new Set(pendingRows.map((o) => o.id)));
   }
 
-  async function receiveOne(orderNumber, condition) {
-    const confirmText =
-      condition === "bad"
-        ? `Mark ${orderNumber} as damaged? It's marked received but its stock is not restored.`
-        : `Receive ${orderNumber} as good? Its units go back into stock.`;
-    if (!window.confirm(confirmText)) return;
+  // A row's Receive: looks the parcel up, then opens the count popup.
+  async function openReceive(orderNumber) {
     setRowBusyId(orderNumber);
     setError("");
     setNotice("");
     try {
-      const result = await wmsService.scanReturn({ orderNumber, condition });
+      const result = await wmsService.lookupReturn({ orderNumber });
+      if (result.success) setReceiving({ orderNumber: result.order_number, lines: result.lines || [] });
+      else setError(`${orderNumber} — ${result.reason}`);
+    } catch (err) {
+      setError(err.message || "Lookup failed");
+    } finally {
+      setRowBusyId(null);
+    }
+  }
+
+  // The popup's Confirm: records the count, restocks the good units.
+  async function confirmReceive(breakdown) {
+    const { orderNumber } = receiving;
+    setError("");
+    setNotice("");
+    try {
+      const result = await wmsService.scanReturn({ orderNumber, breakdown });
       if (result.success) {
+        setReceiving(null);
         setNotice(`${orderNumber} — ${describeOutcome(result)}`);
         await load();
       } else {
@@ -193,8 +211,6 @@ export default function ReturnsPage() {
       }
     } catch (err) {
       setError(err.message || "Receive failed");
-    } finally {
-      setRowBusyId(null);
     }
   }
 
@@ -233,8 +249,8 @@ export default function ReturnsPage() {
         <div>
           <h1 className="text-[28px] font-semibold leading-8 text-slate-900">Returns</h1>
           <p className="mt-1 text-sm text-slate-500">
-            Orders the courier reported as returned. Scan a parcel when it physically arrives, then
-            say whether it came back good (restocked) or damaged (not restocked).
+            Scan a returned parcel when it arrives, then count each SKU as good, damaged or lost/missing.
+            Only good units go back into stock.
           </p>
         </div>
         <DateRangeFilter
@@ -260,84 +276,83 @@ export default function ReturnsPage() {
         <p className="mt-4 rounded-md bg-green-50 px-3 py-2 text-sm text-green-700">{notice}</p>
       ) : null}
 
-      <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-5">
-        <SummaryCard
-          label="Total Returns"
-          value={summary.total_returns ?? 0}
-          active={bucket === ""}
-          onClick={() => applyBucket("")}
-        />
-        <SummaryCard
-          label="Return in Progress"
-          value={summary.return_in_progress ?? 0}
-          hint="Courier bringing it back, not yet returned"
-          active={bucket === "in_progress"}
-          onClick={() => applyBucket("in_progress")}
-        />
-        <SummaryCard
-          label="Awaiting Scan"
-          value={summary.awaiting_scan ?? 0}
-          tone="warning"
-          hint="Courier returned, not yet scanned"
-          active={bucket === "awaiting"}
-          onClick={() => applyBucket("awaiting")}
-        />
-        <SummaryCard
-          label="Received"
-          value={summary.received ?? 0}
-          tone="success"
-          hint="Scanned in good, stock restored"
-          active={bucket === "received"}
-          onClick={() => applyBucket("received")}
-        />
-        <SummaryCard
-          label="Damaged"
-          value={summary.damaged ?? 0}
-          tone="danger"
-          hint="Scanned in bad, not restocked"
-          active={bucket === "damaged"}
-          onClick={() => applyBucket("damaged")}
-        />
-      </div>
-
-      {summary.awaiting_scan > 0 && bucket !== "awaiting" ? (
-        <div className="mt-4 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5">
-          <span className="text-sm text-amber-800">
-            <strong>{summary.awaiting_scan}</strong>{" "}
-            {summary.awaiting_scan === 1 ? "parcel was" : "parcels were"} returned by the courier
-            but never scanned in.
-          </span>
-          <button
-            type="button"
-            onClick={() => applyBucket("awaiting")}
-            className="ml-auto shrink-0 text-sm font-medium text-amber-800 underline"
-          >
-            View
-          </button>
-        </div>
-      ) : null}
-
+      {/* One grid so phones can reorder it: Scan first (what the desk does
+          all day), then the report cards, then the orders list. From lg the
+          cards span the top and Scan sits beside the list, as before. */}
       <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-[340px_1fr]">
-        <ScanPanel
-          title="Scan returned parcel"
-          hint="Scanning only confirms the parcel - nothing is recorded until you pick its condition."
-          actionLabel="Check"
-          fieldLabel="Tracking number"
-          onScan={(trackingNumber) => wmsService.lookupReturn({ trackingNumber })}
-          decision={{
-            prompt: "Parcel condition?",
-            options: CONDITION_OPTIONS,
-            // The lookup phase already resolved the tracking number to a
-            // real order - ScanPanel hands back that order's order_number
-            // here, not the raw tracking number, so this confirms against
-            // the exact order that was found.
-            onDecide: (orderNumber, condition) => wmsService.scanReturn({ orderNumber, condition }),
-          }}
-          renderSuccess={describeOutcome}
-          onAfterSuccess={load}
-        />
+        <div className="order-2 lg:order-1 lg:col-span-2">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <SummaryCard
+              label="Total Returns"
+              value={summary.total_returns ?? 0}
+              active={bucket === ""}
+              onClick={() => applyBucket("")}
+            />
+            <SummaryCard
+              label="Awaiting Scan"
+              value={summary.awaiting_scan ?? 0}
+              tone="warning"
+              hint="Courier returned, not yet scanned"
+              active={bucket === "awaiting"}
+              onClick={() => applyBucket("awaiting")}
+            />
+            <SummaryCard
+              label="Received"
+              value={summary.received_all ?? 0}
+              tone="success"
+              hint="Scanned in and counted"
+              active={bucket === "received"}
+              onClick={() => applyBucket("received")}
+            />
+            <SummaryCard
+              label="Not Received"
+              value={summary.not_received ?? 0}
+              tone="danger"
+              hint="Return in transit, not back yet"
+              active={bucket === "not_received"}
+              onClick={() => applyBucket("not_received")}
+            />
+          </div>
 
-        <div className="min-w-0">
+          {summary.awaiting_scan > 0 && bucket !== "awaiting" ? (
+            <div className="mt-4 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5">
+              <span className="text-sm text-amber-800">
+                <strong>{summary.awaiting_scan}</strong>{" "}
+                {summary.awaiting_scan === 1 ? "parcel was" : "parcels were"} returned by the courier
+                but never scanned in.
+              </span>
+              <button
+                type="button"
+                onClick={() => applyBucket("awaiting")}
+                className="ml-auto shrink-0 text-sm font-medium text-amber-800 underline"
+              >
+                View
+              </button>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="order-1 lg:order-2">
+          <ScanPanel
+            title="Scan returned parcel"
+            hint="Scanning only finds the parcel - nothing is recorded until you confirm its count in the popup."
+            actionLabel="Check"
+            fieldLabel="Tracking number"
+            onScan={async (trackingNumber) => {
+              const result = await wmsService.lookupReturn({ trackingNumber });
+              // Found and receivable: count it in the popup. The lookup
+              // resolved the tracking number to the real order, so the
+              // receive goes against that exact order_number.
+              if (result.success) {
+                setReceiving({ orderNumber: result.order_number, lines: result.lines || [] });
+              }
+              return result;
+            }}
+            renderSuccess={() => "Found — count the items in the popup"}
+          />
+        </div>
+
+        <div className="order-3 min-w-0">
           <div className="mb-3 flex flex-wrap items-center gap-2">
             <form
               onSubmit={(e) => {
@@ -449,15 +464,13 @@ export default function ReturnsPage() {
                 ) : orders.length === 0 ? (
                   <tr>
                     <td colSpan={9} className="px-3 py-6 text-center text-slate-500">
-                      {bucket === "in_progress"
-                        ? "Nothing in progress."
+                      {bucket === "not_received"
+                        ? "No returns in transit."
                         : bucket === "awaiting"
                           ? "Nothing awaiting scan."
                           : bucket === "received"
                             ? "No returns received yet."
-                            : bucket === "damaged"
-                              ? "No damaged returns."
-                              : "No returned orders."}
+                            : "No returned orders."}
                     </td>
                   </tr>
                 ) : (
@@ -469,7 +482,7 @@ export default function ReturnsPage() {
                             type="checkbox"
                             checked={selectedIds.has(order.id)}
                             onChange={() => toggleRow(order.id)}
-                            disabled={Boolean(order.return_received_at)}
+                            disabled={Boolean(order.return_received_at) || order.status !== "returned"}
                             aria-label={`Select ${order.order_number}`}
                           />
                         ) : null}
@@ -478,10 +491,10 @@ export default function ReturnsPage() {
                       <td className="px-3 py-2 text-slate-600">{order.customer_name}</td>
                       <td className="px-3 py-2 text-slate-600">{order.courier_name || "—"}</td>
                       <td className="px-3 py-2 text-slate-500">
-                        {formatDate(isInProgress ? order.return_in_progress_at : order.returned_at)}
+                        {formatDate(order.status === "returned" ? order.returned_at : order.return_in_progress_at)}
                       </td>
                       <td className="px-3 py-2">
-                        {isInProgress ? (
+                        {order.status !== "returned" ? (
                           <span className="text-slate-400">—</span>
                         ) : order.return_received_at ? (
                           <span className="text-slate-500">
@@ -494,41 +507,36 @@ export default function ReturnsPage() {
                         )}
                       </td>
                       <td className="px-3 py-2 text-slate-500">
-                        {isInProgress ? "—" : order.return_received_by_email || "—"}
+                        {order.return_received_by_email || "—"}
                       </td>
                       <td className="px-3 py-2 text-right tabular-nums text-slate-900">
                         {order.total_amount}
                       </td>
                       <td className="px-3 py-2 text-right">
-                        {isInProgress ? null : order.return_received_at ? (
-                          order.return_condition === "bad" ? (
-                            <span className="rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-medium text-red-700">
-                              Damaged
-                            </span>
-                          ) : (
-                            <span className="rounded-full bg-green-100 px-2 py-0.5 text-[11px] font-medium text-green-700">
-                              Received
-                            </span>
-                          )
+                        {order.status !== "returned" ? (
+                          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600">
+                            Not received
+                          </span>
+                        ) : order.return_received_at ? (
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                              order.return_condition === "bad"
+                                ? "bg-red-100 text-red-700"
+                                : "bg-green-100 text-green-700"
+                            }`}
+                          >
+                            {breakdownText(order.return_breakdown) ||
+                              (order.return_condition === "bad" ? "Damaged" : "Received")}
+                          </span>
                         ) : (
-                          <div className="flex justify-end gap-2">
-                            <button
-                              type="button"
-                              disabled={rowBusyId === order.order_number}
-                              onClick={() => receiveOne(order.order_number, "good")}
-                              className="text-xs font-medium text-green-700 hover:underline disabled:opacity-50"
-                            >
-                              Good
-                            </button>
-                            <button
-                              type="button"
-                              disabled={rowBusyId === order.order_number}
-                              onClick={() => receiveOne(order.order_number, "bad")}
-                              className="text-xs font-medium text-red-700 hover:underline disabled:opacity-50"
-                            >
-                              Bad
-                            </button>
-                          </div>
+                          <button
+                            type="button"
+                            disabled={rowBusyId === order.order_number}
+                            onClick={() => openReceive(order.order_number)}
+                            className="text-xs font-medium text-brand-700 hover:underline disabled:opacity-50"
+                          >
+                            Receive
+                          </button>
                         )}
                       </td>
                     </tr>
@@ -550,6 +558,8 @@ export default function ReturnsPage() {
           />
         </div>
       </div>
+
+      <ReturnBreakdownModal request={receiving} onConfirm={confirmReceive} onClose={() => setReceiving(null)} />
 
       {confirmCondition ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">

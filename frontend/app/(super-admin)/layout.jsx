@@ -49,6 +49,11 @@ const NAV = [
     label: "Tickets",
     match: (path) => path.startsWith("/admin/tickets"),
   },
+  {
+    href: "/admin/cities",
+    label: "Cities",
+    match: (path) => path.startsWith("/admin/cities"),
+  },
 ];
 
 const PLATFORM_ACCOUNT_PAGES = ["barq-raftar", "postex", "smartlane"].map(

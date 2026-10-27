@@ -1,63 +1,47 @@
 "use client";
 
-import { useState } from "react";
-import Button from "../../shared/Button";
 import EditableField from "../../shared/EditableField";
-import ordersService from "../../../services/ordersService";
-import { EDITABLE_STATUSES } from "../statusConfig";
 import FynkTechDispatchTag from "../FynkTechDispatchTag";
+import { ReplacementMark, TicketMark } from "../OrdersTable";
 
 const ITEM_FIELDS = [
   ["product_name", "Product", "text"],
   ["unit_price", "Price", "number"],
   ["quantity", "Qty", "number"],
   ["discount_amount", "Discount Amount", "number"],
-  ["weight_grams", "Weight (grams)", "number"],
 ];
 
-function serializeItem(source, overrides = {}) {
-  return {
-    product_name: overrides.product_name ?? source.product_name,
-    quantity: Number(overrides.quantity ?? source.quantity) || 1,
-    unit_price: overrides.unit_price ?? source.unit_price ?? 0,
-    vendor: overrides.vendor ?? source.vendor ?? "",
-    barcode: overrides.barcode ?? source.barcode ?? "",
-    compare_at_price: overrides.compare_at_price ?? source.compare_at_price ?? null,
-    discount_amount: overrides.discount_amount ?? source.discount_amount ?? 0,
-    weight_grams: overrides.weight_grams ?? source.weight_grams ?? null,
-  };
-}
+// Line items edit through the detail panel's single Edit (draft.items),
+// saved together with every other field - no per-item Edit/Save here.
+export default function LineItemsTab({ order, draft, editing, onChange }) {
+  const items = editing ? draft.items : order.items;
 
-export default function LineItemsTab({ order, onOrderChanged }) {
-  const [editingItemId, setEditingItemId] = useState(null);
-  const [itemDraft, setItemDraft] = useState({});
-  const [saving, setSaving] = useState(false);
-
-  function startEdit(item) {
-    setEditingItemId(item.id);
-    setItemDraft({ ...item });
-  }
-
-  async function save() {
-    setSaving(true);
-    try {
-      const items = order.items.map((i) =>
-        i.id === editingItemId ? serializeItem(i, itemDraft) : serializeItem(i)
-      );
-      await ordersService.update(order.id, { items });
-      setEditingItemId(null);
-      onOrderChanged();
-    } finally {
-      setSaving(false);
-    }
+  function onItemChange(index, field, value) {
+    onChange(
+      "items",
+      draft.items.map((item, i) => (i === index ? { ...item, [field]: value } : item))
+    );
   }
 
   return (
     <div>
-      <div className="grid grid-cols-2 gap-3 rounded-md bg-brand-800 px-4 py-3 text-sm text-white sm:grid-cols-5">
+      <div className="grid grid-cols-2 gap-3 rounded-md bg-brand-800 px-4 py-3 text-sm text-white sm:grid-cols-3 lg:grid-cols-6">
         <div>
-          <div className="text-[10px] uppercase tracking-wide text-brand-100">Order</div>
-          {order.order_number}
+          <div className="text-[10px] uppercase tracking-wide text-brand-100">OMS Order ID</div>
+          {order.supabase_order_no ?? "N/A"}
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-brand-100">Store Order ID</div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {order.order_number}
+            <ReplacementMark order={order} onDark />
+            <TicketMark order={order} onDark />
+          </div>
+          {order.recreate_type === "replacement" && order.recreated_from_number ? (
+            <div className="mt-0.5 text-[11px] text-brand-100">
+              Replacement for {order.recreated_from_number}
+            </div>
+          ) : null}
         </div>
         <div>
           <div className="text-[10px] uppercase tracking-wide text-brand-100">Location</div>
@@ -81,40 +65,27 @@ export default function LineItemsTab({ order, onOrderChanged }) {
       </div>
 
       <div className="mt-3 space-y-2">
-        {order.items.map((item) => (
-          <div key={item.id} className="rounded-md border border-surface-border bg-white p-3">
-            {editingItemId === item.id ? (
-              <div className="space-y-3">
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                  {ITEM_FIELDS.map(([field, label, type]) => (
-                    <EditableField
-                      key={field}
-                      label={label}
-                      type={type}
-                      editing
-                      value={itemDraft[field]}
-                      onChange={(v) => setItemDraft((d) => ({ ...d, [field]: v }))}
-                    />
-                  ))}
-                </div>
-                <div className="flex gap-2">
-                  <Button variant="secondary" onClick={() => setEditingItemId(null)} disabled={saving}>
-                    Cancel
-                  </Button>
-                  <Button onClick={save} loading={saving}>
-                    Save
-                  </Button>
-                </div>
+        {items.map((item, index) => (
+          <div key={item.id || index} className="rounded-md border border-surface-border bg-white p-3">
+            {editing ? (
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                {ITEM_FIELDS.map(([field, label, type]) => (
+                  <EditableField
+                    key={field}
+                    label={label}
+                    type={type}
+                    editing
+                    value={item[field]}
+                    onChange={(v) => onItemChange(index, field, v)}
+                  />
+                ))}
               </div>
             ) : (
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p className="font-medium text-slate-900">{item.product_name}</p>
-                  <p className="text-xs text-slate-500">
-                    {item.weight_grams ? `Weight: ${item.weight_grams} Grams` : "Weight: N/A"}
-                  </p>
-                </div>
-                <div className="flex flex-wrap gap-6 text-sm text-slate-600">
+                <p className="min-w-0 flex-1 font-medium text-slate-900">{item.product_name}</p>
+                {/* Fixed column widths so Price/QTY/Discount/Total line up
+                    across every item, whatever the numbers' lengths. */}
+                <div className="grid shrink-0 grid-cols-[5.5rem_3rem_7.5rem_5.5rem] gap-x-4 text-sm text-slate-600">
                   <div>
                     <div className="text-xs text-slate-400">Price</div>
                     {item.unit_price}
@@ -132,11 +103,6 @@ export default function LineItemsTab({ order, onOrderChanged }) {
                     {(item.quantity * item.unit_price - (item.discount_amount || 0)).toFixed(2)}
                   </div>
                 </div>
-                {EDITABLE_STATUSES.has(order.status) ? (
-                  <Button variant="secondary" onClick={() => startEdit(item)}>
-                    Edit
-                  </Button>
-                ) : null}
               </div>
             )}
           </div>

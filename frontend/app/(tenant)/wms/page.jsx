@@ -6,27 +6,59 @@ import useLoadingStore from "../../../store/loadingStore";
 import Button from "../../../components/shared/Button";
 import Pagination from "../../../components/shared/Pagination";
 import StockAdjustModal from "../../../components/wms/StockAdjustModal";
-import NewStockItemModal from "../../../components/wms/NewStockItemModal";
 import WarehouseSetupCard from "../../../components/wms/WarehouseSetupCard";
 import ShopifyPushModal from "../../../components/wms/ShopifyPushModal";
+import InventoryItemDetailModal from "../../../components/wms/InventoryItemDetailModal";
 
-const STOCK_FILTERS = [
-  { value: "", label: "All Stock" },
-  { value: "negative", label: "Negative" },
-  { value: "low", label: "Low Stock" },
+// The cards (backend: wms.services.inventory_activity) - each also filters
+// the table. Active: in stock and ordered. Inactive: in stock, never
+// ordered. Out of stock: ordered, none on hand.
+const ACTIVITY_CARDS = [
+  { value: "", key: "total", label: "Total SKUs", tone: "default" },
+  { value: "active", key: "active", label: "Active SKUs", tone: "success", hint: "In stock, and ordered" },
+  { value: "inactive", key: "inactive", label: "Inactive SKUs", tone: "warning", hint: "In stock, no orders" },
+  { value: "out_of_stock", key: "out_of_stock", label: "Out of Stock", tone: "danger", hint: "Ordered, none in stock" },
 ];
 
-function SummaryCard({ label, value, tone = "default" }) {
+const ACTIVITY_DOT = {
+  active: "bg-green-500",
+  inactive: "bg-amber-400",
+  out_of_stock: "bg-red-500",
+};
+
+function SummaryCard({ label, value, tone = "default", hint, active, onClick }) {
   const tones = {
     default: "text-slate-900",
+    success: "text-green-600",
     danger: "text-red-600",
-    warning: "text-amber-600",
+    warning: "text-amber-500",
   };
   return (
-    <div className="rounded-lg border border-surface-border bg-white p-4">
-      <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{label}</p>
-      <p className={`mt-1 text-2xl font-semibold ${tones[tone]}`}>{value}</p>
-    </div>
+    <button
+      type="button"
+      onClick={onClick}
+      title={hint}
+      className={`flex items-center justify-between gap-2 rounded-md border bg-white px-3 py-1.5 text-left transition ${
+        active ? "border-brand-800 ring-1 ring-brand-800" : "border-surface-border hover:bg-surface"
+      }`}
+    >
+      <span className="truncate text-[11px] font-medium uppercase tracking-wide text-slate-500">{label}</span>
+      <span className={`text-lg font-semibold tabular-nums ${tones[tone]}`}>{value}</span>
+    </button>
+  );
+}
+
+// One line per header, vertically centred - numbers right-aligned under
+// right-aligned headers, with the same padding as their cells.
+const TH_LEFT = "whitespace-nowrap px-3 py-2.5 text-left align-middle";
+const TH_NUM = "whitespace-nowrap px-3 py-2.5 text-right align-middle";
+
+function EyeIcon() {
+  return (
+    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M2.5 12S6 5 12 5s9.5 7 9.5 7-3.5 7-9.5 7-9.5-7-9.5-7z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
   );
 }
 
@@ -37,16 +69,17 @@ export default function WmsPage() {
   const [stock, setStock] = useState([]);
   const [count, setCount] = useState(0);
   const [summary, setSummary] = useState({});
+  // The cards' counts (Total / Active / Inactive / Out of Stock).
+  const [activityCounts, setActivityCounts] = useState({});
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const [search, setSearch] = useState("");
   const [appliedSearch, setAppliedSearch] = useState("");
-  const [stockFilter, setStockFilter] = useState("");
+  const [activity, setActivity] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [adjusting, setAdjusting] = useState(null);
-  const [newItemOpen, setNewItemOpen] = useState(false);
-  const [importing, setImporting] = useState(false);
+  const [viewing, setViewing] = useState(null);
   const [syncing, setSyncing] = useState(false);
   const [notice, setNotice] = useState("");
   const [pushOpen, setPushOpen] = useState(false);
@@ -64,45 +97,25 @@ export default function WmsPage() {
     setError("");
     try {
       const [stockData, summaryData] = await Promise.all([
-        wmsService.listStock({
+        wmsService.inventoryOverview({
           page,
           page_size: pageSize,
           search: appliedSearch || undefined,
-          stock_filter: stockFilter || undefined,
+          activity: activity || undefined,
         }),
+        // Still read for Push to Shopify's pending count.
         wmsService.stockSummary(),
       ]);
       setStock(stockData.results || []);
       setCount(stockData.count || 0);
+      setActivityCounts(stockData.summary || {});
       setSummary(summaryData);
     } catch (err) {
       setError(err.message || "Failed to load stock");
     } finally {
       setLoading(false);
     }
-  }, [page, pageSize, appliedSearch, stockFilter]);
-
-  async function onImportSkus() {
-    if (!window.confirm("Import every SKU from your orders that isn't listed yet? New SKUs start at zero quantity.")) {
-      return;
-    }
-    setImporting(true);
-    setError("");
-    setNotice("");
-    try {
-      const result = await wmsService.importSkusFromOrders();
-      setNotice(
-        result.created > 0
-          ? `Imported ${result.created} SKU${result.created === 1 ? "" : "s"} at zero quantity — click a product to enter real counts.`
-          : `Nothing new to import — all ${result.total_skus} SKUs from your orders are already listed.`
-      );
-      await load();
-    } catch (err) {
-      setError(err.message || "Failed to import SKUs");
-    } finally {
-      setImporting(false);
-    }
-  }
+  }, [page, pageSize, appliedSearch, activity]);
 
   async function onSyncShopify() {
     if (!window.confirm("Sync stock from Shopify? Quantities here are replaced with Shopify's on-hand counts (plus any adjustments not yet pushed to Shopify).")) {
@@ -139,16 +152,44 @@ export default function WmsPage() {
 
   return (
     <div>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-[28px] font-semibold leading-8 text-slate-900">Inventory</h1>
-          <p className="mt-1 text-sm text-slate-500">
-            Stock levels across your warehouses. Negative balances mean orders shipped units the
-            warehouse didn&apos;t have.
-          </p>
-        </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <h1
+          className="mr-2 text-2xl font-semibold text-slate-900"
+          title="Click a row to adjust its stock, or the eye for its details and report."
+        >
+          Inventory
+        </h1>
         {hasWarehouse ? (
-          <div className="flex gap-2">
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              setAppliedSearch(search);
+              setPage(1);
+            }}
+            className="flex min-w-0 flex-1 items-center gap-2 sm:flex-none"
+          >
+            <input
+              type="search"
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                // Emptying the box (typing it away or the ✕) brings the
+                // full list back without another Search click.
+                if (!e.target.value.trim() && appliedSearch) {
+                  setAppliedSearch("");
+                  setPage(1);
+                }
+              }}
+              placeholder="Search SKU or product"
+              className="w-full min-w-0 rounded-md border border-surface-border px-3 py-1.5 text-sm outline-none focus:border-brand-500 sm:w-60"
+            />
+            <Button type="submit" variant="secondary">
+              Search
+            </Button>
+          </form>
+        ) : null}
+        {hasWarehouse ? (
+          <div className="ml-auto flex gap-2">
             <Button variant="secondary" onClick={onSyncShopify} loading={syncing}>
               Sync from Shopify
             </Button>
@@ -171,131 +212,72 @@ export default function WmsPage() {
                 </span>
               ) : null}
             </Button>
-            <Button variant="secondary" onClick={onImportSkus} loading={importing}>
-              Import SKUs from Orders
-            </Button>
-            <Button onClick={() => setNewItemOpen(true)}>Add Stock Item</Button>
           </div>
         ) : null}
       </div>
 
       {error ? (
-        <p className="mt-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
+        <p className="mt-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
       ) : null}
       {notice ? (
-        <p className="mt-4 rounded-md bg-green-50 px-3 py-2 text-sm text-green-700">{notice}</p>
+        <p className="mt-3 rounded-md bg-green-50 px-3 py-2 text-sm text-green-700">{notice}</p>
       ) : null}
 
       {!hasWarehouse ? (
         <WarehouseSetupCard onCreated={loadWarehouses} />
       ) : (
         <>
-          <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <SummaryCard label="Total SKUs" value={summary.total_skus ?? 0} />
-            <SummaryCard label="Negative Stock" value={summary.negative_count ?? 0} tone="danger" />
-            <SummaryCard label="Low Stock" value={summary.low_count ?? 0} tone="warning" />
-          </div>
-
-          {summary.negative_count > 0 ? (
-            <div className="mt-4 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2.5">
-              <span className="text-sm text-red-700">
-                <strong>{summary.negative_count}</strong>{" "}
-                {summary.negative_count === 1 ? "item is" : "items are"} in negative stock — orders
-                were processed beyond available inventory. Receive stock or adjust quantities to
-                clear this.
-              </span>
-              <button
-                type="button"
+          <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {ACTIVITY_CARDS.map((card) => (
+              <SummaryCard
+                key={card.key}
+                label={card.label}
+                value={activityCounts[card.key] ?? 0}
+                tone={card.tone}
+                hint={card.hint}
+                active={activity === card.value}
                 onClick={() => {
-                  setStockFilter("negative");
+                  setActivity(card.value);
                   setPage(1);
                 }}
-                className="ml-auto shrink-0 text-sm font-medium text-red-700 underline"
-              >
-                View
-              </button>
-            </div>
-          ) : null}
-
-          <div className="mt-5 flex flex-wrap items-center gap-2">
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                setAppliedSearch(search);
-                setPage(1);
-              }}
-              className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap"
-            >
-              <input
-                type="search"
-                value={search}
-                onChange={(e) => {
-                  setSearch(e.target.value);
-                  // Emptying the box (typing it away or the ✕) brings the
-                  // full list back without another Search click.
-                  if (!e.target.value.trim() && appliedSearch) {
-                    setAppliedSearch("");
-                    setPage(1);
-                  }
-                }}
-                placeholder="Search SKU or product"
-                className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500 sm:w-64"
               />
-              <Button type="submit" variant="secondary">
-                Search
-              </Button>
-            </form>
-
-            <div className="flex gap-1.5">
-              {STOCK_FILTERS.map((f) => (
-                <button
-                  key={f.value}
-                  type="button"
-                  onClick={() => {
-                    setStockFilter(f.value);
-                    // "All Stock" means everything - clear any search too.
-                    if (!f.value) {
-                      setSearch("");
-                      setAppliedSearch("");
-                    }
-                    setPage(1);
-                  }}
-                  className={`rounded-md border px-3 py-1.5 text-sm font-medium transition ${
-                    stockFilter === f.value
-                      ? "border-brand-800 bg-brand-800 text-white"
-                      : "border-surface-border bg-white text-slate-600 hover:bg-surface"
-                  }`}
-                >
-                  {f.label}
-                </button>
-              ))}
-            </div>
+            ))}
           </div>
 
-          <div className="mt-4 overflow-x-auto rounded-lg border border-surface-border bg-white">
+          <div className="mt-3 overflow-x-auto rounded-lg border border-surface-border bg-white">
             <table className="w-full text-sm">
               <thead className="border-b border-surface-border bg-surface text-[11px] font-medium uppercase tracking-wide text-slate-500">
                 <tr>
-                  <th className="px-3 py-2 text-left">SKU</th>
-                  <th className="px-3 py-2 text-left">Product</th>
-                  <th className="px-3 py-2 text-left">Warehouse</th>
-                  <th className="px-3 py-2 text-right">On Hand</th>
-                  <th className="px-3 py-2 text-right">Reorder At</th>
-                  <th className="px-3 py-2 text-left">Status</th>
+                  <th className={TH_LEFT}>SKU</th>
+                  <th className={TH_LEFT}>Name</th>
+                  <th className={TH_LEFT}>Warehouse</th>
+                  <th className={TH_NUM} title="Good units received on purchase orders">
+                    Total Inbound
+                  </th>
+                  <th className={TH_NUM} title="On the shelf - not yet booked with a courier">
+                    Available
+                  </th>
+                  <th className={TH_NUM}>Delivered</th>
+                  <th className={TH_NUM}>Dispatched</th>
+                  <th className={TH_NUM}>Failed Delivery</th>
+                  <th className={TH_NUM}>Return in Transit</th>
+                  <th className={TH_NUM}>Damaged/Lost</th>
+                  <th className="w-10 px-2 py-2.5" />
                 </tr>
               </thead>
               <tbody>
                 {loading && stock.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-3 py-6 text-center text-slate-500">
+                    <td colSpan={11} className="px-3 py-6 text-center text-slate-500">
                       Loading…
                     </td>
                   </tr>
                 ) : stock.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-3 py-6 text-center text-slate-500">
-                      No stock items yet. Add one, or they&apos;ll be created automatically the
-                      first time an order consumes a SKU.
+                    <td colSpan={11} className="px-3 py-6 text-center text-slate-500">
+                      {activity || appliedSearch
+                        ? "No items here."
+                        : "No stock items yet - Sync from Shopify, or receive a purchase order."}
                     </td>
                   </tr>
                 ) : (
@@ -304,7 +286,7 @@ export default function WmsPage() {
                       key={item.id}
                       role="button"
                       tabIndex={0}
-                      title="Click to edit"
+                      title="Click to adjust stock"
                       onClick={() => setAdjusting(item)}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" || e.key === " ") {
@@ -312,12 +294,18 @@ export default function WmsPage() {
                           setAdjusting(item);
                         }
                       }}
-                      className={`cursor-pointer border-b border-surface-border last:border-0 focus:outline-none focus-visible:bg-surface ${
-                        item.is_negative ? "bg-red-50/60 hover:bg-red-100/60" : "hover:bg-surface"
-                      }`}
+                      className="cursor-pointer border-b border-surface-border last:border-0 hover:bg-surface focus:outline-none focus-visible:bg-surface"
                     >
-                      <td className="px-3 py-2 font-medium text-slate-800">{item.sku || "—"}</td>
-                      <td className="px-3 py-2 text-slate-600">
+                      <td className="whitespace-nowrap px-3 py-1.5 font-medium text-slate-800">
+                        <span className="flex items-center gap-2">
+                          <span
+                            className={`h-2 w-2 shrink-0 rounded-full ${ACTIVITY_DOT[item.activity] || "bg-slate-300"}`}
+                            title={ACTIVITY_CARDS.find((c) => c.value === item.activity)?.label || "No stock, no orders"}
+                          />
+                          {item.sku || "—"}
+                        </span>
+                      </td>
+                      <td className="max-w-[260px] truncate px-3 py-1.5 text-slate-600" title={item.product_name}>
                         {item.product_name || "—"}
                         {item.has_pending_shopify_push ? (
                           <span
@@ -332,31 +320,34 @@ export default function WmsPage() {
                           </span>
                         ) : null}
                       </td>
-                      <td className="px-3 py-2 text-slate-600">{item.warehouse_name}</td>
+                      <td className="whitespace-nowrap px-3 py-1.5 text-slate-600">{item.warehouse_name}</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">{item.total_inbound}</td>
                       <td
-                        className={`px-3 py-2 text-right font-semibold tabular-nums ${
-                          item.is_negative ? "text-red-600" : "text-slate-900"
+                        className={`px-3 py-1.5 text-right font-semibold tabular-nums ${
+                          item.available < 0 ? "text-red-600" : "text-slate-900"
                         }`}
                       >
-                        {item.quantity}
+                        {item.available}
                       </td>
-                      <td className="px-3 py-2 text-right tabular-nums text-slate-500">
-                        {item.reorder_level}
-                      </td>
-                      <td className="px-3 py-2">
-                        {item.is_negative ? (
-                          <span className="rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-medium text-red-700">
-                            Negative
-                          </span>
-                        ) : item.is_low ? (
-                          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700">
-                            Low
-                          </span>
-                        ) : (
-                          <span className="rounded-full bg-green-100 px-2 py-0.5 text-[11px] font-medium text-green-700">
-                            In Stock
-                          </span>
-                        )}
+                      <td className="px-3 py-1.5 text-right tabular-nums">{item.delivered}</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">{item.dispatched}</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">{item.failed_delivery}</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">{item.return_in_transit}</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">{item.damaged_lost}</td>
+                      <td className="px-2 py-1 text-right">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setViewing(item);
+                          }}
+                          onKeyDown={(e) => e.stopPropagation()}
+                          aria-label={`Details for ${item.sku || item.product_name}`}
+                          title="Details and report"
+                          className="rounded p-1 text-slate-500 hover:bg-white hover:text-brand-700"
+                        >
+                          <EyeIcon />
+                        </button>
                       </td>
                     </tr>
                   ))
@@ -393,18 +384,7 @@ export default function WmsPage() {
         onClose={() => setPushOpen(false)}
         onPushed={load}
       />
-      <NewStockItemModal
-        open={newItemOpen}
-        warehouses={warehouses}
-        shopifyConnected={Boolean(summary.shopify_connected)}
-        onClose={() => setNewItemOpen(false)}
-        onCreated={async (message, isWarning) => {
-          setNewItemOpen(false);
-          setError(isWarning ? message : "");
-          setNotice(isWarning ? "" : message || "");
-          await load();
-        }}
-      />
+      <InventoryItemDetailModal item={viewing} onClose={() => setViewing(null)} />
     </div>
   );
 }

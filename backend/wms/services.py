@@ -52,9 +52,31 @@ def _order_line_requirements(order):
     return required, unmatched
 
 
-def _return_lines(order, warehouse):
-    """A returned order's units as [(stock_item, quantity)], plus the names
-    of lines that match no stock item.
+def return_line_summary(order):
+    """A returned order's lines as the returns desk counts them - one per
+    SKU, plus one per product name for lines with no SKU:
+    [{key, sku, product_name, quantity}]. `key` is what a breakdown sent
+    back to restock_from_return refers to."""
+    required, _no_sku = _order_line_requirements(order)
+    lines = [
+        {"key": f"sku:{sku}", "sku": sku, "product_name": need["product_name"], "quantity": need["quantity"]}
+        for sku, need in required.items()
+    ]
+    by_name = {}
+    for item in order.items.all():
+        if not (item.barcode or "").strip():
+            name = (item.product_name or "").strip()
+            by_name[name] = by_name.get(name, 0) + item.quantity
+    for name, quantity in by_name.items():
+        lines.append(
+            {"key": f"name:{name}", "sku": "", "product_name": name or "(unnamed item)", "quantity": quantity}
+        )
+    return lines
+
+
+def _return_stock_item(order, warehouse, line):
+    """The stock item one return line (return_line_summary) goes back on,
+    or None.
 
     By SKU first, as everywhere else. A line with no SKU (most Shopify
     stores leave it blank) falls back to its exact product name - but only
@@ -63,46 +85,67 @@ def _return_lines(order, warehouse):
     (consume_for_order/check_order_stock) still matches by SKU alone, since
     name-matched shortages there would start warning on/blocking bookings.
     """
-    required, no_sku = _order_line_requirements(order)
-    lines = []
-    for sku, need in required.items():
+    if line["sku"]:
         item, _ = StockItem.objects.get_or_create(
             organization_id=order.organization_id,
             warehouse=warehouse,
-            sku=sku,
-            defaults={"product_name": need["product_name"]},
+            sku=line["sku"],
+            defaults={"product_name": line["product_name"]},
         )
-        lines.append((item, need["quantity"]))
+        return item
+    name = line["key"][len("name:"):]
+    if not name:
+        return None
+    candidates = list(
+        StockItem.objects.filter(
+            organization_id=order.organization_id, warehouse=warehouse, product_name__iexact=name
+        )[:2]
+    )
+    return candidates[0] if len(candidates) == 1 else None
 
-    by_name = {}
-    for item in order.items.all():
-        if not (item.barcode or "").strip():
-            name = (item.product_name or "").strip()
-            by_name[name] = by_name.get(name, 0) + item.quantity
-    unmatched = []
-    for name, quantity in by_name.items():
-        candidates = (
-            list(
-                StockItem.objects.filter(
-                    organization_id=order.organization_id,
-                    warehouse=warehouse,
-                    product_name__iexact=name,
-                )[:2]
-            )
-            if name
-            else []
-        )
-        if len(candidates) == 1:
-            lines.append((candidates[0], quantity))
+
+class InvalidReturnBreakdown(Exception):
+    pass
+
+
+def build_return_breakdown(order, counts=None, *, condition="good"):
+    """Every line of the order with its good / damaged / lost units. `counts`
+    is {key: {good, damaged, lost}} from the returns desk's popup; each line
+    must add up to its quantity. Without it, every unit is `condition`
+    ("good", or "bad" = damaged) - the bulk Mark Good / Mark Damaged."""
+    lines = return_line_summary(order)
+    breakdown = []
+    for line in lines:
+        if counts is None:
+            good = line["quantity"] if condition == "good" else 0
+            entry = {"good": good, "damaged": line["quantity"] - good, "lost": 0}
         else:
-            unmatched.append(name or "(unnamed item)")
-    return lines, unmatched
+            given = counts.get(line["key"])
+            if given is None:
+                raise InvalidReturnBreakdown(f"Missing the count for {line['sku'] or line['product_name']}.")
+            try:
+                entry = {k: int(given.get(k) or 0) for k in ("good", "damaged", "lost")}
+            except (TypeError, ValueError) as exc:
+                raise InvalidReturnBreakdown("Counts must be whole numbers.") from exc
+            if min(entry.values()) < 0:
+                raise InvalidReturnBreakdown("Counts can't be negative.")
+            if sum(entry.values()) != line["quantity"]:
+                raise InvalidReturnBreakdown(
+                    f"{line['sku'] or line['product_name']}: good + damaged + lost must equal "
+                    f"{line['quantity']}."
+                )
+        breakdown.append({**line, **entry})
+    return breakdown
 
 
-def check_order_stock(order, warehouse=None):
+def check_order_stock(order, warehouse=None, reserved=None):
     """Read-only availability check. Returns a list of shortage dicts -
     empty means everything is in stock. Never mutates anything, so the UI
-    can call it to preview before committing."""
+    can call it to preview before committing.
+
+    reserved ({sku: units}) is stock already promised to other orders in
+    the same run (oms.services.allocate_stock) - counted as gone, and this
+    order's own units are added to it when it fits."""
     warehouse = warehouse or get_default_warehouse(order.organization_id)
     if warehouse is None:
         return []
@@ -121,7 +164,7 @@ def check_order_stock(order, warehouse=None):
     shortages = []
     for sku, need in required.items():
         item = on_hand.get(sku)
-        available = item.quantity if item else 0
+        available = (item.quantity if item else 0) - (reserved or {}).get(sku, 0)
         if available < need["quantity"]:
             shortages.append(
                 {
@@ -132,6 +175,9 @@ def check_order_stock(order, warehouse=None):
                     "short_by": need["quantity"] - available,
                 }
             )
+    if reserved is not None and not shortages:
+        for sku, need in required.items():
+            reserved[sku] = reserved.get(sku, 0) + need["quantity"]
     return shortages
 
 
@@ -181,66 +227,78 @@ def consume_for_order(order, *, force=False, actor_user_id=None, warehouse=None)
 
 @transaction.atomic
 def restock_from_return(
-    order, *, condition, actor_user_id=None, actor_email="", warehouse=None, note="", unmatched=None
+    order, *, breakdown, actor_user_id=None, actor_email="", warehouse=None, note="", unmatched=None
 ):
     """Records a returns-desk scan outcome. Idempotent per order via
-    order.return_received_at - it's stamped for both outcomes below, so a
-    second scan of the same parcel (good or bad) is caught here rather
-    than by checking for a StockMovement, which a damaged parcel never
-    creates.
+    order.return_received_at - stamped whatever the outcome, so a second
+    scan of the same parcel is caught here rather than by checking for a
+    StockMovement, which a parcel with no good units never creates.
 
-    condition="good" puts the order's units back into stock, same as
-    before. condition="bad" only marks the parcel received and its
-    condition - it deliberately never touches StockItem/StockMovement,
-    since a damaged unit isn't sellable stock and adding it back would
-    misrepresent what's actually available to dispatch.
+    `breakdown` comes from build_return_breakdown: only each line's good
+    units go back into stock. Damaged and lost units never touch
+    StockItem/StockMovement - they aren't sellable stock. The breakdown is
+    kept on the order, and return_condition is "good" when every unit was
+    good, else "bad".
 
-    Pass a list as `unmatched` to get the names of lines that matched no
-    stock item (see _return_lines) - those are received but not restocked.
+    Pass a list as `unmatched` to get the names of lines with good units
+    that matched no stock item - those are received but not restocked.
 
-    Returns None if the order was already received (either outcome) -
-    the caller should treat that the same as any other scan failure.
-    Otherwise returns the list of StockMovement rows created (empty for
-    "bad", or for "good" with no WMS-tracked SKUs on the order).
+    Returns None if the order was already received - the caller should
+    treat that the same as any other scan failure. Otherwise returns the
+    list of StockMovement rows created.
     """
-    if order.return_received_at:
+    # Re-read under a row lock: two scans of the same parcel landing
+    # together would otherwise both see it unreceived and restock twice.
+    already = (
+        type(order).all_objects.select_for_update()
+        .filter(pk=order.pk)
+        .values_list("return_received_at", flat=True)
+        .first()
+    )
+    if order.return_received_at or already:
         return None
 
+    all_good =all(line["damaged"] == 0 and line["lost"] == 0 for line in breakdown)
     order.return_received_at = timezone.now()
     order.return_received_by = actor_user_id
     order.return_received_by_email = actor_email or ""
-    order.return_condition = condition
+    order.return_condition = "good" if all_good else "bad"
+    order.return_breakdown = breakdown
     update_fields = [
         "return_received_at",
         "return_received_by",
         "return_received_by_email",
         "return_condition",
+        "return_breakdown",
         "updated_at",
     ]
 
     movements = []
-    if condition == "good":
-        warehouse = warehouse or get_default_warehouse(order.organization_id)
-        if warehouse is not None:
-            lines, not_matched = _return_lines(order, warehouse)
-            if unmatched is not None:
-                unmatched.extend(not_matched)
-            for item, quantity in lines:
-                item.quantity += quantity
-                item.save(update_fields=["quantity", "updated_at"])
-                _queue_shopify_delta(item, quantity)
-                movements.append(
-                    StockMovement.objects.create(
-                        organization_id=order.organization_id,
-                        stock_item=item,
-                        delta=quantity,
-                        balance_after=item.quantity,
-                        reason="return_restock",
-                        order_number=order.order_number,
-                        note=note,
-                        actor_user_id=actor_user_id,
-                    )
+    warehouse = warehouse or get_default_warehouse(order.organization_id)
+    if warehouse is not None:
+        for line in breakdown:
+            if not line["good"]:
+                continue
+            item = _return_stock_item(order, warehouse, line)
+            if item is None:
+                if unmatched is not None:
+                    unmatched.append(line["product_name"])
+                continue
+            item.quantity += line["good"]
+            item.save(update_fields=["quantity", "updated_at"])
+            _queue_shopify_delta(item, line["good"])
+            movements.append(
+                StockMovement.objects.create(
+                    organization_id=order.organization_id,
+                    stock_item=item,
+                    delta=line["good"],
+                    balance_after=item.quantity,
+                    reason="return_restock",
+                    order_number=order.order_number,
+                    note=note,
+                    actor_user_id=actor_user_id,
                 )
+            )
 
     order.save(update_fields=update_fields)
     return movements
@@ -449,3 +507,357 @@ def rename_stock_item(*, organization_id, stock_item, product_name, actor_user_i
     except Exception:
         pass
     return item
+
+
+# --------------------------------------------------------- Purchase orders --
+
+class PurchaseOrderError(Exception):
+    pass
+
+
+def purchase_order_state(total_quantity, received_quantity):
+    """"not_received" / "partial" / "received" - worked out from the lines,
+    never stored, so it can't drift from what actually arrived."""
+    if not received_quantity:
+        return "not_received"
+    if received_quantity >= total_quantity:
+        return "received"
+    return "partial"
+
+
+def _add_purchase_stock(po, line, good, *, actor_user_id=None):
+    """Puts `good` received units of `line` into the PO's warehouse - the
+    stock row with that SKU there (a Shopify-linked one first), created if
+    the warehouse has none - and logs the movement."""
+    item = (
+        StockItem.objects.filter(organization_id=po.organization_id, warehouse=po.warehouse, sku=line.sku)
+        .order_by(F("shopify_inventory_item_id").asc(nulls_last=True))
+        .first()
+    )
+    if item is None:
+        item = StockItem.objects.create(
+            organization_id=po.organization_id,
+            warehouse=po.warehouse,
+            sku=line.sku,
+            product_name=line.product_name,
+            image_url=line.image_url,
+        )
+    item.quantity += good
+    item.save(update_fields=["quantity", "updated_at"])
+    _queue_shopify_delta(item, good)
+    return StockMovement.objects.create(
+        organization_id=po.organization_id,
+        stock_item=item,
+        delta=good,
+        balance_after=item.quantity,
+        reason="purchase_receipt",
+        order_number=po.po_number,
+        note=f"Received from {po.supplier.name}"[:255],
+        actor_user_id=actor_user_id,
+    )
+
+
+def _apply_receipt(po, line, good, damaged, *, actor_user_id=None):
+    """Adds one receipt to a line: good units go into stock, damaged ones
+    are only counted. Never more than the line ordered in total."""
+    try:
+        good, damaged = int(good or 0), int(damaged or 0)
+    except (TypeError, ValueError) as exc:
+        raise PurchaseOrderError("Good and Damaged must be whole numbers.") from exc
+    if good < 0 or damaged < 0:
+        raise PurchaseOrderError("Good and Damaged can't be negative.")
+    if line.received + good + damaged > line.quantity_ordered:
+        raise PurchaseOrderError(
+            f"{line.sku}: {line.received + good + damaged} received would be more than the "
+            f"{line.quantity_ordered} ordered."
+        )
+    if not good and not damaged:
+        return
+    line.good_received += good
+    line.damaged_received += damaged
+    line.save(update_fields=["good_received", "damaged_received", "updated_at"])
+    if good:
+        _add_purchase_stock(po, line, good, actor_user_id=actor_user_id)
+
+
+@transaction.atomic
+def create_purchase_order(*, organization_id, supplier, warehouse, ordered_at, lines, note="", actor_user_id=None):
+    """A new PO. `lines` is [{sku, product_name, image_url, quantity_ordered,
+    unit_price, good, damaged}] - good/damaged are what already arrived
+    (often nothing yet); good units go straight into stock."""
+    from .models import PurchaseOrder, PurchaseOrderLine
+
+    if not lines:
+        raise PurchaseOrderError("Add at least one product.")
+    seen = set()
+    for row in lines:
+        sku = (row.get("sku") or "").strip()
+        if not sku:
+            raise PurchaseOrderError("Every product needs a SKU.")
+        if sku in seen:
+            raise PurchaseOrderError(f"{sku} is on the PO twice - put it on one line.")
+        seen.add(sku)
+        try:
+            ordered = int(row.get("quantity_ordered") or 0)
+        except (TypeError, ValueError) as exc:
+            raise PurchaseOrderError(f"{sku}: quantity ordered must be a whole number.") from exc
+        if ordered <= 0:
+            raise PurchaseOrderError(f"{sku}: quantity ordered must be more than 0.")
+
+    po = PurchaseOrder.objects.create(
+        organization_id=organization_id,
+        supplier=supplier,
+        warehouse=warehouse,
+        ordered_at=ordered_at or timezone.now(),
+        note=(note or "")[:255],
+        created_by_user_id=actor_user_id,
+    )
+    po.refresh_from_db(fields=["number"])
+    for row in lines:
+        line = PurchaseOrderLine.objects.create(
+            organization_id=organization_id,
+            purchase_order=po,
+            sku=row["sku"].strip(),
+            product_name=(row.get("product_name") or "").strip()[:255],
+            image_url=(row.get("image_url") or "")[:1000],
+            quantity_ordered=int(row["quantity_ordered"]),
+            unit_price=row.get("unit_price") or 0,
+        )
+        _apply_receipt(po, line, row.get("good"), row.get("damaged"), actor_user_id=actor_user_id)
+    return po
+
+
+@transaction.atomic
+def receive_purchase_order(po, receipts, *, actor_user_id=None):
+    """Another delivery against an existing PO: `receipts` is
+    {line_id: {good, damaged}}, added to what's already received."""
+    lines = {str(line.id): line for line in po.lines.select_for_update()}
+    for line_id, counts in receipts.items():
+        line = lines.get(str(line_id))
+        if line is None:
+            raise PurchaseOrderError("That product isn't on this PO.")
+        _apply_receipt(po, line, counts.get("good"), counts.get("damaged"), actor_user_id=actor_user_id)
+    return po
+
+
+# ------------------------------------------------------- Inventory overview --
+# The Inventory page: every stock item with where its units are - bought in
+# (purchase orders), on the shelf, out with the courier, delivered, coming
+# back, damaged or lost. Order lines are matched to a stock item by SKU
+# (OrderItem.barcode), or, for a stock item with no SKU, by exact product
+# name - the same rule returns use (_return_stock_item).
+
+INVENTORY_ACTIVITY = ("active", "inactive", "out_of_stock")
+
+
+def _match_key(sku, name):
+    sku = (sku or "").strip().lower()
+    return sku if sku else "name:" + (name or "").strip().lower()
+
+
+def _order_bucket(status, returning):
+    """Which Inventory column an order's units count under, or None."""
+    if status in ("dispatched", "out_for_delivery", "attempt") and returning:
+        return "return_in_transit"
+    if status in ("dispatched", "out_for_delivery"):
+        return "dispatched"
+    if status == "attempt":
+        return "failed_delivery"
+    if status == "delivered":
+        return "delivered"
+    return None
+
+
+def _empty_metrics():
+    return {
+        "total_inbound": 0,
+        "delivered": 0,
+        "dispatched": 0,
+        "failed_delivery": 0,
+        "return_in_transit": 0,
+        "returns_damaged": 0,
+        "returns_lost": 0,
+        "po_damaged": 0,
+        "ordered": 0,
+    }
+
+
+def _order_metrics(organization_id):
+    """{match key: metrics} from every order that isn't cancelled, plus
+    the damaged / lost units its returns desk counted."""
+    from django.db.models import BooleanField, ExpressionWrapper, Q, Sum
+
+    from oms.models import Order, OrderItem
+
+    metrics = {}
+    rows = (
+        OrderItem.all_objects.filter(organization_id=organization_id)
+        .exclude(order__status="cancelled")
+        .annotate(
+            _returning=ExpressionWrapper(
+                Q(order__return_in_progress_at__isnull=False), output_field=BooleanField()
+            )
+        )
+        .values("barcode", "product_name", "order__status", "_returning")
+        .annotate(qty=Sum("quantity"))
+        .order_by()
+    )
+    for row in rows:
+        m = metrics.setdefault(_match_key(row["barcode"], row["product_name"]), _empty_metrics())
+        m["ordered"] += row["qty"] or 0
+        bucket = _order_bucket(row["order__status"], row["_returning"])
+        if bucket:
+            m[bucket] += row["qty"] or 0
+
+    received = Order.all_objects.filter(
+        organization_id=organization_id, return_breakdown__isnull=False
+    ).values_list("return_breakdown", flat=True)
+    for breakdown in received:
+        for line in breakdown or []:
+            m = metrics.setdefault(_match_key(line.get("sku"), line.get("product_name")), _empty_metrics())
+            m["returns_damaged"] += int(line.get("damaged") or 0)
+            m["returns_lost"] += int(line.get("lost") or 0)
+    return metrics
+
+
+def _purchase_metrics(organization_id):
+    """{(warehouse id, sku): (good received, damaged received)} from the
+    warehouse's purchase orders."""
+    from django.db.models import Sum
+
+    from .models import PurchaseOrderLine
+
+    rows = (
+        PurchaseOrderLine.all_objects.filter(organization_id=organization_id)
+        .values("purchase_order__warehouse_id", "sku")
+        .annotate(good=Sum("good_received"), damaged=Sum("damaged_received"))
+        .order_by()
+    )
+    return {
+        (str(r["purchase_order__warehouse_id"]), (r["sku"] or "").strip().lower()): (r["good"] or 0, r["damaged"] or 0)
+        for r in rows
+    }
+
+
+def inventory_activity(quantity, ordered):
+    """Active: in stock and ordered. Inactive: in stock, never ordered.
+    Out of stock: ordered, none on hand. "" for neither (nothing on hand,
+    never ordered) - only in Total."""
+    if quantity > 0:
+        return "active" if ordered else "inactive"
+    return "out_of_stock" if ordered else ""
+
+
+def _inventory_row(item, order_metrics, purchase_metrics):
+    m = dict(order_metrics.get(_match_key(item.sku, item.product_name)) or _empty_metrics())
+    if item.sku:
+        good, damaged = purchase_metrics.get((str(item.warehouse_id), item.sku.strip().lower()), (0, 0))
+        m["total_inbound"] = good
+        m["po_damaged"] = damaged
+    m["damaged_lost"] = m["returns_damaged"] + m["returns_lost"] + m["po_damaged"]
+    return {
+        "id": str(item.id),
+        "sku": item.sku,
+        "product_name": item.product_name,
+        "image_url": item.image_url,
+        "warehouse": str(item.warehouse_id),
+        "warehouse_name": item.warehouse.name,
+        # On the shelf: bought in and returned good, less what couriers were
+        # booked for (stock leaves at booking - consume_for_order).
+        "available": item.quantity,
+        "reorder_level": item.reorder_level,
+        "has_pending_shopify_push": item.has_pending_shopify_push,
+        "shopify_push_error": item.shopify_push_error,
+        "activity": inventory_activity(item.quantity, m["ordered"]),
+        **m,
+    }
+
+
+def inventory_overview(organization_id, *, search="", activity=""):
+    """(rows, summary) for the Inventory page - every stock item, filtered
+    by `search` (SKU / name) and `activity` (INVENTORY_ACTIVITY); the
+    summary counts cover every item, whatever the filter."""
+    order_metrics = _order_metrics(organization_id)
+    purchase_metrics = _purchase_metrics(organization_id)
+    items = StockItem.objects.filter(organization_id=organization_id).select_related("warehouse")
+    rows = [_inventory_row(item, order_metrics, purchase_metrics) for item in items]
+
+    summary = {"total": len(rows), **{a: 0 for a in INVENTORY_ACTIVITY}}
+    for row in rows:
+        if row["activity"]:
+            summary[row["activity"]] += 1
+
+    term = (search or "").strip().lower()
+    if term:
+        rows = [r for r in rows if term in (r["sku"] or "").lower() or term in (r["product_name"] or "").lower()]
+    if activity in INVENTORY_ACTIVITY:
+        rows = [r for r in rows if r["activity"] == activity]
+    return rows, summary
+
+
+def inventory_item_report(item):
+    """One stock item's row plus where its numbers come from - the orders
+    by status, the purchase orders and returns, and its stock ledger."""
+    from oms.models import OrderItem
+
+    from .models import PurchaseOrderLine
+
+    row = _inventory_row(item, _order_metrics(item.organization_id), _purchase_metrics(item.organization_id))
+
+    lines = OrderItem.all_objects.filter(organization_id=item.organization_id).select_related(
+        "order", "order__courier"
+    )
+    lines = (
+        lines.filter(barcode__iexact=item.sku)
+        if item.sku
+        else lines.filter(barcode="", product_name__iexact=item.product_name)
+    )
+    orders = [
+        {
+            "order_id": str(line.order.id),
+            "order_number": line.order.order_number,
+            "customer_name": line.order.customer_name,
+            "status": line.order.status,
+            "status_label": line.order.get_status_display(),
+            "returning": bool(line.order.return_in_progress_at),
+            "quantity": line.quantity,
+            "total": str(line.order.grand_total),
+            "courier": line.order.courier.name if line.order.courier_id else "",
+            "tracking_number": line.order.tracking_number,
+            "date": line.order.placed_at or line.order.created_at,
+            "created_at": line.order.created_at,
+        }
+        for line in lines.order_by("-order__created_at")[:500]
+    ]
+
+    purchases = [
+        {
+            "po_number": line.purchase_order.po_number,
+            "supplier": line.purchase_order.supplier.name,
+            "ordered_at": line.purchase_order.ordered_at,
+            "quantity_ordered": line.quantity_ordered,
+            "good": line.good_received,
+            "damaged": line.damaged_received,
+            "unit_price": str(line.unit_price),
+        }
+        for line in PurchaseOrderLine.all_objects.filter(
+            organization_id=item.organization_id,
+            purchase_order__warehouse=item.warehouse,
+            sku__iexact=item.sku,
+        )
+        .select_related("purchase_order__supplier")
+        .order_by("-purchase_order__ordered_at")
+    ] if item.sku else []
+
+    movements = [
+        {
+            "date": m.created_at,
+            "reason": m.get_reason_display(),
+            "delta": m.delta,
+            "balance_after": m.balance_after,
+            "reference": m.order_number,
+            "note": m.note,
+        }
+        for m in item.movements.order_by("-created_at")[:500]
+    ]
+    return {"item": row, "orders": orders, "purchases": purchases, "movements": movements}

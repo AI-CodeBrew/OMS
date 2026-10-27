@@ -6,12 +6,7 @@ import ticketsService from "../../../services/ticketsService";
 import CreateTicketDialog from "../../tickets/CreateTicketDialog";
 import TicketDetailDialog from "../../tickets/TicketDetailDialog";
 import { timeAgo } from "../../../lib/timeAgo";
-import {
-  TICKET_STATUS_LABEL,
-  TICKET_STATUS_TONE,
-  TICKET_PRIORITY_LABEL,
-  TICKET_PRIORITY_DOT,
-} from "../../tickets/ticketStatus";
+import { TICKET_STATUS_LABEL, TICKET_STATUS_TONE, TicketTypeBadge } from "../../tickets/ticketStatus";
 
 function EyeIcon() {
   return (
@@ -69,12 +64,6 @@ export default function OrderTicketsTab({ order }) {
               key={t.id}
               className="flex items-center gap-3 rounded-md border border-surface-border bg-white px-3 py-2 text-sm"
             >
-              <span
-                className={`h-2 w-2 shrink-0 rounded-full ${
-                  TICKET_PRIORITY_DOT[t.priority] || "bg-slate-400"
-                }`}
-                title={`${TICKET_PRIORITY_LABEL[t.priority] || t.priority} priority`}
-              />
               <div className="min-w-0 flex-1">
                 <p className="font-medium text-slate-800">
                   <span className="mr-1.5 font-mono text-xs font-normal text-slate-400">
@@ -83,6 +72,7 @@ export default function OrderTicketsTab({ order }) {
                   {t.category}
                   {t.sub_category ? ` — ${t.sub_category}` : ""}
                 </p>
+                <TicketTypeBadge type={t.ticket_type} />
                 <p className="text-xs text-slate-400" title={new Date(t.created_at).toLocaleString()}>
                   {timeAgo(t.created_at)}
                 </p>

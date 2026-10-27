@@ -1,5 +1,6 @@
 import csv
 import io
+import json
 import logging
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
@@ -41,6 +42,8 @@ from wms.services import InsufficientStock
 from . import csv_report, importers, order_importer, services
 from .models import (
     Courier,
+    DispatchBatch,
+    DispatchBatchOrder,
     Order,
     OrderItem,
     OrderNote,
@@ -52,6 +55,7 @@ from .models import (
 )
 from .serializers import (
     CourierSerializer,
+    DispatchBatchSerializer,
     OrderNoteSerializer,
     OrderSerializer,
     OrderStatusEventSerializer,
@@ -125,6 +129,7 @@ def _hub_push_to_smartlane(order, params, actor):
 
 _BOOKING_ACTIONS = {
     "push_to_smartlane", "push_to_postex", "push_to_postex_oms", "push_to_barqraftar", "push_to_barqraftar_oms",
+    "auto_book",
 }
 
 
@@ -146,6 +151,18 @@ def _record_hub_booking(request, action_name, results):
     rows.update(hub_dispatched_at=timezone.now() if is_hub_request(request) else None)
     for organization_id in stores:
         publish_event("order.updated", {"organization_id": str(organization_id), "source": "hub_dispatch"})
+
+
+def _json_list(raw):
+    """A query param holding a JSON array of strings, or [] when it's
+    missing or isn't one."""
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return []
+    return [str(v) for v in value if str(v).strip()] if isinstance(value, list) else []
 
 
 SEARCHABLE_FIELDS = {
@@ -194,8 +211,11 @@ BULK_ACTIONS = {
     "mark_returned_by_hand": lambda order, params, actor: services.set_outcome_by_hand(
         order, "returned", actor_user_id=actor
     ),
+    "revert_status": lambda order, params, actor: services.revert_to_previous_status(
+        order, actor_user_id=actor
+    ),
     "cancel": lambda order, params, actor: services.cancel_order(
-        order, reason=params.get("reason", ""), actor_user_id=actor
+        order, reason=str(params.get("reason") or "").strip(), actor_user_id=actor
     ),
     "dispatch": lambda order, params, actor: services.dispatch_order(
         order, tracking_number=params.get("tracking_number", ""), actor_user_id=actor
@@ -216,6 +236,33 @@ BULK_ACTIONS = {
     "withdraw_dispatch_request": lambda order, params, actor: services.withdraw_dispatch_request(
         order, actor_user_id=actor
     ),
+    # Assigning Courier's Edit Order: the booking is cancelled first, then
+    # the order is back in Approved for its edit.
+    "edit_order": lambda order, params, actor: services.unbook_from_assigning(
+        order, flag=services.FLAG_CANCELLED_FROM_ASSIGNING, reason="Edit Order", actor_user_id=actor
+    ),
+}
+
+# Booked (or picked up) one store's batch at a time rather than order by
+# order - see bulk_action.
+# auto_book: BarqRaftar for an order in one of BarqRaftar's cities,
+# PostEx for one in PostEx's, else tagged No City Matched (see
+# services.auto_book_routes).
+COURIER_BATCH_ACTIONS = {
+    "push_to_barqraftar", "push_to_barqraftar_oms", "barqraftar_ready_for_pickup",
+    "push_to_postex", "push_to_postex_oms", "auto_book",
+}
+
+# Assigning Courier's Change Courier: what the picker's value books with -
+# (booking action, its params, the courier's name, through FynkTech's
+# account). The name is the Courier row the booking gives the order.
+CHANGE_COURIER_TARGETS = {
+    "smartlane": ("push_to_smartlane", {"account": "own"}, "Smartlane", False),
+    "oms_courier": ("push_to_smartlane", {"account": "oms"}, "OMS Courier", False),
+    "barqraftar": ("push_to_barqraftar", {}, "BarqRaftar", False),
+    "barqraftar_oms": ("push_to_barqraftar_oms", {}, "BarqRaftar", True),
+    "postex": ("push_to_postex", {}, "PostEx", False),
+    "postex_oms": ("push_to_postex_oms", {}, "PostEx", True),
 }
 
 
@@ -258,7 +305,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         # queryset backs get_object() too, so every detail action (notes,
         # transactions, log, split, loadsheet, ...) is Dispatch-Hub-aware
         # for free.
-        qs = (
+        qs = services.with_ticket_counts(
             Order.objects.filter(**org_filter(self.request))
             .select_related("courier", "parent_order", "organization")
             .prefetch_related("items")
@@ -291,7 +338,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         )
 
     def _base_order_qs(self, organization_id):
-        return (
+        return services.with_ticket_counts(
             Order.objects.filter(organization_id=organization_id)
             .select_related("courier", "parent_order", "organization")
             .prefetch_related("items")
@@ -380,7 +427,9 @@ class OrderViewSet(viewsets.ModelViewSet):
         for row in status_rows:
             status_breakdown[row["status"]] = row["count"]
         trend_rows = (
-            queryset.annotate(day=TruncDate(Coalesce("placed_at", "created_at")))
+            queryset.annotate(
+                day=TruncDate(Coalesce("placed_at", "created_at"), tzinfo=services.BUSINESS_TZ)
+            )
             .values("day")
             .annotate(count=Count("id"))
             .order_by("day")
@@ -421,6 +470,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         return {
             "total_orders": queryset.count(),
             "status_breakdown": status_breakdown,
+            "delivery_performance": services.delivery_performance(queryset),
             "trend": trend,
             "cod_summary": {
                 "collected": str(paid_sum),
@@ -457,10 +507,23 @@ class OrderViewSet(viewsets.ModelViewSet):
         return Response(payload)
 
     def _apply_filters(self, qs, params):
+        # Dispatch Hub: only the orders a store sent for dispatch, plus any
+        # the Hub booked itself - never a store's other orders.
+        if is_hub_request(self.request):
+            qs = qs.filter(Q(dispatch_requested_at__isnull=False) | Q(hub_dispatched_at__isnull=False))
         status_param = params.get("status")
         if status_param:
             status_list = [s.strip() for s in status_param.split(",") if s.strip()]
-            if status_list == ["critical"]:
+            if len(status_list) == 1 and status_list[0].startswith("card:"):
+                # One of the Orders page's cards (services.WORKFLOW_CARDS) -
+                # several statuses each, so the card value never clashes
+                # with a status of the same name.
+                card = status_list[0][len("card:"):]
+                if card in services.WORKFLOW_CARDS or card == "all_returns":
+                    qs = services.card_queryset(qs, card)
+                elif card != "all":
+                    qs = qs.none()
+            elif status_list == ["critical"]:
                 # Not a real status - in transit too long, longest first.
                 qs = services.critical_transit_orders(qs).order_by("_in_transit_since")
             elif status_list == ["booking_pending"] and not params.get("status_exact"):
@@ -468,6 +531,10 @@ class OrderViewSet(viewsets.ModelViewSet):
                 # queue / Unbooked / Pending (those also stay in Ready to
                 # Print). status_exact asks for the plain status.
                 qs = services.booking_pending_orders(qs)
+            elif status_list == ["new"] and not params.get("status_exact"):
+                # The New tab also holds Awaiting Confirmation
+                # (awaiting_approval) - it has no tab of its own any more.
+                qs = qs.filter(status__in=services.NEW_TAB_STATUSES)
             elif status_list == ["awaiting_dispatched"] and not params.get("status_exact"):
                 # The Orders tab: load sheet made, or the courier already
                 # says Awaiting Pickup / Booked / ready (those also stay in
@@ -529,12 +596,28 @@ class OrderViewSet(viewsets.ModelViewSet):
                 if search_field == "product_name":
                     qs = qs.distinct()
 
+        # The Critical Orders page's cards - one reason's orders.
+        reason_filter = services.CRITICAL_REASON_FILTERS.get(params.get("critical_reason") or "")
+        if reason_filter:
+            qs = reason_filter(qs)
+
         # Dispatch Hub only (meaningless, and never sent, otherwise - a
         # single-store page already implies exactly one store) - narrows
-        # the combined view down to one of its stores.
-        store = params.get("store")
-        if store:
-            qs = qs.filter(organization_id=store)
+        # the combined view down to the picked stores (comma-separated ids).
+        stores = [s.strip() for s in (params.get("store") or "").split(",") if s.strip()]
+        if stores:
+            qs = qs.filter(organization_id__in=stores)
+
+        # Orders containing any of these products - the Dispatch Hub's
+        # Products picker. Exact names, sent as a JSON array since a name
+        # can itself contain a comma. A subquery rather than a join, so an
+        # order with two matching lines isn't counted twice (counts()
+        # groups this queryset).
+        products = _json_list(params.get("product"))
+        if products:
+            qs = qs.filter(
+                id__in=OrderItem.objects.filter(product_name__in=products).values("order_id")
+            )
 
         # Dispatch Hub: only the orders stores have asked FynkTech to ship
         # and that haven't been booked yet.
@@ -583,11 +666,14 @@ class OrderViewSet(viewsets.ModelViewSet):
             # created_at, see Order.placed_at), falling back to this row's
             # own created_at for manually-created orders that have no
             # placed_at - not by when we happened to fetch/sync it.
-            qs = qs.annotate(effective_date=Coalesce("placed_at", "created_at"))
+            # The day in Pakistan time (services.BUSINESS_TZ), not UTC.
+            qs = qs.annotate(
+                effective_day=TruncDate(Coalesce("placed_at", "created_at"), tzinfo=services.BUSINESS_TZ)
+            )
             if date_from:
-                qs = qs.filter(effective_date__date__gte=date_from)
+                qs = qs.filter(effective_day__gte=date_from)
             if date_to:
-                qs = qs.filter(effective_date__date__lte=date_to)
+                qs = qs.filter(effective_day__lte=date_to)
 
         return qs
 
@@ -606,6 +692,42 @@ class OrderViewSet(viewsets.ModelViewSet):
             .distinct()[:10]
         )
         return Response({"results": list(names)})
+
+    @action(detail=False, methods=["get"], url_path="critical-summary")
+    def critical_summary(self, request):
+        """The Critical Orders page's cards: each reason with its count,
+        for this store (or the Dispatch Hub's stores, narrowed by `store`)."""
+        qs = self._apply_filters(
+            Order.objects.filter(**org_filter(request)),
+            {"store": request.query_params.get("store") or ""},
+        )
+        return Response({"reasons": services.critical_summary(qs)})
+
+    @action(detail=False, methods=["get"], url_path="store-products")
+    def store_products(self, request):
+        """Dispatch Hub's Products picker: each distinct product in the
+        picked stores' orders (`store`, comma-separated ids - required) in
+        the current tab (`status`), with how many orders it's in, most
+        ordered first. `q` narrows by name. Capped, since it's a picker."""
+        params = request.query_params
+        stores = [s.strip() for s in (params.get("store") or "").split(",") if s.strip()]
+        if not stores:
+            return Response({"results": [], "truncated": False})
+        orders = self._apply_filters(
+            Order.objects.filter(**org_filter(request)),
+            {"store": ",".join(stores), "status": params.get("status") or ""},
+        )
+        items = OrderItem.objects.filter(order_id__in=orders.values("id"))
+        q = (params.get("q") or "").strip()
+        if q:
+            items = items.filter(product_name__icontains=q)
+        limit = 500
+        rows = list(
+            items.values("product_name")
+            .annotate(order_count=Count("order_id", distinct=True))
+            .order_by("-order_count", "product_name")[: limit + 1]
+        )
+        return Response({"results": rows[:limit], "truncated": len(rows) > limit})
 
     def _resolve_target_org(self, request):
         """The org a write with no order-id context (create, CSV import)
@@ -630,6 +752,26 @@ class OrderViewSet(viewsets.ModelViewSet):
         # "Also create on Shopify": Shopify numbers the order. Otherwise a
         # blank order number gets the one after the store's newest order.
         on_shopify = str(request.data.get("create_on_shopify") or "").lower() in ("true", "1")
+        # An order's "Recreate" - a Replacement or a New order, made from
+        # `recreated_from`. Never created on Shopify.
+        recreate_type = str(request.data.get("recreate_type") or "").strip()
+        recreated_from = None
+        if recreate_type:
+            if recreate_type not in dict(Order.RECREATE_TYPE_CHOICES):
+                return Response({"detail": "Unknown recreate type."}, status=status.HTTP_400_BAD_REQUEST)
+            if on_shopify:
+                return Response(
+                    {"detail": "Recreated orders are never pushed to Shopify."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            recreated_from = Order.all_objects.filter(
+                id=request.data.get("recreated_from"), organization_id=organization_id
+            ).first()
+            if not recreated_from:
+                return Response(
+                    {"detail": "The order being recreated wasn't found in this store."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         serializer = self.get_serializer(data=request.data)
         serializer.fields["order_number"].required = False
         serializer.fields["order_number"].allow_blank = True
@@ -678,6 +820,12 @@ class OrderViewSet(viewsets.ModelViewSet):
             )
             if field in data
         }
+        if recreated_from:
+            extra_fields["recreate_type"] = recreate_type
+            extra_fields["recreated_from"] = recreated_from
+            # Same Store Name as the order it was recreated from.
+            if recreated_from.shop:
+                extra_fields["shop"] = recreated_from.shop
         placed_at = order_importer._parse_order_date(str(request.data.get("order_date") or "").strip())
         if placed_at:
             extra_fields["placed_at"] = placed_at
@@ -756,7 +904,12 @@ class OrderViewSet(viewsets.ModelViewSet):
             organization_filter=org_filter(request), phone_numbers=[instance.customer_phone]
         )
         serializer = self.get_serializer(
-            instance, context={**self.get_serializer_context(), "probability_map": probability_map}
+            instance,
+            context={
+                **self.get_serializer_context(),
+                "probability_map": probability_map,
+                "with_previous_status": True,
+            },
         )
         return Response(serializer.data)
 
@@ -777,7 +930,9 @@ class OrderViewSet(viewsets.ModelViewSet):
         order = services.update_order_detail(instance, fields=serializer.validated_data, items=items)
         if getattr(request, "is_super_admin", False):
             self._notify_store_of_edit(request, order, services.order_changes(order, before, items_before))
-        output = self.get_serializer(order)
+        output = self.get_serializer(
+            order, context={**self.get_serializer_context(), "with_previous_status": True}
+        )
         return Response(output.data)
 
     @staticmethod
@@ -840,6 +995,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         for row in rows:
             counts[row["status"]] = row["count"]
         counts["all"] = sum(counts.values())
+        services.with_card_counts(counts, qs)
         services.with_courier_tab_counts(counts, qs)
         return Response(self._with_critical_count(counts, qs))
 
@@ -868,8 +1024,9 @@ class OrderViewSet(viewsets.ModelViewSet):
             Order.objects.filter(organization_id=organization_id),
         )
         lists = {"all": self._tab_list_payload(request, "all", page_size)}
-        for status, _label in Order.STATUS_CHOICES:
-            lists[status] = self._tab_list_payload(request, status, page_size)
+        # The Orders page's cards - the tabs it actually shows.
+        for card in services.WORKFLOW_CARDS:
+            lists[f"card:{card}"] = self._tab_list_payload(request, f"card:{card}", page_size)
 
         dashboards = {}
         for raw in request.query_params.getlist("dash"):
@@ -1021,9 +1178,16 @@ class OrderViewSet(viewsets.ModelViewSet):
             Order.objects.filter(status="returned", **org_filter(request)),
             params,
         )
-        total = qs.count()
+        returned = qs.count()
+        received_all = qs.filter(return_received_at__isnull=False).count()
         received = qs.filter(return_received_at__isnull=False, return_condition="good").count()
         damaged = qs.filter(return_received_at__isnull=False, return_condition="bad").count()
+        # Return in Transit - the courier is bringing it back, it isn't
+        # Returned yet, so it can't have been received.
+        not_received = self._apply_filters(
+            services.card_queryset(Order.objects.filter(**org_filter(request)), "return_in_transit"),
+            params,
+        ).count()
 
         # Separate from the three buckets above - these orders haven't
         # reached status="returned" yet, so they're outside `qs` entirely.
@@ -1035,10 +1199,14 @@ class OrderViewSet(viewsets.ModelViewSet):
         )
         return Response(
             {
-                "total_returns": total,
+                # The desk's cards: Total = Awaiting Scan + Received + Not Received.
+                "total_returns": returned + not_received,
+                "awaiting_scan": returned - received_all,
+                "received_all": received_all,
+                "not_received": not_received,
+                # Received split by outcome - all good vs. any damaged/lost.
                 "received": received,
                 "damaged": damaged,
-                "awaiting_scan": total - received - damaged,
                 "return_in_progress": in_progress_qs.count(),
             }
         )
@@ -1186,82 +1354,253 @@ class OrderViewSet(viewsets.ModelViewSet):
         # "push_to_postex_oms" / "push_to_barqraftar_oms" are a store booking
         # its own orders through FynkTech's account (OMS Courier) - same
         # approval check.
-        if action_name in (
-            "push_to_barqraftar", "push_to_barqraftar_oms", "barqraftar_ready_for_pickup",
-            "push_to_postex", "push_to_postex_oms",
-        ):
-            from integrations.barqraftar import services as barqraftar_services
-            from integrations.models import OmsCourierEnrollment
-            from integrations.postex import services as postex_services
+        # No booking without the stock for it - "process anyway" (force)
+        # isn't honoured; a short order stays in Approved, tagged Stock Not
+        # Available (services.flag_stock_shortages).
+        if action_name in _BOOKING_ACTIONS or action_name == "change_courier":
+            params = {k: v for k, v in params.items() if k != "force"}
 
-            hub = is_hub_request(request)
-            org_by_order = (
-                self._order_orgs_in_hub(request, order_ids)
-                if hub
-                else {str(oid): request.organization_id for oid in order_ids}
-            )
-            by_org = {}
-            for order_id in order_ids:
-                org_id = org_by_order.get(str(order_id))
-                if org_id:
-                    by_org.setdefault(org_id, []).append(order_id)
+        # Limited stock goes to prepaid orders first, then oldest first
+        # (services.allocate_stock); the orders it can't cover are refused
+        # here, before any courier is asked.
+        stock_refused = []
+        if action_name in _BOOKING_ACTIONS:
+            order_ids, stock_refused = self._allocate_stock(request, order_ids)
 
-            results = []
-            for org_id, ids in by_org.items():
-                if action_name in ("push_to_postex", "push_to_postex_oms"):
-                    via_platform = hub or action_name == "push_to_postex_oms"
-                    refused = via_platform and _oms_courier_refusals(
-                        org_id, ids, OmsCourierEnrollment.COURIER_POSTEX
-                    )
-                    if refused:
-                        results += refused
-                        continue
-                    results += _with_tenant_context(
-                        org_id,
-                        lambda ids=ids, org_id=org_id, via_platform=via_platform: postex_services.book_orders(
-                            org_id, ids, actor_user_id=request.user_id,
-                            force=bool(params.get("force")), via_platform=via_platform,
-                        ),
-                    )
-                elif action_name in ("push_to_barqraftar", "push_to_barqraftar_oms"):
-                    via_platform = hub or action_name == "push_to_barqraftar_oms"
-                    refused = via_platform and _oms_courier_refusals(
-                        org_id, ids, OmsCourierEnrollment.COURIER_BARQRAFTAR
-                    )
-                    if refused:
-                        results += refused
-                        continue
-                    results += _with_tenant_context(
-                        org_id,
-                        lambda ids=ids, org_id=org_id, via_platform=via_platform: barqraftar_services.book_orders(
-                            org_id, ids, actor_user_id=request.user_id,
-                            force=bool(params.get("force")), via_platform=via_platform,
-                        ),
-                    )
-                else:
-                    results += _with_tenant_context(
-                        org_id,
-                        lambda ids=ids, org_id=org_id: barqraftar_services.mark_ready_for_pickup(
-                            org_id, ids
-                        ),
-                    )
-            missing = set(str(oid) for oid in order_ids) - set(org_by_order)
-            results += [
-                {"order_id": order_id, "success": False, "error": "Not found"}
-                for order_id in missing
-            ]
+        if action_name in COURIER_BATCH_ACTIONS:
+            results = self._courier_batch_action(request, action_name, order_ids, params) + stock_refused
+            services.flag_stock_shortages(results)
             _record_hub_booking(request, action_name, results)
             return Response({"results": results})
+        if action_name == "change_courier":
+            target = CHANGE_COURIER_TARGETS.get(str(params.get("courier") or ""))
+            if not target:
+                return Response(
+                    {"detail": "Pick the courier to book with instead."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            return Response({"results": self._change_courier(request, order_ids, target)})
 
         handler = BULK_ACTIONS.get(action_name)
         if not handler:
             return Response(
                 {"detail": f"Unknown action {action_name!r}"}, status=status.HTTP_400_BAD_REQUEST
             )
+        if action_name == "cancel" and not str((params or {}).get("reason") or "").strip():
+            return Response(
+                {"detail": "A cancellation reason is required."}, status=status.HTTP_400_BAD_REQUEST
+            )
         if action_name == "push_to_smartlane" and is_hub_request(request):
             # Through FynkTech's own account - decided here, never by params.
             handler = _hub_push_to_smartlane
 
+        results = self._run_per_order(request, action_name, handler, order_ids, params) + stock_refused
+        services.flag_stock_shortages(results)
+        _record_hub_booking(request, action_name, results)
+        return Response({"results": results})
+
+    def _allocate_stock(self, request, order_ids):
+        """(order ids to book, in stock priority order; insufficient_stock
+        results for the rest). Only orders still waiting for a courier
+        take part - any other is passed through for the booking to refuse
+        with its own reason."""
+        orders = list(
+            Order.objects.filter(id__in=order_ids, status="awaiting_assigning", **org_filter(request))
+            .prefetch_related("items")
+        )
+        fits, short = services.allocate_stock(orders)
+        waiting = {str(o.id) for o in orders}
+        ids = [str(o.id) for o in fits] + [str(oid) for oid in order_ids if str(oid) not in waiting]
+        refused = [
+            {
+                "order_id": str(order.id), "order_number": order.order_number, "success": False,
+                "error": str(InsufficientStock(shortages)),
+                "error_code": "insufficient_stock", "shortages": shortages,
+            }
+            for order, shortages in short
+        ]
+        return ids, refused
+
+    def _change_courier(self, request, order_ids, target):
+        """Cancels each order's booking with its current courier, then books
+        it with the picked one. The old booking goes first, and an order
+        whose courier won't cancel (already picked up, API down) is left
+        exactly as it was - never booked twice. One whose old booking was
+        cancelled but whose new booking then failed is back in Approved,
+        tagged Courier Change Failed, with no tracking number at all rather
+        than the stale one."""
+        booking_action, booking_params, courier_name, via_platform = target
+        reason = f"Change courier to {courier_name}"
+        actor = request.user_id
+        orders_by_id = {
+            str(order.id): order
+            for order in Order.objects.filter(id__in=order_ids, **org_filter(request)).select_related(
+                "courier"
+            )
+        }
+        results = []
+        unbooked = []
+        for order_id in order_ids:
+            order = orders_by_id.get(str(order_id))
+            if not order:
+                results.append({"order_id": order_id, "success": False, "error": "Not found"})
+                continue
+            current = (order.courier.name if order.courier_id else "").strip().lower()
+            if current == courier_name.lower() and bool(order.platform_reference) == via_platform:
+                results.append(
+                    {
+                        "order_id": order_id,
+                        "order_number": order.order_number,
+                        "success": False,
+                        "error": f"Already booked with {courier_name}.",
+                    }
+                )
+                continue
+            try:
+                _with_tenant_context(
+                    order.organization_id,
+                    lambda order=order: services.unbook_from_assigning(
+                        order, flag=services.FLAG_COURIER_CHANGE_FAILED, reason=reason,
+                        actor_user_id=actor,
+                    ),
+                )
+                unbooked.append(str(order.id))
+            except (services.InvalidTransition, services.SmartlaneBookingError,
+                    BarqRaftarBookingError, PostExBookingError) as exc:
+                results.append(
+                    {
+                        "order_id": order_id,
+                        "order_number": order.order_number,
+                        "success": False,
+                        "error": f"Old booking not cancelled, nothing changed - {exc}",
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001 - reported per order, like _run_per_order
+                logger.exception("Change courier failed for order %s", order.order_number)
+                results.append(
+                    {
+                        "order_id": order_id,
+                        "order_number": order.order_number,
+                        "success": False,
+                        "error": f"Old booking not cancelled - {exc.__class__.__name__}: {exc}",
+                    }
+                )
+        if not unbooked:
+            return results
+
+        # force: the stock these orders held was only just put back by the
+        # cancel above - they already had it.
+        params = {**booking_params, "force": True}
+        if booking_action in COURIER_BATCH_ACTIONS:
+            booked = self._courier_batch_action(request, booking_action, unbooked, params)
+        else:
+            handler = (
+                _hub_push_to_smartlane if is_hub_request(request) else BULK_ACTIONS[booking_action]
+            )
+            booked = self._run_per_order(request, booking_action, handler, unbooked, params)
+        _record_hub_booking(request, booking_action, booked)
+        numbers = {oid: order.order_number for oid, order in orders_by_id.items()}
+        for row in booked:
+            row = {**row, "order_number": row.get("order_number") or numbers.get(str(row["order_id"]), "")}
+            if not row.get("success"):
+                row["error"] = (
+                    f"Old booking cancelled, but booking with {courier_name} failed - "
+                    f"{row.get('error') or 'unknown error'}. It's back in Approved; book it again."
+                )
+                row.pop("error_code", None)
+            results.append(row)
+        return results
+
+    def _courier_batch_action(self, request, action_name, order_ids, params):
+        """The BarqRaftar/PostEx batch actions (see bulk_action) - per-order
+        results, same shape as BULK_ACTIONS' loop."""
+        from integrations.barqraftar import services as barqraftar_services
+        from integrations.models import OmsCourierEnrollment
+        from integrations.postex import services as postex_services
+
+        hub = is_hub_request(request)
+        org_by_order = (
+            self._order_orgs_in_hub(request, order_ids)
+            if hub
+            else {str(oid): request.organization_id for oid in order_ids}
+        )
+        by_org = {}
+        for order_id in order_ids:
+            org_id = org_by_order.get(str(order_id))
+            if org_id:
+                by_org.setdefault(org_id, []).append(order_id)
+
+        results = []
+        for org_id, ids in by_org.items():
+            if action_name == "auto_book":
+                # Split by the couriers' city lists, then each part books
+                # exactly as its own courier's button would.
+                barqraftar_ids, postex_ids, unmatched_ids, error = _with_tenant_context(
+                    org_id,
+                    lambda ids=ids, org_id=org_id: services.auto_book_routes(org_id, ids, via_platform=hub),
+                )
+                if error:
+                    results += [{"order_id": str(oid), "success": False, "error": error} for oid in ids]
+                    continue
+                if barqraftar_ids:
+                    results += self._courier_batch_action(request, "push_to_barqraftar", barqraftar_ids, params)
+                if postex_ids:
+                    results += self._courier_batch_action(request, "push_to_postex", postex_ids, params)
+                results += [
+                    {
+                        "order_id": str(oid), "success": False,
+                        "error": "No City Matched - the city isn't spelled as on BarqRaftar's or PostEx's "
+                        "city list. Fix it and Auto Book again.",
+                    }
+                    for oid in unmatched_ids
+                ]
+            elif action_name in ("push_to_postex", "push_to_postex_oms"):
+                via_platform = hub or action_name == "push_to_postex_oms"
+                refused = via_platform and _oms_courier_refusals(
+                    org_id, ids, OmsCourierEnrollment.COURIER_POSTEX
+                )
+                if refused:
+                    results += refused
+                    continue
+                results += _with_tenant_context(
+                    org_id,
+                    lambda ids=ids, org_id=org_id, via_platform=via_platform: postex_services.book_orders(
+                        org_id, ids, actor_user_id=request.user_id,
+                        force=bool(params.get("force")), via_platform=via_platform,
+                    ),
+                )
+            elif action_name in ("push_to_barqraftar", "push_to_barqraftar_oms"):
+                via_platform = hub or action_name == "push_to_barqraftar_oms"
+                refused = via_platform and _oms_courier_refusals(
+                    org_id, ids, OmsCourierEnrollment.COURIER_BARQRAFTAR
+                )
+                if refused:
+                    results += refused
+                    continue
+                results += _with_tenant_context(
+                    org_id,
+                    lambda ids=ids, org_id=org_id, via_platform=via_platform: barqraftar_services.book_orders(
+                        org_id, ids, actor_user_id=request.user_id,
+                        force=bool(params.get("force")), via_platform=via_platform,
+                    ),
+                )
+            else:
+                results += _with_tenant_context(
+                    org_id,
+                    lambda ids=ids, org_id=org_id: barqraftar_services.mark_ready_for_pickup(
+                        org_id, ids
+                    ),
+                )
+        missing = set(str(oid) for oid in order_ids) - set(org_by_order)
+        results += [
+            {"order_id": order_id, "success": False, "error": "Not found"}
+            for order_id in missing
+        ]
+        return results
+
+    def _run_per_order(self, request, action_name, handler, order_ids, params):
+        """Runs `handler` on each order, collecting per-order results -
+        every failure is reported for its own order, never a 500."""
         actor = request.user_id
         results = []
         orders_by_id = {
@@ -1282,8 +1621,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                 results.append({"order_id": order_id, "success": True})
             except InsufficientStock as exc:
                 # Structured rather than a flat message: the UI needs the
-                # per-SKU shortage detail to show what's short and offer
-                # "proceed anyway" (which retries with params.force=True).
+                # per-SKU shortage detail to show what's short.
                 results.append(
                     {
                         "order_id": order_id,
@@ -1337,9 +1675,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                         "error": f"{exc.__class__.__name__}: {exc}",
                     }
                 )
-
-        _record_hub_booking(request, action_name, results)
-        return Response({"results": results})
+        return results
 
     def _resolve_scan_org(self, request, order_number):
         """Which store `order_number` belongs to - request.organization_id
@@ -1382,6 +1718,44 @@ class OrderViewSet(viewsets.ModelViewSet):
             ),
         )
         return Response(result)
+
+    @action(detail=False, methods=["post"], url_path="scan-pack")
+    def scan_pack(self, request):
+        """Assigning Courier's Scan - a parcel's barcode (tracking number,
+        or else order number) marks it Packed (services.scan_pack)."""
+        code = (request.data.get("code") or "").strip()
+        if not code:
+            return Response({"detail": "code is required"}, status=status.HTTP_400_BAD_REQUEST)
+        numbers = [code] if code.startswith("#") else [code, f"#{code}"]
+        candidates = list(
+            Order.objects.filter(
+                Q(tracking_number=code) | Q(order_number__in=numbers), **org_filter(request)
+            ).select_related("courier")[:5]
+        )
+        # The label's barcode is the tracking number, so that match wins
+        # over an order number that happens to read the same.
+        by_tracking = [o for o in candidates if o.tracking_number == code]
+        matches = by_tracking or candidates
+        if len(matches) > 1:
+            return Response(
+                {
+                    "success": False,
+                    "order_number": code,
+                    "reason": "More than one order has this code - open the order to pack it.",
+                }
+            )
+        order = matches[0] if matches else None
+        if order is None:
+            return Response(services.scan_pack(None, code=code))
+        return Response(
+            _with_tenant_context(
+                order.organization_id,
+                lambda: services.scan_pack(
+                    order, code=code, actor_user_id=request.user_id,
+                    actor_email=getattr(request, "auth_email", "") or "",
+                ),
+            )
+        )
 
     @action(detail=False, methods=["post"], url_path="scan-return")
     def scan_return(self, request):
@@ -1509,55 +1883,14 @@ class OrderViewSet(viewsets.ModelViewSet):
         return buffer.getvalue()
 
     def _save_print_batch(self, *, organization_id, kind, courier, order_numbers, content, content_type, actor_user_id):
-        """Keeps a permanent copy of exactly what was generated, so the
-        Batch page can offer it back later without re-hitting Smartlane -
-        which could return different data by then, or fail outright if a
-        consignment was since cancelled. Best-effort: a storage hiccup
-        here must not block the document the user is actively downloading
-        right now.
+        """See oms.batch_services.save_print_batch - shared with PostEx's
+        and BarqRaftar's print views."""
+        from .batch_services import save_print_batch
 
-        Reprinting the exact same set of orders (same kind/courier/order
-        numbers) reuses the existing row instead of piling up a duplicate -
-        sorted so the comparison doesn't care what order the ids were
-        requested in. Skipped when order_numbers is empty (a date-ranged
-        load sheet has nothing stable to match on), which always creates a
-        fresh row same as before."""
-        from django.core.files.base import ContentFile
-
-        try:
-            sorted_numbers = sorted(str(n) for n in order_numbers)
-            existing = None
-            if sorted_numbers:
-                existing = PrintBatch.all_objects.filter(
-                    organization_id=organization_id,
-                    kind=kind,
-                    courier=courier or "",
-                    order_numbers=sorted_numbers,
-                ).first()
-
-            if existing:
-                batch = existing
-                if batch.file:
-                    # FieldFile.save() below doesn't delete the old file on
-                    # its own - without this the previous PDF would leak in
-                    # storage forever, orphaned once the row points at a new one.
-                    batch.file.delete(save=False)
-                batch.content_type = content_type
-                batch.created_by_user_id = actor_user_id
-            else:
-                batch = PrintBatch.all_objects.create(
-                    organization_id=organization_id,
-                    kind=kind,
-                    courier=courier or "",
-                    order_count=len(sorted_numbers),
-                    order_numbers=sorted_numbers,
-                    content_type=content_type,
-                    created_by_user_id=actor_user_id,
-                )
-            ext = "pdf" if content_type == "application/pdf" else "html"
-            batch.file.save(f"{kind}.{ext}", ContentFile(content), save=True)
-        except Exception:
-            pass
+        save_print_batch(
+            organization_id=organization_id, kind=kind, courier=courier, order_numbers=order_numbers,
+            content=content, content_type=content_type, actor_user_id=actor_user_id,
+        )
 
     @action(detail=False, methods=["post"], url_path="smartlane-airway-bill")
     def smartlane_airway_bill(self, request):
@@ -2079,11 +2412,103 @@ class PrintBatchViewSet(viewsets.ReadOnlyModelViewSet):
     def download(self, request, pk=None):
         batch = self.get_object()
         ext = "pdf" if batch.content_type == "application/pdf" else "html"
-        response = HttpResponse(batch.file.read(), content_type=batch.content_type)
+        try:
+            with batch.file.open("rb") as handle:
+                content = handle.read()
+        except (FileNotFoundError, ValueError):
+            # Saved to the machine's own disk before documents moved to
+            # persistent storage (oms/storage.py), and lost on a redeploy.
+            return Response(
+                {"detail": "This document's file is no longer available - generate it again."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        # ?inline=1 is the Batch page's Print button - opened in the
+        # browser's PDF viewer instead of saved.
+        disposition = "inline" if request.query_params.get("inline") else "attachment"
+        response = HttpResponse(content, content_type=batch.content_type)
         response["Content-Disposition"] = (
-            f'attachment; filename="{batch.kind}-{batch.updated_at:%Y-%m-%d}.{ext}"'
+            f'{disposition}; filename="{batch.kind}-{batch.updated_at:%Y-%m-%d}.{ext}"'
         )
         return response
+
+
+class DispatchBatchViewSet(viewsets.ReadOnlyModelViewSet):
+    """The Batch page's History: one card per batch of orders printed
+    together, with every load sheet/airway bill generated for it (filed by
+    oms.batch_services.save_print_batch). The documents themselves are
+    downloaded through PrintBatchViewSet.download - the saved copy, never
+    regenerated.
+
+    Filters: date_from/date_to (the batch's creation date), courier (the
+    batch's or any of its documents'), kind (has a document of that kind),
+    q (an order number in the batch, removed ones included)."""
+
+    serializer_class = DispatchBatchSerializer
+    permission_classes = [RequireModule]
+    required_module = "oms"
+    pagination_class = OrderPagination
+
+    def get_queryset(self):
+        qs = (
+            DispatchBatch.objects.filter(**org_filter(self.request))
+            .select_related("organization")
+            .prefetch_related(
+                # all_objects: the batches are already org-scoped above.
+                Prefetch("entries", queryset=DispatchBatchOrder.all_objects.all()),
+                Prefetch("documents", queryset=PrintBatch.all_objects.order_by("kind", "-updated_at")),
+            )
+        )
+        params = self.request.query_params
+        date_from = params.get("date_from")
+        if date_from:
+            qs = qs.filter(created_at__date__gte=date_from)
+        date_to = params.get("date_to")
+        if date_to:
+            qs = qs.filter(created_at__date__lte=date_to)
+        courier = (params.get("courier") or "").strip().lower()
+        if courier:
+            qs = qs.filter(Q(courier=courier) | Q(documents__courier=courier))
+        kind = params.get("kind")
+        if kind:
+            qs = qs.filter(documents__kind=kind)
+        q = (params.get("q") or "").strip()
+        if q:
+            qs = qs.filter(entries__order_number__icontains=q)
+        if courier or kind or q:
+            # Each join above can repeat a batch once per matching row.
+            qs = qs.distinct()
+        return qs
+
+    @action(detail=False, methods=["get"])
+    def couriers(self, request):
+        """Every courier this store's batches name - the History courier
+        filter's options."""
+        scope = org_filter(request)
+        names = set(
+            DispatchBatch.objects.filter(**scope).exclude(courier="").values_list("courier", flat=True)
+        ) | set(
+            PrintBatch.objects.filter(**scope, batch__isnull=False)
+            .exclude(courier="").values_list("courier", flat=True)
+        )
+        return Response(sorted(names))
+
+    @action(detail=True, methods=["post"], url_path="remove-orders")
+    def remove_orders(self, request, pk=None):
+        """POST {order_numbers} - takes those orders out of this batch.
+        The orders and the documents already generated stay exactly as
+        they were (see batch_services.remove_orders)."""
+        from .batch_services import remove_orders
+
+        batch = self.get_object()
+        order_numbers = [str(n) for n in (request.data.get("order_numbers") or []) if str(n).strip()]
+        if not order_numbers:
+            return Response({"detail": "order_numbers is required"}, status=status.HTTP_400_BAD_REQUEST)
+        removed = remove_orders(batch, order_numbers, actor_user_id=request.user_id)
+        if not removed:
+            return Response(
+                {"detail": "None of those orders are in this batch."}, status=status.HTTP_400_BAD_REQUEST
+            )
+        return Response(self.get_serializer(self.get_queryset().get(pk=batch.pk)).data)
 
 
 class DailyReadyToPrintView(APIView):
@@ -2132,28 +2557,22 @@ class DailyReadyToPrintView(APIView):
         results = []
         for day in sorted(by_date, reverse=True):
             orders = list(by_date[day].values())
-            products = sorted({
-                item.product_name
-                for order in orders
-                for item in order.items.all()
-                if item.product_name
-            })
-            couriers = sorted({order.courier.name for order in orders if order.courier_id})
             results.append({
                 "date": day,
                 "order_count": len(orders),
-                "products": products,
-                "couriers": couriers,
-                # Minimal per-order shape (not the full OrderSerializer) -
-                # just enough for AirwayBillFilterModal's product-wise split
-                # (frontend/components/orders/AirwayBillFilterModal.jsx only
-                # reads .id and .items[].product_name) and for
-                # printSmartlaneLoadSheet, which only needs the id list.
+                # Minimal per-order shape (not the full OrderSerializer).
+                # courier_name is the booking integration the order went out
+                # through (frontend orderBookingAccount) - the page splits
+                # each day by it, since BarqRaftar's and PostEx's documents
+                # only cover their own parcels. items is for
+                # AirwayBillFilterModal's product-wise split of Smartlane
+                # orders (it only reads .id and .items[].product_name).
                 "orders": [
                     {
                         "id": str(order.id),
                         "order_number": order.order_number,
                         "store_name": order.organization.name,
+                        "courier_name": order.courier.name if order.courier_id else "",
                         "items": [
                             {"product_name": item.product_name}
                             for item in order.items.all()
@@ -2169,7 +2588,9 @@ class TicketViewSet(viewsets.ModelViewSet):
     """Support tickets - either attached to one order or standalone
     (Ticket.order is nullable). Listing is narrower than every other
     tenant viewset here: with no `order` filter, `list` only returns
-    tickets *this user* created (the sidebar's "My Tickets" page);
+    tickets *this user* created (the Tickets page's "My Tickets"), or with
+    `scope=admin` the ones FynkTech's super admin raised for the store
+    ("By Admin");
     filtered by `?order=<id>` it returns every ticket on that order
     regardless of who raised it (an order's Tickets tab, same visibility
     model as OrderNote - any org member can see it). Retrieve/messages
@@ -2187,23 +2608,32 @@ class TicketViewSet(viewsets.ModelViewSet):
             order_id = self.request.query_params.get("order")
             if order_id:
                 qs = qs.filter(order_id=order_id)
+            elif self.request.query_params.get("scope") == "admin":
+                # The store's "By Admin" view: what FynkTech's super admin
+                # raised for this store, whoever at the store is looking.
+                qs = qs.filter(ticket_type="admin")
             else:
                 qs = qs.filter(created_by_user_id=self.request.user_id)
 
             status_filter = self.request.query_params.get("status")
             if status_filter:
                 qs = qs.filter(status=status_filter)
-            priority_filter = self.request.query_params.get("priority")
-            if priority_filter:
-                qs = qs.filter(priority=priority_filter)
+            type_filter = self.request.query_params.get("type")
+            if type_filter:
+                qs = qs.filter(ticket_type=type_filter)
             q = (self.request.query_params.get("q") or "").strip()
             if q:
-                qs = qs.filter(
+                condition = (
                     Q(category__icontains=q)
                     | Q(sub_category__icontains=q)
                     | Q(description__icontains=q)
                     | Q(order__order_number__icontains=q)
                 )
+                # "#000123" / "000123" / "123" finds that ticket by its number.
+                number = q.removeprefix("#").lstrip("0")
+                if number.isdigit():
+                    condition |= Q(number=int(number))
+                qs = qs.filter(condition)
         return qs
 
     def create(self, request, *args, **kwargs):
@@ -2232,6 +2662,9 @@ class TicketViewSet(viewsets.ModelViewSet):
             created_by_user_id=self.request.user_id,
             created_by_email=getattr(self.request, "auth_email", "") or "",
             status="open",
+            # FynkTech's super admin (e.g. from the Dispatch Hub) vs the
+            # store itself - see Ticket.TYPE_CHOICES.
+            ticket_type="admin" if getattr(self.request, "is_super_admin", False) else "customer",
         )
 
     @action(detail=True, methods=["get", "post"])
@@ -2261,6 +2694,20 @@ class TicketViewSet(viewsets.ModelViewSet):
         return Response(
             TicketMessageSerializer(ticket.messages.filter(is_internal=False), many=True).data
         )
+
+
+class CityNamesView(APIView):
+    """The couriers' city list (oms.City, kept by the super admin) as
+    plain names - the suggestions in Resolve City Issue, so a store
+    can pick the exact spelling the couriers use."""
+
+    permission_classes = [RequireModule]
+    required_module = "oms"
+
+    def get(self, request):
+        from .models import City
+
+        return Response({"cities": list(City.objects.order_by("name").values_list("name", flat=True))})
 
 
 class ReportView(APIView):

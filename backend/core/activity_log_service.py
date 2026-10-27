@@ -148,8 +148,10 @@ ROUTE_LABELS = {
         "*": "Changed a Dispatch Hub store",
     },
     "admin-ticket-resolve": {"*": "Resolved a support ticket"},
-    "admin-ticket-assign": {"*": "Assigned a support ticket"},
-    "admin-ticket-priority": {"*": "Changed a ticket's priority"},
+    "admin-ticket-status": {"*": "Changed a ticket's status"},
+    "admin-cities": {"POST": "Added cities to the city list"},
+    "admin-cities-import": {"*": "Imported the couriers' cities"},
+    "admin-city-detail": {"DELETE": "Removed a city from the city list"},
     "admin-ticket-messages": {"POST": "Replied on a support ticket"},
     "admin-invoice-generate": {"*": "Generated invoices"},
 }

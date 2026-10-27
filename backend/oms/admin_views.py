@@ -20,11 +20,30 @@ def _error(exc):
     return Response({"success": False, "error": exc.message}, status=exc.status_code)
 
 
-@api_view(["GET"])
+@api_view(["GET", "POST"])
 @permission_classes([IsSuperAdmin])
 def tickets(request):
+    if request.method == "POST":
+        try:
+            ticket = service.create_ticket(
+                request.data,
+                actor_user_id=getattr(request, "user_id", None),
+                actor_email=getattr(request, "auth_email", "") or "",
+            )
+        except TicketAdminError as exc:
+            return _error(exc)
+        return Response({"success": True, "ticket": ticket}, status=201)
     result = service.list_tickets(request.query_params)
     return Response({"success": True, **result})
+
+
+@api_view(["GET"])
+@permission_classes([IsSuperAdmin])
+def ticket_store_orders(request):
+    orders = service.search_store_orders(
+        request.query_params.get("organization_id"), request.query_params.get("q")
+    )
+    return Response({"success": True, "orders": orders})
 
 
 @api_view(["GET"])
@@ -49,23 +68,13 @@ def ticket_resolve(request, ticket_id):
 
 @api_view(["POST"])
 @permission_classes([IsSuperAdmin])
-def ticket_assign(request, ticket_id):
+def ticket_status(request, ticket_id):
     try:
-        ticket = service.assign_ticket(
+        ticket = service.set_status(
             ticket_id,
+            (request.data or {}).get("status", ""),
             actor_user_id=getattr(request, "user_id", None),
-            actor_email=getattr(request, "auth_email", "") or "",
         )
-    except TicketAdminError as exc:
-        return _error(exc)
-    return Response({"success": True, "ticket": ticket})
-
-
-@api_view(["POST"])
-@permission_classes([IsSuperAdmin])
-def ticket_priority(request, ticket_id):
-    try:
-        ticket = service.set_priority(ticket_id, (request.data or {}).get("priority", ""))
     except TicketAdminError as exc:
         return _error(exc)
     return Response({"success": True, "ticket": ticket})

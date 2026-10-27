@@ -9,7 +9,11 @@ const dashboards = new Map();
 let warmupGeneration = 0;
 
 export function ordersListKey({ status, page, pageSize, filters = {} }) {
-  const extras = ["search", "city", "courier_id", "gateway", "date_from", "date_to"]
+  // Every filter the list honours belongs here - one left out makes a
+  // filtered view reuse the unfiltered page cached under the same key.
+  const extras = [
+    "search", "city", "courier_id", "gateway", "date_from", "date_to", "store", "product", "dispatch_requested",
+  ]
     .map((k) => filters[k] || "")
     .join("|");
   return `${status || "all"}|${page}|${pageSize}|${extras}`;
@@ -19,8 +23,11 @@ export function dashboardKey({ date_from = "", date_to = "" }) {
   return `${date_from}|${date_to}`;
 }
 
+// The local calendar day (Pakistan for the team), not toISOString's UTC
+// one - that read as yesterday between midnight and 5 AM.
 function toDateInputValue(d) {
-  return d.toISOString().slice(0, 10);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 export function dashboardRangeFor(days) {
@@ -30,9 +37,27 @@ export function dashboardRangeFor(days) {
   return { date_from: days === null ? "" : toDateInputValue(from), date_to: toDateInputValue(to) };
 }
 
+// The Dashboard's range buttons (Custom aside) - each warmed in the
+// background so switching between them is instant.
+export const DASHBOARD_PRESETS = [
+  { key: "today", label: "Today" },
+  { key: "yesterday", label: "Yesterday" },
+  { key: "7", label: "Last 7 days" },
+  { key: "30", label: "Last 30 days" },
+];
+
+export function dashboardRangeForPreset(key) {
+  if (key === "yesterday") {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    const day = toDateInputValue(d);
+    return { date_from: day, date_to: day };
+  }
+  return dashboardRangeFor(key === "today" ? 1 : Number(key) || 7);
+}
+
 export function dashboardPresetKeys() {
-  // Keep in step with QUICK_RANGES on the dashboard page.
-  return [1, 2, 7, 14, 30, 90, null].map((days) => dashboardKey(dashboardRangeFor(days)));
+  return DASHBOARD_PRESETS.map((p) => dashboardKey(dashboardRangeForPreset(p.key)));
 }
 
 export function getCachedOrdersList(key) {

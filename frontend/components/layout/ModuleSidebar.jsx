@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useState } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
@@ -103,50 +103,9 @@ function FullLink({ item, active }) {
   );
 }
 
-const MenuGlyph = ({ className }) => (
-  <svg viewBox="0 0 20 20" fill="none" className={className} aria-hidden="true">
-    <path d="M2.5 5h15M2.5 10h15M2.5 15h15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-  </svg>
-);
-
-// Same static look as every other item (muted, hover-highlight only - no
-// permanent "active" color just because the sidebar happens to be
-// expanded right now), and it mirrors RailIcon/FullLink's own two modes:
-// icon-only + hover tooltip when collapsed, icon + visible label when
-// expanded - so it reads as "just another row," not a special control.
-function MenuToggle({ expanded, onToggle }) {
-  if (expanded) {
-    return (
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-label="Collapse sidebar"
-        className="mb-2 flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium text-brand-100 transition hover:bg-white/10 hover:text-white"
-      >
-        <MenuGlyph className="h-5 w-5 shrink-0" />
-        <span>Menu</span>
-      </button>
-    );
-  }
-
-  return (
-    <div className="group relative mb-2 flex justify-center">
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-label="Expand sidebar"
-        className="flex h-9 w-9 items-center justify-center rounded-lg text-brand-100 transition hover:bg-white/10 hover:text-white"
-      >
-        <MenuGlyph className="h-5 w-5" />
-      </button>
-      <RailTooltip label="Menu" />
-    </div>
-  );
-}
-
-export default function ModuleSidebar({ activeModule, expanded, onToggle }) {
-  const pathname = usePathname();
-  const search = useSearchParams();
+// One source for what the nav shows, so the desktop rail and the phone
+// bar (MobileNav) can never list different pages.
+function useNavItems(activeModule) {
   const user = useEffectiveUser();
   const isOrgAdmin =
     user?.role === "org_admin" || user?.isOrgAdmin === true || user?.role === "super_admin";
@@ -156,27 +115,49 @@ export default function ModuleSidebar({ activeModule, expanded, onToggle }) {
     : returnsAssociate
       ? RETURNS_ASSOCIATE_SIDEBAR_ITEMS
       : SIDEBAR_ITEMS[activeModule] || [];
+  const bottom = [
+    ...(isOrgAdmin && !user?.isDispatchHub ? [INTEGRATIONS_ITEM, BILLING_ITEM, LOGS_ITEM] : []),
+    ...(!returnsAssociate ? [REPORT_ITEM, BATCH_ITEM, TICKETS_ITEM] : []),
+    ...(!user?.isDispatchHub ? [SETTINGS_ITEM] : []),
+  ];
+  return { items, bottom };
+}
+
+function isSectionActive(item, pathname) {
+  return pathname === item.href || pathname.startsWith(`${item.href}/`);
+}
+
+// Expands while the pointer is over it (no Menu button) and folds back
+// to the icon rail when it leaves. The rail's own width is held by an
+// outer w-14 box, so the expanded panel slides over the page rather than
+// pushing it sideways on every pass of the mouse.
+export default function ModuleSidebar({ activeModule }) {
+  const pathname = usePathname();
+  const search = useSearchParams();
+  const { items, bottom } = useNavItems(activeModule);
+  const [expanded, setExpanded] = useState(false);
   const ItemComponent = expanded ? FullLink : RailIcon;
-  const asideRef = useRef(null);
 
+  // Leaving for another page shouldn't leave it open over the new one.
   useEffect(() => {
-    if (!expanded) return undefined;
-    function onClickOutside(e) {
-      if (asideRef.current && !asideRef.current.contains(e.target)) onToggle();
-    }
-    document.addEventListener("mousedown", onClickOutside);
-    return () => document.removeEventListener("mousedown", onClickOutside);
-  }, [expanded, onToggle]);
+    setExpanded(false);
+  }, [pathname]);
 
+  // Desktop only - below md the same links sit in MobileNav's bar under the
+  // header instead, so a phone gets its full width for the page.
   return (
+    <div className="relative z-30 hidden w-14 shrink-0 md:block">
     <aside
-      ref={asideRef}
-      className={`sticky top-16 z-20 flex h-[calc(100vh-4rem)] shrink-0 flex-col border-r border-brand-900 bg-brand-800 py-4 transition-all duration-150 ${
-        expanded ? "w-56 items-stretch px-3" : "w-14 items-center"
+      onMouseEnter={() => setExpanded(true)}
+      onMouseLeave={() => setExpanded(false)}
+      // min-h, not h: a module with many links (Financify/WMS, expanded)
+      // is taller than the screen, and a fixed height let the bottom links
+      // spill out below the blue box onto the white page, near-invisible.
+      // Growing instead keeps them on blue and reachable by scrolling.
+      className={`sticky top-16 flex min-h-[calc(100vh-4rem)] flex-col border-r border-brand-900 bg-brand-800 py-4 transition-all duration-150 ${
+        expanded ? "w-56 items-stretch px-3 shadow-2xl" : "w-14 items-center"
       }`}
     >
-      <MenuToggle expanded={expanded} onToggle={onToggle} />
-
       <nav className={`flex-1 space-y-1 ${expanded ? "" : "w-full"}`}>
         {items.map((item, i) =>
           item.divider ? (
@@ -191,41 +172,47 @@ export default function ModuleSidebar({ activeModule, expanded, onToggle }) {
       </nav>
 
       <div className={`mt-2 space-y-1 border-t border-brand-900 pt-2 ${expanded ? "" : "w-full"}`}>
-        {isOrgAdmin && !user?.isDispatchHub ? (
-          <>
-            <ItemComponent
-              item={INTEGRATIONS_ITEM}
-              active={
-                pathname === INTEGRATIONS_ITEM.href ||
-                pathname.startsWith(`${INTEGRATIONS_ITEM.href}/`)
-              }
-            />
-            <ItemComponent
-              item={BILLING_ITEM}
-              active={
-                pathname === BILLING_ITEM.href || pathname.startsWith(`${BILLING_ITEM.href}/`)
-              }
-            />
-            <ItemComponent
-              item={LOGS_ITEM}
-              active={pathname === LOGS_ITEM.href || pathname.startsWith(`${LOGS_ITEM.href}/`)}
-            />
-          </>
-        ) : null}
-        {!returnsAssociate ? (
-          <>
-            <ItemComponent item={REPORT_ITEM} active={pathname === REPORT_ITEM.href} />
-            <ItemComponent item={BATCH_ITEM} active={pathname === BATCH_ITEM.href} />
-            <ItemComponent
-              item={TICKETS_ITEM}
-              active={pathname === TICKETS_ITEM.href || pathname.startsWith(`${TICKETS_ITEM.href}/`)}
-            />
-          </>
-        ) : null}
-        {!user?.isDispatchHub ? (
-          <ItemComponent item={SETTINGS_ITEM} active={pathname === SETTINGS_ITEM.href} />
-        ) : null}
+        {bottom.map((item) => (
+          <ItemComponent key={item.key} item={item} active={isSectionActive(item, pathname)} />
+        ))}
       </div>
     </aside>
+    </div>
+  );
+}
+
+/** Phones (below md): the sidebar's links as one horizontally scrolling
+ * row of pills under the header, in place of the blue rail. "Coming soon"
+ * items are left out - there's no room to show a disabled stub here. */
+export function MobileNav({ activeModule }) {
+  const pathname = usePathname();
+  const search = useSearchParams();
+  const { items, bottom } = useNavItems(activeModule);
+  const links = [
+    ...items.filter((item) => !item.divider && !item.disabled).map((item) => ({
+      item,
+      active: isItemActive(item, pathname, search),
+    })),
+    ...bottom.map((item) => ({ item, active: isSectionActive(item, pathname) })),
+  ];
+
+  return (
+    <nav className="sticky top-16 z-30 flex gap-1.5 overflow-x-auto border-b border-brand-900 bg-brand-800 px-3 pb-2 md:hidden">
+      {links.map(({ item, active }) => {
+        const Icon = item.icon;
+        return (
+          <Link
+            key={item.href}
+            href={item.href}
+            className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-3 py-1.5 text-sm font-medium transition ${
+              active ? "bg-white text-brand-800" : "bg-white/10 text-brand-100 hover:bg-white/20"
+            }`}
+          >
+            {Icon ? <Icon className="h-4 w-4" /> : null}
+            {item.label}
+          </Link>
+        );
+      })}
+    </nav>
   );
 }

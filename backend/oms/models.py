@@ -1,10 +1,13 @@
 import uuid
+from decimal import Decimal
 
 from django.db import models
 from django.db.models.expressions import RawSQL
 from django.utils import timezone
 
 from core.models import TenantScopedModel
+
+from .storage import print_batch_storage
 
 
 class Courier(TenantScopedModel):
@@ -26,7 +29,10 @@ class Courier(TenantScopedModel):
 
 
 def _next_supabase_order_no():
-    """Atomically claims the next value of the oms.orders_supabase_no_seq
+    """No longer the field's default (see Order.supabase_order_no) - kept
+    because migration 0023 imports it.
+
+    Atomically claims the next value of the oms.orders_supabase_no_seq
     Postgres sequence (created in the migration that adds this field) -
     one DB round trip, race-free by construction, regardless of which code
     path is creating the Order (manual, Shopify webhook, CSV import,
@@ -51,7 +57,7 @@ class Order(TenantScopedModel):
         ("pending_cc", "Pending CC"),
         ("pending_cod", "Pending COD"),
         ("city_issue", "City Issue"),
-        ("awaiting_assigning", "Assigning Courier"),
+        ("awaiting_assigning", "Approved (Awaiting Courier)"),
         ("awaiting_approval", "Awaiting Confirmation"),
         ("approved", "Approved"),
         # Reached from awaiting_assigning when a courier booking is pushed
@@ -83,6 +89,7 @@ class Order(TenantScopedModel):
     ]
     PAYMENT_STATUS_CHOICES = [
         ("pending", "Pending"),
+        ("partially_paid", "Partially Paid"),
         ("paid", "Paid"),
     ]
     FULFILLMENT_STATUS_CHOICES = [
@@ -98,8 +105,16 @@ class Order(TenantScopedModel):
     # Shopify webhook, CSV import, Smartlane absorb - gets the next number
     # automatically with no app-level counting/races. Global across every
     # organization, not per-org, by design (confirmed with the user).
+    # db_default, not a Python default: the number is taken by the INSERT
+    # itself, so an Order only built in memory (and never saved) no longer
+    # uses one up - that left gaps in the count. A failed or rolled-back
+    # insert, or a deleted order, still leaves one: a sequence never rewinds.
     supabase_order_no = models.PositiveIntegerField(
-        null=True, blank=True, unique=True, editable=False, default=_next_supabase_order_no
+        null=True,
+        blank=True,
+        unique=True,
+        editable=False,
+        db_default=RawSQL("nextval('oms.orders_supabase_no_seq')", []),
     )
     order_number = models.CharField(max_length=50)
     customer_name = models.CharField(max_length=255)
@@ -119,7 +134,7 @@ class Order(TenantScopedModel):
     # Independent of `status` - a COD order can be Approved/Dispatched while
     # still Pending here until cash is actually collected on delivery.
     payment_status = models.CharField(
-        max_length=10, choices=PAYMENT_STATUS_CHOICES, default="pending"
+        max_length=20, choices=PAYMENT_STATUS_CHOICES, default="pending"
     )
     # Independent of `status` too - mirrors Shopify's own fulfillment_status,
     # not the internal dispatch pipeline.
@@ -216,12 +231,28 @@ class Order(TenantScopedModel):
     return_condition = models.CharField(
         max_length=10, choices=RETURN_CONDITION_CHOICES, blank=True, default=""
     )
+    # What the returns desk counted, per line, when it scanned the parcel:
+    # [{key, sku, product_name, quantity, good, damaged, lost}]. Only the
+    # good units went back into stock. return_condition is "good" when
+    # every unit was good, else "bad". Null for parcels received before
+    # this existed (or by the bulk Mark Good/Damaged, which records it too).
+    return_breakdown = models.JSONField(null=True, blank=True)
 
     # Packing bench: stamped by wms.views.PackingView when a Ready to Pick
     # parcel is scanned as packed (-> awaiting_dispatched). No separate
     # packing record - these two fields are the whole of it.
     packed_at = models.DateTimeField(null=True, blank=True)
     packed_by_email = models.CharField(max_length=255, blank=True, default="")
+    # How many times the courier has taken it out for delivery - bumped on
+    # every move into out_for_delivery (services._apply_transition), so the
+    # same courier event repeated never counts twice. Tells a first failed
+    # attempt from a second one.
+    delivery_attempts = models.PositiveSmallIntegerField(default=0, db_default=0)
+    # Why an order is back in Approved after it had a booking: its booking
+    # was cancelled for Edit Order ("cancelled_from_assigning"), or a
+    # Change Courier cancelled the old booking but the new one failed
+    # ("courier_change_failed"). Cleared once it leaves Approved again.
+    workflow_flag = models.CharField(max_length=40, blank=True, default="", db_default="")
 
     # --- Customer/shipping profile (denormalized on Order, same convention
     # as customer_name/customer_phone - a real cross-order Customer model is
@@ -238,6 +269,11 @@ class Order(TenantScopedModel):
     # which describes the customer). Set by hand or from a courier/finance
     # sheet during CSV import.
     tag = models.CharField(max_length=100, blank=True, default="")
+    # Why the order was cancelled, whoever cancelled it: the reason typed
+    # when cancelling in OMS (required there), or Shopify's own cancel
+    # reason. Shown in the orders table's Tag column - kept apart from
+    # `tag` so it never overwrites (or gets pushed to Shopify as) a tag.
+    cancel_reason = models.CharField(max_length=255, blank=True, default="", db_default="")
     # Courier or accounting invoice reference, imported from the courier's
     # settlement sheet rather than generated here.
     invoice_number = models.CharField(max_length=100, blank=True, default="")
@@ -284,6 +320,21 @@ class Order(TenantScopedModel):
 
     parent_order = models.ForeignKey(
         "self", on_delete=models.SET_NULL, null=True, blank=True, related_name="split_orders"
+    )
+
+    # Set when this order was made with an order's "Recreate" - a
+    # Replacement (shown with an "R" next to its number) or a plain New
+    # order - and which order it was recreated from. Recreated orders are
+    # never created on Shopify.
+    RECREATE_TYPE_CHOICES = [
+        ("replacement", "Replacement"),
+        ("new", "New order"),
+    ]
+    recreate_type = models.CharField(
+        max_length=12, choices=RECREATE_TYPE_CHOICES, blank=True, default="", db_default=""
+    )
+    recreated_from = models.ForeignKey(
+        "self", on_delete=models.SET_NULL, null=True, blank=True, related_name="recreations"
     )
 
     class Meta:
@@ -346,6 +397,12 @@ class Order(TenantScopedModel):
 
     @property
     def amount_receivable(self):
+        # Whatever amount_paid doesn't cover - so on a prepaid order a later
+        # discount/shipping change moves the receivable while what was paid
+        # stays put. A Paid order with no amount_paid recorded (older rows,
+        # CSV imports) is taken as paid in full, never as cash to collect.
+        if self.payment_status == "paid" and not self.amount_paid:
+            return Decimal("0")
         return max(self.grand_total - self.amount_paid, 0)
 
     @property
@@ -447,14 +504,25 @@ class OrderTransaction(TenantScopedModel):
 class Ticket(TenantScopedModel):
     """A tenant user's support request - either attached to one order or
     standalone (order is nullable). Status is the single source of truth
-    for the lifecycle, same pattern as Order.status: open -> seen (a
-    superadmin opened it) -> in_progress (they replied) -> resolved."""
+    for the lifecycle, same pattern as Order.status: raised as open, then
+    moved by a super admin through pending / in_progress /
+    awaiting_action to resolved (a reply also moves open/pending to
+    in_progress on its own)."""
 
     STATUS_CHOICES = [
         ("open", "Open"),
-        ("seen", "Seen"),
+        ("pending", "Pending"),
         ("in_progress", "In Progress"),
+        ("awaiting_action", "Awaiting Action"),
         ("resolved", "Resolved"),
+    ]
+
+    # Who raised it, set from the request (never chosen): "customer" is a
+    # store - FynkTech's client, whose shop is attached to OMS - and "admin"
+    # is FynkTech's own super admin side (dispatching for stores etc.).
+    TYPE_CHOICES = [
+        ("customer", "By Customer"),
+        ("admin", "By Admin"),
     ]
 
     PRIORITY_CHOICES = [
@@ -482,14 +550,18 @@ class Ticket(TenantScopedModel):
     sub_category = models.CharField(max_length=100, blank=True, default="")
     description = models.TextField()
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="open")
+    ticket_type = models.CharField(
+        max_length=10, choices=TYPE_CHOICES, default="customer", db_default="customer"
+    )
+    # No longer set or shown anywhere - kept so existing rows stay intact.
     priority = models.CharField(max_length=10, choices=PRIORITY_CHOICES, default="medium")
     # Supabase auth.users.id - same non-FK pattern as OrderNote.author_user_id.
     created_by_user_id = models.UUIDField(null=True, blank=True)
     # Denormalized: Supabase Auth owns the display name/email, not Django,
     # and the cross-org admin list needs a "who" without joining auth.users.
     created_by_email = models.CharField(max_length=255, blank=True, default="")
-    # Which superadmin has claimed this ticket - set via the admin "Assign
-    # to me" action, not the tenant side. Nullable/blank means unassigned.
+    # No longer set or shown (the admin "Assign to me" action is gone) -
+    # kept so existing rows stay intact.
     assigned_to_user_id = models.UUIDField(null=True, blank=True)
     assigned_to_email = models.CharField(max_length=255, blank=True, default="")
     resolved_at = models.DateTimeField(null=True, blank=True)
@@ -510,7 +582,7 @@ class Ticket(TenantScopedModel):
 
     @property
     def ticket_number(self):
-        return f"TKT-{self.number:06d}"
+        return f"#{self.number:06d}"
 
 
 class TicketMessage(TenantScopedModel):
@@ -544,6 +616,69 @@ class TicketMessage(TenantScopedModel):
         return f"{self.author_role} on ticket {self.ticket_id}"
 
 
+class DispatchBatch(TenantScopedModel):
+    """One set of orders printed together - what the Batch page's History
+    shows as a single card. Its documents (PrintBatch rows: the load sheet,
+    the airway bill) are generated separately, from separate endpoints, and
+    are filed into the same batch when they cover the same orders (see
+    oms.batch_services.save_print_batch)."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    # Human-facing id ("B-000123"), same sequence-backed pattern as
+    # Ticket.number.
+    number = models.BigIntegerField(
+        unique=True, editable=False, db_default=RawSQL("nextval('oms.dispatch_batches_number_seq')", [])
+    )
+    # Empty until a document names one - a Smartlane airway bill isn't
+    # scoped to a courier, its load sheet is.
+    courier = models.CharField(max_length=50, blank=True, default="")
+    created_by_user_id = models.UUIDField(null=True, blank=True)
+
+    class Meta:
+        db_table = '"oms"."dispatch_batches"'
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["organization", "-created_at"], name="oms_dbatch_org_created_idx"),
+        ]
+
+    def __str__(self):
+        return self.batch_number
+
+    @property
+    def batch_number(self):
+        return f"B-{self.number:06d}" if self.number else ""
+
+
+class DispatchBatchOrder(TenantScopedModel):
+    """One order in a DispatchBatch. Removing an order from a batch only
+    stamps removed_at - the order itself and the documents already
+    generated (whose own order_numbers still list it) are left as they
+    were."""
+
+    batch = models.ForeignKey(DispatchBatch, on_delete=models.CASCADE, related_name="entries")
+    # Nullable + snapshot number: the batch must still read correctly if
+    # the order is later deleted.
+    order = models.ForeignKey(
+        Order, on_delete=models.SET_NULL, null=True, blank=True, related_name="dispatch_batch_entries"
+    )
+    order_number = models.CharField(max_length=50)
+    removed_at = models.DateTimeField(null=True, blank=True)
+    removed_by_user_id = models.UUIDField(null=True, blank=True)
+
+    class Meta:
+        db_table = '"oms"."dispatch_batch_orders"'
+        ordering = ["order_number"]
+        constraints = [
+            models.UniqueConstraint(fields=["batch", "order_number"], name="oms_dbatch_order_unique"),
+        ]
+        indexes = [
+            models.Index(fields=["organization", "order_number"], name="oms_dbatch_order_number_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.order_number} in {self.batch_id}"
+
+
 def _print_batch_upload_path(instance, filename):
     # Grouped by org and day so a bucket/filesystem browse isn't one flat
     # folder of thousands of files - date comes from created_at's default
@@ -575,9 +710,13 @@ class PrintBatch(TenantScopedModel):
     # Kept for search (order number lookup) and for display without a join
     # back to orders that may since have changed status/been deleted.
     order_numbers = models.JSONField(default=list, blank=True)
-    file = models.FileField(upload_to=_print_batch_upload_path)
+    file = models.FileField(upload_to=_print_batch_upload_path, storage=print_batch_storage)
     content_type = models.CharField(max_length=100, default="application/pdf")
     created_by_user_id = models.UUIDField(null=True, blank=True)
+    # The batch card this document shows under on the Batch page.
+    batch = models.ForeignKey(
+        DispatchBatch, on_delete=models.SET_NULL, null=True, blank=True, related_name="documents"
+    )
 
     class Meta:
         db_table = '"oms"."print_batches"'
@@ -588,3 +727,30 @@ class PrintBatch(TenantScopedModel):
 
     def __str__(self):
         return f"{self.get_kind_display()} ({self.order_count} orders) {self.created_at:%Y-%m-%d}"
+
+
+class City(models.Model):
+    """One city name an order's city must match before the order can be
+    Approved (oms.approval_checks) - "LHR" is held back until it reads
+    "Lahore". Platform-wide, not per store (so not TenantScopedModel): one
+    list for every store, kept by the super admin from the couriers' own
+    city lists (oms.city_admin_services) and by hand."""
+
+    SOURCE_CHOICES = [
+        ("manual", "Added by hand"),
+        ("postex", "PostEx"),
+        ("barqraftar", "BarqRaftar"),
+    ]
+
+    name = models.CharField(max_length=100)
+    # city_key(name) - what matching compares (case/spacing-insensitive).
+    name_key = models.CharField(max_length=100, unique=True)
+    source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default="manual")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = '"oms"."cities"'
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name

@@ -77,6 +77,7 @@ _STAGE_BY_STATUS = {
     "transferred": "dispatched",
     "en-route to postex warehouse": "dispatched",
     "out for delivery": "out_for_delivery",
+    "ofd": "out_for_delivery",
     "delivery en-route": "out_for_delivery",
     "attempted": "attempt",
     "delivery under review": "attempt",
@@ -682,11 +683,11 @@ def apply_postex_status(order, stage, *, tracking_number="", actor_user_id=None)
     from oms import services as oms_services
 
     if stage == "return_in_progress":
-        # Informational, same role as for Smartlane/BarqRaftar.
-        if not order.return_in_progress_at:
-            order.return_in_progress_at = timezone.now()
-            order.save(update_fields=["return_in_progress_at", "updated_at"])
-        return False
+        # Not a status transition - stamps Order.return_in_progress_at, which
+        # puts the order under Return in Transit.
+        return oms_services.mark_return_in_progress(
+            order, courier_label="PostEx", tracking_number=tracking_number
+        )
 
     if stage == "delivered":
         if order.status == "delivered":
@@ -703,13 +704,11 @@ def apply_postex_status(order, stage, *, tracking_number="", actor_user_id=None)
         return True
 
     if stage == "cancelled":
-        if order.status == "cancelled":
-            return False
-        # PostEx already says it's cancelled - don't call their API again.
-        oms_services.cancel_order(
-            order, reason="Cancelled on PostEx", actor_user_id=actor_user_id, propagate_to_courier=False,
+        # Cancelled on PostEx's side: the booking is gone, not the order -
+        # it goes back to Awaiting Assigning to be booked again.
+        return oms_services.unbook_cancelled_by_courier(
+            order, courier_label="PostEx", actor_user_id=actor_user_id
         )
-        return True
 
     if stage in ("out_for_delivery", "attempt"):
         return _advance_to_dispatch_substate(order, stage, tracking_number)

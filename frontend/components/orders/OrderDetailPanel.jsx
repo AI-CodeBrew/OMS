@@ -1,17 +1,22 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Button from "../shared/Button";
 import Modal from "../shared/Modal";
 import ordersService from "../../services/ordersService";
 import CustomerDetailPanel from "./CustomerDetailPanel";
 import OrderDetailHeader from "./OrderDetailHeader";
 import OrderDetailTabs from "./OrderDetailTabs";
-import OrderItemsEditor from "./OrderItemsEditor";
+import OrderMoneySummary from "./OrderMoneySummary";
+import OrderActionsMenu from "./OrderActionsMenu";
+import LineItemsTab from "./tabs/LineItemsTab";
+import { draftGrandTotal } from "./orderMoney";
 import OrderActionModal from "./OrderActionModal";
 import VerifyDispatchModal from "./VerifyDispatchModal";
 import StockShortageModal from "./StockShortageModal";
 import {
   BOOKING_ACCOUNTS,
+  EDITABLE_STATUSES,
   SMARTLANE_LOAD_SHEET_COURIERS,
   isBookingAccountCourier,
 } from "./statusConfig";
@@ -50,17 +55,51 @@ const EDITABLE_FIELDS = [
   "amount_paid",
 ];
 
+// The fields the line-items write takes - same full-replace shape the
+// backend expects (services.update_order_detail recreates every item).
+function serializeItem(item) {
+  return {
+    product_name: item.product_name,
+    quantity: Number(item.quantity) || 1,
+    unit_price: item.unit_price || 0,
+    vendor: item.vendor ?? "",
+    barcode: item.barcode ?? "",
+    compare_at_price: item.compare_at_price ?? null,
+    discount_amount: item.discount_amount || 0,
+    weight_grams: item.weight_grams ?? null,
+  };
+}
+
 function buildDraft(order) {
   const draft = {};
   EDITABLE_FIELDS.forEach((field) => {
     draft[field] = order[field];
   });
+  draft.items = order.items.map((item) => ({ ...item }));
   return draft;
+}
+
+// What Save sends: the draft minus the view-only receivable, and items only
+// when one actually changed (an untouched list would still be recreated).
+function buildPatch(order, draft) {
+  const { items, amount_receivable: _receivable, ...fields } = draft;
+  const before = JSON.stringify(order.items.map(serializeItem));
+  const after = items.map(serializeItem);
+  return JSON.stringify(after) === before ? fields : { ...fields, items: after };
 }
 
 // bookingAccounts: the connected entries of statusConfig's BOOKING_ACCOUNTS
 // (see connectedBookingAccounts), resolved once by the orders page.
-export default function OrderDetailPanel({ orderId, couriers, bookingAccounts = [], onClose, onOrderChanged }) {
+// startEditing: open straight into Edit - Assigning Courier's Edit Order,
+// once the booking is cancelled.
+export default function OrderDetailPanel({
+  orderId,
+  couriers,
+  bookingAccounts = [],
+  startEditing = false,
+  onClose,
+  onOrderChanged,
+}) {
   const [order, setOrder] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -81,6 +120,7 @@ export default function OrderDetailPanel({ orderId, couriers, bookingAccounts = 
       const data = await ordersService.get(orderId);
       setOrder(data);
       setDraft(buildDraft(data));
+      if (startEditing && !quiet) setEditing(true);
     } catch (err) {
       setError(err.message || "Failed to load order");
     } finally {
@@ -94,7 +134,30 @@ export default function OrderDetailPanel({ orderId, couriers, bookingAccounts = 
   }, [orderId]);
 
   function onDraftChange(field, value) {
-    setDraft((d) => ({ ...d, [field]: value }));
+    // Amount Receivable (editable while partially paid) isn't a stored
+    // field - typing it sets Amount Paid to whatever leaves that much
+    // receivable. Any other change drops the typed figure so the cell
+    // goes back to being worked out from the draft.
+    if (field === "amount_receivable") {
+      setDraft((d) => ({
+        ...d,
+        amount_receivable: value,
+        amount_paid: Math.max(draftGrandTotal(d) - (Number(value) || 0), 0).toFixed(2),
+      }));
+      return;
+    }
+    // Marking it Paid records the whole grand total as paid; from then on
+    // Amount Paid stays fixed and the receivable follows any later change.
+    if (field === "payment_status" && value === "paid") {
+      setDraft((d) => ({
+        ...d,
+        amount_receivable: undefined,
+        payment_status: value,
+        amount_paid: d.payment_status === "paid" ? d.amount_paid : draftGrandTotal(d).toFixed(2),
+      }));
+      return;
+    }
+    setDraft((d) => ({ ...d, amount_receivable: undefined, [field]: value }));
   }
 
   function toggleEdit() {
@@ -106,7 +169,7 @@ export default function OrderDetailPanel({ orderId, couriers, bookingAccounts = 
     setSaving(true);
     setError("");
     try {
-      const updated = await ordersService.update(orderId, draft);
+      const updated = await ordersService.update(orderId, buildPatch(order, draft));
       setOrder(updated);
       setDraft(buildDraft(updated));
       setEditing(false);
@@ -284,26 +347,47 @@ export default function OrderDetailPanel({ orderId, couriers, bookingAccounts = 
               <CustomerDetailPanel order={order} draft={draft} editing={editing} onChange={onDraftChange} />
 
               <div className="min-w-0 flex-1">
-                <OrderDetailHeader
+                <OrderDetailTabs
                   order={order}
-                  draft={draft}
-                  editing={editing}
-                  onChange={onDraftChange}
-                  onToggleEdit={toggleEdit}
-                  onSave={onSave}
-                  saving={saving}
-                />
+                  actions={
+                    <OrderActionsMenu
+                      order={order}
+                      onAction={startAction}
+                      onScan={() => setScanOpen(true)}
+                      working={working}
+                    />
+                  }
+                  lineItems={
+                    <>
+                      {/* Items stay locked once a courier is on the order - stock
+                          is deducted from then on (see EDITABLE_STATUSES). */}
+                      <LineItemsTab
+                        order={order}
+                        draft={draft}
+                        editing={editing && EDITABLE_STATUSES.has(order.status)}
+                        onChange={onDraftChange}
+                      />
+                      <OrderMoneySummary order={order} draft={draft} editing={editing} onChange={onDraftChange} />
+                      <OrderDetailHeader order={order} draft={draft} editing={editing} onChange={onDraftChange} />
 
-                <OrderDetailTabs order={order} onOrderChanged={refreshAfterChange} />
-
-                <OrderItemsEditor
-                  order={order}
-                  draft={draft}
-                  editing={editing}
-                  onChange={onDraftChange}
-                  onAction={startAction}
-                  onScan={() => setScanOpen(true)}
-                  working={working}
+                      <div className="mt-4 flex justify-end gap-2 border-t border-surface-border pt-4">
+                        {editing ? (
+                          <>
+                            <Button variant="secondary" onClick={toggleEdit} disabled={saving}>
+                              Cancel
+                            </Button>
+                            <Button onClick={onSave} loading={saving}>
+                              Save
+                            </Button>
+                          </>
+                        ) : (
+                          <Button variant="secondary" onClick={toggleEdit}>
+                            Edit
+                          </Button>
+                        )}
+                      </div>
+                    </>
+                  }
                 />
               </div>
             </div>

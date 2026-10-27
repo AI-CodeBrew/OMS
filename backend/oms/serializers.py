@@ -3,6 +3,8 @@ from rest_framework import serializers
 
 from .models import (
     Courier,
+    DispatchBatch,
+    DispatchBatchOrder,
     Order,
     OrderItem,
     OrderNote,
@@ -38,6 +40,42 @@ class PrintBatchSerializer(serializers.ModelSerializer):
 
     def get_download_url(self, batch):
         return f"/api/oms/print-batches/{batch.id}/download/"
+
+
+class DispatchBatchOrderSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DispatchBatchOrder
+        fields = ["id", "order_id", "order_number", "removed_at"]
+
+
+class DispatchBatchSerializer(serializers.ModelSerializer):
+    """One Batch page History card - the batch, its orders (removed ones
+    included, flagged by removed_at) and every document printed for it.
+    Relies on the viewset's prefetch of entries/documents."""
+
+    batch_number = serializers.CharField(read_only=True)
+    store_name = serializers.CharField(source="organization.name", read_only=True, default="")
+    entries = DispatchBatchOrderSerializer(many=True, read_only=True)
+    documents = PrintBatchSerializer(many=True, read_only=True)
+    order_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = DispatchBatch
+        fields = [
+            "id",
+            "batch_number",
+            "organization_id",
+            "store_name",
+            "courier",
+            "order_count",
+            "entries",
+            "documents",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_order_count(self, batch):
+        return sum(1 for e in batch.entries.all() if e.removed_at is None)
 
 
 class OrderItemSerializer(serializers.ModelSerializer):
@@ -124,7 +162,7 @@ class TicketSerializer(serializers.ModelSerializer):
             "sub_category",
             "description",
             "status",
-            "priority",
+            "ticket_type",
             "created_by_user_id",
             "created_by_email",
             "resolved_at",
@@ -134,11 +172,24 @@ class TicketSerializer(serializers.ModelSerializer):
             "id",
             "ticket_number",
             "status",
+            "ticket_type",
             "created_by_user_id",
             "created_by_email",
             "resolved_at",
             "created_at",
         ]
+
+    # Minimum length counts actual characters, not spaces - "  ok   " is
+    # still too short. No upper limit.
+    DESCRIPTION_MIN_CHARS = 10
+
+    def validate_description(self, value):
+        value = (value or "").strip()
+        if len("".join(value.split())) < self.DESCRIPTION_MIN_CHARS:
+            raise serializers.ValidationError(
+                f"Description must be at least {self.DESCRIPTION_MIN_CHARS} characters."
+            )
+        return value
 
 
 class AdminTicketSerializer(TicketSerializer):
@@ -152,8 +203,6 @@ class AdminTicketSerializer(TicketSerializer):
     class Meta(TicketSerializer.Meta):
         fields = TicketSerializer.Meta.fields + [
             "organization_name",
-            "assigned_to_user_id",
-            "assigned_to_email",
         ]
 
 
@@ -181,12 +230,25 @@ class OrderSerializer(serializers.ModelSerializer):
     parent_order_number = serializers.CharField(
         source="parent_order.order_number", read_only=True, default=""
     )
+    recreated_from_number = serializers.CharField(
+        source="recreated_from.order_number", read_only=True, default=""
+    )
+    # Revert's target - only worked out on the detail view (it's a query
+    # per order), null in lists.
+    previous_status = serializers.SerializerMethodField()
+    # The orders table's ticket symbol - see services.with_ticket_counts.
+    ticket_count = serializers.SerializerMethodField()
+    open_ticket_count = serializers.SerializerMethodField()
     placed_at = serializers.SerializerMethodField()
     in_transit_days = serializers.SerializerMethodField()
     # Booked from the Dispatch Hub (Order.hub_dispatched_at) - FynkTech
     # ships it, whether or not the store sent it for dispatch. The "by
     # FynkTech" tag. A store's own OMS Courier booking doesn't get it.
     dispatched_by_fynktech = serializers.SerializerMethodField()
+    # The Orders card the order sits under and its tag there - see
+    # services.workflow_card / workflow_tag.
+    workflow_card = serializers.SerializerMethodField()
+    workflow_tag = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -207,6 +269,7 @@ class OrderSerializer(serializers.ModelSerializer):
             "cnic",
             "customer_tags",
             "tag",
+            "cancel_reason",
             "invoice_number",
             "courier_charges",
             "customer_type",
@@ -251,6 +314,12 @@ class OrderSerializer(serializers.ModelSerializer):
             "acceptance_pct",
             "parent_order",
             "parent_order_number",
+            "recreate_type",
+            "recreated_from",
+            "recreated_from_number",
+            "previous_status",
+            "ticket_count",
+            "open_ticket_count",
             "placed_at",
             "in_transit_days",
             "dispatch_requested_at",
@@ -261,8 +330,13 @@ class OrderSerializer(serializers.ModelSerializer):
             "return_received_at",
             "return_received_by_email",
             "return_condition",
+            "return_breakdown",
             "packed_at",
             "packed_by_email",
+            "delivery_attempts",
+            "workflow_flag",
+            "workflow_card",
+            "workflow_tag",
             "created_at",
             "updated_at",
         ]
@@ -279,7 +353,10 @@ class OrderSerializer(serializers.ModelSerializer):
             "platform_reference",
             "issue_note",
             "return_reason",
+            "cancel_reason",
             "parent_order",
+            "recreate_type",
+            "recreated_from",
             "placed_at",
             "dispatched_at",
             "delivered_at",
@@ -288,8 +365,11 @@ class OrderSerializer(serializers.ModelSerializer):
             "return_received_at",
             "return_received_by_email",
             "return_condition",
+            "return_breakdown",
             "packed_at",
             "packed_by_email",
+            "delivery_attempts",
+            "workflow_flag",
             "created_at",
             "updated_at",
         ]
@@ -307,6 +387,16 @@ class OrderSerializer(serializers.ModelSerializer):
         from .services import DISPATCH_REQUESTABLE_STATUSES
 
         return bool(order.hub_dispatched_at) and order.status not in DISPATCH_REQUESTABLE_STATUSES
+
+    def get_workflow_card(self, order):
+        from .services import workflow_card
+
+        return workflow_card(order)
+
+    def get_workflow_tag(self, order):
+        from .services import workflow_tag
+
+        return workflow_tag(order)
 
     def get_cancelled_pct(self, order):
         return self._probability(order, "cancelled_pct")
@@ -329,6 +419,30 @@ class OrderSerializer(serializers.ModelSerializer):
 
     def get_owed_to_customer(self, order):
         return order.owed_to_customer
+
+    def _ticket_counts(self, order):
+        # Annotated on every list query (services.with_ticket_counts); a
+        # single order serialized on its own (detail, a live update) is
+        # counted here instead.
+        if hasattr(order, "_ticket_count"):
+            return order._ticket_count, order._open_ticket_count
+        from .models import Ticket
+
+        tickets = Ticket.all_objects.filter(order_id=order.id)
+        return tickets.count(), tickets.exclude(status="resolved").count()
+
+    def get_ticket_count(self, order):
+        return self._ticket_counts(order)[0]
+
+    def get_open_ticket_count(self, order):
+        return self._ticket_counts(order)[1]
+
+    def get_previous_status(self, order):
+        if not self.context.get("with_previous_status"):
+            return None
+        from .services import previous_status
+
+        return previous_status(order)
 
     def get_placed_at(self, order):
         return order.placed_at or order.created_at

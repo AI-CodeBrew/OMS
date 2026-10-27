@@ -87,6 +87,9 @@ _STATUSES = [
     (99, "cancelled", "Cancelled"),
 ]
 _SLUG_TO_CODE = {slug: code for code, slug, _ in _STATUSES}
+# BarqRaftar calls Out for Delivery "dispatched" (4); the usual spellings
+# resolve to it too.
+_SLUG_TO_CODE.update({"out_for_delivery": 4, "ofd": 4})
 _CODE_TO_LABEL = {code: label for code, _, label in _STATUSES}
 
 
@@ -942,12 +945,11 @@ def apply_barqraftar_status(order, shipment, status_code, *, tracking_number="",
     from oms import services as oms_services
 
     if status_code in _RETURN_IN_PROGRESS_CODES:
-        # Informational only, same role as Order.return_in_progress_at for
-        # Smartlane - never itself a status transition.
-        if not order.return_in_progress_at:
-            order.return_in_progress_at = timezone.now()
-            order.save(update_fields=["return_in_progress_at", "updated_at"])
-        return False
+        # Not a status transition - stamps Order.return_in_progress_at, which
+        # puts the order under Return in Transit.
+        return oms_services.mark_return_in_progress(
+            order, courier_label="BarqRaftar", tracking_number=tracking_number
+        )
 
     if status_code in _DELIVERED_CODES:
         if order.status == "delivered":
@@ -964,15 +966,11 @@ def apply_barqraftar_status(order, shipment, status_code, *, tracking_number="",
         return True
 
     if status_code in _CANCELLED_CODES:
-        if order.status == "cancelled":
-            return False
-        # propagate_to_courier=False: BarqRaftar has already told us it's
-        # cancelled - calling their API again here would be pointless.
-        oms_services.cancel_order(
-            order, reason="Cancelled by BarqRaftar", actor_user_id=actor_user_id,
-            propagate_to_courier=False,
+        # Cancelled on BarqRaftar's side: the booking is gone, not the
+        # order - it goes back to Awaiting Assigning to be booked again.
+        return oms_services.unbook_cancelled_by_courier(
+            order, courier_label="BarqRaftar", actor_user_id=actor_user_id
         )
-        return True
 
     if status_code in _OUT_FOR_DELIVERY_CODES or status_code in _ATTEMPT_CODES:
         target = "out_for_delivery" if status_code in _OUT_FOR_DELIVERY_CODES else "attempt"

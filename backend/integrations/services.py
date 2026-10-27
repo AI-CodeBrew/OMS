@@ -300,6 +300,17 @@ def _shopify_money(shopify_order):
 _SHOPIFY_COD_FINANCIAL_STATUSES = {"", "pending", "partially_paid"}
 
 
+# Shopify's cancel_reason codes, in the words its admin shows.
+_SHOPIFY_CANCEL_REASONS = {
+    "customer": "Customer changed or cancelled order",
+    "fraud": "Fraudulent order",
+    "inventory": "Items unavailable",
+    "declined": "Payment declined",
+    "staff": "Staff error",
+    "other": "Other",
+}
+
+
 def _shopify_payment(shopify_order, money):
     """payment_gateway / payment_status / amount_paid for a Shopify order,
     so that Order.amount_receivable - what the order screen shows and the
@@ -326,10 +337,11 @@ def _shopify_payment(shopify_order, money):
         }
     outstanding = shopify_order.get("total_outstanding")
     paid = total - _to_decimal(outstanding) if outstanding is not None else Decimal("0")
+    paid = min(max(paid, Decimal("0")), total)
     return {
         "payment_gateway": "cod",
-        "payment_status": "pending",
-        "amount_paid": min(max(paid, Decimal("0")), total),
+        "payment_status": "partially_paid" if paid > 0 else "pending",
+        "amount_paid": paid,
     }
 
 
@@ -425,6 +437,13 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
         "placed_at": placed_at,
         "customer_note": shopify_order.get("note") or "",
     }
+    # Cancelled on Shopify: its reason, as Shopify's admin words it.
+    if shopify_order.get("cancelled_at"):
+        reason = (shopify_order.get("cancel_reason") or "").strip().lower()
+        shopify_fields["cancel_reason"] = _truncate(
+            "Shopify: " + _SHOPIFY_CANCEL_REASONS.get(reason, reason.replace("_", " ").capitalize() or "Cancelled"),
+            255,
+        )
 
     # The carrier Shopify recorded on the fulfillment ("TCS", "Leopards",
     # ...). Matched by name so repeated syncs reuse one Courier row rather
@@ -700,6 +719,7 @@ _SMARTLANE_STATUS_MAP = {
     "cancel": "cancelled",
     "cancelled": "cancelled",
     "out_for_delivery": "out_for_delivery",
+    "ofd": "out_for_delivery",
     "attempt": "attempt",
 }
 
@@ -924,9 +944,12 @@ def apply_smartlane_status(order, smartlane_status, *, tracking_number="", organ
     # timestamp WMS can use later (see Order.return_in_progress_at). Checked
     # on every event regardless of what else it resolves to, since a real
     # payload could carry this stage timestamp alongside a later one.
-    if _resolve_return_in_progress(smartlane_status, row) and not order.return_in_progress_at:
-        order.return_in_progress_at = timezone.now()
-        order.save(update_fields=["return_in_progress_at", "updated_at"])
+    # Stamps Order.return_in_progress_at, which puts the order under Return
+    # in Transit.
+    if _resolve_return_in_progress(smartlane_status, row):
+        oms_services.mark_return_in_progress(
+            order, courier_label="Smartlane", tracking_number=tracking_number
+        )
 
     target = _resolve_smartlane_target(smartlane_status, row)
     before = order.status
@@ -952,9 +975,10 @@ def apply_smartlane_status(order, smartlane_status, *, tracking_number="", organ
                            order.order_number, result.get("reason"))
             return False
     elif target == "cancelled":
-        if order.status == "cancelled":
+        # Cancelled on Smartlane's side: the booking is gone, not the order
+        # - it goes back to Awaiting Assigning to be booked again.
+        if not oms_services.unbook_cancelled_by_courier(order, courier_label="Smartlane"):
             return False
-        oms_services.cancel_order(order, reason="Cancelled by Smartlane")
     elif target in ("out_for_delivery", "attempt"):
         if not _advance_to_dispatch_substate(order, target, tracking_number):
             return False
@@ -1035,12 +1059,10 @@ def absorb_untracked_smartlane_order(
 
     target = _resolve_smartlane_target(raw_status, row)
     if target == "cancelled":
-        # Nothing was ever fulfilled from stock for a cancelled booking -
-        # just record the outcome, no absorb_smartlane_booking needed.
-        oms_services.cancel_order(
-            order, reason="Cancelled by Smartlane (booked outside OMS)", actor_user_id=actor_user_id
-        )
-        return True
+        # A booking made on Smartlane's portal and cancelled there again -
+        # there's nothing to absorb, and the order itself isn't cancelled
+        # (it was never booked through OMS), so it stays where it is.
+        return False
 
     oms_services.absorb_smartlane_booking(
         order, actor_user_id=actor_user_id, courier_name=courier_name
@@ -1983,6 +2005,38 @@ def sync_inventory_from_shopify(organization_id):
         "updated": updated,
         "unchanged": unchanged,
     }
+
+
+def sync_product_images_from_shopify(organization_id):
+    """Every WMS stock item's Shopify image (StockItem.image_url) - the
+    variant's own, else its product's first - matched by inventory item id,
+    else by SKU. The Purchase Orders page shows it when adding a PO."""
+    connection = ShopifyConnection.objects.filter(
+        organization_id=organization_id, is_connected=True
+    ).first()
+    if not connection:
+        raise InventorySyncError("Connect Shopify from the Integrations page first.")
+
+    from wms.models import StockItem
+
+    args = (connection.shop_domain, connection.access_token, settings.SHOPIFY_API_VERSION)
+    by_item_id, by_sku = {}, {}
+    for inventory_item_id, sku, src in shopify_client.iter_variant_images(*args):
+        if not src:
+            continue
+        if inventory_item_id:
+            by_item_id[inventory_item_id] = src
+        if sku:
+            by_sku.setdefault(sku, src)
+
+    updated = 0
+    for item in StockItem.objects.filter(organization_id=organization_id):
+        src = (by_item_id.get(item.shopify_inventory_item_id) or by_sku.get(item.sku) or "")[:1000]
+        if src and src != item.image_url:
+            item.image_url = src
+            item.save(update_fields=["image_url", "updated_at"])
+            updated += 1
+    return {"images_updated": updated}
 
 
 def sync_stock_item_from_shopify_inventory_item(organization_id, inventory_item_id):

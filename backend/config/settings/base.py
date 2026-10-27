@@ -161,6 +161,17 @@ SUPABASE_ANON_KEY = env("SUPABASE_ANON_KEY")
 SUPABASE_SERVICE_ROLE_KEY = env("SUPABASE_SERVICE_ROLE_KEY", required=True)
 SUPABASE_JWT_SECRET = env("SUPABASE_JWT_SECRET", required=True)
 
+# Where generated load sheets / airway bills are kept (oms/storage.py) - a
+# Bunny.net Storage zone. ACCESS_KEY is the zone's own password (Storage
+# Zone > FTP & API Access), not the account API key. REGION is the zone's
+# primary region prefix ("sg", "ny", "uk", ...), blank for Falkenstein.
+# Without a zone + key, or with PRINT_BATCH_STORAGE=filesystem, they go to
+# local disk instead (not persistent on Fly).
+PRINT_BATCH_STORAGE = env("PRINT_BATCH_STORAGE", default="bunny")
+BUNNY_STORAGE_ZONE = env("BUNNY_STORAGE_ZONE", default="")
+BUNNY_STORAGE_ACCESS_KEY = env("BUNNY_STORAGE_ACCESS_KEY", default="")
+BUNNY_STORAGE_REGION = env("BUNNY_STORAGE_REGION", default="")
+
 
 # --- Redis / Realtime -------------------------------------------------------
 # Backs two things: the order-counts cache (core/redis_client.py) and the

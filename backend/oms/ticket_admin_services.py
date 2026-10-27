@@ -8,8 +8,10 @@ from django.core.paginator import Paginator
 from django.db.models import Q
 from django.utils import timezone
 
-from .models import Ticket, TicketMessage
-from .serializers import AdminTicketSerializer, TicketMessageSerializer
+from core.models import Organization
+
+from .models import Order, Ticket, TicketMessage
+from .serializers import AdminTicketSerializer, TicketMessageSerializer, TicketSerializer
 
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
@@ -40,7 +42,7 @@ def _int_param(value, default, maximum=None):
 
 
 def list_tickets(params=None):
-    """params is a query-params-like mapping (status, priority, q, mine,
+    """params is a query-params-like mapping (status, type, q,
     page, page_size). Manual pagination rather than DRF's automatic
     PageNumberPagination since these are plain @api_view functions, not a
     ModelViewSet - kept in the shape the frontend already expects
@@ -49,26 +51,13 @@ def list_tickets(params=None):
     params = params or {}
     qs = Ticket.all_objects.select_related("organization", "order").order_by("-created_at")
 
-    status_filter = params.get("status")
-    if status_filter:
-        qs = qs.filter(status=status_filter)
-
-    priority_filter = params.get("priority")
-    if priority_filter:
-        qs = qs.filter(priority=priority_filter)
-
-    # "Unassigned" / "Assigned to me" are the two admin-side triage filters
-    # that matter in practice - "mine" resolves against the caller, passed
-    # in explicitly rather than read from a global here.
-    assigned = params.get("assigned")
-    if assigned == "unassigned":
-        qs = qs.filter(assigned_to_user_id__isnull=True)
-    elif assigned:
-        qs = qs.filter(assigned_to_user_id=assigned)
+    type_filter = params.get("type")
+    if type_filter:
+        qs = qs.filter(ticket_type=type_filter)
 
     q = (params.get("q") or "").strip()
     if q:
-        qs = qs.filter(
+        condition = (
             Q(category__icontains=q)
             | Q(sub_category__icontains=q)
             | Q(description__icontains=q)
@@ -76,6 +65,15 @@ def list_tickets(params=None):
             | Q(organization__name__icontains=q)
             | Q(order__order_number__icontains=q)
         )
+        # "#000123" / "000123" / "123" finds that ticket by its number.
+        number = q.removeprefix("#").lstrip("0")
+        if number.isdigit():
+            condition |= Q(number=int(number))
+        qs = qs.filter(condition)
+
+    status_filter = params.get("status")
+    if status_filter:
+        qs = qs.filter(status=status_filter)
 
     page_size = _int_param(params.get("page_size"), DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE)
     page_number = _int_param(params.get("page"), 1)
@@ -91,47 +89,85 @@ def list_tickets(params=None):
     }
 
 
+def create_ticket(data, *, actor_user_id=None, actor_email=""):
+    """FynkTech raising a ticket to a store (`organization_id`, required),
+    optionally on one of that store's orders. Always "By Admin" - it shows
+    under that store's By Admin tickets. Same field rules as a store's own
+    ticket (TicketSerializer: category required, description 10+ chars)."""
+    data = data or {}
+    organization_id = data.get("organization_id")
+    if not organization_id or not Organization.objects.filter(
+        id=organization_id, is_platform=False
+    ).exists():
+        raise TicketAdminError("Pick the store this ticket is for.", 400)
+    order_id = data.get("order") or None
+    if order_id and not Order.all_objects.filter(id=order_id, organization_id=organization_id).exists():
+        raise TicketAdminError("That order isn't one of this store's.", 400)
+
+    serializer = TicketSerializer(
+        data={
+            "category": data.get("category", ""),
+            "sub_category": data.get("sub_category", ""),
+            "description": data.get("description", ""),
+        }
+    )
+    if not serializer.is_valid():
+        field, errors = next(iter(serializer.errors.items()))
+        raise TicketAdminError(f"{field.replace('_', ' ').capitalize()}: {errors[0]}", 400)
+    ticket = Ticket.all_objects.create(
+        organization_id=organization_id,
+        order_id=order_id,
+        **serializer.validated_data,
+        status="open",
+        ticket_type="admin",
+        created_by_user_id=actor_user_id,
+        created_by_email=actor_email or "",
+    )
+    return AdminTicketSerializer(_get_ticket(ticket.id)).data
+
+
+def search_store_orders(organization_id, q, limit=8):
+    """The New ticket form's order picker: one store's orders matching `q`
+    (order no., OMS id, customer, phone), newest first."""
+    q = (q or "").strip()
+    if not organization_id or not q:
+        return []
+    condition = (
+        Q(order_number__icontains=q) | Q(customer_name__icontains=q) | Q(customer_phone__icontains=q)
+    )
+    if q.isdigit():
+        condition |= Q(supabase_order_no=int(q))
+    rows = (
+        Order.all_objects.filter(condition, organization_id=organization_id)
+        .order_by("-created_at")
+        .values("id", "order_number", "supabase_order_no", "customer_name")[:limit]
+    )
+    return [{**r, "id": str(r["id"])} for r in rows]
+
+
 def get_ticket(ticket_id):
-    """Retrieving a ticket is also how a super admin acknowledges it -
-    opening it flips open -> seen, same as reading a mention."""
-    ticket = _get_ticket(ticket_id)
-    if ticket.status == "open":
-        ticket.status = "seen"
-        ticket.save(update_fields=["status"])
-    return AdminTicketSerializer(ticket).data
+    return AdminTicketSerializer(_get_ticket(ticket_id)).data
 
 
-def resolve_ticket(ticket_id, *, actor_user_id=None):
+def set_status(ticket_id, new_status, *, actor_user_id=None):
+    """The admin's ticket actions - any status to any other. Resolving
+    stamps who/when; moving away from resolved clears that again."""
+    if new_status not in dict(Ticket.STATUS_CHOICES):
+        raise TicketAdminError(f"Invalid status: {new_status!r}.", 400)
     ticket = _get_ticket(ticket_id)
-    ticket.status = "resolved"
-    ticket.resolved_at = timezone.now()
-    ticket.resolved_by_user_id = actor_user_id
+    ticket.status = new_status
+    if new_status == "resolved":
+        ticket.resolved_at = timezone.now()
+        ticket.resolved_by_user_id = actor_user_id
+    else:
+        ticket.resolved_at = None
+        ticket.resolved_by_user_id = None
     ticket.save(update_fields=["status", "resolved_at", "resolved_by_user_id"])
     return AdminTicketSerializer(ticket).data
 
 
-def assign_ticket(ticket_id, *, actor_user_id, actor_email):
-    """Claim/unclaim - POSTing with the same actor again unassigns, so the
-    UI can offer one toggling "Assign to me" button rather than a separate
-    unassign action."""
-    ticket = _get_ticket(ticket_id)
-    if ticket.assigned_to_user_id == actor_user_id:
-        ticket.assigned_to_user_id = None
-        ticket.assigned_to_email = ""
-    else:
-        ticket.assigned_to_user_id = actor_user_id
-        ticket.assigned_to_email = actor_email or ""
-    ticket.save(update_fields=["assigned_to_user_id", "assigned_to_email"])
-    return AdminTicketSerializer(ticket).data
-
-
-def set_priority(ticket_id, priority):
-    if priority not in dict(Ticket.PRIORITY_CHOICES):
-        raise TicketAdminError(f"Invalid priority: {priority!r}.", 400)
-    ticket = _get_ticket(ticket_id)
-    ticket.priority = priority
-    ticket.save(update_fields=["priority"])
-    return AdminTicketSerializer(ticket).data
+def resolve_ticket(ticket_id, *, actor_user_id=None):
+    return set_status(ticket_id, "resolved", actor_user_id=actor_user_id)
 
 
 def list_messages(ticket_id):
@@ -153,12 +189,10 @@ def add_admin_message(ticket_id, body, *, actor_user_id=None, actor_email="", is
         author_email=actor_email,
         is_internal=bool(is_internal),
     )
-    # A superadmin replying has necessarily seen it - fold "seen" into this
-    # transition too, not just an explicit open (a ticket could still be
-    # "open" here if the reply came from a fresh GET that raced this POST).
-    # An internal note is invisible to the customer, so it shouldn't move
-    # the ticket's customer-facing status at all.
-    if not is_internal and ticket.status in ("open", "seen"):
+    # A superadmin replying means it's being worked on. An internal note is
+    # invisible to the customer, so it shouldn't move the ticket's
+    # customer-facing status at all.
+    if not is_internal and ticket.status in ("open", "pending"):
         ticket.status = "in_progress"
         ticket.save(update_fields=["status"])
     return TicketMessageSerializer(message).data

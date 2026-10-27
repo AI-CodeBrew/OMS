@@ -50,6 +50,30 @@ export const ClockIcon = ({ className }) => (
   </Base>
 );
 
+// Clock with a counter-clockwise arrow - "history", not just "time".
+export const HistoryIcon = ({ className }) => (
+  <Base className={className}>
+    <path d="M3.5 10a6.5 6.5 0 1 0 1.9-4.6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    <path d="M3.5 3.5v2.5H6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M10 6.5V10l2.5 1.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+  </Base>
+);
+
+export const DownloadIcon = ({ className }) => (
+  <Base className={className}>
+    <path d="M10 3.5v9M6.5 9l3.5 3.5L13.5 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M4 14.5v1A1.5 1.5 0 0 0 5.5 17h9a1.5 1.5 0 0 0 1.5-1.5v-1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+  </Base>
+);
+
+export const PrinterIcon = ({ className }) => (
+  <Base className={className}>
+    <path d="M6 7V3h8v4" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+    <rect x="3" y="7" width="14" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+    <path d="M6 12h8v5H6z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+  </Base>
+);
+
 export const CashIcon = ({ className }) => (
   <Base className={className}>
     <rect x="2.5" y="5.5" width="15" height="9" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
@@ -223,6 +247,19 @@ export const IntegrationsIcon = ({ className }) => (
 );
 
 /** Perforated ticket stub - "Tickets" sidebar item. */
+export const AlertIcon = ({ className }) => (
+  <Base className={className}>
+    <path
+      d="M10 3.2 17.5 16H2.5L10 3.2Z"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinejoin="round"
+    />
+    <path d="M10 8v3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    <circle cx="10" cy="13.6" r="0.8" fill="currentColor" />
+  </Base>
+);
+
 export const TicketIcon = ({ className }) => (
   <Base className={className}>
     <path

@@ -26,10 +26,13 @@ import Pagination from "../../../components/shared/Pagination";
 import OrderStatusTabs from "../../../components/orders/OrderStatusTabs";
 import OrdersToolbar from "../../../components/orders/OrdersToolbar";
 import OrdersTable from "../../../components/orders/OrdersTable";
+import HubOrderFilters from "../../../components/orders/HubOrderFilters";
 import CsvExportButton from "../../../components/orders/CsvExportButton";
 import DateRangeFilter from "../../../components/orders/DateRangeFilter";
 import {
   ACTIONS_BY_STATUS,
+  ASSIGNING_COURIER_ACTIONS,
+  ASSIGNING_COURIER_TAB,
   BOOKING_ACCOUNTS,
   SMARTLANE_LOAD_SHEET_COURIERS,
   STATUS_LABELS,
@@ -83,8 +86,16 @@ const PrintByCourierModal = dynamic(() => import("../../../components/orders/Pri
 const CreateTicketDialog = dynamic(() => import("../../../components/tickets/CreateTicketDialog"), {
   ssr: false,
 });
+const ScanPackModal = dynamic(() => import("../../../components/orders/ScanPackModal"), {
+  ssr: false,
+});
 
-const EMPTY_FILTERS = { city: "", courier_id: "", gateway: "", date_from: "", date_to: "", store: "", dispatch_requested: "" };
+// store: comma-separated store ids; product: a JSON array of product names
+// (a name can contain a comma) - both Dispatch Hub only, set by
+// HubOrderFilters.
+const EMPTY_FILTERS = {
+  city: "", courier_id: "", gateway: "", date_from: "", date_to: "", store: "", product: "", dispatch_requested: "",
+};
 // "critical" is time-dependent rather than a status an order is moved into,
 // so the backend never caches it or includes it in the warmup - leave it
 // out of the "is every tab warm" check, and out of the list cache below.
@@ -94,8 +105,10 @@ const IN_TRANSIT_STATUSES = new Set(["dispatched"]);
 // Tabs from booking on - where the courier's own word for where the parcel
 // is (its Sub Status) tells apart orders that share one of our statuses.
 const SUB_STATUS_TABS = new Set([
+  "card:assigning_courier", "card:dispatched", "card:undelivered", "card:delivered",
+  "card:return_in_transit", "card:returned", "card:cancelled", CRITICAL_TAB,
   "booking_pending", "ready_to_print", "ready_to_pick", "awaiting_dispatched",
-  "dispatched", CRITICAL_TAB, "out_for_delivery", "attempt", "delivered", "cancelled", "returned",
+  "dispatched", "out_for_delivery", "attempt", "delivered", "cancelled", "returned",
 ]);
 
 function isPlainTabQuery(queryParams) {
@@ -107,6 +120,7 @@ function isPlainTabQuery(queryParams) {
     !queryParams.date_from &&
     !queryParams.date_to &&
     !queryParams.store &&
+    !queryParams.product &&
     !queryParams.dispatch_requested
   );
 }
@@ -202,7 +216,6 @@ export default function OrdersPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [selectedIds, setSelectedIds] = useState(new Set());
-  const [sortBy, setSortBy] = useState("date"); // "date" | "oms_id" | "store_id"
 
   const [newOrderOpen, setNewOrderOpen] = useState(false);
   // The order a row's "Recreate order" copies into the Manual Order form.
@@ -221,6 +234,9 @@ export default function OrdersPage() {
   // per-order shortage detail plus the ids to retry with force=true.
   const [stockShortfall, setStockShortfall] = useState(null);
   const [detailOrderId, setDetailOrderId] = useState(null);
+  // Edit Order opens the order straight into Edit once its booking is cancelled.
+  const [detailStartEditing, setDetailStartEditing] = useState(false);
+  const [scanOpen, setScanOpen] = useState(false);
   const [ticketOrder, setTicketOrder] = useState(null);
   const reloadTimer = useRef(null);
   const loadGen = useRef(0);
@@ -264,35 +280,28 @@ export default function OrdersPage() {
     [activeStatus, appliedSearch, appliedFilters]
   );
 
-  // Client-side sort of the current page — server always returns data in its
-  // own order; we re-sort locally without refetching.
-  const sortedOrders = useMemo(() => {
-    const list = [...orders];
-    if (sortBy === "oms_id") {
-      // Sort by internal numeric id descending (newest OMS ID first)
-      list.sort((a, b) => (b.id ?? 0) - (a.id ?? 0));
-    } else if (sortBy === "store_id") {
-      // Sort by store order number as a string — preserves the original
-      // insertion order within equal values (i.e. as-received, not
-      // re-sequenced). Nulls/dashes go to the end.
-      list.sort((a, b) => {
-        const an = a.order_number || "";
-        const bn = b.order_number || "";
-        if (!an && !bn) return 0;
-        if (!an) return 1;
-        if (!bn) return -1;
-        return an.localeCompare(bn, undefined, { numeric: true, sensitivity: "base" });
-      });
-    } else {
-      // Default: Date & Time descending (newest first)
-      list.sort((a, b) => {
-        const da = new Date(a.placed_at || a.created_at || 0).getTime();
-        const db = new Date(b.placed_at || b.created_at || 0).getTime();
-        return db - da;
-      });
-    }
-    return list;
-  }, [orders, sortBy]);
+  // Newest order first - by when it was placed (Shopify's own date),
+  // falling back to when it reached OMS.
+  const sortedOrders = useMemo(
+    () =>
+      [...orders].sort(
+        (a, b) =>
+          new Date(b.placed_at || b.created_at || 0).getTime() -
+          new Date(a.placed_at || a.created_at || 0).getTime()
+      ),
+    [orders]
+  );
+
+  // A pushed counts frame is one store's unfiltered counts - right only for
+  // a single store's plain view. The Dispatch Hub (several stores) or any
+  // filter re-fetches its own counts instead of taking it.
+  const pushedCountsFitRef = useRef(true);
+  const queryParamsRef = useRef(queryParams);
+  useEffect(() => {
+    queryParamsRef.current = queryParams;
+    pushedCountsFitRef.current = !user?.isDispatchHub && isPlainTabQuery(queryParams);
+  }, [queryParams, user?.isDispatchHub]);
+  const countsTimer = useRef(null);
 
   // Any filter change invalidates the current page.
   useEffect(() => {
@@ -524,7 +533,14 @@ export default function OrdersPage() {
       }
 
       if (patchable.length > 0) applyOrderPatches(patchable);
-      if (latestCounts) applyCountsPatch(latestCounts);
+      if (latestCounts && pushedCountsFitRef.current) {
+        applyCountsPatch(latestCounts);
+      } else if (latestCounts) {
+        clearTimeout(countsTimer.current);
+        countsTimer.current = setTimeout(() => {
+          ordersService.counts(queryParamsRef.current).then(setCounts).catch(() => {});
+        }, 500);
+      }
 
       if (needsFullReload) {
         clearTimeout(reloadTimer.current);
@@ -535,6 +551,7 @@ export default function OrdersPage() {
     });
     return () => {
       clearTimeout(reloadTimer.current);
+      clearTimeout(countsTimer.current);
       cleanup();
     };
   }, [reloadAfterChange, applyOrderPatches, applyCountsPatch]);
@@ -619,8 +636,32 @@ export default function OrdersPage() {
       // courier's pickup notice is still on each order's own menu.
       covered.add("barqraftar_ready_for_pickup");
     }
-    return actions.filter((a) => !covered.has(a.action));
+    const plain = actions.filter((a) => !covered.has(a.action));
+    // All in Assigning Courier: its own Cancel / Change Courier / Edit Order
+    // come first, then whatever the statuses offer (printing, load sheet,
+    // ...), whichever status each order has within the card.
+    if (selectedOrders.every((o) => o.workflow_card === "assigning_courier")) {
+      const rest = plain.filter((a) => a.action !== "cancel");
+      return [
+        ...ASSIGNING_COURIER_ACTIONS,
+        ...(rest.length ? [{ key: "assigning_courier_divider", divider: true }, ...rest] : []),
+      ];
+    }
+    return plain;
   }, [selectedOrders, barqraftarConnected, barqraftarOmsConnected, postexConnected, postexOmsConnected]);
+
+  // Change Courier's picker: every courier this store can book with right
+  // now. Values are the backend's CHANGE_COURIER_TARGETS keys.
+  const changeCourierOptions = useMemo(
+    () => [
+      ...bookingAccounts.map((a) => ({ value: a.id, label: a.name })),
+      ...(barqraftarConnected ? [{ value: "barqraftar", label: "BarqRaftar" }] : []),
+      ...(barqraftarOmsConnected ? [{ value: "barqraftar_oms", label: "BarqRaftar (OMS Courier)" }] : []),
+      ...(postexConnected ? [{ value: "postex", label: "PostEx" }] : []),
+      ...(postexOmsConnected ? [{ value: "postex_oms", label: "PostEx (OMS Courier)" }] : []),
+    ],
+    [bookingAccounts, barqraftarConnected, barqraftarOmsConnected, postexConnected, postexOmsConnected]
+  );
 
   // Why the Actions menu is empty, so it says so instead of opening blank:
   // a status with no actions (Delivered, Cancelled, ...) or a mix of
@@ -810,6 +851,11 @@ export default function OrdersPage() {
       // After reloadAfterChange(), which clears the error banner on the way in.
       await reloadAfterChange();
       if (failed.length > 0) setError(describeFailures(failed));
+      // Edit Order on one order: its booking is cancelled, so open it to edit.
+      if (action === "edit_order" && orderIds.length === 1 && failed.length === 0) {
+        setDetailStartEditing(true);
+        setDetailOrderId(orderIds[0]);
+      }
     } catch (err) {
       setError(err.message || "Action failed");
     } finally {
@@ -960,9 +1006,34 @@ export default function OrdersPage() {
             window.location.reload();
           }}
           refreshing={loading}
-          sortBy={sortBy}
-          onSortChange={setSortBy}
+          extraFilters={
+            user?.isDispatchHub ? (
+              <HubOrderFilters
+                stores={hubStoreOptions || []}
+                storeIds={appliedFilters.store ? appliedFilters.store.split(",") : []}
+                productNames={appliedFilters.product ? JSON.parse(appliedFilters.product) : []}
+                status={activeStatus === "all" ? undefined : activeStatus}
+                onChange={({ storeIds, productNames }) => {
+                  const next = {
+                    store: storeIds.join(","),
+                    product: productNames.length ? JSON.stringify(productNames) : "",
+                  };
+                  setFilters((f) => ({ ...f, ...next }));
+                  setAppliedFilters((f) => ({ ...f, ...next }));
+                }}
+              />
+            ) : null
+          }
         />
+
+        {activeStatus === ASSIGNING_COURIER_TAB ? (
+          <div className="mb-3 flex items-center justify-between gap-3 rounded-md border border-surface-border bg-white px-4 py-2">
+            <span className="text-sm text-slate-600">
+              Scan each parcel&apos;s barcode to mark it Packed - only orders with a tracking number (To Be Packed).
+            </span>
+            <Button onClick={() => setScanOpen(true)}>Scan</Button>
+          </div>
+        ) : null}
 
         {appliedFilters.date_from || appliedFilters.date_to ? (
           <div className="mb-3 flex items-center justify-between rounded-md border border-brand-200 bg-brand-50 px-3 py-2 text-xs text-brand-800">
@@ -1013,6 +1084,7 @@ export default function OrdersPage() {
           onToggleSelectAll={onToggleSelectAll}
           onOpenDetail={setDetailOrderId}
           showStoreColumn={Boolean(user?.isDispatchHub)}
+          showProductColumn={Boolean(user?.isDispatchHub)}
           showTransitColumn={activeStatus === CRITICAL_TAB}
           showSubStatusColumn={SUB_STATUS_TABS.has(activeStatus)}
           onRecreate={(order) => {
@@ -1072,6 +1144,7 @@ export default function OrdersPage() {
               ]
             : couriers
         }
+        options={pendingAction?.action === "change_courier" ? changeCourierOptions : undefined}
         onClose={() => setPendingAction(null)}
         onSubmit={onSubmitPendingAction}
       />
@@ -1097,9 +1170,14 @@ export default function OrdersPage() {
         orderId={detailOrderId}
         couriers={couriers}
         bookingAccounts={bookingAccounts}
-        onClose={() => setDetailOrderId(null)}
+        startEditing={detailStartEditing}
+        onClose={() => {
+          setDetailOrderId(null);
+          setDetailStartEditing(false);
+        }}
         onOrderChanged={reloadAfterChange}
       />
+      <ScanPackModal open={scanOpen} onClose={() => setScanOpen(false)} onPacked={reloadAfterChange} />
       <CreateTicketDialog
         open={Boolean(ticketOrder)}
         order={ticketOrder}

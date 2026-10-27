@@ -1,5 +1,6 @@
 "use client";
 
+import Button from "../shared/Button";
 import EditableField from "../shared/EditableField";
 
 const FIELD_ROWS = [
@@ -41,6 +42,12 @@ export default function CustomerDetailPanel({ order, draft, editing, onChange })
             ? "N/A"
             : `${order.acceptance_pct}%`}
         </div>
+      </div>
+
+      <div className="pt-2">
+        <Button variant="secondary" disabled title="No telephony provider configured">
+          Initiate IVR Call
+        </Button>
       </div>
     </div>
   );

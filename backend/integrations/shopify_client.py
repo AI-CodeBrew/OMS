@@ -682,3 +682,32 @@ def activate_inventory_at_location(shop_domain, access_token, api_version, *, in
         },
     )
     _raise_user_errors(data.get("inventoryActivate"), "Could not stock the product at the shop's location")
+
+
+def iter_variant_images(shop_domain, access_token, api_version, *, page_size=250, max_pages=400):
+    """Yields (inventory_item_id, sku, image_url) for every variant - the
+    variant's own image when it has one, else the product's first image
+    ("" when the product has none)."""
+    url = f"{_base_url(shop_domain, api_version)}/products.json"
+    headers = {"X-Shopify-Access-Token": access_token}
+    params = {"fields": "variants,images,image", "limit": page_size}
+
+    page_info = None
+    for _ in range(max_pages):
+        query = {"limit": page_size, "page_info": page_info} if page_info else params
+        resp = _get_with_backoff(url, headers, query)
+        if not resp.ok:
+            raise ShopifyAPIError(f"Failed to fetch products: {resp.status_code} {resp.text}")
+
+        for product in resp.json().get("products", []):
+            images = product.get("images") or []
+            by_id = {img.get("id"): img.get("src") or "" for img in images}
+            first = (product.get("image") or {}).get("src") or (images[0].get("src") if images else "") or ""
+            for variant in product.get("variants", []):
+                src = by_id.get(variant.get("image_id")) or first
+                yield variant.get("inventory_item_id"), (variant.get("sku") or "").strip(), src
+
+        match = _NEXT_PAGE_INFO_RE.search(resp.headers.get("Link", ""))
+        if not match:
+            break
+        page_info = match.group(1)

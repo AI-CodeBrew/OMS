@@ -120,7 +120,23 @@ const UploadIcon = (
  * the same editable grid as the courier-sheet import before anything is
  * created).
  */
+const RECREATE_TITLES = { replacement: "Replacement for", new: "New order from" };
+
+const RECREATE_CHOICES = [
+  {
+    value: "replacement",
+    title: "Replacement",
+    text: "Sent in place of this order - marked with an R next to its order ID.",
+  },
+  { value: "new", title: "New order", text: "A separate new order for the same customer and products." },
+];
+
+// recreateFrom: an order's "Recreate order". The first screen asks
+// Replacement or New order; the order is saved with that type (a
+// replacement gets an "R" by its number) and never created on Shopify -
+// the Shopify option isn't offered.
 export default function NewOrderModal({ open, recreateFrom = null, onClose, onCreated }) {
+  const [recreateType, setRecreateType] = useState(null);
   const [view, setView] = useState("methods"); // "methods" | "manual"
   const [form, setForm] = useState(emptyForm);
   const [creating, setCreating] = useState(false);
@@ -137,8 +153,8 @@ export default function NewOrderModal({ open, recreateFrom = null, onClose, onCr
     setView("manual");
     try {
       const info = await ordersService.getNewOrderInfo();
-      setShopifyConnected(Boolean(info.shopify_connected));
-      setOnShopify(Boolean(info.shopify_connected));
+      setShopifyConnected(Boolean(info.shopify_connected) && !recreateFrom);
+      setOnShopify(Boolean(info.shopify_connected) && !recreateFrom);
       setForm((f) => (f.order_number ? f : { ...f, order_number: info.next_order_number || "" }));
     } catch {
       // Leaves the number blank - the server fills one in on create.
@@ -166,6 +182,7 @@ export default function NewOrderModal({ open, recreateFrom = null, onClose, onCr
 
   function resetAll() {
     setView("methods");
+    setRecreateType(null);
     setOnShopify(false);
     setForm(emptyForm());
     setError("");
@@ -212,7 +229,8 @@ export default function NewOrderModal({ open, recreateFrom = null, onClose, onCr
     setError("");
     try {
       await ordersService.create({
-        create_on_shopify: onShopify,
+        ...(recreateFrom ? { recreate_type: recreateType, recreated_from: recreateFrom.id } : {}),
+        create_on_shopify: onShopify && !recreateFrom,
         order_number: onShopify ? "" : form.order_number.trim(),
         order_date: form.order_date,
         payment_gateway: form.payment_gateway,
@@ -284,6 +302,37 @@ export default function NewOrderModal({ open, recreateFrom = null, onClose, onCr
     <p className="mb-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
   ) : null;
 
+  if (recreateFrom && !recreateType) {
+    return (
+      <Modal open={open} onClose={close} title={`Recreate order ${recreateFrom.order_number}`} width="max-w-xl">
+        <p className="mb-4 text-sm text-slate-600">What is the new order?</p>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          {RECREATE_CHOICES.map((choice) => (
+            <button
+              key={choice.value}
+              type="button"
+              onClick={() => setRecreateType(choice.value)}
+              className="rounded-lg border border-surface-border bg-white p-4 text-left transition hover:border-brand-500 hover:bg-brand-50"
+            >
+              <span className="flex items-center gap-2 text-base font-semibold text-slate-900">
+                {choice.title}
+                {choice.value === "replacement" ? (
+                  <span className="rounded bg-orange-100 px-1 text-[11px] font-bold text-orange-700">R</span>
+                ) : null}
+              </span>
+              <span className="mt-1 block text-xs text-slate-500">{choice.text}</span>
+            </button>
+          ))}
+        </div>
+        <div className="mt-5 flex justify-end">
+          <Button variant="secondary" onClick={close}>
+            Cancel
+          </Button>
+        </div>
+      </Modal>
+    );
+  }
+
   if (view === "methods") {
     return (
       <Modal open={open} onClose={close} title="Manual order" width="max-w-3xl">
@@ -318,12 +367,16 @@ export default function NewOrderModal({ open, recreateFrom = null, onClose, onCr
     <Modal
       open={open}
       onClose={close}
-      title={recreateFrom ? `Recreate order ${recreateFrom.order_number}` : "Book manual order"}
+      title={
+        recreateFrom
+          ? `${RECREATE_TITLES[recreateType] || "Recreate"} order ${recreateFrom.order_number}`
+          : "Book manual order"
+      }
       width="max-w-3xl"
     >
       {errorBox}
       <form onSubmit={onSubmit} className="space-y-5">
-        {shopifyConnected ? (
+        {shopifyConnected && !recreateFrom ? (
           <label className="flex items-start gap-2 rounded-md border border-surface-border bg-surface px-3 py-2.5">
             <input
               type="checkbox"

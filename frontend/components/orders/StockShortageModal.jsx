@@ -19,10 +19,11 @@ function WarningIcon({ className }) {
 }
 
 /**
- * Shown when Ready to Print is blocked by insufficient warehouse stock.
+ * Shown when a booking is refused for insufficient warehouse stock.
  * `shortfalls` is the structured payload the bulk-action endpoint returns
  * (error_code "insufficient_stock"), so the operator sees exactly which
- * SKUs are short by how much before deciding to push through anyway.
+ * SKUs are short by how much. There's no override - a short order isn't
+ * booked (onProceed is no longer offered).
  */
 export default function StockShortageModal({ shortfalls, onProceed, onClose, submitting }) {
   if (!shortfalls || shortfalls.length === 0) return null;
@@ -35,7 +36,8 @@ export default function StockShortageModal({ shortfalls, onProceed, onClose, sub
           {shortfalls.length === 1
             ? "This order needs more units than the warehouse has on hand."
             : `${shortfalls.length} orders need more units than the warehouse has on hand.`}{" "}
-          You can still process them — the shortfall will show as negative stock on the WMS screen.
+          They were not booked and stay in Approved, tagged Stock Not Available - add the stock in WMS, then
+          book them again.
         </p>
       </div>
 
@@ -72,12 +74,7 @@ export default function StockShortageModal({ shortfalls, onProceed, onClose, sub
       </div>
 
       <div className="mt-4 flex justify-end gap-2">
-        <Button variant="secondary" onClick={onClose} disabled={submitting}>
-          Cancel
-        </Button>
-        <Button onClick={onProceed} loading={submitting}>
-          Process anyway
-        </Button>
+        <Button onClick={onClose}>OK</Button>
       </div>
     </Modal>
   );

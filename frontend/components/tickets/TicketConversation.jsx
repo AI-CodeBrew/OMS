@@ -6,10 +6,11 @@ import { timeAgo } from "../../lib/timeAgo";
 
 const DEFAULT_LABELS = { tenant: "You", super_admin: "Support" };
 
-// author_role is stored on each message at write time ("tenant" |
-// "super_admin"), not derived - so alignment/labelling here never needs a
-// second lookup against who the viewer is, only who wrote each message.
-// currentRole picks which side is "mine" (aligned right); labels lets the
+// A ticket's history as a chat - the viewer's own messages on the right,
+// the other side's on the left, each with a role label (no names) and its
+// time. author_role is stored on each message at write time ("tenant" |
+// "super_admin"), not derived - so this never needs a second lookup
+// against who the viewer is. currentRole picks which side is "mine"; labels lets the
 // admin page invert the wording ("Customer" / "You") without a new prop
 // shape. allowInternal turns on the internal-note checkbox for admins -
 // tenants never see this prop set, and the backend hides internal
@@ -66,25 +67,25 @@ export default function TicketConversation({
       {loading ? (
         <p className="text-sm text-slate-500">Loading…</p>
       ) : messages.length === 0 ? (
-        <p className="mb-3 text-sm text-slate-500">No messages yet.</p>
+        <p className="mb-3 text-sm text-slate-500">No replies yet.</p>
       ) : (
-        <ul className="mb-3 max-h-80 space-y-2 overflow-y-auto pr-1">
+        <ul className="mb-3 max-h-96 space-y-3 overflow-y-auto rounded-lg bg-slate-100/70 p-3">
           {messages.map((m) => {
             const mine = m.author_role === currentRole;
             return (
               <li key={m.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
                 <div
-                  className={`max-w-[80%] rounded-lg px-3 py-2 text-sm shadow-sm ${
+                  className={`max-w-[75%] px-3.5 py-2 text-sm shadow-sm ${
                     m.is_internal
-                      ? "border border-amber-200 bg-amber-50 text-amber-900"
+                      ? "rounded-2xl border border-amber-200 bg-amber-50 text-amber-900"
                       : mine
-                        ? "bg-brand-800 text-white"
-                        : "border border-surface-border bg-white text-slate-800"
+                        ? "rounded-2xl rounded-br-sm bg-brand-700 text-white"
+                        : "rounded-2xl rounded-bl-sm bg-white text-slate-800"
                   }`}
                 >
                   <p
-                    className={`mb-1 flex items-center gap-1.5 text-xs font-medium ${
-                      m.is_internal ? "text-amber-700" : "opacity-70"
+                    className={`mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold ${
+                      m.is_internal ? "text-amber-700" : mine ? "text-white/80" : "text-brand-700"
                     }`}
                   >
                     {labels[m.author_role] || m.author_role}
@@ -96,12 +97,17 @@ export default function TicketConversation({
                   </p>
                   <p className="whitespace-pre-wrap">{m.body}</p>
                   <p
-                    className={`mt-1 text-xs ${
+                    className={`mt-1 text-right text-[10px] ${
                       m.is_internal ? "text-amber-600" : mine ? "text-white/70" : "text-slate-400"
                     }`}
-                    title={new Date(m.created_at).toLocaleString()}
+                    title={timeAgo(m.created_at)}
                   >
-                    {timeAgo(m.created_at)}
+                    {new Date(m.created_at).toLocaleString([], {
+                      day: "numeric",
+                      month: "short",
+                      hour: "numeric",
+                      minute: "2-digit",
+                    })}
                   </p>
                 </div>
               </li>

@@ -5,7 +5,6 @@ import logging
 import threading
 from datetime import date, timedelta
 
-from django.core.files.base import ContentFile
 from django.http import HttpResponse, JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
@@ -498,31 +497,15 @@ class PostExShipmentActionView(APIView):
 
 
 def _save_print_batch(*, organization_id, order_numbers, content, actor_user_id, kind):
-    """Same shape as BarqRaftar's own copy (oms/views.py's is private to
-    OrderViewSet). Best-effort: a storage hiccup must not block the PDF the
-    user is downloading."""
-    from oms.models import PrintBatch
+    """oms.batch_services.save_print_batch, as postex - files the PDF
+    into its dispatch batch. Best-effort: a storage hiccup must not block
+    the PDF the user is downloading."""
+    from oms.batch_services import save_print_batch
 
-    try:
-        sorted_numbers = sorted(str(n) for n in order_numbers)
-        existing = PrintBatch.all_objects.filter(
-            organization_id=organization_id, kind=kind, courier="postex", order_numbers=sorted_numbers,
-        ).first() if sorted_numbers else None
-        if existing:
-            batch = existing
-            if batch.file:
-                batch.file.delete(save=False)
-            batch.content_type = "application/pdf"
-            batch.created_by_user_id = actor_user_id
-        else:
-            batch = PrintBatch.all_objects.create(
-                organization_id=organization_id, kind=kind, courier="postex",
-                order_count=len(sorted_numbers), order_numbers=sorted_numbers,
-                content_type="application/pdf", created_by_user_id=actor_user_id,
-            )
-        batch.file.save(f"postex_{kind}.pdf", ContentFile(content), save=True)
-    except Exception:
-        logger.exception("postex: failed to save print batch")
+    save_print_batch(
+        organization_id=organization_id, kind=kind, courier="postex", order_numbers=order_numbers,
+        content=content, actor_user_id=actor_user_id, filename=f"postex_{kind}.pdf",
+    )
 
 
 def _shipments_by_account(order_ids):

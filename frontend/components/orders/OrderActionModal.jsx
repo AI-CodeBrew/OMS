@@ -3,13 +3,18 @@
 import { useEffect, useState } from "react";
 import Modal from "../shared/Modal";
 import Button from "../shared/Button";
-import { SMARTLANE_LOAD_SHEET_COURIERS } from "./statusConfig";
+import { CANCEL_REASONS, SMARTLANE_LOAD_SHEET_COURIERS } from "./statusConfig";
+import ordersService from "../../services/ordersService";
 
 const FIELD_BY_ACTION = {
   assign_courier: { key: "courier_id", label: "Courier", type: "courier-select" },
-  resolve_city_issue: { key: "city", label: "Corrected city", type: "text" },
+  // Suggests the couriers' city list - only those spellings pass.
+  resolve_city_issue: { key: "city", label: "Corrected city", type: "city-input" },
   mark_dispatch_issue: { key: "note", label: "Issue note", type: "text" },
-  cancel: { key: "reason", label: "Cancellation reason (optional)", type: "text", optional: true },
+  // One of CANCEL_REASONS has to be picked.
+  cancel: { key: "reason", label: "Cancellation reason", type: "reason-select" },
+  // `options` (the couriers this store can book with) comes from the page.
+  change_courier: { key: "courier", label: "New courier", type: "option-select" },
   print_loadsheet: { key: "courier", label: "Courier", type: "smartlane-courier-select" },
 };
 
@@ -18,6 +23,7 @@ const ACTION_TITLES = {
   resolve_city_issue: "Resolve city issue",
   mark_dispatch_issue: "Mark dispatch issue",
   cancel: "Cancel order(s)",
+  change_courier: "Change courier",
   print_loadsheet: "Print Load Sheet",
 };
 
@@ -26,11 +32,24 @@ const ACTION_TITLES = {
 // to a generic message, so a new action is never run unconfirmed.
 const CONFIRM_BY_ACTION = {
   acknowledge: {
-    title: "Start processing",
-    button: "Start Processing",
-    result: "move to Assigning Courier",
+    title: "Approve order(s)",
+    button: "Approve",
+    result:
+      "be checked and move to Approved, ready for a courier - an order whose city isn't on the couriers' city list moves to City Issue instead",
+  },
+  // Assigning Courier's Edit Order (backend: oms.services.unbook_from_assigning).
+  edit_order: {
+    title: "Edit order(s)",
+    button: "Cancel Booking & Edit",
+    result:
+      "have their courier booking cancelled and move back to Approved, tagged Cancelled from Assigning Courier, to be edited",
   },
   confirm: { title: "Confirm order(s)", button: "Confirm", result: "move to Assigning Courier" },
+  revert_status: {
+    title: "Revert to previous status",
+    button: "Revert",
+    result: "go back to the status they were in before this one",
+  },
   approve: { title: "Approve order(s)", button: "Approve", result: "move to Approved" },
   dispatch: { title: "Dispatch order(s)", button: "Dispatch", result: "be marked Dispatched" },
   cancel_fulfillment: {
@@ -73,6 +92,12 @@ const CONFIRM_BY_ACTION = {
     button: "Mark Dispatched",
     result: "move from New straight to Dispatched (no courier booking, no stock taken)",
   },
+  auto_book: {
+    title: "Auto Book",
+    button: "Book",
+    result:
+      "be booked with BarqRaftar if their city is spelled exactly as one of BarqRaftar's, else with PostEx if spelled exactly as one of PostEx's - any other stays here, tagged No City Matched",
+  },
   push_to_barqraftar: {
     title: "Book with BarqRaftar",
     button: "Book",
@@ -100,13 +125,26 @@ const CONFIRM_BY_ACTION = {
   },
 };
 
-export default function OrderActionModal({ action, couriers, count, onSubmit, onClose, submitting }) {
+export default function OrderActionModal({ action, couriers, options, count, onSubmit, onClose, submitting }) {
   const field = action ? FIELD_BY_ACTION[action] : null;
   const [value, setValue] = useState("");
+  const [cityNames, setCityNames] = useState([]);
 
   useEffect(() => {
     setValue("");
   }, [action]);
+
+  useEffect(() => {
+    if (field?.type !== "city-input") return;
+    let alive = true;
+    ordersService
+      .getCityNames()
+      .then((names) => alive && setCityNames(names))
+      .catch(() => alive && setCityNames([]));
+    return () => {
+      alive = false;
+    };
+  }, [field?.type]);
 
   if (!action) return null;
 
@@ -155,6 +193,38 @@ export default function OrderActionModal({ action, couriers, count, onSubmit, on
               </option>
             ))}
           </select>
+        ) : field.type === "reason-select" ? (
+          <select
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
+          >
+            <option value="">Select a reason…</option>
+            {CANCEL_REASONS.map((reason) => (
+              <option key={reason} value={reason}>
+                {reason}
+              </option>
+            ))}
+          </select>
+        ) : field.type === "option-select" ? (
+          <>
+            <select
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
+            >
+              <option value="">Select a courier…</option>
+              {(options || []).map((o) => (
+                <option key={o.value} value={o.value} disabled={o.disabled}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            <p className="mt-2 text-xs text-slate-500">
+              The current booking is cancelled first, then the order is booked with this courier. If the new
+              booking fails, the order goes back to Approved with no tracking number.
+            </p>
+          </>
         ) : field.type === "smartlane-courier-select" ? (
           <select
             value={value}
@@ -168,6 +238,24 @@ export default function OrderActionModal({ action, couriers, count, onSubmit, on
               </option>
             ))}
           </select>
+        ) : field.type === "city-input" ? (
+          <>
+            <input
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              list="courier-city-names"
+              placeholder="Start typing a city…"
+              className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
+            />
+            <datalist id="courier-city-names">
+              {cityNames.map((name) => (
+                <option key={name} value={name} />
+              ))}
+            </datalist>
+            <p className="mt-2 text-xs text-slate-500">
+              Pick the city as the couriers spell it - the order then moves to Approved.
+            </p>
+          </>
         ) : (
           <input
             value={value}
