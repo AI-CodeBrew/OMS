@@ -22,7 +22,7 @@ from core.rbac import write_audit_log
 
 from . import client, services
 from .exceptions import LeopardsAPIError, LeopardsBookingError
-from .models import WEBHOOK_HEADER_KEY, LeopardsConnection, LeopardsShipment, LeopardsSyncJob, new_webhook_secret
+from .models import LeopardsConnection, LeopardsShipment, LeopardsSyncJob, new_webhook_secret
 from .serializers import LeopardsConnectionSerializer, LeopardsStatusSerializer, LeopardsSyncJobSerializer
 
 logger = logging.getLogger(__name__)
@@ -749,14 +749,29 @@ def _push_response(status_code, errors=()):
     )
 
 
+def _carries_secret(request, secret):
+    """Whether any request header holds the webhook secret. Leopards' portal
+    has a single "Push API Header" box - no header name - so which header it
+    arrives in isn't ours to dictate: every header value is compared (in
+    constant time), bare or after a scheme word such as "Bearer"."""
+    expected = secret.encode()
+    found = False
+    for _name, value in request.headers.items():
+        value = (value or "").strip()
+        for candidate in {value, value.rsplit(None, 1)[-1] if value else ""}:
+            if candidate and hmac.compare_digest(candidate.encode(), expected):
+                found = True
+    return found
+
+
 @csrf_exempt
 @require_http_methods(["GET", "POST", "PUT"])
 def leopards_webhook(request, token):
     """Leopards' Push API callback. Public by necessity - Leopards can't log
     in - so two checks stand in for auth: `token` (an unguessable per-org
-    UUID in the URL) finds the account, and the WEBHOOK_HEADER_KEY header
-    must carry that account's webhook_secret (registered with Leopards as the
-    "custom request header"). The body is the documented
+    UUID in the URL) finds the account, and a request header must carry that
+    account's webhook_secret (registered with Leopards as its "Push API
+    Header" - see _carries_secret). The body is the documented
     {"data": [{cn_number, status, receiver_name, reason, activity_date}]}
     (see services.handle_webhook_event).
 
@@ -775,12 +790,10 @@ def leopards_webhook(request, token):
     if request.method == "GET":
         return JsonResponse({"success": True})
 
-    supplied = request.headers.get(WEBHOOK_HEADER_KEY) or ""
-    if not supplied or not hmac.compare_digest(supplied.encode(), connection.webhook_secret.encode()):
+    if not _carries_secret(request, connection.webhook_secret):
         reason = (
-            f"Call rejected: the {WEBHOOK_HEADER_KEY} header was missing."
-            if not supplied
-            else f"Call rejected: the {WEBHOOK_HEADER_KEY} header value didn't match."
+            "Call rejected: none of the request headers carried the webhook secret "
+            "(is the Header Value saved in the Leopards Push API page?)."
         )
         logger.warning("leopards webhook REJECTED for org %s: %s", connection.organization_id, reason)
         services.record_webhook_rejected(connection, reason)

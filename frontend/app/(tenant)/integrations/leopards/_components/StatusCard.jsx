@@ -44,10 +44,10 @@ function CopyField({ label, value, secret = false }) {
   );
 }
 
-// The three values Leopards' Push API needs: the callback URL it should POST
-// status updates to, and the custom request header (key + value) it should
-// send with each call. A call without the right header is rejected by the
-// backend, and the reason shows here.
+// The two values Leopards' Push API portal asks for: the callback URL it
+// should POST status updates to, and the one "Push API Header" value it sends
+// with each call (the portal has no field for a header name). A call without
+// that value is rejected by the backend, and the reason shows here.
 function WebhookSection({ status, onChanged, onError, onNotice }) {
   const [regenerating, setRegenerating] = useState(false);
 
@@ -107,13 +107,12 @@ function WebhookSection({ status, onChanged, onError, onNotice }) {
       ) : null}
 
       <CopyField label="Callback URL (POST)" value={status.webhook_url} />
-      <CopyField label="Header Key" value={status.webhook_header_key} />
       <CopyField label="Header Value" value={status.webhook_header_value} secret />
 
       <p className="text-xs text-slate-500">
-        Give these three values to Leopards for your account (their Push API): the callback URL that accepts POST
-        requests, and the custom request header - its key and value. Once Leopards starts pushing, the pill above
-        turns Active.
+        Give these two values to Leopards for your account (Push API Management in their portal): the callback URL
+        goes in "Push API URL" and the Header Value in "Push API Header". Once Leopards starts pushing, the pill
+        above turns Active.
       </p>
       <button
         type="button"
