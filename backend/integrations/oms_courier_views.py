@@ -67,6 +67,22 @@ BARQRAFTAR_FIELDS = {
     "longitude": ("Longitude", 20, False, "coordinate"),
 }
 
+# Leopards is asked for with the shipper details its createShipper API takes:
+# approved, they become a shipper on FynkTech's Leopards account, and every
+# booking of the store's orders goes out under that shipper (see
+# oms_courier_service._create_leopards_shipper). The city is a Leopards city
+# id (getAllCities); the id and the name travel together like BarqRaftar's.
+LEOPARDS_FIELDS = {
+    "name": ("Shipper name", 255, True, "text"),
+    "email": ("Email", 255, False, "email"),
+    "phone": ("Phone number", 11, True, "phone"),
+    "city_id": ("City", 20, True, "city_id"),
+    "city_name": ("City", 150, True, "text"),
+    "address": ("Address", 500, True, "text"),
+    "return_address": ("Return address", 500, False, "text"),
+    "cnic": ("CNIC", 15, False, "text"),
+}
+
 
 def _mobile(value):
     """"+92 300 1234567" / "923001234567" / "3001234567" -> "03001234567",
@@ -100,6 +116,8 @@ def _clean_fields(body, fields):
             problems.append(f"Pick an {label.lower()} from the list.")
         elif kind == "city_id" and not value.isdigit():
             problems.append(f"Pick a {label.lower()} from the list.")
+        elif kind == "email" and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", value):
+            problems.append(f"{label} must be an email address like name@example.com.")
         elif kind == "coordinate" and not re.fullmatch(r"-?\d{1,3}(\.\d+)?", value):
             problems.append(f"{label} must be a number like 31.5204.")
         elif len(value) > limit:
@@ -134,10 +152,24 @@ def _clean_barqraftar(body):
     return details, generic, ""
 
 
+def _clean_leopards(body):
+    """(details, generic fields, error) from a Leopards shipper form."""
+    details, problems = _clean_fields(body, LEOPARDS_FIELDS)
+    if problems:
+        return None, None, " ".join(dict.fromkeys(problems))
+    generic = {
+        "store_name": details["name"][:255],
+        "phone": details["phone"],
+        "pickup_address": f"{details['address']}, {details['city_name']}"[:500],
+    }
+    return details, generic, ""
+
+
 # Courier -> its own request form's cleaner (the rest use _clean_generic).
 COURIER_FORMS = {
     OmsCourierEnrollment.COURIER_POSTEX: _clean_postex,
     OmsCourierEnrollment.COURIER_BARQRAFTAR: _clean_barqraftar,
+    OmsCourierEnrollment.COURIER_LEOPARDS: _clean_leopards,
 }
 
 
@@ -211,6 +243,8 @@ class OmsCourierEnrollmentOptionsView(APIView):
     def get(self, request, courier):
         if courier == OmsCourierEnrollment.COURIER_BARQRAFTAR:
             return self._barqraftar()
+        if courier == OmsCourierEnrollment.COURIER_LEOPARDS:
+            return self._leopards()
         if courier != OmsCourierEnrollment.COURIER_POSTEX:
             return Response({"success": True})
 
@@ -237,6 +271,31 @@ class OmsCourierEnrollmentOptionsView(APIView):
             }
         )
 
+
+    def _leopards(self):
+        """Leopards' cities a shipper can be created in (those it ships
+        from), from FynkTech's own account."""
+        from .leopards import services as leopards_services
+        from .leopards.exceptions import LeopardsAPIError
+
+        connection = leopards_services.platform_connection()
+        cities = []
+        if connection is not None:
+            try:
+                cities = leopards_services.get_cities(connection)
+            except LeopardsAPIError as exc:
+                return Response(
+                    {"success": False, "error": f"Could not load Leopards cities: {exc}"},
+                    status=http_status.HTTP_502_BAD_GATEWAY,
+                )
+        return Response(
+            {
+                "success": True,
+                "cities": [
+                    {"id": str(c["id"]), "name": c["name"]} for c in cities if c.get("origin", True)
+                ],
+            }
+        )
 
     def _barqraftar(self):
         from .barqraftar import services as barqraftar_services
@@ -347,7 +406,7 @@ class OmsCourierEnrollmentDetailView(APIView):
 
 class OmsCourierSyncView(APIView):
     """POST -> pulls the latest status of this store's orders booked through
-    FynkTech's PostEx or BarqRaftar account, right now, instead of waiting
+    FynkTech's PostEx, BarqRaftar or Leopards account, right now, instead of waiting
     for the background poller. Only for a courier that is on and approved."""
 
     permission_classes = [IsOrgAdmin]
@@ -357,9 +416,11 @@ class OmsCourierSyncView(APIView):
             from .postex.services import poll_store_platform_statuses
         elif courier == OmsCourierEnrollment.COURIER_BARQRAFTAR:
             from .barqraftar.services import poll_store_platform_statuses
+        elif courier == OmsCourierEnrollment.COURIER_LEOPARDS:
+            from .leopards.services import poll_store_platform_statuses
         else:
             return Response(
-                {"success": False, "error": "Sync is available for PostEx and BarqRaftar only."},
+                {"success": False, "error": "Sync is available for PostEx, BarqRaftar and Leopards only."},
                 status=http_status.HTTP_404_NOT_FOUND,
             )
         if not OmsCourierEnrollment.is_enabled_for(request.organization_id, courier):

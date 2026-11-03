@@ -1,7 +1,7 @@
 // Every booking integration books an order under a Courier row of its own
 // name - Smartlane's two accounts under SmartlaneConnection.COURIER_NAMES,
-// BarqRaftar and PostEx under "BarqRaftar"/"PostEx" (their services' own
-// get-or-create) - so an order's courier_name is how it remembers which
+// BarqRaftar, PostEx and Leopards under "BarqRaftar"/"PostEx"/"Leopards"
+// (their services' own get-or-create) - so an order's courier_name is how it remembers which
 // one it went out through. The backend goes by the same thing when
 // printing (SmartlaneConnection.for_order, the BarqRaftar/PostEx bookings).
 const ACCOUNT_BY_COURIER_NAME = {
@@ -9,6 +9,7 @@ const ACCOUNT_BY_COURIER_NAME = {
   "oms courier": "oms_courier",
   barqraftar: "barqraftar",
   postex: "postex",
+  leopards: "leopards",
 };
 
 export const BOOKING_ACCOUNT_LABELS = {
@@ -16,11 +17,12 @@ export const BOOKING_ACCOUNT_LABELS = {
   oms_courier: "OMS Courier",
   barqraftar: "BarqRaftar",
   postex: "PostEx",
+  leopards: "Leopards",
 };
 
 export const SMARTLANE_ACCOUNTS = new Set(["smartlane", "oms_courier"]);
 
-// "smartlane" | "oms_courier" | "barqraftar" | "postex", or null for an
+// "smartlane" | "oms_courier" | "barqraftar" | "postex" | "leopards", or null for an
 // order with no courier yet, or one no integration booked (a manually
 // assigned or imported courier).
 export function orderBookingAccount(order) {
@@ -38,6 +40,8 @@ const ACCOUNTS_BY_ACTION = {
   barqraftar_ready_for_pickup: ["barqraftar"],
   print_postex_airway_bill: ["postex"],
   print_postex_loadsheet: ["postex"],
+  print_leopards_airway_bill: ["leopards"],
+  print_leopards_loadsheet: ["leopards"],
 };
 
 // Drops the courier-specific actions of every account none of `orders` was

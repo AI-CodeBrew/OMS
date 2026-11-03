@@ -70,6 +70,18 @@ export function PostExWordmark({ className }) {
   );
 }
 
+// Leopards Courier - stacked like BarqRaftar's so the name fits the tile.
+export function LeopardsWordmark({ className }) {
+  return (
+    <span
+      className={`flex flex-col items-center font-black italic leading-none tracking-tight ${className || ""}`}
+    >
+      <span className="text-slate-900">Leo</span>
+      <span className="text-amber-500">pards</span>
+    </span>
+  );
+}
+
 // Badge = the small white rounded-square icon tile. Shared by the tenant
 // Integrations page and the super admin's, so both render the exact same
 // logo mark.

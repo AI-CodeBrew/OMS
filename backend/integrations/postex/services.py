@@ -985,7 +985,7 @@ def _courier(organization_id):
 
 def _adoptable_orders(organization_id):
     """Orders an outside-OMS booking may be adopted onto: not final, not
-    flagged by a human, and not already PostEx's or BarqRaftar's."""
+    flagged by a human, and not already PostEx's, BarqRaftar's or Leopards'."""
     from oms.models import Order
 
     return (
@@ -995,6 +995,7 @@ def _adoptable_orders(organization_id):
         )
         .exclude(postex_shipments__is_active=True)
         .exclude(barqraftar_shipments__is_active=True)
+        .exclude(leopards_shipments__is_active=True)
         .select_related("courier")
     )
 

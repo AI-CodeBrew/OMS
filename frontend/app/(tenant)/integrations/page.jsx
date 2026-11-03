@@ -6,10 +6,12 @@ import { useRouter } from "next/navigation";
 import integrationsService from "../../../services/integrationsService";
 import barqraftarService from "./barq-raftar/_lib/barqraftarService";
 import postexService from "./postex/_lib/postexService";
+import leopardsService from "./leopards/_lib/leopardsService";
 import GreenTick from "../../../components/shared/GreenTick";
 import {
   Badge,
   BarqRaftarWordmark,
+  LeopardsWordmark,
   OmsCourierLogo,
   PostExWordmark,
   ShopifyLogo,
@@ -74,7 +76,7 @@ const INTEGRATIONS = [
     href: "/integrations/oms-courier",
     live: true,
     features: [
-      { label: "Smartlane, PostEx & BarqRaftar", done: true },
+      { label: "Smartlane, PostEx, BarqRaftar & Leopards", done: true },
       { label: "FynkTech Books & Dispatches", done: true },
       { label: "Live Tracking on Your Orders", done: true },
     ],
@@ -107,6 +109,21 @@ const INTEGRATIONS = [
       { label: "Airway Bills & Load Sheets", done: true },
       { label: "Auto Status Updates", done: true },
       { label: "COD Settlement Status", done: true },
+    ],
+  },
+  {
+    key: "leopards",
+    name: "Leopards",
+    tagline: "Connect Leopards Courier for nationwide COD deliveries.",
+    logo: LeopardsWordmark,
+    wordmark: true,
+    href: "/integrations/leopards",
+    live: true,
+    features: [
+      { label: "Create Shipments", done: true },
+      { label: "Airway Bills & Load Sheets", done: true },
+      { label: "Live Status Webhook", done: true },
+      { label: "COD Reconciliation", done: false },
     ],
   },
 ];
@@ -210,6 +227,10 @@ export default function IntegrationsOverviewPage() {
     postexService
       .getStatus()
       .then((d) => setConnectedMap((m) => ({ ...m, postex: Boolean(d.connected) })))
+      .catch(() => {});
+    leopardsService
+      .getStatus()
+      .then((d) => setConnectedMap((m) => ({ ...m, leopards: Boolean(d.connected) })))
       .catch(() => {});
     integrationsService
       .getOmsCourierOnboarding()

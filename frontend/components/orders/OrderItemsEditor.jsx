@@ -6,6 +6,8 @@ import useBarqRaftarStatusStore from "../../app/(tenant)/integrations/barq-rafta
 import { withBarqRaftarActions } from "../../app/(tenant)/integrations/barq-raftar/_lib/orderActions";
 import usePostExStatusStore from "../../app/(tenant)/integrations/postex/_lib/postexStatusStore";
 import { withPostExActions } from "../../app/(tenant)/integrations/postex/_lib/orderActions";
+import useLeopardsStatusStore from "../../app/(tenant)/integrations/leopards/_lib/leopardsStatusStore";
+import { withLeopardsActions } from "../../app/(tenant)/integrations/leopards/_lib/orderActions";
 import { forOrdersBookingAccounts } from "./orderBookingAccount";
 
 const MONEY_FIELDS = [
@@ -32,15 +34,22 @@ export default function OrderItemsEditor({ order, draft, editing, onChange, onAc
   const barqraftarOmsConnected = useBarqRaftarStatusStore((s) => s.omsConnected);
   const postexConnected = usePostExStatusStore((s) => s.connected);
   const postexOmsConnected = usePostExStatusStore((s) => s.omsConnected);
+  const leopardsConnected = useLeopardsStatusStore((s) => s.connected);
+  const leopardsOmsConnected = useLeopardsStatusStore((s) => s.omsConnected);
   // Only the documents/actions of the courier this order was booked with.
   const actions = forOrdersBookingAccounts(
-    withPostExActions(
+    withLeopardsActions(
       order.status,
-      withBarqRaftarActions(
-        order.status, ACTIONS_BY_STATUS[order.status] || [], barqraftarConnected, barqraftarOmsConnected
+      withPostExActions(
+        order.status,
+        withBarqRaftarActions(
+          order.status, ACTIONS_BY_STATUS[order.status] || [], barqraftarConnected, barqraftarOmsConnected
+        ),
+        postexConnected,
+        postexOmsConnected
       ),
-      postexConnected,
-      postexOmsConnected
+      leopardsConnected,
+      leopardsOmsConnected
     ),
     [order]
   );

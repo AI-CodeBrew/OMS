@@ -49,6 +49,10 @@ import { withBarqRaftarActions } from "../integrations/barq-raftar/_lib/orderAct
 import postexService from "../integrations/postex/_lib/postexService";
 import usePostExStatusStore from "../integrations/postex/_lib/postexStatusStore";
 import { withPostExActions } from "../integrations/postex/_lib/orderActions";
+// Leopards' own, same arrangement again - integrations/leopards/.
+import leopardsService from "../integrations/leopards/_lib/leopardsService";
+import useLeopardsStatusStore from "../integrations/leopards/_lib/leopardsStatusStore";
+import { withLeopardsActions } from "../integrations/leopards/_lib/orderActions";
 import { forOrdersBookingAccounts } from "../../../components/orders/orderBookingAccount";
 
 // Modals/panels only ever render once opened (each returns null while
@@ -495,6 +499,10 @@ export default function OrdersPage() {
       .getStatus()
       .then((d) => usePostExStatusStore.getState().setStatus(d))
       .catch(() => {});
+    leopardsService
+      .getStatus()
+      .then((d) => useLeopardsStatusStore.getState().setStatus(d))
+      .catch(() => {});
   }, []);
 
   // Live updates: the backend pushes a message here the moment an order is
@@ -565,6 +573,8 @@ export default function OrdersPage() {
   const barqraftarOmsConnected = useBarqRaftarStatusStore((s) => s.omsConnected);
   const postexConnected = usePostExStatusStore((s) => s.connected);
   const postexOmsConnected = usePostExStatusStore((s) => s.omsConnected);
+  const leopardsConnected = useLeopardsStatusStore((s) => s.connected);
+  const leopardsOmsConnected = useLeopardsStatusStore((s) => s.omsConnected);
 
   // Memoized so OrderDetailPanel gets a stable prop between renders. The
   // per-org "is X connected" checks these come from don't mean anything
@@ -589,13 +599,18 @@ export default function OrdersPage() {
     // in statuses without the plain ones (Ready to Pick, ...) they stay.
     const actionsFor = (status) =>
       forOrdersBookingAccounts(
-        withPostExActions(
+        withLeopardsActions(
           status,
-          withBarqRaftarActions(
-            status, ACTIONS_BY_STATUS[status] || [], barqraftarConnected, barqraftarOmsConnected
+          withPostExActions(
+            status,
+            withBarqRaftarActions(
+              status, ACTIONS_BY_STATUS[status] || [], barqraftarConnected, barqraftarOmsConnected
+            ),
+            postexConnected,
+            postexOmsConnected
           ),
-          postexConnected,
-          postexOmsConnected
+          leopardsConnected,
+          leopardsOmsConnected
         ),
         selectedOrders,
         ["print_loadsheet", "print_airway_bill"]
@@ -611,16 +626,24 @@ export default function OrdersPage() {
     );
     const covered = new Set();
     if (actions.some((a) => a.action === "print_airway_bill")) {
-      covered.add("print_barqraftar_labels").add("print_postex_airway_bill");
+      covered.add("print_barqraftar_labels").add("print_postex_airway_bill").add("print_leopards_airway_bill");
     }
     if (actions.some((a) => a.action === "print_loadsheet")) {
-      covered.add("print_barqraftar_loadsheet").add("print_postex_loadsheet");
+      covered.add("print_barqraftar_loadsheet").add("print_postex_loadsheet").add("print_leopards_loadsheet");
       // Ready to Print's bulk list stays at its five plain actions; a
       // courier's pickup notice is still on each order's own menu.
       covered.add("barqraftar_ready_for_pickup");
     }
     return actions.filter((a) => !covered.has(a.action));
-  }, [selectedOrders, barqraftarConnected, barqraftarOmsConnected, postexConnected, postexOmsConnected]);
+  }, [
+    selectedOrders,
+    barqraftarConnected,
+    barqraftarOmsConnected,
+    postexConnected,
+    postexOmsConnected,
+    leopardsConnected,
+    leopardsOmsConnected,
+  ]);
 
   // Why the Actions menu is empty, so it says so instead of opening blank:
   // a status with no actions (Delivered, Cancelled, ...) or a mix of
@@ -639,8 +662,17 @@ export default function OrdersPage() {
       ...bookingAccounts.map((a) => a.id),
       ...(barqraftarConnected || barqraftarOmsConnected ? ["barqraftar"] : []),
       ...(postexConnected || postexOmsConnected ? ["postex"] : []),
+      ...(leopardsConnected || leopardsOmsConnected ? ["leopards"] : []),
     ],
-    [bookingAccounts, barqraftarConnected, barqraftarOmsConnected, postexConnected, postexOmsConnected]
+    [
+      bookingAccounts,
+      barqraftarConnected,
+      barqraftarOmsConnected,
+      postexConnected,
+      postexOmsConnected,
+      leopardsConnected,
+      leopardsOmsConnected,
+    ]
   );
 
   // fromBulk: the toolbar/selection bar (several orders, maybe several
@@ -716,6 +748,29 @@ export default function OrdersPage() {
       beginLoading(isLoadSheet ? "Preparing PostEx load sheet" : "Preparing PostEx airway bills");
       try {
         await (isLoadSheet ? postexService.printLoadSheet(orderIds) : postexService.printAirwayBills(orderIds));
+        if (isLoadSheet) await reloadAfterChange();
+      } catch (err) {
+        setError(err.message || "Print failed");
+      } finally {
+        endLoading();
+      }
+      return;
+    }
+
+    // Leopards' airway bills and load sheet - same interception. The load
+    // sheet is Leopards' hand-over step too, so it's confirmed first.
+    if (action === "print_leopards_airway_bill" || action === "print_leopards_loadsheet") {
+      const isLoadSheet = action === "print_leopards_loadsheet";
+      const count = `${orderIds.length} order${orderIds.length === 1 ? "" : "s"}`;
+      if (
+        isLoadSheet &&
+        !window.confirm(`Generate the Leopards load sheet for ${count}? This hands the parcels over to Leopards for pickup.`)
+      ) {
+        return;
+      }
+      beginLoading(isLoadSheet ? "Preparing Leopards load sheet" : "Preparing Leopards airway bills");
+      try {
+        await (isLoadSheet ? leopardsService.printLoadSheet(orderIds) : leopardsService.printAirwayBills(orderIds));
         if (isLoadSheet) await reloadAfterChange();
       } catch (err) {
         setError(err.message || "Print failed");

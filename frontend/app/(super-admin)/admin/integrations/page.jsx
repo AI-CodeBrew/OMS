@@ -10,6 +10,7 @@ import timeAgo from "../../../../lib/timeAgo";
 import {
   Badge,
   BarqRaftarWordmark,
+  LeopardsWordmark,
   OmsCourierLogo,
   PostExWordmark,
   ShopifyLogo,
@@ -41,6 +42,13 @@ const INTEGRATIONS = [
     logo: PostExWordmark,
     wordmark: true,
     href: "/integrations/postex",
+  },
+  {
+    key: "leopards",
+    name: "Leopards",
+    logo: LeopardsWordmark,
+    wordmark: true,
+    href: "/integrations/leopards",
   },
 ];
 
@@ -207,7 +215,7 @@ export default function AdminIntegrationsPage() {
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
     // The status filter looks at the selected integration's cell only, or
-    // at all five when none is selected.
+    // at every integration when none is selected.
     const scope = selected ? INTEGRATIONS.filter((i) => i.key === selected) : INTEGRATIONS;
     return stores.filter((store) => {
       if (q && !store.name?.toLowerCase().includes(q) && !store.slug?.toLowerCase().includes(q)) {
@@ -248,7 +256,7 @@ export default function AdminIntegrationsPage() {
         <p className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>
       ) : null}
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         {INTEGRATIONS.map((integration) => (
           <SummaryCard
             key={integration.key}

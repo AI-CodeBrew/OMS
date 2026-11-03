@@ -421,6 +421,16 @@ class OrdersService {
     return data;
   }
 
+  // { smartlane: everything Smartlane reported (or null), dispatch_hub }
+  async getTracking(orderId) {
+    const response = await fetch(`${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderTracking(orderId)}`, {
+      headers: authService.getAuthHeaders(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Failed to load tracking");
+    return data;
+  }
+
   async listCustomerHistory(orderId) {
     const response = await fetch(
       `${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderCustomerHistory(orderId)}`,

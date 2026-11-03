@@ -17,6 +17,7 @@ import {
 } from "./statusConfig";
 import barqraftarService from "../../app/(tenant)/integrations/barq-raftar/_lib/barqraftarService";
 import postexService from "../../app/(tenant)/integrations/postex/_lib/postexService";
+import leopardsService from "../../app/(tenant)/integrations/leopards/_lib/leopardsService";
 
 const EDITABLE_FIELDS = [
   "customer_name",
@@ -168,6 +169,26 @@ export default function OrderDetailPanel({ orderId, couriers, bookingAccounts = 
       (isLoadSheet
         ? postexService.printLoadSheet([orderId]).then(refreshAfterChange)
         : postexService.printAirwayBills([orderId]))
+        .catch((err) => setError(err.message || "Print failed"))
+        .finally(() => setWorking(false));
+      return;
+    }
+
+    // Leopards' airway bill / load sheet - same interception again (its load
+    // sheet is the hand-over to Leopards too, so it's confirmed first).
+    if (action === "print_leopards_airway_bill" || action === "print_leopards_loadsheet") {
+      const isLoadSheet = action === "print_leopards_loadsheet";
+      if (
+        isLoadSheet &&
+        !window.confirm("Generate the Leopards load sheet? This hands the parcel over to Leopards for pickup.")
+      ) {
+        return;
+      }
+      setWorking(true);
+      setError("");
+      (isLoadSheet
+        ? leopardsService.printLoadSheet([orderId]).then(refreshAfterChange)
+        : leopardsService.printAirwayBills([orderId]))
         .catch((err) => setError(err.message || "Print failed"))
         .finally(() => setWorking(false));
       return;

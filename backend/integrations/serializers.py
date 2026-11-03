@@ -1,6 +1,12 @@
 from rest_framework import serializers
 
-from .models import ShopifyConnection, ShopifySyncJob, SmartlaneConnection, SmartlaneSyncJob
+from .models import (
+    ShopifyConnection,
+    ShopifySyncJob,
+    SmartlaneConnection,
+    SmartlaneShipment,
+    SmartlaneSyncJob,
+)
 
 
 class ShopifyConnectionSerializer(serializers.ModelSerializer):
@@ -91,3 +97,12 @@ class ShopifySyncJobSerializer(serializers.ModelSerializer):
             "finished_at",
             "created_at",
         ]
+
+
+class SmartlaneShipmentSerializer(serializers.ModelSerializer):
+    """The order detail's Tracking tab - everything Smartlane reported, minus
+    the raw payloads it was read from."""
+
+    class Meta:
+        model = SmartlaneShipment
+        exclude = ["organization", "order", "last_payload", "last_advice_payload"]

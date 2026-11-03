@@ -35,6 +35,12 @@ primary_region = "sin"
   # 0020_postex and 0021_postex_webhook to production before deploying with
   # this on (until then each cycle just logs a missing-table error).
   POSTEX_AUTO_POLL = "true"
+  # Leopards' poller (integrations/leopards/poller.py) - the backup behind
+  # Leopards' Push API webhook. Left OFF until migration 0026_leopards (or
+  # leopards/sql/0026_leopards.sql) has been applied to the production
+  # database and Leopards is connected - the poller queries those tables.
+  # Switch to "true" afterwards.
+  LEOPARDS_AUTO_POLL = "false"
   # Smartlane's LIVE Business API root. Deliberately without the business
   # code (bs178998760511) - the client appends /{business_code} itself, taken
   # from SmartlaneBusinessConfig. Local dev keeps the TEST default in

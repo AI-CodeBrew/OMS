@@ -33,8 +33,10 @@ from core.redis_client import (
 )
 from core.scoping import is_hub_request, org_filter
 from integrations.barqraftar.exceptions import BarqRaftarBookingError
-from integrations.models import ShopifyConnection
+from integrations.leopards.exceptions import LeopardsBookingError
+from integrations.models import ShopifyConnection, SmartlaneShipment
 from integrations.postex.exceptions import PostExBookingError
+from integrations.serializers import SmartlaneShipmentSerializer
 from integrations.services import InventorySyncError, create_order_on_shopify
 from wms.services import InsufficientStock
 
@@ -125,6 +127,7 @@ def _hub_push_to_smartlane(order, params, actor):
 
 _BOOKING_ACTIONS = {
     "push_to_smartlane", "push_to_postex", "push_to_postex_oms", "push_to_barqraftar", "push_to_barqraftar_oms",
+    "push_to_leopards", "push_to_leopards_oms",
 }
 
 
@@ -1183,14 +1186,16 @@ class OrderViewSet(viewsets.ModelViewSet):
         # In the Dispatch Hub both book through FynkTech's own account
         # (via_platform - decided here, never by the client), and only for
         # stores whose request for that courier was approved.
-        # "push_to_postex_oms" / "push_to_barqraftar_oms" are a store booking
-        # its own orders through FynkTech's account (OMS Courier) - same
-        # approval check.
+        # "push_to_postex_oms" / "push_to_barqraftar_oms" /
+        # "push_to_leopards_oms" are a store booking its own orders through
+        # FynkTech's account (OMS Courier) - same approval check.
         if action_name in (
             "push_to_barqraftar", "push_to_barqraftar_oms", "barqraftar_ready_for_pickup",
             "push_to_postex", "push_to_postex_oms",
+            "push_to_leopards", "push_to_leopards_oms",
         ):
             from integrations.barqraftar import services as barqraftar_services
+            from integrations.leopards import services as leopards_services
             from integrations.models import OmsCourierEnrollment
             from integrations.postex import services as postex_services
 
@@ -1219,6 +1224,21 @@ class OrderViewSet(viewsets.ModelViewSet):
                     results += _with_tenant_context(
                         org_id,
                         lambda ids=ids, org_id=org_id, via_platform=via_platform: postex_services.book_orders(
+                            org_id, ids, actor_user_id=request.user_id,
+                            force=bool(params.get("force")), via_platform=via_platform,
+                        ),
+                    )
+                elif action_name in ("push_to_leopards", "push_to_leopards_oms"):
+                    via_platform = hub or action_name == "push_to_leopards_oms"
+                    refused = via_platform and _oms_courier_refusals(
+                        org_id, ids, OmsCourierEnrollment.COURIER_LEOPARDS
+                    )
+                    if refused:
+                        results += refused
+                        continue
+                    results += _with_tenant_context(
+                        org_id,
+                        lambda ids=ids, org_id=org_id, via_platform=via_platform: leopards_services.book_orders(
                             org_id, ids, actor_user_id=request.user_id,
                             force=bool(params.get("force")), via_platform=via_platform,
                         ),
@@ -1301,7 +1321,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             # itself never reaches this loop at all (see the special case
             # above).
             except (services.InvalidTransition, services.SmartlaneBookingError,
-                    BarqRaftarBookingError, PostExBookingError) as exc:
+                    BarqRaftarBookingError, PostExBookingError, LeopardsBookingError) as exc:
                 results.append(
                     {
                         "order_id": order_id,
@@ -1749,6 +1769,18 @@ class OrderViewSet(viewsets.ModelViewSet):
     def log(self, request, pk=None):
         order = self.get_object()
         return Response(OrderStatusEventSerializer(order.status_events.all(), many=True).data)
+
+    @action(detail=True, methods=["get"])
+    def tracking(self, request, pk=None):
+        """Everything Smartlane reported about this order's consignment
+        (integrations.models.SmartlaneShipment) - null until a Smartlane
+        poll, webhook or backfill has seen it."""
+        order = self.get_object()
+        shipment = SmartlaneShipment.all_objects.filter(order=order).first()
+        return Response({
+            "smartlane": SmartlaneShipmentSerializer(shipment).data if shipment else None,
+            "dispatch_hub": bool(order.platform_reference),
+        })
 
     @action(detail=True, methods=["get"], url_path="customer-history")
     def customer_history(self, request, pk=None):

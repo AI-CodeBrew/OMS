@@ -4,9 +4,11 @@ import { useState } from "react";
 import LineItemsTab from "./tabs/LineItemsTab";
 import OrderLogTab from "./tabs/OrderLogTab";
 import OrderTicketsTab from "./tabs/OrderTicketsTab";
+import TrackingTab from "./tabs/TrackingTab";
 
 const TABS = [
   { key: "line_items", label: "Line Items" },
+  { key: "tracking", label: "Tracking" },
   { key: "log", label: "Order Log" },
   { key: "tickets", label: "Tickets" },
 ];
@@ -36,6 +38,7 @@ export default function OrderDetailTabs({ order, onOrderChanged }) {
 
       <div className="pt-3">
         {active === "line_items" ? <LineItemsTab order={order} onOrderChanged={onOrderChanged} /> : null}
+        {active === "tracking" ? <TrackingTab orderId={orderId} /> : null}
         {active === "log" ? <OrderLogTab orderId={orderId} /> : null}
         {active === "tickets" ? <OrderTicketsTab order={order} /> : null}
       </div>

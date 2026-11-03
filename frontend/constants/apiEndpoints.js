@@ -89,6 +89,7 @@ export const API_ENDPOINTS = {
     orderNotes: (id) => `/api/oms/orders/${id}/notes/`,
     orderTransactions: (id) => `/api/oms/orders/${id}/transactions/`,
     orderLog: (id) => `/api/oms/orders/${id}/log/`,
+    orderTracking: (id) => `/api/oms/orders/${id}/tracking/`,
     orderCustomerHistory: (id) => `/api/oms/orders/${id}/customer-history/`,
     orderSplitOrders: (id) => `/api/oms/orders/${id}/split-orders/`,
     orderSplit: (id) => `/api/oms/orders/${id}/split/`,

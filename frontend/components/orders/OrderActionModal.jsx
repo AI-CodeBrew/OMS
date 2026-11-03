@@ -98,6 +98,16 @@ const CONFIRM_BY_ACTION = {
     button: "Book",
     result: "be booked with PostEx through FynkTech's account, from your pickup address",
   },
+  push_to_leopards: {
+    title: "Book with Leopards",
+    button: "Book",
+    result: "be booked with Leopards",
+  },
+  push_to_leopards_oms: {
+    title: "Book with Leopards (OMS Courier)",
+    button: "Book",
+    result: "be booked with Leopards through FynkTech's account, under your shipper",
+  },
 };
 
 export default function OrderActionModal({ action, couriers, count, onSubmit, onClose, submitting }) {

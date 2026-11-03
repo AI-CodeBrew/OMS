@@ -261,18 +261,68 @@ def _create_barqraftar_address(enrollment):
     return str(address_id)
 
 
+def _create_leopards_shipper(enrollment):
+    """Adds the store's shipper form to FynkTech's Leopards account
+    (createShipper) and returns the shipment_id Leopards answers with -
+    every booking of this store's orders through that account then goes out
+    under it (leopards.services.store_shipper). createShipper is idempotent
+    ("Shipper already exists." returns the existing one), so approving twice
+    can't double-create. The bank id is FynkTech's (settings.
+    LEOPARDS_DEFAULT_BANK_ID): FynkTech's account is the one paid COD."""
+    from django.conf import settings
+
+    from .leopards import client as leopards_client
+    from .leopards import services as leopards_services
+    from .leopards.exceptions import LeopardsAPIError
+
+    connection = leopards_services.platform_connection()
+    if connection is None:
+        raise OmsCourierRequestError(
+            "Connect FynkTech's Leopards account on the OMS Couriers tab before approving."
+        )
+    form = enrollment.details or {}
+    if not form.get("address") or not form.get("city_id"):
+        raise OmsCourierRequestError(
+            "This request has no Leopards shipper details - reject it so the store sends the form."
+        )
+    try:
+        result = leopards_client.create_shipper(
+            connection,
+            name=form.get("name") or enrollment.store_name,
+            email=form.get("email") or "",
+            phone=form.get("phone") or enrollment.phone,
+            address=form["address"],
+            city_id=form["city_id"],
+            bank_id=settings.LEOPARDS_DEFAULT_BANK_ID,
+            cnic=form.get("cnic") or "",
+            return_address=form.get("return_address") or "",
+        )
+    except LeopardsAPIError as exc:
+        raise OmsCourierRequestError(f"Leopards didn't accept the shipper: {exc}", 502) from exc
+    shipment_id = result.get("shipment_id")
+    if not shipment_id:
+        raise OmsCourierRequestError(
+            "Leopards answered without a shipper id - check FynkTech's Leopards page "
+            "before approving again.",
+            502,
+        )
+    return str(shipment_id)
+
+
 # Courier -> what approving first creates on FynkTech's account for it,
 # returning the reference bookings then use (courier_reference).
 _ON_APPROVE = {
     OmsCourierEnrollment.COURIER_POSTEX: _create_postex_address,
     OmsCourierEnrollment.COURIER_BARQRAFTAR: _create_barqraftar_address,
+    OmsCourierEnrollment.COURIER_LEOPARDS: _create_leopards_shipper,
 }
 
 
 def approve_request(enrollment_id, *, message="", actor_email=""):
     """Approves a request. A PostEx or BarqRaftar one first becomes a pickup
-    address on FynkTech's account for it (_ON_APPROVE) - if the courier
-    refuses it, the request stays pending and the reason comes back."""
+    address on FynkTech's account for it, a Leopards one a shipper
+    (_ON_APPROVE) - if the courier refuses it, the request stays pending and
+    the reason comes back."""
     enrollment = _get(enrollment_id)
     message = (message or "").strip()[:500]
     create_address = _ON_APPROVE.get(enrollment.courier)
@@ -342,15 +392,17 @@ def _notify_rejected(enrollment, message, actor_email):
 def _form_labels(courier):
     """{field: label} of what a request's form shows - its courier's own
     address form, or the generic three fields."""
-    from .oms_courier_views import BARQRAFTAR_FIELDS, DETAIL_FIELDS, POSTEX_FIELDS
+    from .oms_courier_views import BARQRAFTAR_FIELDS, DETAIL_FIELDS, LEOPARDS_FIELDS, POSTEX_FIELDS
 
     fields = {
         OmsCourierEnrollment.COURIER_POSTEX: POSTEX_FIELDS,
         OmsCourierEnrollment.COURIER_BARQRAFTAR: BARQRAFTAR_FIELDS,
+        OmsCourierEnrollment.COURIER_LEOPARDS: LEOPARDS_FIELDS,
     }.get(courier)
     if fields is None:
         return {field: label for field, (label, _) in DETAIL_FIELDS.items()}
-    # BarqRaftar's city shows as its name; the id beside it is bookkeeping.
+    # BarqRaftar's and Leopards' city shows as its name; the id beside it is
+    # bookkeeping.
     return {field: spec[0] for field, spec in fields.items() if field != "city_id"}
 
 
@@ -369,7 +421,9 @@ def edit_request(enrollment_id, body, *, actor_email=""):
     its pickup address on FynkTech's account, and neither courier can edit
     one (PostEx has no API for it; BarqRaftar's "update" makes a new
     address), so a changed address is added as a new one there and the
-    store's bookings move to its code. A rejected request is the store's to
+    store's bookings move to its code. (Leopards' createShipper likewise
+    just makes - or finds - a shipper, so a changed form moves the store to
+    that shipper's id.) A rejected request is the store's to
     fix and resend. The store is told what changed."""
     from .oms_courier_views import COURIER_FORMS, _clean_generic
 
@@ -407,8 +461,10 @@ def edit_request(enrollment_id, body, *, actor_email=""):
         enrollment.courier_reference = create_address(enrollment)
         changes.append({
             "field": "courier_reference",
-            "label": "Pickup address code" if enrollment.courier == OmsCourierEnrollment.COURIER_POSTEX
-            else "Pickup address ID",
+            "label": {
+                OmsCourierEnrollment.COURIER_POSTEX: "Pickup address code",
+                OmsCourierEnrollment.COURIER_LEOPARDS: "Shipper ID",
+            }.get(enrollment.courier, "Pickup address ID"),
             "old": old_reference or "-",
             "new": enrollment.courier_reference,
         })

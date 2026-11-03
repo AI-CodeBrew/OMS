@@ -442,6 +442,84 @@ class SmartlaneConnection(TenantScopedModel):
         return order.platform_reference or order.order_number
 
 
+class SmartlaneShipment(TenantScopedModel):
+    """Everything Smartlane reports about one order's consignment - every
+    field of its /track row and status webhook, plus the latest shipper
+    advice - kept as Smartlane sends it (services.record_smartlane_shipment).
+    The order itself only takes what it already has a field for (Sub
+    Status, CN, return reason, paid, tag); the rest lives here. One row per
+    order: a rebooked order is still the same store_order_id at Smartlane,
+    whose /track answers with the latest consignment."""
+
+    SETTLEMENT_SETTLED = "Settled"
+
+    order = models.OneToOneField(
+        "oms.Order", on_delete=models.CASCADE, related_name="smartlane_shipment"
+    )
+    # SmartlaneConnection.courier_name of the account that reported it.
+    account = models.CharField(max_length=50, blank=True, default="")
+    store_id = models.CharField(max_length=50, blank=True, default="")
+    store_order_id = models.CharField(max_length=100, blank=True, default="")
+    consignment_id = models.CharField(max_length=50, blank=True, default="")
+    consignment_number = models.CharField(max_length=100, blank=True, default="")
+    batch_id = models.CharField(max_length=50, blank=True, default="")
+    warehouse_code = models.CharField(max_length=100, blank=True, default="")
+    warehouse_name = models.CharField(max_length=255, blank=True, default="")
+    # The real carrier Smartlane routed it to ("leopards", "barq_raftar") -
+    # the order's own courier stays the Smartlane account it was booked
+    # through, which is how it's tracked/printed/cancelled.
+    carrier = models.CharField(max_length=50, blank=True, default="")
+    state = models.CharField(max_length=50, blank=True, default="")
+    courier_status = models.CharField(max_length=255, blank=True, default="")
+    # "Pending" until Smartlane pays the store the parcel's COD, then
+    # "Settled" (only ever seen on delivered parcels).
+    courier_settlement = models.CharField(max_length=50, blank=True, default="")
+    order_label = models.CharField(max_length=255, blank=True, default="")
+    # The carrier's reason the parcel is coming back (Leopards' "Ready for
+    # Return - <REASON>" step in tracking_history).
+    return_reason = models.CharField(max_length=255, blank=True, default="")
+    qrcode_url = models.CharField(max_length=500, blank=True, default="")
+    barcode_url = models.CharField(max_length=500, blank=True, default="")
+
+    # Smartlane's per-stage times - null until that stage happens.
+    queued_at = models.DateTimeField(null=True, blank=True)
+    ready_at = models.DateTimeField(null=True, blank=True)
+    dispatched_at = models.DateTimeField(null=True, blank=True)
+    out_for_delivery_at = models.DateTimeField(null=True, blank=True)
+    attempted_at = models.DateTimeField(null=True, blank=True)
+    return_in_progress_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    returned_at = models.DateTimeField(null=True, blank=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    disputed_at = models.DateTimeField(null=True, blank=True)
+
+    # The carrier's own scan history, newest first: [{"status", "date"}].
+    tracking_history = models.JSONField(default=list, blank=True)
+    last_payload = models.JSONField(default=dict, blank=True)
+    last_synced_at = models.DateTimeField(null=True, blank=True)
+
+    # Smartlane's Shipper Advice webhook - the carrier asking us to choose
+    # Reattempt or Return before `expiry`.
+    advice_reason = models.CharField(max_length=255, blank=True, default="")
+    advice_actions = models.JSONField(default=list, blank=True)
+    advice_expiry = models.CharField(max_length=50, blank=True, default="")
+    advice_received_at = models.DateTimeField(null=True, blank=True)
+    last_advice_payload = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        db_table = '"integrations"."smartlane_shipments"'
+        indexes = [
+            models.Index(
+                fields=["organization", "courier_settlement"],
+                name="sl_shipment_settlement_idx",
+            ),
+            models.Index(fields=["organization", "carrier"], name="sl_shipment_carrier_idx"),
+        ]
+
+    def __str__(self):
+        return f"Smartlane shipment {self.store_order_id} ({self.consignment_number or 'no CN yet'})"
+
+
 class OmsCourierEnrollment(TenantScopedModel):
     """A store's request to ship with one courier through OMS Courier -
     FynkTech's own account for it (the super admin's OMS Couriers tab), not
@@ -454,10 +532,12 @@ class OmsCourierEnrollment(TenantScopedModel):
     COURIER_SMARTLANE = "smartlane"
     COURIER_POSTEX = "postex"
     COURIER_BARQRAFTAR = "barq_raftar"
+    COURIER_LEOPARDS = "leopards"
     COURIER_CHOICES = [
         (COURIER_SMARTLANE, "Smartlane"),
         (COURIER_POSTEX, "PostEx"),
         (COURIER_BARQRAFTAR, "BarqRaftar"),
+        (COURIER_LEOPARDS, "Leopards"),
     ]
     STATUS_PENDING = "pending"
     STATUS_APPROVED = "approved"
@@ -640,4 +720,13 @@ from .postex.models import (  # noqa: E402,F401
     PostExConnection,
     PostExShipment,
     PostExSyncJob,
+)
+
+# Same reason for Leopards Courier (integrations/leopards/, own
+# "leopards_integrations" schema). Import only, never edit Leopards' models
+# from here.
+from .leopards.models import (  # noqa: E402,F401
+    LeopardsConnection,
+    LeopardsShipment,
+    LeopardsSyncJob,
 )

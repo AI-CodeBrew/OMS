@@ -294,6 +294,22 @@ POSTEX_AUTO_POLL_INTERVAL_SECONDS = int(env("POSTEX_AUTO_POLL_INTERVAL_SECONDS",
 POSTEX_ADOPT_LOOKBACK_DAYS = int(env("POSTEX_ADOPT_LOOKBACK_DAYS", default="3"))
 POSTEX_ADOPT_BACKFILL_DAYS = int(env("POSTEX_ADOPT_BACKFILL_DAYS", default="90"))
 
+# Leopards Courier's Merchant API v2 - its own direct integration
+# (integrations/leopards/), unrelated to Smartlane's routing of some parcels
+# to a carrier it calls "leopards". Production by default; point it at
+# https://merchantapistaging.leopardscourier.com/api to test with staging
+# credentials. Its poller backs up Leopards' Push API status webhook. Same
+# off-by-default convention as the pollers above.
+LEOPARDS_API_BASE_URL = env(
+    "LEOPARDS_API_BASE_URL", default="https://merchantapi.leopardscourier.com/api"
+)
+LEOPARDS_AUTO_POLL = env("LEOPARDS_AUTO_POLL", default="false").lower() == "true"
+LEOPARDS_AUTO_POLL_INTERVAL_SECONDS = int(env("LEOPARDS_AUTO_POLL_INTERVAL_SECONDS", default="900"))
+# createShipper (a store's OMS Courier request, on approval) wants a bank id
+# from getBankList. FynkTech's account is the one paid, so any valid id does -
+# the one the Postman collection used is the default.
+LEOPARDS_DEFAULT_BANK_ID = int(env("LEOPARDS_DEFAULT_BANK_ID", default="1"))
+
 # Comma-separated client IPs allowed to hit /api/core/admin/*
 ADMIN_IP_ALLOWLIST = env(
     "ADMIN_IP_ALLOWLIST",

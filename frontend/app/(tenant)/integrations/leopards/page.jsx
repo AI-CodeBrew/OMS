@@ -1,0 +1,163 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import leopardsService from "./_lib/leopardsService";
+import useLeopardsStatusStore from "./_lib/leopardsStatusStore";
+import StatusCard from "./_components/StatusCard";
+import ConnectForm from "./_components/ConnectForm";
+import SettingsCard from "./_components/SettingsCard";
+import ShipmentsTab from "./_components/ShipmentsTab";
+import CitiesTab from "./_components/CitiesTab";
+import { LeopardsWordmark } from "../../../../components/integrations/IntegrationLogos";
+import { useIntegrationsHome } from "../../../../components/integrations/IntegrationsHome";
+
+const TABS = [
+  { key: "shipments", label: "Shipments" },
+  { key: "cities", label: "Cities" },
+];
+
+export default function LeopardsIntegrationPage() {
+  const integrationsHome = useIntegrationsHome();
+  const [status, setStatus] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [tab, setTab] = useState("shipments");
+
+  async function loadStatus() {
+    setLoading(true);
+    setError("");
+    try {
+      const data = await leopardsService.getConnection();
+      setStatus(data);
+      return data;
+    } catch (err) {
+      setError(err.message || "Failed to load integration status");
+      return null;
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Keeps the shared status store (read by the orders page's Leopards
+  // actions) in sync with connect/disconnect/settings changes here.
+  function refreshSharedStatus() {
+    leopardsService
+      .getStatus()
+      .then((d) => useLeopardsStatusStore.getState().setStatus(d))
+      .catch(() => {});
+  }
+
+  function onChanged() {
+    loadStatus();
+    refreshSharedStatus();
+  }
+
+  useEffect(() => {
+    loadStatus();
+    refreshSharedStatus();
+  }, []);
+
+  function handleConnected(data) {
+    setStatus(data);
+    setNotice("Connected to Leopards. Give Leopards the webhook URL and header below so statuses arrive live.");
+    setError("");
+    refreshSharedStatus();
+  }
+
+  async function handleDisconnect() {
+    if (!window.confirm("Disconnect Leopards? Existing shipments stay booked on Leopards' side.")) return;
+    try {
+      await leopardsService.disconnect();
+      setStatus(null);
+      setNotice("Disconnected from Leopards.");
+      refreshSharedStatus();
+    } catch (err) {
+      setError(err.message || "Failed to disconnect");
+    }
+  }
+
+  const connected = Boolean(status?.connected);
+
+  return (
+    <div>
+      <nav className="mb-6 flex items-center gap-1.5 text-sm text-slate-500">
+        <Link href={integrationsHome.href} className="hover:text-slate-700">
+          {integrationsHome.label}
+        </Link>
+        <span>/</span>
+        <span className="font-medium text-slate-700">Leopards</span>
+      </nav>
+
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-surface-border bg-white shadow-sm">
+            <LeopardsWordmark className="text-[11px]" />
+          </span>
+          <div>
+            <h1 className="text-[22px] font-semibold text-slate-900">Leopards</h1>
+            <p className="text-sm text-slate-500">
+              Book orders, print airway bills and load sheets, and keep statuses in sync with your Leopards account.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {error ? <p className="mb-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+      {notice ? <p className="mb-4 rounded-md bg-green-50 px-3 py-2 text-sm text-green-700">{notice}</p> : null}
+
+      <div className="grid gap-4 lg:grid-cols-[360px_1fr]">
+        <div className="space-y-4">
+          {loading ? (
+            <p className="text-sm text-slate-500">Loading…</p>
+          ) : connected ? (
+            <>
+              <StatusCard
+                status={status}
+                onChanged={loadStatus}
+                onDisconnect={handleDisconnect}
+                onError={setError}
+                onNotice={setNotice}
+              />
+              <SettingsCard status={status} onChanged={onChanged} onError={setError} onNotice={setNotice} />
+            </>
+          ) : (
+            <ConnectForm onConnected={handleConnected} onError={setError} />
+          )}
+        </div>
+
+        <div>
+          {connected ? (
+            <>
+              <div className="mb-4 flex gap-1 border-b border-surface-border">
+                {TABS.map((t) => (
+                  <button
+                    key={t.key}
+                    type="button"
+                    onClick={() => setTab(t.key)}
+                    className={`px-3 py-2 text-sm font-medium transition ${
+                      tab === t.key
+                        ? "border-b-2 border-brand-700 text-brand-800"
+                        : "text-slate-500 hover:text-slate-700"
+                    }`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+              {tab === "shipments" ? <ShipmentsTab onError={setError} onNotice={setNotice} /> : null}
+              {tab === "cities" ? (
+                <CitiesTab status={status} onChanged={onChanged} onError={setError} onNotice={setNotice} />
+              ) : null}
+            </>
+          ) : (
+            <p className="rounded-lg border border-surface-border bg-white p-6 text-sm text-slate-500">
+              Connect your Leopards account to see shipments and cities here.
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

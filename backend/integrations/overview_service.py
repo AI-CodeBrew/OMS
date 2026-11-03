@@ -1,6 +1,6 @@
 """Super admin's cross-store view of every integration: one row per store,
 one cell per integration (Shopify, Smartlane, OMS Courier, BarqRaftar,
-PostEx). Read-only - managing a connection still happens by opening the
+PostEx, Leopards). Read-only - managing a connection still happens by opening the
 store and using its own integration page, so there is exactly one code
 path that connects, edits or disconnects anything.
 
@@ -24,6 +24,7 @@ from .models import (
     SmartlaneRequest,
     SmartlaneStoreLink,
 )
+from .leopards.models import LeopardsConnection
 from .postex.models import PostExConnection
 
 
@@ -112,6 +113,17 @@ def _postex(conn):
     }
 
 
+def _leopards(conn):
+    if conn is None:
+        return None
+    return {
+        "connected": conn.is_connected,
+        "label": conn.shipper_name or conn.origin_city_name,
+        "last_activity_at": _iso(_latest(conn.last_synced_at, conn.last_event_at)),
+        "error": conn.last_webhook_error,
+    }
+
+
 def list_store_integrations():
     orgs = (
         Organization.objects.filter(is_platform=False)
@@ -129,6 +141,7 @@ def list_store_integrations():
     oms_link = _by_org(SmartlaneStoreLink.all_objects.all())
     barqraftar = _by_org(BarqRaftarConnection.all_objects.all())
     postex = _by_org(PostExConnection.all_objects.all())
+    leopards = _by_org(LeopardsConnection.all_objects.all())
     courier_names = dict(OmsCourierEnrollment.COURIER_CHOICES)
     approved, pending = {}, {}
     for org_id, courier, status in (
@@ -162,6 +175,7 @@ def list_store_integrations():
                     ),
                     "barq_raftar": _barqraftar(barqraftar.get(org.id)),
                     "postex": _postex(postex.get(org.id)),
+                    "leopards": _leopards(leopards.get(org.id)),
                 },
             }
         )
@@ -191,6 +205,7 @@ def oms_courier_summary():
                 BarqRaftarConnection.all_objects.filter(organization_id=org.id).first()
             ),
             "postex": _postex(PostExConnection.all_objects.filter(organization_id=org.id).first()),
+            "leopards": _leopards(LeopardsConnection.all_objects.filter(organization_id=org.id).first()),
         },
         "smartlane_business": {
             "configured": config.is_configured,

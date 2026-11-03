@@ -1,11 +1,12 @@
 import logging
 import time
+import zoneinfo
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
 from django.db import OperationalError, connections, transaction
-from django.db.models import F
+from django.db.models import F, Q
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -15,7 +16,7 @@ from core.platform_service import is_platform_organization
 from oms.models import Courier, Order, OrderItem
 
 from . import shopify_client, smartlane_client
-from .models import ShopifyConnection, ShopifySyncJob
+from .models import ShopifyConnection, ShopifySyncJob, SmartlaneShipment
 
 logger = logging.getLogger(__name__)
 
@@ -820,6 +821,221 @@ def smartlane_status_label(payload):
     return label
 
 
+# Smartlane's stage fields -> SmartlaneShipment's time columns.
+_SMARTLANE_STAGE_FIELDS = {
+    "queue": "queued_at",
+    "ready": "ready_at",
+    "dispatch": "dispatched_at",
+    "out_for_delivery": "out_for_delivery_at",
+    "attempt": "attempted_at",
+    "return_in_progress": "return_in_progress_at",
+    "complete": "completed_at",
+    "return": "returned_at",
+    "cancel": "cancelled_at",
+    "dispute": "disputed_at",
+}
+
+# Smartlane's plain fields -> SmartlaneShipment's text columns.
+_SMARTLANE_TEXT_FIELDS = {
+    "store_id": "store_id",
+    "store_order_id": "store_order_id",
+    "consignment_id": "consignment_id",
+    "consignment_number": "consignment_number",
+    "batch_id": "batch_id",
+    "warehouse_code": "warehouse_code",
+    "courier": "carrier",
+    "state": "state",
+    "courier_status": "courier_status",
+    "courier_settlement": "courier_settlement",
+    "order_label": "order_label",
+    "qrcode": "qrcode_url",
+    "barcode": "barcode_url",
+}
+
+# What Smartlane writes for "nothing here": order_label comes back as the
+# string "null", courier/consignment_number as "Not Assigned Yet".
+_SMARTLANE_BLANKS = {"", "null", "none", "not assigned yet"}
+
+# Smartlane's times are Pakistan wall-clock with no offset - same as the
+# courier sheets (oms.importers.SHEET_TIMEZONE).
+_SMARTLANE_TIMEZONE = zoneinfo.ZoneInfo(getattr(settings, "COURIER_SHEET_TIMEZONE", "Asia/Karachi"))
+
+_SMARTLANE_RETURN_REASON_PREFIX = "ready for return - "
+
+# What apply_smartlane_status writes as the return reason when the carrier
+# gave none - a real one replaces it.
+_SMARTLANE_DEFAULT_RETURN_REASON = "Reported returned by Smartlane"
+
+
+def _smartlane_text(value):
+    text = "" if value is None else str(value).strip()
+    return "" if text.lower() in _SMARTLANE_BLANKS else text
+
+
+def _smartlane_time(value):
+    text = _smartlane_text(value)
+    if not text or text == _BLANK_STAGE_TIMESTAMP:
+        return None
+    try:
+        parsed = parse_datetime(text)
+    except ValueError:
+        return None
+    if parsed is not None and timezone.is_naive(parsed):
+        parsed = parsed.replace(tzinfo=_SMARTLANE_TIMEZONE)
+    return parsed
+
+
+def _smartlane_history(steps):
+    return [
+        {"status": str(step.get("status") or "").strip(), "date": str(step.get("date") or "").strip()}
+        for step in steps
+        if isinstance(step, dict)
+    ]
+
+
+def smartlane_return_reason(row):
+    """The carrier's reason a parcel is coming back - the newest "Ready for
+    Return - <REASON>" step in courier_tracking_info (Leopards writes these;
+    Barq Raftar via Smartlane gives no reason)."""
+    for step in (row or {}).get("courier_tracking_info") or []:
+        status = str(step.get("status") or "").strip() if isinstance(step, dict) else ""
+        if status.lower().startswith(_SMARTLANE_RETURN_REASON_PREFIX):
+            return status[len(_SMARTLANE_RETURN_REASON_PREFIX):].strip()
+    return ""
+
+
+def parse_smartlane_shipment(row):
+    """SmartlaneShipment fields from one /track row or webhook payload -
+    only the keys it actually carries, so a slimmer webhook never blanks
+    what a fuller /track row filled in."""
+    fields = {}
+    for key, field in _SMARTLANE_TEXT_FIELDS.items():
+        if key in row:
+            max_length = SmartlaneShipment._meta.get_field(field).max_length
+            fields[field] = _truncate(_smartlane_text(row[key]), max_length)
+    for key, field in _SMARTLANE_STAGE_FIELDS.items():
+        if key in row:
+            fields[field] = _smartlane_time(row[key])
+    if isinstance(row.get("courier_tracking_info"), list):
+        fields["tracking_history"] = _smartlane_history(row["courier_tracking_info"])
+        fields["return_reason"] = _truncate(smartlane_return_reason(row), 255)
+    return fields
+
+
+def smartlane_warehouse_names(api_key):
+    """{warehouse code: name} for one Smartlane account - empty if the list
+    can't be fetched, which only costs the shipment its warehouse name."""
+    try:
+        payload = smartlane_client.fetch_warehouse_list(api_key)
+    except smartlane_client.SmartlaneAPIError as exc:
+        logger.warning("smartlane warehouse list unavailable: %s", exc)
+        return {}
+    rows = payload.get("data") if isinstance(payload, dict) else None
+    return {
+        str(w.get("code")): str(w.get("name") or "")
+        for w in rows or []
+        if isinstance(w, dict) and w.get("code")
+    }
+
+
+def _save_shipment(order, fields):
+    shipment, _ = SmartlaneShipment.all_objects.update_or_create(
+        order=order, defaults={**fields, "organization_id": order.organization_id}
+    )
+    return shipment
+
+
+def record_smartlane_shipment(order, row, *, account="", warehouse_names=None):
+    """Keeps `order`'s SmartlaneShipment in step with one /track row or
+    consignment-status webhook payload, then copies onto the order the
+    things it already has a field for:
+
+    - return_reason: the carrier's reason, once Smartlane says the parcel
+      is coming back - never over one a person or a sheet wrote
+    - payment_status -> paid: Smartlane settled the delivered parcel's COD
+      with the store (the courier sheets' "Settled" rule)
+    - tag: Smartlane's order label, when it has one
+
+    Order status is left alone - that's apply_smartlane_status's job.
+    Returns the shipment."""
+    fields = parse_smartlane_shipment(row)
+    if account:
+        fields["account"] = account
+    code = fields.get("warehouse_code")
+    if code and warehouse_names and warehouse_names.get(code):
+        fields["warehouse_name"] = _truncate(warehouse_names[code], 255)
+    fields["last_payload"] = row
+    fields["last_synced_at"] = timezone.now()
+    shipment = _save_shipment(order, fields)
+
+    changes = {}
+    if (
+        shipment.return_reason
+        and shipment.state in ("return", "return_in_progress")
+        and order.return_reason in ("", _SMARTLANE_DEFAULT_RETURN_REASON)
+        and order.return_reason != shipment.return_reason
+    ):
+        changes["return_reason"] = shipment.return_reason
+    if (
+        shipment.courier_settlement == SmartlaneShipment.SETTLEMENT_SETTLED
+        and shipment.state == "complete"
+        and order.payment_status != "paid"
+    ):
+        changes["payment_status"] = "paid"
+    label = _truncate(shipment.order_label, 100)
+    if label and order.tag != label:
+        changes["tag"] = label
+
+    if changes:
+        for field, value in changes.items():
+            setattr(order, field, value)
+        order.save(update_fields=[*changes, "updated_at"])
+        logger.info("smartlane: %s updated from Smartlane: %s", order.order_number, changes)
+        publish_event(
+            "order.updated",
+            {
+                "organization_id": str(order.organization_id),
+                "order_id": str(order.id),
+                "order_number": order.order_number,
+                "source": "smartlane",
+            },
+        )
+    return shipment
+
+
+def record_smartlane_shipment_safely(order, row, **kwargs):
+    """record_smartlane_shipment for the poller/webhook, where the status
+    handling that follows must run even if this bookkeeping fails."""
+    try:
+        return record_smartlane_shipment(order, row, **kwargs)
+    except Exception:
+        logger.exception("smartlane: could not record shipment details for %s", order.order_number)
+        return None
+
+
+def record_smartlane_advice(order, payload, *, account=""):
+    """Smartlane's Shipper Advice webhook - the carrier asking us to choose
+    Reattempt or Return before `expiry` - kept on the order's shipment."""
+    actions = payload.get("available_actions")
+    if isinstance(actions, str):
+        actions = [a.strip() for a in actions.split(",") if a.strip()]
+    fields = {
+        key: value
+        for key, value in parse_smartlane_shipment(payload).items()
+        if key in ("store_order_id", "consignment_number", "carrier")
+    }
+    if account:
+        fields["account"] = account
+    fields.update(
+        advice_reason=_truncate(_smartlane_text(payload.get("reason")), 255),
+        advice_actions=actions if isinstance(actions, list) else [],
+        advice_expiry=_truncate(_smartlane_text(payload.get("expiry")), 50),
+        advice_received_at=timezone.now(),
+        last_advice_payload=payload,
+    )
+    return _save_shipment(order, fields)
+
+
 def find_order_by_smartlane_reference(reference):
     """Smartlane echoes back the store_order_id we sent, but a Shopify-style
     order name ("#10133") does not reliably survive that round trip - the
@@ -945,7 +1161,7 @@ def apply_smartlane_status(order, smartlane_status, *, tracking_number="", organ
         result = oms_services.scan_return(
             organization_id=organization_id,
             order_number=order.order_number,
-            reason="Reported returned by Smartlane",
+            reason=smartlane_return_reason(row) or _SMARTLANE_DEFAULT_RETURN_REASON,
         )
         if not result.get("success"):
             logger.warning("smartlane: could not mark %s returned - %s",
@@ -985,20 +1201,39 @@ _ABSORBABLE_STATUSES = {
 
 
 def _without_direct_courier_bookings(queryset):
-    """Drops orders booked with PostEx or BarqRaftar (an active shipment row
-    in either integration). Those have their own pollers and webhooks, so
-    Smartlane is never asked about them and never allowed to move them -
-    not even when Smartlane happens to know a booking with the same order
-    number, which would otherwise overwrite their tracking number/status.
-    Goes through the reverse relations rather than importing either
-    integration's models, so this module stays independent of both."""
-    return queryset.exclude(postex_shipments__is_active=True).exclude(
-        barqraftar_shipments__is_active=True
+    """Drops orders booked with PostEx, BarqRaftar or Leopards (an active
+    shipment row in any of those integrations). Those have their own pollers
+    and webhooks, so Smartlane is never asked about them and never allowed
+    to move them - not even when Smartlane happens to know a booking with
+    the same order number, which would otherwise overwrite their tracking
+    number/status. Goes through the reverse relations rather than importing
+    the integrations' models, so this module stays independent of them."""
+    return (
+        queryset.exclude(postex_shipments__is_active=True)
+        .exclude(barqraftar_shipments__is_active=True)
+        .exclude(leopards_shipments__is_active=True)
     )
 
 
+# Smartlane settles a delivered parcel's COD with the store some days after
+# delivery, so delivered orders stay in the poll until their shipment says
+# Settled - for this long, so one Smartlane never settles drops out.
+_SETTLEMENT_WATCH_DAYS = 45
+
+
+def _smartlane_pollable(queryset):
+    """Orders a Smartlane poll asks about: every non-final one, plus
+    delivered ones still waiting on their settlement."""
+    unsettled = Q(
+        status="delivered",
+        smartlane_shipment__isnull=False,
+        delivered_at__gte=timezone.now() - timedelta(days=_SETTLEMENT_WATCH_DAYS),
+    ) & ~Q(smartlane_shipment__courier_settlement=SmartlaneShipment.SETTLEMENT_SETTLED)
+    return queryset.filter(~Q(status__in=TERMINAL_STATUSES) | unsettled)
+
+
 def is_booked_with_direct_courier(order):
-    """True if `order` is PostEx's or BarqRaftar's - see
+    """True if `order` is PostEx's, BarqRaftar's or Leopards' - see
     _without_direct_courier_bookings. Used by the Smartlane webhook."""
     return not _without_direct_courier_bookings(Order.all_objects.filter(id=order.id)).exists()
 
@@ -1145,9 +1380,9 @@ def _poll_smartlane_statuses_body(
     ]
     orders = list(
         _without_direct_courier_bookings(
-            Order.all_objects.filter(organization_id=organization_id, platform_reference="")
-            .exclude(status__in=TERMINAL_STATUSES)
-            .exclude(courier__name__in=other_couriers)
+            _smartlane_pollable(
+                Order.all_objects.filter(organization_id=organization_id, platform_reference="")
+            ).exclude(courier__name__in=other_couriers)
         )
         .order_by(F("smartlane_checked_at").asc(nulls_first=True), "id")[:limit]
     )
@@ -1173,6 +1408,7 @@ def _poll_smartlane_statuses_body(
         stripped = o.order_number.lstrip("#")
         for key in dict.fromkeys([o.order_number, f"#{stripped}", stripped]):
             by_number.setdefault(key, o)
+    warehouse_names = smartlane_warehouse_names(connection.api_key)
     updated = 0
     checked = 0
 
@@ -1210,6 +1446,9 @@ def _poll_smartlane_statuses_body(
                 logger.debug("smartlane poll: row for %r matches no order we asked about", row_number)
                 continue
             oms_services.record_courier_status(order, smartlane_status_label(row))
+            record_smartlane_shipment_safely(
+                order, row, account=connection.courier_name, warehouse_names=warehouse_names
+            )
 
             # Keep the consignment number Smartlane assigned, which for a
             # real booking only becomes known after the fact. consignment
@@ -1323,9 +1562,11 @@ def _poll_platform_smartlane(organization_id, oms_services, *, batch_size, limit
 
     orders = list(
         _without_direct_courier_bookings(
-            Order.all_objects.exclude(platform_reference="")
-            .filter(courier__name=connection.courier_name)
-            .exclude(status__in=TERMINAL_STATUSES)
+            _smartlane_pollable(
+                Order.all_objects.exclude(platform_reference="").filter(
+                    courier__name=connection.courier_name
+                )
+            )
         )
         .order_by(F("smartlane_checked_at").asc(nulls_first=True), "id")[:limit]
     )
@@ -1337,6 +1578,7 @@ def _poll_platform_smartlane(organization_id, oms_services, *, batch_size, limit
         return {"checked": 0, "updated": 0}
 
     by_reference = {o.platform_reference: o for o in orders}
+    warehouse_names = smartlane_warehouse_names(connection.api_key)
     checked = 0
     updated = 0
     for start in range(0, len(orders), batch_size):
@@ -1363,6 +1605,9 @@ def _poll_platform_smartlane(organization_id, oms_services, *, batch_size, limit
                 continue
             try:
                 with tenant_context(order.organization_id):
+                    record_smartlane_shipment_safely(
+                        order, row, account=connection.courier_name, warehouse_names=warehouse_names
+                    )
                     if _apply_platform_smartlane_row(order, consignment, raw_status, row, oms_services):
                         updated += 1
             except oms_services.InvalidTransition:

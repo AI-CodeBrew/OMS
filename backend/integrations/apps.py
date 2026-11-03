@@ -41,3 +41,10 @@ class IntegrationsConfig(AppConfig):
             from .postex import poller as postex_poller
 
             postex_poller.start_background_poller()
+
+        # Leopards' own poller (integrations/leopards/poller.py) - same
+        # convention again - the backup behind Leopards' Push API webhook.
+        if settings.LEOPARDS_AUTO_POLL:
+            from .leopards import poller as leopards_poller
+
+            leopards_poller.start_background_poller()

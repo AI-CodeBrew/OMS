@@ -7,6 +7,7 @@ import timeAgo from "../../../../lib/timeAgo";
 import {
   Badge,
   BarqRaftarWordmark,
+  LeopardsWordmark,
   OmsCourierLogo,
   PostExWordmark,
   SmartlaneLogo,
@@ -31,6 +32,14 @@ const ACCOUNTS = [
     logo: PostExWordmark,
     wordmark: true,
     href: "/admin/oms-courier/postex",
+  },
+  {
+    key: "leopards",
+    name: "Leopards",
+    tagline: "FynkTech's Leopards Courier account - cities and shipments; stores become its shippers.",
+    logo: LeopardsWordmark,
+    wordmark: true,
+    href: "/admin/oms-courier/leopards",
   },
   {
     key: "smartlane",

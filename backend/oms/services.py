@@ -463,6 +463,20 @@ def cancel_order(order, *, reason="", actor_user_id=None, propagate_to_courier=T
         if propagate_to_courier:
             postex_services.cancel_on_postex(order)
         postex_services.release_shipment_stock_and_deactivate(order, actor_user_id=actor_user_id)
+    # Additive, Leopards-only branch (integrations/leopards/) - same shape as
+    # the PostEx branch above. The name "Leopards" is NOT proof of a Leopards
+    # booking: every org has a manual courier of that name, and sheet
+    # imports / Shopify fulfillments attach orders to it. Both calls below
+    # therefore work from LeopardsShipment rows and do nothing for an order
+    # that has none (no Leopards API call, no stock put back that was never
+    # taken). Needs the leopards_integrations tables (migration
+    # integrations.0026_leopards / leopards/sql/0026_leopards.sql).
+    elif order.courier_id and (order.courier.name or "").strip().lower() == "leopards":
+        from integrations.leopards import services as leopards_services
+
+        if propagate_to_courier:
+            leopards_services.cancel_on_leopards(order)
+        leopards_services.release_shipment_stock_and_deactivate(order, actor_user_id=actor_user_id)
     return _transition(order, "cancelled", actor_user_id=actor_user_id, note=reason)
 
 

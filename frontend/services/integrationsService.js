@@ -292,7 +292,7 @@ class IntegrationsService {
     return data;
   }
 
-  // What a courier's request form picks from - PostEx: { cities, address_types }.
+  // What a courier's request form picks from - PostEx: { cities, address_types }; BarqRaftar and Leopards: { cities: [{id, name}] }.
   async getOmsCourierCourierOptions(courier) {
     const response = await fetch(
       `${apiConfig.baseUrl}/api/integrations/oms-courier/couriers/${encodeURIComponent(courier)}/options/`,

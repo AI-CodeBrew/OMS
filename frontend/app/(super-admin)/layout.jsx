@@ -51,7 +51,7 @@ const NAV = [
   },
 ];
 
-const PLATFORM_ACCOUNT_PAGES = ["barq-raftar", "postex", "smartlane"].map(
+const PLATFORM_ACCOUNT_PAGES = ["barq-raftar", "postex", "leopards", "smartlane"].map(
   (slug) => `/admin/oms-courier/${slug}`
 );
 

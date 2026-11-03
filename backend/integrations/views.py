@@ -516,6 +516,21 @@ def smartlane_shipment_webhook(request, token):
             payload.get("courier"), payload.get("reason"),
             payload.get("available_actions"), payload.get("expiry"),
         )
+        # Same order lookup as the status branch below.
+        reference = str(payload.get("store_order_id") or "").strip()
+        is_platform = is_platform_organization(connection.organization_id)
+        context_token = current_organization_id.set(connection.organization_id)
+        try:
+            order = (
+                services.find_platform_order(reference) if is_platform
+                else services.find_order_by_smartlane_reference(reference)
+            )
+            if order and not services.is_booked_with_direct_courier(order):
+                services.record_smartlane_advice(order, payload, account=connection.courier_name)
+        except Exception:
+            logger.exception("smartlane webhook: could not record shipper advice for %s", reference)
+        finally:
+            current_organization_id.reset(context_token)
         connection.events_received_count += 1
         connection.last_event_at = timezone.now()
         connection.save(update_fields=["events_received_count", "last_event_at"])
@@ -564,6 +579,9 @@ def smartlane_shipment_webhook(request, token):
                 order = None
             if order:
                 oms_services.record_courier_status(order, services.smartlane_status_label(payload))
+                services.record_smartlane_shipment_safely(
+                    order, payload, account=connection.courier_name
+                )
                 if tracking_number and tracking_number != order.tracking_number:
                     order.tracking_number = tracking_number[:100]
                     order.save(update_fields=["tracking_number", "updated_at"])

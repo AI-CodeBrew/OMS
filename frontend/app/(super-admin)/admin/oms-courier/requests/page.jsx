@@ -10,11 +10,16 @@ import timeAgo from "../../../../../lib/timeAgo";
 // and laid out exactly like the store's submit.
 import PostExAddressForm from "../../../../(tenant)/integrations/oms-courier/_components/PostExAddressForm";
 import BarqRaftarAddressForm from "../../../../(tenant)/integrations/oms-courier/_components/BarqRaftarAddressForm";
+import LeopardsAddressForm from "../../../../(tenant)/integrations/oms-courier/_components/LeopardsAddressForm";
 
 const EDIT_FORM_ID = "oms-courier-request-edit-form";
 // Couriers whose request is their own address form; the rest (Smartlane)
 // carry the generic three fields.
-const ADDRESS_FORMS = { postex: PostExAddressForm, barq_raftar: BarqRaftarAddressForm };
+const ADDRESS_FORMS = {
+  postex: PostExAddressForm,
+  barq_raftar: BarqRaftarAddressForm,
+  leopards: LeopardsAddressForm,
+};
 
 const inputClass =
   "mt-1 w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100";
@@ -183,9 +188,12 @@ function RequestCard({ request, onAnswered }) {
   const hasPostExForm = Boolean(postex && postex.address);
   const barq = request.courier === "barq_raftar" ? request.details || {} : null;
   const hasBarqForm = Boolean(barq && barq.address);
-  // Couriers whose approval adds the store's address to FynkTech's account.
-  const addsAddress = Boolean(postex || barq);
-  const hasAddressForm = hasPostExForm || hasBarqForm;
+  const leopards = request.courier === "leopards" ? request.details || {} : null;
+  const hasLeopardsForm = Boolean(leopards && leopards.address);
+  // Couriers whose approval adds the store's address (or, for Leopards, its
+  // shipper) to FynkTech's account.
+  const addsAddress = Boolean(postex || barq || leopards);
+  const hasAddressForm = hasPostExForm || hasBarqForm || hasLeopardsForm;
 
   async function answer(kind) {
     const text = message.trim();
@@ -312,6 +320,28 @@ function RequestCard({ request, onAnswered }) {
             <Detail label="Address">{barq.address}</Detail>
           </dl>
         </div>
+      ) : hasLeopardsForm ? (
+        <div className="mt-4 rounded-lg bg-slate-50 p-4">
+          <p className="text-xs font-semibold text-slate-700">Leopards shipper</p>
+          <dl className="mt-3 grid gap-4 sm:grid-cols-3">
+            <Detail label="Shipper name">{leopards.name}</Detail>
+            <Detail label="City">{leopards.city_name}</Detail>
+            <Detail label="Shipper ID">
+              {request.courier_reference ? (
+                <span className="font-mono">{request.courier_reference}</span>
+              ) : (
+                "Given by Leopards on approval"
+              )}
+            </Detail>
+            <Detail label="Phone">{leopards.phone}</Detail>
+            <Detail label="Email">{leopards.email}</Detail>
+            <Detail label="CNIC">{leopards.cnic}</Detail>
+          </dl>
+          <dl className="mt-4 grid gap-4 sm:grid-cols-2">
+            <Detail label="Address">{leopards.address}</Detail>
+            <Detail label="Return address">{leopards.return_address}</Detail>
+          </dl>
+        </div>
       ) : (
         <dl className="mt-4 grid gap-4 sm:grid-cols-3">
           <Detail label="Store name">{request.store_name}</Detail>
@@ -368,9 +398,13 @@ function RequestCard({ request, onAnswered }) {
           {addsAddress ? (
             <p className="text-xs text-slate-500">
               {hasAddressForm
-                ? `Approving adds this address to FynkTech's ${request.courier_name} account - every ` +
-                  `${request.courier_name} order of this store is then picked up from it. If ` +
-                  `${request.courier_name} refuses it, the request stays pending.`
+                ? (hasLeopardsForm
+                    ? `Approving adds this store as a shipper on FynkTech's ${request.courier_name} account - ` +
+                      `every ${request.courier_name} order of this store is then booked under it. If ` +
+                      `${request.courier_name} refuses it, the request stays pending.`
+                    : `Approving adds this address to FynkTech's ${request.courier_name} account - every ` +
+                      `${request.courier_name} order of this store is then picked up from it. If ` +
+                      `${request.courier_name} refuses it, the request stays pending.`)
                 : `This request came before the ${request.courier_name} address form - reject it so ` +
                   "the store sends the form again."}
             </p>

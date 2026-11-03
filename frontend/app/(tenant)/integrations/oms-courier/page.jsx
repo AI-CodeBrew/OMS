@@ -8,12 +8,14 @@ import integrationsService from "../../../../services/integrationsService";
 import {
   Badge,
   BarqRaftarWordmark,
+  LeopardsWordmark,
   PostExWordmark,
   SmartlaneLogo,
 } from "../../../../components/integrations/IntegrationLogos";
 import SmartlaneBusinessForm from "./_components/SmartlaneBusinessForm";
 import PostExAddressForm from "./_components/PostExAddressForm";
 import BarqRaftarAddressForm from "./_components/BarqRaftarAddressForm";
+import LeopardsAddressForm from "./_components/LeopardsAddressForm";
 
 // FynkTech dispatches the store's orders through its own account for each
 // courier turned on here and approved by FynkTech on its Requests page
@@ -21,7 +23,8 @@ import BarqRaftarAddressForm from "./_components/BarqRaftarAddressForm";
 // Smartlane is asked for with the full business details its onboarding
 // needs (the same form as before); PostEx and BarqRaftar with their own
 // pickup-address forms, which become the store's pickup address on
-// FynkTech's account for that courier once approved.
+// FynkTech's account for that courier once approved, and Leopards with its
+// shipper form, which becomes the store's shipper on FynkTech's account.
 const COURIERS = [
   {
     key: "smartlane",
@@ -43,6 +46,13 @@ const COURIERS = [
     logo: BarqRaftarWordmark,
     wordmark: true,
   },
+  {
+    key: "leopards",
+    name: "Leopards",
+    tagline: "Nationwide COD deliveries with Leopards Courier.",
+    logo: LeopardsWordmark,
+    wordmark: true,
+  },
 ];
 
 const SMARTLANE_FORM_ID = "oms-courier-smartlane-form";
@@ -60,6 +70,12 @@ const ADDRESS_FORMS = {
     formId: "oms-courier-barqraftar-form",
     Form: BarqRaftarAddressForm,
     referenceLabel: "BarqRaftar pickup address ID",
+    prefill: (storeName) => ({ name: storeName }),
+  },
+  leopards: {
+    formId: "oms-courier-leopards-form",
+    Form: LeopardsAddressForm,
+    referenceLabel: "Leopards shipper ID",
     prefill: (storeName) => ({ name: storeName }),
   },
 };
@@ -143,7 +159,7 @@ const STATUS_PILL = {
 
 // Couriers whose order statuses the store can pull on demand (Smartlane's
 // come through its own webhook and poller).
-const SYNCABLE = new Set(["postex", "barq_raftar"]);
+const SYNCABLE = new Set(["postex", "barq_raftar", "leopards"]);
 
 // One courier per row - logo, details and FynkTech's answer, then the switch.
 function CourierCard({ courier, enrollment, onboarding, busy, syncing, onToggle, onEdit, onResubmit, onSync }) {

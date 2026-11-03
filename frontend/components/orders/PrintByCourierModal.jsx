@@ -7,6 +7,7 @@ import AirwayBillFilterModal from "./AirwayBillFilterModal";
 import ordersService from "../../services/ordersService";
 import barqraftarService from "../../app/(tenant)/integrations/barq-raftar/_lib/barqraftarService";
 import postexService from "../../app/(tenant)/integrations/postex/_lib/postexService";
+import leopardsService from "../../app/(tenant)/integrations/leopards/_lib/leopardsService";
 import { SMARTLANE_LOAD_SHEET_COURIERS } from "./statusConfig";
 import { BOOKING_ACCOUNT_LABELS, SMARTLANE_ACCOUNTS, orderBookingAccount } from "./orderBookingAccount";
 
@@ -45,6 +46,12 @@ function printDocument(kind, account, orderIds, smartlaneCourier) {
     return kind === "airway_bill"
       ? barqraftarService.printLabels(orderIds)
       : barqraftarService.printLoadSheet(orderIds);
+  }
+  // PostEx is NOT the catch-all for an unknown account - Leopards has its own.
+  if (account === "leopards") {
+    return kind === "airway_bill"
+      ? leopardsService.printAirwayBills(orderIds)
+      : leopardsService.printLoadSheet(orderIds);
   }
   return kind === "airway_bill" ? postexService.printAirwayBills(orderIds) : postexService.printLoadSheet(orderIds);
 }
@@ -116,13 +123,14 @@ export default function PrintByCourierModal({ request, accounts, onClose, onPrin
       setSplitAccount(account);
       return;
     }
-    // PostEx's load sheet is also their hand-over step - confirmed first,
-    // same as the per-courier action.
+    // PostEx's and Leopards' load sheets are also their hand-over step -
+    // confirmed first, same as the per-courier action.
     if (
       kind === "loadsheet" &&
-      account === "postex" &&
+      (account === "postex" || account === "leopards") &&
       !window.confirm(
-        `Generate the PostEx load sheet for ${plural(accountOrders.length)}? This hands the parcels over to PostEx for pickup.`
+        `Generate the ${account === "postex" ? "PostEx" : "Leopards"} load sheet for ${plural(accountOrders.length)}? ` +
+          `This hands the parcels over to ${account === "postex" ? "PostEx" : "Leopards"} for pickup.`
       )
     ) {
       return;
