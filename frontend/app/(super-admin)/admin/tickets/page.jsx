@@ -1,50 +1,50 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import Link from "next/link";
+import { useRouter } from "next/navigation";
+import Button from "../../../../components/shared/Button";
 import Pagination from "../../../../components/shared/Pagination";
+import TicketsTable from "../../../../components/tickets/TicketsTable";
+import { TICKET_STATUSES, TICKET_STATUS_LABEL } from "../../../../components/tickets/ticketStatus";
 import ticketsAdminService from "../../../../services/ticketsAdminService";
-import { timeAgo } from "../../../../lib/timeAgo";
-import {
-  TICKET_STATUS_LABEL,
-  TICKET_STATUS_TONE,
-  TICKET_PRIORITY_LABEL,
-  TICKET_PRIORITY_DOT,
-  TICKET_STATUS_FILTERS,
-  TICKET_PRIORITY_FILTERS,
-} from "../../../../components/tickets/ticketStatus";
+import tenantsService from "../../../../services/tenantsService";
+import CreateTicketDialog from "../../../../components/tickets/CreateTicketDialog";
 
-const ASSIGNED_FILTERS = [
-  { value: "", label: "Everyone" },
-  { value: "unassigned", label: "Unassigned" },
+// Cross-org - every organization's tickets. Opening a ticket goes to
+// /admin/tickets/[id] (a dedicated page, not an inline accordion) since
+// changing its status and replying is enough surface area to deserve its own
+// screen rather than fighting the list for space.
+// Two views, picked from the dropdown: "My Tickets" (the default) - what
+// FynkTech's super admin side raised for stores - and "By Customer", what
+// the stores raised (Ticket.ticket_type "admin" / "customer").
+const VIEWS = [
+  { value: "admin", label: "My Tickets", hint: "Tickets FynkTech has raised for stores." },
+  { value: "customer", label: "By Customer", hint: "Every support ticket raised by the stores." },
 ];
 
-// Cross-org - every organization's tickets. Clicking a row goes to
-// /admin/tickets/[id] (a dedicated page, not an inline accordion) since
-// resolving/assigning/replying is enough surface area to deserve its own
-// screen rather than fighting the list for space.
 export default function AdminTicketsPage() {
+  const router = useRouter();
   const [tickets, setTickets] = useState([]);
   const [count, setCount] = useState(0);
   const [search, setSearch] = useState("");
   const [appliedSearch, setAppliedSearch] = useState("");
+  const [view, setView] = useState("admin");
   const [status, setStatus] = useState("");
-  const [priority, setPriority] = useState("");
-  const [assigned, setAssigned] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [stores, setStores] = useState([]);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
       const data = await ticketsAdminService.list({
+        type: view,
         q: appliedSearch,
         status,
-        priority,
-        assigned,
         page,
         page_size: pageSize,
       });
@@ -55,11 +55,25 @@ export default function AdminTicketsPage() {
     } finally {
       setLoading(false);
     }
-  }, [appliedSearch, status, priority, assigned, page, pageSize]);
+  }, [view, appliedSearch, status, page, pageSize]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  // The New ticket form's Store list - every store, not just the Hub's.
+  useEffect(() => {
+    tenantsService
+      .listOrganizations()
+      .then((data) =>
+        setStores(
+          (data.organizations || [])
+            .map((o) => ({ id: o.id, name: o.name }))
+            .sort((a, b) => a.name.localeCompare(b.name))
+        )
+      )
+      .catch(() => {});
+  }, []);
 
   function onSearchSubmit(e) {
     e.preventDefault();
@@ -68,31 +82,44 @@ export default function AdminTicketsPage() {
   }
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold text-slate-900">Tickets</h1>
-        <p className="mt-1 text-sm text-slate-500">
-          Every support ticket raised across every organization.
-        </p>
+    <div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold text-slate-900">Tickets</h1>
+          <p className="mt-1 text-sm text-slate-500">{VIEWS.find((v) => v.value === view).hint}</p>
+        </div>
+        <Button onClick={() => setCreating(true)}>New ticket</Button>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
-        <form
-          onSubmit={onSearchSubmit}
-          className="flex w-full flex-wrap items-center gap-1.5 sm:w-auto sm:flex-nowrap"
+      <div className="mt-4 flex flex-wrap items-center gap-2 py-3">
+        <select
+          value={view}
+          onChange={(e) => {
+            setPage(1);
+            setView(e.target.value);
+          }}
+          className="rounded-md border border-brand-300 bg-brand-50 px-3 py-2 text-sm font-medium text-brand-800 outline-none focus:border-brand-500"
         >
+          {VIEWS.map((v) => (
+            <option key={v.value} value={v.value}>
+              {v.label}
+            </option>
+          ))}
+        </select>
+
+        <form onSubmit={onSearchSubmit} className="flex w-full items-center sm:w-auto">
           <input
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search org, order, category…"
-            className="w-full rounded-lg border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500 sm:w-64"
+            onChange={(e) => {
+              setSearch(e.target.value);
+              if (!e.target.value.trim() && appliedSearch) setAppliedSearch("");
+            }}
+            placeholder="Search ticket no., store, order, category…"
+            className="w-full rounded-l-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500 sm:w-72"
           />
-          <button
-            type="submit"
-            className="rounded-lg border border-surface-border bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-surface"
-          >
+          <Button type="submit" variant="secondary" className="-ml-px shrink-0 rounded-l-none">
             Search
-          </button>
+          </Button>
         </form>
 
         <select
@@ -101,110 +128,30 @@ export default function AdminTicketsPage() {
             setPage(1);
             setStatus(e.target.value);
           }}
-          className="rounded-lg border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
+          className="rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
         >
-          {TICKET_STATUS_FILTERS.map((f) => (
-            <option key={f.value} value={f.value}>
-              {f.label}
-            </option>
-          ))}
-        </select>
-
-        <select
-          value={priority}
-          onChange={(e) => {
-            setPage(1);
-            setPriority(e.target.value);
-          }}
-          className="rounded-lg border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
-        >
-          {TICKET_PRIORITY_FILTERS.map((f) => (
-            <option key={f.value} value={f.value}>
-              {f.label}
-            </option>
-          ))}
-        </select>
-
-        <select
-          value={assigned}
-          onChange={(e) => {
-            setPage(1);
-            setAssigned(e.target.value);
-          }}
-          className="rounded-lg border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
-        >
-          {ASSIGNED_FILTERS.map((f) => (
-            <option key={f.value} value={f.value}>
-              {f.label}
+          <option value="">All statuses</option>
+          {TICKET_STATUSES.map((s) => (
+            <option key={s} value={s}>
+              {TICKET_STATUS_LABEL[s]}
             </option>
           ))}
         </select>
       </div>
 
       {error ? (
-        <div className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
+        <div className="mb-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
       ) : null}
 
-      <div className="overflow-hidden rounded-xl border border-surface-border bg-white shadow-sm">
-        {loading ? (
-          <p className="px-5 py-10 text-center text-sm text-slate-500">Loading…</p>
-        ) : tickets.length === 0 ? (
-          <p className="px-5 py-10 text-center text-sm text-slate-500">No tickets match these filters.</p>
-        ) : (
-          <ul className="divide-y divide-surface-border">
-            {tickets.map((t) => (
-              <li key={t.id}>
-                <Link
-                  href={`/admin/tickets/${t.id}`}
-                  className="flex items-center gap-4 px-5 py-3.5 transition hover:bg-surface/60"
-                >
-                  <span
-                    className={`h-2 w-2 shrink-0 rounded-full ${
-                      TICKET_PRIORITY_DOT[t.priority] || "bg-slate-400"
-                    }`}
-                    title={`${TICKET_PRIORITY_LABEL[t.priority] || t.priority} priority`}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono text-xs font-medium text-slate-400">
-                        {t.ticket_number}
-                      </span>
-                      <span className="truncate text-sm font-semibold text-slate-900">
-                        {t.category}
-                        {t.sub_category ? (
-                          <span className="font-normal text-slate-500"> — {t.sub_category}</span>
-                        ) : null}
-                      </span>
-                    </div>
-                    <p className="mt-0.5 truncate text-xs text-slate-500">
-                      {t.organization_name} ·{" "}
-                      {t.order_number ? `Order ${t.order_number} · ` : "Standalone · "}
-                      {t.created_by_email || "Unknown"} ·{" "}
-                      <span title={new Date(t.created_at).toLocaleString()}>
-                        {timeAgo(t.created_at)}
-                      </span>
-                    </p>
-                  </div>
-                  {t.assigned_to_email ? (
-                    <span className="hidden shrink-0 rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-600 sm:inline">
-                      {t.assigned_to_email}
-                    </span>
-                  ) : null}
-                  <span
-                    className={`shrink-0 rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                      TICKET_STATUS_TONE[t.status] || "bg-slate-100 text-slate-600"
-                    }`}
-                  >
-                    {TICKET_STATUS_LABEL[t.status] || t.status}
-                  </span>
-                </Link>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      <TicketsTable
+        tickets={tickets}
+        loading={loading}
+        emptyText="No tickets match these filters."
+        onOpen={(t) => router.push(`/admin/tickets/${t.id}`)}
+        showStore
+      />
 
-      {!loading && tickets.length > 0 ? (
+      {tickets.length > 0 ? (
         <Pagination
           page={page}
           pageSize={pageSize}
@@ -218,6 +165,21 @@ export default function AdminTicketsPage() {
           }}
         />
       ) : null}
+
+      <CreateTicketDialog
+        open={creating}
+        stores={stores}
+        createTicket={(payload) => ticketsAdminService.create(payload)}
+        searchStoreOrders={(storeId, q) => ticketsAdminService.searchStoreOrders(storeId, q)}
+        onClose={() => setCreating(false)}
+        onCreated={() => {
+          setCreating(false);
+          setPage(1);
+          // FynkTech's own ticket - land on My Tickets to show it.
+          if (view === "admin") load();
+          else setView("admin");
+        }}
+      />
     </div>
   );
 }

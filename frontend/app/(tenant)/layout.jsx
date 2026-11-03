@@ -5,7 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import ProtectedRoute from "../../components/shared/ProtectedRoute";
 import LoadingOverlay from "../../components/shared/LoadingOverlay";
 import TenantHeader from "../../components/layout/TenantHeader";
-import ModuleSidebar from "../../components/layout/ModuleSidebar";
+import ModuleSidebar, { MobileNav } from "../../components/layout/ModuleSidebar";
 import ActingStoreBanner from "../../components/layout/ActingStoreBanner";
 import CriticalOrdersAlert from "../../components/orders/CriticalOrdersAlert";
 import {
@@ -43,7 +43,6 @@ function TenantShell({ children }) {
   const user = useEffectiveUser();
   const actingStore = useAuthStore((s) => s.actingStore);
   const activeModule = getActiveModule(pathname);
-  const [sidebarExpanded, setSidebarExpanded] = useState(false);
   const [lastModule, setLastModule] = useState(null);
   const superAdminWithoutStore = user?.role === "super_admin" && !actingStore;
 
@@ -129,18 +128,18 @@ function TenantShell({ children }) {
       <CriticalOrdersAlert />
       <ActingStoreBanner />
       <TenantHeader activeModule={navModule} />
+      <MobileNav activeModule={navModule} />
       <div className="flex">
-        <ModuleSidebar
-          activeModule={navModule}
-          expanded={sidebarExpanded}
-          onToggle={() => setSidebarExpanded((e) => !e)}
-        />
+        <ModuleSidebar activeModule={navModule} />
         {/* sticky + own scroll, matching ModuleSidebar's own top-16/
             h-[calc(100vh-4rem)] treatment - otherwise the whole document
             scrolls and rounded-tl-2xl (a fixed feature of this box's own
             top edge) scrolls out of view after the first scroll, leaving a
             flat/square corner instead of the rounded one. */}
-        <main className="sticky top-16 h-[calc(100vh-4rem)] min-w-0 flex-1 overflow-y-auto rounded-tl-2xl bg-surface px-6 py-8">
+        {/* Phones: no rail beside it (MobileNav is above instead), so it's
+            a plain full-width block that scrolls with the page - the
+            sticky/fixed-height box only applies from md up. */}
+        <main className="min-h-[calc(100vh-4rem)] min-w-0 flex-1 bg-surface px-4 py-5 md:sticky md:top-16 md:h-[calc(100vh-4rem)] md:min-h-0 md:overflow-y-auto md:rounded-tl-2xl md:px-6 md:py-8">
           {children}
         </main>
       </div>

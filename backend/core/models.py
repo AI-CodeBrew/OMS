@@ -69,6 +69,10 @@ class Organization(models.Model):
     # same tenant-scoped connection tables and be managed through the same
     # integration screens a store admin uses. Never listed as a store.
     is_platform = models.BooleanField(default=False)
+    # The store's short number (1, 2, 3 ... in creation order), so two stores
+    # with the same name can still be told apart. Taken from a database
+    # sequence on first save - see save().
+    store_code = models.PositiveIntegerField(unique=True, null=True, blank=True, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -84,6 +88,15 @@ class Organization(models.Model):
 
     def __str__(self):
         return self.name
+
+    def save(self, *args, **kwargs):
+        if self.store_code is None:
+            from django.db import connection
+
+            with connection.cursor() as cursor:
+                cursor.execute("select nextval('core.organization_store_code_seq')")
+                self.store_code = cursor.fetchone()[0]
+        super().save(*args, **kwargs)
 
 
 class Membership(models.Model):

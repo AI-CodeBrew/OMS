@@ -157,15 +157,10 @@ const STATUS_PILL = {
   rejected: { text: "Rejected", className: "bg-red-50 text-red-700" },
 };
 
-// Couriers whose order statuses the store can pull on demand (Smartlane's
-// come through its own webhook and poller).
-const SYNCABLE = new Set(["postex", "barq_raftar", "leopards"]);
-
 // One courier per row - logo, details and FynkTech's answer, then the switch.
-function CourierCard({ courier, enrollment, onboarding, busy, syncing, onToggle, onEdit, onResubmit, onSync }) {
+function CourierCard({ courier, enrollment, onboarding, busy, onToggle, onEdit, onResubmit }) {
   const enabled = Boolean(enrollment?.is_enabled);
   const isSmartlane = courier.key === "smartlane";
-  const canSync = enabled && enrollment?.status === "approved" && SYNCABLE.has(courier.key);
   const unavailable = isSmartlane && onboarding && !onboarding.available;
   const pill =
     enrollment && (enabled || enrollment.status === "rejected") ? STATUS_PILL[enrollment.status] : null;
@@ -205,16 +200,6 @@ function CourierCard({ courier, enrollment, onboarding, busy, syncing, onToggle,
           {enabled && !isSmartlane ? (
             <button type="button" onClick={() => onEdit(courier)} className="text-brand-700 hover:underline">
               Edit details
-            </button>
-          ) : null}
-          {canSync ? (
-            <button
-              type="button"
-              onClick={() => onSync(courier)}
-              disabled={syncing}
-              className="text-brand-700 hover:underline disabled:cursor-wait disabled:text-slate-400 disabled:no-underline"
-            >
-              {syncing ? "Syncing…" : "Sync statuses now"}
             </button>
           ) : null}
           {isSmartlane && onboarding?.link?.status && onboarding.link.status !== "draft" ? (
@@ -297,7 +282,6 @@ export default function OmsCourierPage() {
   const [dialogError, setDialogError] = useState("");
   const [saving, setSaving] = useState(false);
   const [busyKey, setBusyKey] = useState("");
-  const [syncingKey, setSyncingKey] = useState("");
 
   const load = useCallback(async () => {
     setError("");
@@ -421,24 +405,6 @@ export default function OmsCourierPage() {
     }
   }
 
-  async function onSync(courier) {
-    setSyncingKey(courier.key);
-    setError("");
-    setNotice("");
-    try {
-      const result = await integrationsService.syncOmsCourierCourier(courier.key);
-      setNotice(
-        result.checked
-          ? `${courier.name} sync finished: checked ${result.checked}, updated ${result.updated}.`
-          : `No open ${courier.name} orders to check.`
-      );
-    } catch (err) {
-      setError(err.message || `Could not sync ${courier.name}`);
-    } finally {
-      setSyncingKey("");
-    }
-  }
-
   async function onSmartlaneSubmitted() {
     setDialog(null);
     setNotice("Smartlane requested - your business details were sent to FynkTech for review.");
@@ -455,7 +421,7 @@ export default function OmsCourierPage() {
       </Link>
 
       <div className="mt-3">
-        <h1 className="text-[28px] font-semibold leading-8 text-slate-900">OMS Courier</h1>
+        <h1 className="text-2xl font-semibold text-slate-900">OMS Courier</h1>
         <p className="mt-1 max-w-2xl text-sm text-slate-500">
           Let FynkTech dispatch your orders through its own courier accounts - no courier signup
           of your own. Turn on the couriers you want and add your details; tracking numbers and
@@ -481,11 +447,9 @@ export default function OmsCourierPage() {
               enrollment={enrollments[courier.key]}
               onboarding={onboarding}
               busy={busyKey === courier.key}
-              syncing={syncingKey === courier.key}
               onToggle={onToggle}
               onEdit={openDialog}
               onResubmit={requestCourier}
-              onSync={onSync}
             />
           ))}
         </div>

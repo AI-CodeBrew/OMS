@@ -19,6 +19,7 @@ import {
   IntegrationsIcon,
   LayersIcon,
   TicketIcon,
+  AlertIcon,
 } from "./navIcons";
 
 // Top header tabs only — Integrations / Logs / Settings live in the sidebar.
@@ -107,7 +108,7 @@ export const TICKETS_ITEM = {
 };
 
 const MODULE_PATH_PREFIXES = {
-  oms: ["/orders", "/dashboard"],
+  oms: ["/orders", "/dashboard", "/critical-orders"],
   // Returns Desk lives under WMS — keep the WMS sidebar when on /returns.
   wms: ["/wms", "/returns"],
   finance: ["/finance"],
@@ -131,7 +132,9 @@ export function getActiveModule(pathname) {
 // module-tab model (OMS/WMS/Financify, each its own store-shaped world)
 // doesn't apply - one fixed set of pages instead, none of them WMS
 // inventory/Settings/Integrations/Billing (all genuinely single-store).
-const HUB_ALLOWED_PREFIXES = ["/dashboard", "/orders", "/returns", "/reports", "/batch", "/tickets"];
+const HUB_ALLOWED_PREFIXES = [
+  "/dashboard", "/orders", "/critical-orders", "/returns", "/reports", "/batch", "/tickets",
+];
 
 /** Header tabs visible for the current user (JWT modules + org-admin gates). */
 export function getVisibleModules(user) {
@@ -207,8 +210,10 @@ export const SIDEBAR_ITEMS = {
   oms: [
     { label: "Dashboard", href: "/dashboard", icon: DashboardIcon },
     { label: "All Orders", href: "/orders", icon: GridIcon },
+    { label: "Critical Orders", href: "/critical-orders", icon: AlertIcon },
   ],
   wms: [
+    { label: "Purchase Orders", href: "/wms/purchase-orders", icon: DocumentIcon },
     { label: "Inventory", href: "/wms", icon: PackageIcon },
     { label: "Packing", href: "/wms/packing", icon: PackageIcon },
     { label: "Returns Desk", href: "/returns", icon: UndoIcon },
@@ -252,5 +257,6 @@ export const RETURNS_ASSOCIATE_SIDEBAR_ITEMS = [
 export const HUB_SIDEBAR_ITEMS = [
   { label: "Dashboard", href: "/dashboard", icon: DashboardIcon },
   { label: "All Orders", href: "/orders", icon: GridIcon },
+  { label: "Critical Orders", href: "/critical-orders", icon: AlertIcon },
   { label: "Returns Desk", href: "/returns", icon: UndoIcon },
 ];

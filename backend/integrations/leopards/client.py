@@ -178,7 +178,14 @@ def create_shipper(connection, *, name, email, phone, address, city_id, bank_id,
     """POST createShipper - adds a shipper under this account (or returns the
     existing one: "Shipper already exists."). Returns the shipper row
     {"shipment_id", "shipment_name", ...}; shipment_id is what bookPacket's
-    shipment_id takes."""
+    shipment_id takes.
+
+    Leopards documents `data` as a list but really answers with ONE object
+    ({"status": 1, "message": "Shipper added successfully.", "data":
+    {"shipment_id": 2851241, "shipment_name": ..., "username": ...,
+    "user_password": ...}}), so both shapes are read. The shipper's own
+    portal login (username / user_password) comes back too - it is dropped
+    here and never stored or logged."""
     body = _request(
         "POST", "/createShipper/format/json/", connection, context=f"Create shipper {name}",
         body={
@@ -196,8 +203,12 @@ def create_shipper(connection, *, name, email, phone, address, city_id, bank_id,
             "return_address": return_address or "",
         },
     )
-    rows = _list(body, "data")
-    row = rows[0] if rows and isinstance(rows[0], dict) else {}
+    data = body.get("data")
+    if isinstance(data, list):
+        data = data[0] if data and isinstance(data[0], dict) else {}
+    elif not isinstance(data, dict):
+        data = {}
+    row = {k: v for k, v in data.items() if k not in ("username", "user_password")}
     return {**row, "message": str(body.get("message") or "")}
 
 

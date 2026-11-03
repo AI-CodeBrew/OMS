@@ -152,7 +152,7 @@ export default function OmsCourierSmartlaneBusinessPage() {
       </Link>
 
       <div className="mt-3">
-        <h1 className="text-[28px] font-semibold leading-8 text-slate-900">
+        <h1 className="text-2xl font-semibold text-slate-900">
           OMS Courier · Smartlane Business
         </h1>
         <p className="mt-1 text-sm text-slate-500">

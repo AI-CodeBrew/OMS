@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import LogHistoryPanel from "./LogHistoryPanel";
 import { formatWhen, isFailed, Who } from "./logFormat";
+import DateInput from "../shared/DateInput";
 
 const PERIODS = [
   { value: "1", label: "Last 1 day" },
@@ -127,8 +128,7 @@ export default function ActivityLog({ fetchLogs, stores = null }) {
         <label className="text-xs font-medium text-slate-600">
           Or a date
           <span className="mt-1 flex items-center gap-1">
-            <input
-              type="date"
+            <DateInput
               value={date}
               max={new Date().toISOString().slice(0, 10)}
               onChange={(e) => {

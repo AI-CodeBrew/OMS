@@ -27,26 +27,26 @@ export default function OrderStatusTabs({ counts, activeStatus, onChange }) {
             key={tab.value}
             type="button"
             onClick={() => onChange(tab.value)}
-            className={`relative h-[60px] w-[112px] shrink-0 rounded-md border border-l-4 text-left transition ${
+            className={`flex shrink-0 items-center justify-between gap-3 rounded-md border border-l-4 px-2.5 py-1.5 text-left transition ${
               isActive
                 ? "border-brand-600 bg-brand-50"
                 : `border-surface-border ${TONE_BORDER[tab.tone] || TONE_BORDER.neutral} bg-white hover:border-slate-300`
             }`}
           >
-            <div
-              className={`absolute left-2 right-2 top-2 text-[10px] font-medium uppercase leading-tight ${
+            <span
+              className={`whitespace-nowrap text-[10px] font-medium uppercase leading-tight ${
                 isActive ? "text-brand-700" : "text-slate-500"
               }`}
             >
               {tab.label}
-            </div>
-            <div
-              className={`absolute bottom-1.5 right-2 whitespace-nowrap text-lg font-semibold ${
+            </span>
+            <span
+              className={`whitespace-nowrap text-base font-semibold tabular-nums ${
                 isActive ? "text-brand-700" : isZero ? "text-slate-300" : "text-slate-900"
               }`}
             >
               {counts == null ? "—" : count}
-            </div>
+            </span>
           </button>
         );
       })}

@@ -5,6 +5,7 @@ import Modal from "../shared/Modal";
 import Button, { Spinner } from "../shared/Button";
 import Checkbox from "../shared/Checkbox";
 import ordersService from "../../services/ordersService";
+import { BOOKING_ACCOUNT_LABELS, orderBookingAccount } from "./orderBookingAccount";
 
 function CheckIcon({ className }) {
   return (
@@ -49,6 +50,12 @@ const MODES = [
   { value: "orderid", label: "By Order ID" },
 ];
 
+// The Dispatch Hub's choices (byCourier).
+const HUB_MODES = [
+  { value: "courier", label: "Courier wise" },
+  { value: "product", label: "Product wise" },
+];
+
 // "#10858" or "10858" both match - whatever the operator actually has on
 // hand (order number as shown in the UI, with or without the leading #).
 function normalizeOrderNumber(value) {
@@ -56,8 +63,11 @@ function normalizeOrderNumber(value) {
 }
 
 // onGenerated (optional) runs after each PDF that downloads successfully.
-export default function AirwayBillFilterModal({ orders, onClose, onGenerated }) {
-  const [mode, setMode] = useState("all");
+// byCourier: the Dispatch Hub - Courier wise (one PDF, courier after
+// courier) or Product wise, across whichever couriers booked the orders.
+export default function AirwayBillFilterModal({ orders, onClose, onGenerated, byCourier = false }) {
+  const firstMode = byCourier ? "courier" : "all";
+  const [mode, setMode] = useState(firstMode);
   const [selectedProducts, setSelectedProducts] = useState(() => new Set());
   const [allStatus, setAllStatus] = useState("idle");
   const [rowStatus, setRowStatus] = useState({});
@@ -67,7 +77,7 @@ export default function AirwayBillFilterModal({ orders, onClose, onGenerated }) 
   const [error, setError] = useState("");
 
   useEffect(() => {
-    setMode("all");
+    setMode(firstMode);
     setSelectedProducts(new Set());
     setAllStatus("idle");
     setRowStatus({});
@@ -75,6 +85,15 @@ export default function AirwayBillFilterModal({ orders, onClose, onGenerated }) 
     setOrderIdStatus("idle");
     setOrderIdNotFound([]);
     setError("");
+  }, [orders, firstMode]);
+
+  const courierCounts = useMemo(() => {
+    const counts = new Map();
+    for (const order of orders || []) {
+      const label = BOOKING_ACCOUNT_LABELS[orderBookingAccount(order)] || "Smartlane";
+      counts.set(label, (counts.get(label) || 0) + 1);
+    }
+    return Array.from(counts.entries()).map(([name, count]) => `${name} ${count}`).join(", ");
   }, [orders]);
 
   const productEntries = useMemo(() => {
@@ -97,6 +116,14 @@ export default function AirwayBillFilterModal({ orders, onClose, onGenerated }) 
     orderIdStatus === "generating" ||
     Object.values(rowStatus).includes("generating");
 
+  // Hub: a courier that failed is named; the others already downloaded.
+  async function print(ids, label) {
+    if (!byCourier) return ordersService.printSmartlaneAirwayBill(ids, label);
+    const failed = await ordersService.printByCourier("airway_bill", ids, label);
+    if (failed) setError(`Downloaded, but these couriers failed - ${failed}`);
+    return undefined;
+  }
+
   function toggleProduct(name) {
     setSelectedProducts((prev) => {
       const next = new Set(prev);
@@ -110,7 +137,7 @@ export default function AirwayBillFilterModal({ orders, onClose, onGenerated }) 
     setError("");
     setAllStatus("generating");
     try {
-      await ordersService.printSmartlaneAirwayBill(orders.map((o) => o.id));
+      await print(orders.map((o) => o.id));
       setAllStatus("done");
       onGenerated?.();
     } catch (err) {
@@ -127,7 +154,7 @@ export default function AirwayBillFilterModal({ orders, onClose, onGenerated }) 
         const ids = orders
           .filter((o) => (o.items || []).some((i) => i.product_name === name))
           .map((o) => o.id);
-        await ordersService.printSmartlaneAirwayBill(ids, name);
+        await print(ids, name);
         setRowStatus((prev) => ({ ...prev, [name]: "done" }));
         onGenerated?.();
       } catch (err) {
@@ -163,7 +190,7 @@ export default function AirwayBillFilterModal({ orders, onClose, onGenerated }) 
     }
     setOrderIdStatus("generating");
     try {
-      await ordersService.printSmartlaneAirwayBill(matched.map((o) => o.id), "selected");
+      await print(matched.map((o) => o.id), "selected");
       setOrderIdStatus("done");
       onGenerated?.();
     } catch (err) {
@@ -175,11 +202,12 @@ export default function AirwayBillFilterModal({ orders, onClose, onGenerated }) 
   return (
     <Modal open title="Print Airway Bill" onClose={onClose} width="max-w-lg">
       <p className="mb-3 text-sm text-slate-500">
-        {orders.length} orders selected. Print them all together, or split by product.
+        {orders.length} order{orders.length === 1 ? "" : "s"} selected.{" "}
+        {byCourier ? "Print them courier by courier, or pick products." : "Print them all together, or split by product."}
       </p>
 
       <div className="mb-4 flex flex-wrap gap-2">
-        {MODES.map((m) => (
+        {(byCourier ? HUB_MODES : MODES).map((m) => (
           <button
             key={m.value}
             type="button"
@@ -198,9 +226,13 @@ export default function AirwayBillFilterModal({ orders, onClose, onGenerated }) 
 
       {error ? <p className="mb-3 text-sm text-red-600">{error}</p> : null}
 
-      {mode === "all" ? (
+      {mode === "all" || mode === "courier" ? (
         <div className="flex items-center justify-between rounded-md border border-surface-border p-3">
-          <span className="text-sm text-slate-700">One combined PDF for all {orders.length} orders</span>
+          <span className="text-sm text-slate-700">
+            {mode === "courier"
+              ? `One PDF, courier after courier (${courierCounts})`
+              : `One combined PDF for all ${orders.length} orders`}
+          </span>
           <div className="flex items-center gap-2">
             <StatusMark status={allStatus} />
             <Button onClick={handleGenerateAll} loading={allStatus === "generating"} disabled={busy}>

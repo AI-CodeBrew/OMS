@@ -1,6 +1,6 @@
 // Tiny zustand store holding whether PostEx is connected - loaded once
 // (orders/page.jsx) and read by every place that shows/hides the PostEx
-// actions (OrderRowMenu, OrderItemsEditor, OrderDetailPanel). Same pattern as
+// actions (OrderRowMenu, OrderActionsMenu, OrderDetailPanel). Same pattern as
 // barq-raftar/_lib/barqraftarStatusStore.js; components outside this folder
 // only ever read it.
 import { create } from "zustand";

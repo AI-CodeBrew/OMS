@@ -5,12 +5,6 @@ import Dropdown from "../shared/Dropdown";
 import Button from "../shared/Button";
 import ordersService from "../../services/ordersService";
 
-const SORT_OPTIONS = [
-  { key: "date", label: "Date & Time" },
-  { key: "oms_id", label: "OMS Order ID" },
-  { key: "store_id", label: "Store Order ID" },
-];
-
 export default function OrdersToolbar({
   search,
   onSearchChange,
@@ -22,8 +16,9 @@ export default function OrdersToolbar({
   onAction,
   onRefresh,
   refreshing,
-  sortBy,
-  onSortChange,
+  // Page-specific filter controls, shown after the search (the Dispatch
+  // Hub's store/product pickers).
+  extraFilters = null,
 }) {
   // Product-name autocomplete for the last comma-separated term (matches
   // the multi-term search convention the input already supports).
@@ -53,7 +48,7 @@ export default function OrdersToolbar({
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-2 py-3">
+    <div className="flex flex-wrap items-center gap-2 py-2">
       {/* w-64 on the input alone used to force this whole form wider than
           a phone screen, since the form itself had no flex-wrap of its
           own - the outer container wrapping the form as one unit didn't
@@ -72,7 +67,7 @@ export default function OrdersToolbar({
             onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
             placeholder="Search order, customer, phone, product…"
             title="Searches order no., customer, phone, product, SKU, tracking and city. Separate multiple values with commas, e.g. 87364,7386473,8343"
-            className="w-full rounded-l-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
+            className="w-full rounded-l-md border border-surface-border px-3 py-1.5 text-sm outline-none focus:border-brand-500"
           />
           {showSuggestions && suggestions.length > 0 ? (
             <ul className="absolute z-20 mt-1 w-full rounded-md border border-surface-border bg-white py-1 shadow-lg">
@@ -96,9 +91,7 @@ export default function OrdersToolbar({
         </Button>
       </form>
 
-      <Button variant="secondary" disabled title="Coming soon">
-        Saved Filters
-      </Button>
+      {extraFilters}
 
       <Dropdown
         disabled={selectedCount === 0}
@@ -115,40 +108,32 @@ export default function OrdersToolbar({
         }
         items={[
           ...(availableActions.length > 0
-            ? availableActions.map((a) => ({
-                key: a.key || a.action,
-                label: a.label,
-                disabled: a.disabled,
-                onClick: () => onAction(a.action),
-              }))
+            ? availableActions.map((a) =>
+                a.divider
+                  ? { key: a.key, divider: true }
+                  : {
+                      key: a.key || a.action,
+                      label: a.label,
+                      disabled: a.disabled,
+                      onClick: () => onAction(a.action),
+                    }
+              )
             : [{ key: "none", label: noActionsReason || "No actions available", disabled: true }]),
           // Not a status change, so it's offered for any status - but a
-          // ticket is about one order.
-          { key: "divider", divider: true },
-          {
-            key: "raise_ticket",
-            label: selectedCount === 1 ? "Raise ticket" : "Raise ticket (select one order)",
-            disabled: selectedCount !== 1,
-            onClick: onRaiseTicket,
-          },
+          // ticket is about one order. Left out where the page gives no
+          // onRaiseTicket (All Orders, which is view only).
+          ...(onRaiseTicket
+            ? [
+                { key: "divider", divider: true },
+                {
+                  key: "raise_ticket",
+                  label: selectedCount === 1 ? "Raise ticket" : "Raise ticket (select one order)",
+                  disabled: selectedCount !== 1,
+                  onClick: onRaiseTicket,
+                },
+              ]
+            : []),
         ]}
-      />
-
-      <Dropdown
-        trigger={
-          <span className="inline-flex items-center gap-1 rounded-md border border-surface-border px-3 py-2 text-sm text-slate-600">
-            <svg className="h-3.5 w-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M3 4h18M7 8h10M11 12h2" />
-            </svg>
-            {SORT_OPTIONS.find((o) => o.key === sortBy)?.label ?? "Date & Time"}
-            <span className="text-xs">▾</span>
-          </span>
-        }
-        items={SORT_OPTIONS.map((o) => ({
-          key: o.key,
-          label: o.key === sortBy ? `✓ ${o.label}` : o.label,
-          onClick: () => onSortChange(o.key),
-        }))}
       />
 
       <Button variant="secondary" onClick={onRefresh} loading={refreshing}>

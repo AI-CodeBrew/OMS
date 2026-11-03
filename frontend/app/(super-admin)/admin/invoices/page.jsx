@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import invoicesAdminService from "../../../../services/invoicesAdminService";
 import tenantsService from "../../../../services/tenantsService";
 import Button from "../../../../components/shared/Button";
+import DateInput from "../../../../components/shared/DateInput";
 
 const STATUS_TONE = {
   draft: "bg-slate-100 text-slate-600",
@@ -107,8 +108,7 @@ export default function InvoicesAdminPage() {
         </label>
         <label className="block text-sm">
           <span className="mb-1 block text-slate-600">Period start</span>
-          <input
-            type="date"
+          <DateInput
             value={genStart}
             onChange={(e) => setGenStart(e.target.value)}
             className="rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
@@ -116,8 +116,7 @@ export default function InvoicesAdminPage() {
         </label>
         <label className="block text-sm">
           <span className="mb-1 block text-slate-600">Period end</span>
-          <input
-            type="date"
+          <DateInput
             value={genEnd}
             onChange={(e) => setGenEnd(e.target.value)}
             className="rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"

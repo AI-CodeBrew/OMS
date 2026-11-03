@@ -11,11 +11,19 @@ function buildQuery(params = {}) {
   return qs ? `?${qs}` : "";
 }
 
+// DRF's field errors ({"name": ["This field is required."]}) as one line,
+// for responses without a `detail`.
+function fieldErrors(data) {
+  return Object.entries(data || {})
+    .map(([field, errors]) => `${field}: ${Array.isArray(errors) ? errors.join(" ") : errors}`)
+    .join("; ");
+}
+
 async function request(url, options = {}) {
   const response = await fetch(url, { headers: authService.getAuthHeaders(), ...options });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(data.detail || "Request failed");
+    throw new Error(data.detail || fieldErrors(data) || "Request failed");
   }
   return data;
 }
@@ -34,6 +42,69 @@ class WmsService {
     });
   }
 
+  // Add Warehouse on the Purchase Orders page - its code is made from the name.
+  async addWarehouse({ name, city, address, poc_name, poc_phone, remark }) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.warehouses}`, {
+      method: "POST",
+      body: JSON.stringify({ name, city, address, poc_name, poc_phone, remark, is_active: true }),
+    });
+  }
+
+  // --- Suppliers / Purchase orders ---
+  async listSuppliers() {
+    const data = await request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.suppliers}`);
+    return data.results || data;
+  }
+
+  async addSupplier({ name, phone, city }) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.suppliers}`, {
+      method: "POST",
+      body: JSON.stringify({ name, phone, city }),
+    });
+  }
+
+  // {count, results} - params: state (received | partial | not_received), search, page, page_size.
+  async listPurchaseOrders(params = {}) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.purchaseOrders}${buildQuery(params)}`);
+  }
+
+  async purchaseOrderSummary() {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.purchaseOrderSummary}`);
+  }
+
+  // { supplier, warehouse, ordered_at, lines: [{sku, product_name, image_url,
+  // quantity_ordered, unit_price, good, damaged}] }
+  async createPurchaseOrder(payload) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.purchaseOrders}`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  }
+
+  // receipts: [{line, good, damaged}] - added to what's already received.
+  async receivePurchaseOrder(id, receipts) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.purchaseOrderReceive(id)}`, {
+      method: "POST",
+      body: JSON.stringify({ receipts }),
+    });
+  }
+
+  // { sku, product_name, image_url } for an exact SKU, or null if there's none.
+  async purchaseOrderProduct(sku) {
+    const response = await fetch(
+      `${apiConfig.baseUrl}${API_ENDPOINTS.wms.purchaseOrderProduct}${buildQuery({ sku })}`,
+      { headers: authService.getAuthHeaders() }
+    );
+    if (response.status === 404) return null;
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Lookup failed");
+    return data;
+  }
+
+  async syncPurchaseOrderProducts() {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.purchaseOrderSyncShopify}`, { method: "POST" });
+  }
+
   // --- Stock ---
   // Returns DRF's paginated shape: {count, next, previous, results}.
   async listStock(params = {}) {
@@ -42,6 +113,33 @@ class WmsService {
 
   async stockSummary(params = {}) {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.stockSummary}${buildQuery(params)}`);
+  }
+
+  // The Inventory page: {count, results, summary: {total, active, inactive,
+  // out_of_stock}} - params: activity, search, page, page_size.
+  async inventoryOverview(params = {}) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.stockOverview}${buildQuery(params)}`);
+  }
+
+  // One item's details: {item, orders, purchases, movements}.
+  async inventoryReport(id) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.stockReport(id)}`);
+  }
+
+  async downloadInventoryReport(id, filename) {
+    const response = await fetch(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.stockReport(id)}?export=csv`, {
+      headers: authService.getAuthHeaders(),
+    });
+    if (!response.ok) throw new Error("Report download failed");
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
   }
 
   async downloadStockReportCsv({ dateFrom, dateTo } = {}) {
@@ -143,13 +241,16 @@ class WmsService {
     });
   }
 
-  async scanReturn({ trackingNumber, orderNumber, condition, note = "" }) {
+  // breakdown: [{key, good, damaged, lost}] per line (the receive popup) -
+  // only good units are restocked. Without it, condition applies to all.
+  async scanReturn({ trackingNumber, orderNumber, condition, breakdown, note = "" }) {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.returnScan}`, {
       method: "POST",
       body: JSON.stringify({
         tracking_number: trackingNumber,
         order_number: orderNumber,
         condition,
+        breakdown,
         note,
       }),
     });

@@ -1,76 +1,74 @@
 "use client";
 
 import Badge from "../shared/Badge";
-import Button from "../shared/Button";
-import EditableField from "../shared/EditableField";
-import { EDITABLE_STATUSES, STATUS_LABELS } from "./statusConfig";
+import { STATUS_LABELS, cardTab } from "./statusConfig";
 
-export default function OrderDetailHeader({ order, draft, editing, onChange, onToggleEdit, onSave, saving }) {
+const PAYMENT_STATUSES = [
+  { value: "pending", label: "Pending", badge: "amber" },
+  { value: "partially_paid", label: "Partially Paid", badge: "brand" },
+  { value: "paid", label: "Paid", badge: "green" },
+];
+
+const SELECT_CLASS =
+  "mt-0.5 w-full rounded-md border border-surface-border px-2 py-1 text-sm outline-none focus:border-brand-500";
+
+// Beside the order number at the top of the detail: the card the order is
+// in (Awaiting Confirmation, Dispatched, ...), and its own status too when
+// that says more (City Issue, Out for Delivery, ...).
+export function OrderStatusBadge({ order }) {
+  const card = cardTab(order.workflow_card)?.label;
+  const status = STATUS_LABELS[order.status] || order.status;
   return (
-    <div className="mb-4 flex items-start justify-between gap-4">
-      <div className="grid flex-1 grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3">
-        <div>
-          <div className="text-xs text-slate-500">Payment Status</div>
-          {editing ? (
-            <select
-              value={draft.payment_status}
-              onChange={(e) => onChange("payment_status", e.target.value)}
-              className="mt-0.5 w-full rounded-md border border-surface-border px-2 py-1 text-sm outline-none focus:border-brand-500"
-            >
-              <option value="pending">Pending</option>
-              <option value="paid">Paid</option>
-            </select>
-          ) : (
-            <Badge variant={order.payment_status === "paid" ? "green" : "amber"}>
-              {order.payment_status}
-            </Badge>
-          )}
-        </div>
-        <div>
-          <div className="text-xs text-slate-500">Status</div>
-          <Badge variant="brand">{STATUS_LABELS[order.status] || order.status}</Badge>
-        </div>
-        <div>
-          <div className="text-xs text-slate-500">Date</div>
-          <div className="text-sm text-slate-900">
-            {order.placed_at || order.created_at
-              ? new Date(order.placed_at || order.created_at).toLocaleString()
-              : "N/A"}
-          </div>
-        </div>
-        <EditableField
-          label="Order Source"
-          value={editing ? draft.order_source : order.order_source}
-          editing={editing}
-          onChange={(v) => onChange("order_source", v)}
-        />
-        <EditableField
-          label="Shipping Type"
-          value={editing ? draft.shipping_type : order.shipping_type}
-          editing={editing}
-          onChange={(v) => onChange("shipping_type", v)}
-        />
-      </div>
+    <>
+      <Badge variant="brand">{card || status}</Badge>
+      {card && card !== status ? <Badge variant="neutral">{status}</Badge> : null}
+      {/* Sub Status: the courier's own word for where the parcel is. */}
+      {order.courier_status ? (
+        <span className="text-xs font-normal text-slate-500">Sub status: {order.courier_status}</span>
+      ) : null}
+    </>
+  );
+}
 
-      <div className="shrink-0">
+// The order's payment/date/source block - sits below the items and money
+// in the detail panel. Edited through the panel's single Edit. The status
+// is at the top, beside the order number (OrderStatusBadge).
+export default function OrderDetailHeader({ order, draft, editing, onChange }) {
+  const payment = PAYMENT_STATUSES.find((p) => p.value === order.payment_status);
+
+  return (
+    <div className="mt-4 grid grid-cols-2 gap-x-6 gap-y-3 border-t border-surface-border pt-4 sm:grid-cols-3">
+      <div>
+        <div className="text-xs text-slate-500">Payment Status</div>
         {editing ? (
-          <div className="flex gap-2">
-            <Button variant="secondary" onClick={onToggleEdit} disabled={saving}>
-              Cancel
-            </Button>
-            <Button onClick={onSave} loading={saving}>
-              Save
-            </Button>
-          </div>
-        ) : EDITABLE_STATUSES.has(order.status) ? (
-          <button
-            type="button"
-            onClick={onToggleEdit}
-            className="text-sm font-medium text-brand-600 hover:underline"
+          <select
+            value={draft.payment_status}
+            onChange={(e) => onChange("payment_status", e.target.value)}
+            className={SELECT_CLASS}
           >
-            Edit
-          </button>
-        ) : null}
+            {PAYMENT_STATUSES.map((p) => (
+              <option key={p.value} value={p.value}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <Badge variant={payment?.badge || "amber"}>{payment?.label || order.payment_status}</Badge>
+        )}
+      </div>
+      {order.status === "cancelled" && order.cancel_reason ? (
+        <div>
+          <div className="text-xs text-slate-500">Cancel Reason</div>
+          <div className="text-sm text-red-700">{order.cancel_reason}</div>
+        </div>
+      ) : null}
+      <div>
+        <div className="text-xs text-slate-500">Date</div>
+        <div className="text-sm text-slate-900">
+          {order.placed_at || order.created_at
+            ? new Date(order.placed_at || order.created_at).toLocaleString()
+            : "N/A"}
+        </div>
       </div>
     </div>
   );

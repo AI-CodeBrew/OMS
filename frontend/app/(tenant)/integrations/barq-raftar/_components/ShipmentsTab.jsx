@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Button from "../../../../../components/shared/Button";
 import Modal from "../../../../../components/shared/Modal";
 import barqraftarService from "../_lib/barqraftarService";
+import DateInput from "../../../../../components/shared/DateInput";
 
 // BarqRaftar's own numeric status ids, from their Postman collection's
 // description - kept in sync with backend/integrations/barqraftar/
@@ -261,8 +262,7 @@ export default function ShipmentsTab({ onError }) {
       <form onSubmit={onFilter} className="mb-4 flex flex-wrap items-end gap-3">
         <label className="block">
           <span className="mb-1 block text-xs font-medium text-slate-600">From</span>
-          <input
-            type="date"
+          <DateInput
             value={filters.date_from}
             onChange={(e) => setFilters((f) => ({ ...f, date_from: e.target.value }))}
             className="rounded-md border border-surface-border px-3 py-1.5 text-sm outline-none focus:border-brand-500"
@@ -270,8 +270,7 @@ export default function ShipmentsTab({ onError }) {
         </label>
         <label className="block">
           <span className="mb-1 block text-xs font-medium text-slate-600">To</span>
-          <input
-            type="date"
+          <DateInput
             value={filters.date_to}
             onChange={(e) => setFilters((f) => ({ ...f, date_to: e.target.value }))}
             className="rounded-md border border-surface-border px-3 py-1.5 text-sm outline-none focus:border-brand-500"

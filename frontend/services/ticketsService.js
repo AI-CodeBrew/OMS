@@ -34,16 +34,18 @@ class TicketsService {
     return data;
   }
 
-  async create({ order, category, sub_category, description, priority }) {
+  async create({ order, category, sub_category, description }) {
     const response = await fetch(`${apiConfig.baseUrl}${API_ENDPOINTS.oms.tickets}`, {
       method: "POST",
       headers: authService.getAuthHeaders(),
-      body: JSON.stringify({ order, category, sub_category, description, priority }),
+      body: JSON.stringify({ order, category, sub_category, description }),
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       const message =
-        data.detail || (typeof data === "object" ? JSON.stringify(data) : "Failed to raise ticket");
+        data.detail ||
+        (data.description && [].concat(data.description).join(" ")) ||
+        (typeof data === "object" ? JSON.stringify(data) : "Failed to raise ticket");
       throw new Error(message);
     }
     return data;

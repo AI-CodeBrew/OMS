@@ -5,6 +5,7 @@ ledger - each extending core.models.TenantScopedModel and declared in the
 import uuid
 
 from django.db import models
+from django.db.models.expressions import RawSQL
 
 from core.models import TenantScopedModel
 
@@ -17,6 +18,12 @@ class Warehouse(TenantScopedModel):
     # Exactly one warehouse per org is the fulfilment default, so order
     # stock checks know where to look without the caller naming it.
     is_default = models.BooleanField(default=False)
+    # Where it is and who runs it - the Purchase Orders page's Add Warehouse.
+    city = models.CharField(max_length=100, blank=True, default="", db_default="")
+    address = models.CharField(max_length=255, blank=True, default="", db_default="")
+    poc_name = models.CharField(max_length=150, blank=True, default="", db_default="")
+    poc_phone = models.CharField(max_length=50, blank=True, default="", db_default="")
+    remark = models.CharField(max_length=255, blank=True, default="", db_default="")
 
     class Meta:
         db_table = '"wms"."warehouses"'
@@ -61,6 +68,10 @@ class StockItem(TenantScopedModel):
     # wms.services.import_skus_from_orders that haven't been matched to a
     # Shopify variant yet.
     shopify_inventory_item_id = models.BigIntegerField(null=True, blank=True)
+    # The Shopify product's first image - filled by the Purchase Orders
+    # page's Sync from Shopify (integrations.services.
+    # sync_product_images_from_shopify), shown when adding a PO.
+    image_url = models.URLField(max_length=1000, blank=True, default="", db_default="")
 
     # Local edits waiting for "Push to Shopify" (see integrations.services.
     # push_stock_changes_to_shopify). Stock is tracked as the net of unpushed
@@ -126,6 +137,7 @@ class StockMovement(TenantScopedModel):
         ("manual_adjustment", "Manual Adjustment"),
         ("initial", "Initial Stock"),
         ("shopify_sync", "Shopify Inventory Sync"),
+        ("purchase_receipt", "Purchase Receipt"),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -149,3 +161,77 @@ class StockMovement(TenantScopedModel):
 
     def __str__(self):
         return f"{self.stock_item_id} {self.delta:+d} ({self.reason})"
+
+
+class Supplier(TenantScopedModel):
+    """Who a purchase order is bought from."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=150)
+    phone = models.CharField(max_length=50, blank=True, default="")
+    city = models.CharField(max_length=100, blank=True, default="")
+
+    class Meta:
+        db_table = '"wms"."suppliers"'
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+
+class PurchaseOrder(TenantScopedModel):
+    """Stock bought from a supplier into one warehouse. Its lines say what
+    was ordered and how much has arrived (good + damaged); whether it's
+    Received, Partially Received or Not Received is worked out from those
+    (wms.services.purchase_order_state), never stored."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    # Human-facing id ("PO-000123"), same sequence-backed pattern as
+    # oms.DispatchBatch.number.
+    number = models.BigIntegerField(
+        unique=True, editable=False, db_default=RawSQL("nextval('wms.purchase_orders_number_seq')", [])
+    )
+    supplier = models.ForeignKey(Supplier, on_delete=models.PROTECT, related_name="purchase_orders")
+    warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name="purchase_orders")
+    # When it was ordered - filled with the time it was added, editable.
+    ordered_at = models.DateTimeField()
+    note = models.CharField(max_length=255, blank=True, default="")
+    created_by_user_id = models.UUIDField(null=True, blank=True)
+
+    class Meta:
+        db_table = '"wms"."purchase_orders"'
+        ordering = ["-ordered_at"]
+
+    def __str__(self):
+        return self.po_number
+
+    @property
+    def po_number(self):
+        return f"PO-{self.number:06d}" if self.number else ""
+
+
+class PurchaseOrderLine(TenantScopedModel):
+    """One SKU on a purchase order. good_received units are in stock
+    (each receipt adds them - see wms.services.receive_purchase_order);
+    damaged_received units arrived but were never added."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    purchase_order = models.ForeignKey(PurchaseOrder, on_delete=models.CASCADE, related_name="lines")
+    sku = models.CharField(max_length=100)
+    product_name = models.CharField(max_length=255, blank=True, default="")
+    image_url = models.URLField(max_length=1000, blank=True, default="")
+    quantity_ordered = models.PositiveIntegerField()
+    unit_price = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    good_received = models.PositiveIntegerField(default=0)
+    damaged_received = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        db_table = '"wms"."purchase_order_lines"'
+        ordering = ["created_at"]
+
+    def __str__(self):
+        return f"{self.sku} x{self.quantity_ordered}"
+
+    @property
+    def received(self):
+        return self.good_received + self.damaged_received

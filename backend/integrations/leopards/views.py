@@ -559,17 +559,103 @@ def _merge_pdfs(pdf_byte_list):
     return buffer.getvalue()
 
 
+# The heading of every page of a Leopards load sheet proper (its "Courier
+# Copy" / "Operation Copy" / "Customer Copy" summary pages).
+_LOAD_SHEET_HEADING = "booked packets summary report"
+
+
+def _load_sheet_pages_only(pdf_bytes):
+    """Leopards' downloadLoadSheet PDF opens with each packet's airway bill
+    slip, followed by the summary copies. The load sheet should be the
+    summary only (the slips are what "Print Airway Bill" is for), so pages
+    without the summary heading are dropped. Anything unexpected - no page
+    carries the heading (a layout change), nothing to drop, or the PDF can't
+    be read - hands back Leopards' PDF untouched, never an empty one."""
+    from pypdf import PdfReader, PdfWriter
+
+    try:
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        keep = [
+            index for index, page in enumerate(reader.pages)
+            if _LOAD_SHEET_HEADING in (page.extract_text() or "").lower()
+        ]
+        if not keep or len(keep) == len(reader.pages):
+            return pdf_bytes
+        writer = PdfWriter()
+        for index in keep:
+            writer.add_page(reader.pages[index])
+        buffer = io.BytesIO()
+        writer.write(buffer)
+        return buffer.getvalue()
+    except Exception:
+        logger.exception("leopards: could not trim the slip pages off a load sheet - returning it as is")
+        return pdf_bytes
+
+
 def _is_pdf(content, content_type):
     return "pdf" in (content_type or "") or (content or b"").startswith(b"%PDF")
 
 
+def render_airway_bills(order_ids, actor_user_id):
+    """The airway bills (slips) of `order_ids`, per (store, booking account).
+    Leopards gives each booking a slip_link rather than a print call, so every
+    saved link is fetched. Returns (pdf parts, error response, slip links);
+    when a link answers with something that isn't a PDF (a web page) no PDF
+    can be made, so pdf parts is None and the links are handed back."""
+    groups, error = _shipments_by_account(order_ids)
+    if error:
+        return None, error, []
+
+    pdf_parts = []
+    links = []
+    all_pdf = True
+    for organization_id, _connection_for_group, shipments in groups:
+        group_pdfs, group_numbers = [], []
+        for shipment in shipments:
+            if not shipment.slip_link:
+                return None, Response(
+                    {"detail": f"Order {shipment.order.order_number} has no Leopards slip link saved."},
+                    status=http_status.HTTP_404_NOT_FOUND,
+                ), links
+            links.append(shipment.slip_link)
+            try:
+                content, content_type = client.fetch_slip(shipment.slip_link)
+            except LeopardsAPIError as exc:
+                return None, _bad_gateway(exc), links
+            if _is_pdf(content, content_type):
+                group_pdfs.append(content)
+                group_numbers.append(shipment.order.order_number)
+            else:
+                all_pdf = False
+        if group_pdfs:
+            merged = _merge_pdfs(group_pdfs)
+            _save_print_batch(
+                organization_id=organization_id, order_numbers=group_numbers,
+                content=merged, actor_user_id=actor_user_id, kind="airway_bill",
+            )
+            pdf_parts.append(merged)
+
+    if all_pdf and pdf_parts:
+        return pdf_parts, None, links
+    return None, None, links
+
+
+def render_airway_bills_for_hub(order_ids, actor_user_id):
+    """render_airway_bills in the (pdf parts, error response) shape the
+    Dispatch Hub's print-by-courier uses: slips that came back as web pages
+    become an error there, since that print can only merge PDFs."""
+    parts, error, links = render_airway_bills(order_ids, actor_user_id)
+    if error or parts:
+        return parts, error
+    return None, Response(
+        {"detail": "Leopards' slips opened as web pages, not PDFs - print them from the Leopards portal."},
+        status=http_status.HTTP_502_BAD_GATEWAY,
+    )
+
+
 class LeopardsAirwayBillView(APIView):
     """POST {order_ids} -> one merged PDF of Leopards airway bills (slips).
-
-    Leopards gives each booking a slip_link ("copy this URL in a browser to
-    get the slip") rather than a print call, so every saved link is fetched
-    and the PDFs merged. If a link answers with something that isn't a PDF
-    (a web page), no PDF can be made from it here: the answer is JSON
+    If a link answers with something that isn't a PDF, the answer is JSON
     {"slip_links": [...]} and the page opens them instead."""
 
     permission_classes = [RequireModule]
@@ -580,94 +666,75 @@ class LeopardsAirwayBillView(APIView):
         if not order_ids:
             return Response({"detail": "order_ids is required"}, status=http_status.HTTP_400_BAD_REQUEST)
 
-        groups, error = _shipments_by_account(order_ids)
+        pdf_parts, error, links = render_airway_bills(order_ids, request.user_id)
         if error:
             return error
-
-        pdf_parts = []
-        links = []
-        all_pdf = True
-        for organization_id, _connection_for_group, shipments in groups:
-            group_pdfs, group_numbers = [], []
-            for shipment in shipments:
-                if not shipment.slip_link:
-                    return Response(
-                        {"detail": f"Order {shipment.order.order_number} has no Leopards slip link saved."},
-                        status=http_status.HTTP_404_NOT_FOUND,
-                    )
-                links.append(shipment.slip_link)
-                try:
-                    content, content_type = client.fetch_slip(shipment.slip_link)
-                except LeopardsAPIError as exc:
-                    return _bad_gateway(exc)
-                if _is_pdf(content, content_type):
-                    group_pdfs.append(content)
-                    group_numbers.append(shipment.order.order_number)
-                else:
-                    all_pdf = False
-            if group_pdfs:
-                merged = _merge_pdfs(group_pdfs)
-                _save_print_batch(
-                    organization_id=organization_id, order_numbers=group_numbers,
-                    content=merged, actor_user_id=request.user_id, kind="airway_bill",
-                )
-                pdf_parts.append(merged)
-
-        if all_pdf and pdf_parts:
+        if pdf_parts:
             return HttpResponse(_merge_pdfs(pdf_parts), content_type="application/pdf")
         return JsonResponse({"slip_links": links})
 
 
+def render_load_sheets(order_ids, actor_user_id):
+    """Leopards' own load sheet PDF for `order_ids`' active shipments, per
+    (store, booking account). This is the hand-over step on Leopards' side:
+    generateLoadSheet makes the sheet (once per parcel - the id is kept on
+    the shipment), downloadLoadSheet returns its PDF (without the airway bill
+    slips Leopards puts in front - see _load_sheet_pages_only), and unlike
+    PostEx's it can be downloaded again by id whenever needed. Returns (pdf
+    parts, error response)."""
+    from oms import services as oms_services
+
+    groups, error = _shipments_by_account(order_ids)
+    if error:
+        return None, error
+    pdf_parts = []
+    for organization_id, connection, shipments in groups:
+        try:
+            # Sheets already made are downloaded again by their id.
+            for sheet_id in dict.fromkeys(s.load_sheet_id for s in shipments if s.load_sheet_id):
+                pdf_parts.append(_load_sheet_pages_only(client.download_load_sheet_pdf(connection, sheet_id)))
+
+            fresh = [s for s in shipments if not s.load_sheet_id]
+            if fresh:
+                sheet_id = client.generate_load_sheet(
+                    connection, [s.tracking_number for s in fresh],
+                    courier_name=connection.load_sheet_courier_name,
+                    courier_code=connection.load_sheet_courier_code,
+                )
+                pdf_bytes = _load_sheet_pages_only(client.download_load_sheet_pdf(connection, sheet_id))
+                services.mark_load_sheet_generated(fresh, sheet_id)
+                _save_print_batch(
+                    organization_id=organization_id,
+                    order_numbers=[s.order.order_number for s in fresh],
+                    content=pdf_bytes, actor_user_id=actor_user_id, kind="loadsheet",
+                )
+                pdf_parts.append(pdf_bytes)
+        except LeopardsAPIError as exc:
+            return None, _bad_gateway(exc)
+
+        # Every one of them is on a load sheet now - handed over, so out
+        # of Ready to Print and into Awaiting Dispatched.
+        oms_services.mark_orders_handed_over(
+            [s.order for s in shipments], actor_user_id=actor_user_id, note="Leopards load sheet",
+        )
+    return pdf_parts, None
+
+
 class LeopardsLoadSheetView(APIView):
     """POST {order_ids} -> Leopards' own load sheet PDF for the selected
-    orders' active shipments. This is the hand-over step on Leopards' side:
-    generateLoadSheet makes the sheet (once per parcel - the id is kept on
-    the shipment), downloadLoadSheet returns its PDF, and unlike PostEx's it
-    can be downloaded again by id whenever needed."""
+    orders' active shipments (see render_load_sheets)."""
 
     permission_classes = [RequireModule]
     required_module = "oms"
 
     def post(self, request):
-        from oms import services as oms_services
-
         order_ids = request.data.get("order_ids") or []
         if not order_ids:
             return Response({"detail": "order_ids is required"}, status=http_status.HTTP_400_BAD_REQUEST)
 
-        groups, error = _shipments_by_account(order_ids)
+        pdf_parts, error = render_load_sheets(order_ids, request.user_id)
         if error:
             return error
-        pdf_parts = []
-        for organization_id, connection, shipments in groups:
-            try:
-                # Sheets already made are downloaded again by their id.
-                for sheet_id in dict.fromkeys(s.load_sheet_id for s in shipments if s.load_sheet_id):
-                    pdf_parts.append(client.download_load_sheet_pdf(connection, sheet_id))
-
-                fresh = [s for s in shipments if not s.load_sheet_id]
-                if fresh:
-                    sheet_id = client.generate_load_sheet(
-                        connection, [s.tracking_number for s in fresh],
-                        courier_name=connection.load_sheet_courier_name,
-                        courier_code=connection.load_sheet_courier_code,
-                    )
-                    pdf_bytes = client.download_load_sheet_pdf(connection, sheet_id)
-                    services.mark_load_sheet_generated(fresh, sheet_id)
-                    _save_print_batch(
-                        organization_id=organization_id,
-                        order_numbers=[s.order.order_number for s in fresh],
-                        content=pdf_bytes, actor_user_id=request.user_id, kind="loadsheet",
-                    )
-                    pdf_parts.append(pdf_bytes)
-            except LeopardsAPIError as exc:
-                return _bad_gateway(exc)
-
-            # Every one of them is on a load sheet now - handed over, so out
-            # of Ready to Print and into Awaiting Dispatched.
-            oms_services.mark_orders_handed_over(
-                [s.order for s in shipments], actor_user_id=request.user_id, note="Leopards load sheet",
-            )
         return HttpResponse(_merge_pdfs(pdf_parts), content_type="application/pdf")
 
 

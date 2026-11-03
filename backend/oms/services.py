@@ -1,6 +1,7 @@
 import logging
 import re
 from datetime import timedelta
+from zoneinfo import ZoneInfo
 from decimal import Decimal
 
 from django.db import transaction
@@ -26,15 +27,16 @@ def create_order(*, organization_id, order_number, customer_name, customer_phone
     the order's first note."""
     from .models import OrderNote
 
+    # shop / order_source can be overridden through extra_fields - a
+    # recreated order keeps the store name of the order it came from.
+    fields = {"shop": "Manual", "order_source": "Manual", **(extra_fields or {})}
     order = Order.objects.create(
         organization_id=organization_id,
         order_number=order_number,
         customer_name=customer_name,
         customer_phone=customer_phone or "",
         status="new",
-        shop="Manual",
-        order_source="Manual",
-        **(extra_fields or {}),
+        **fields,
     )
 
     total = 0
@@ -103,7 +105,11 @@ ALLOWED_TRANSITIONS = {
     # pending_cc/pending_cod stay listed so orders that were already in
     # them keep their way forward (and a stray old transition still works),
     # but acknowledge_order no longer routes anything there.
-    "new": {"awaiting_assigning", "pending_cc", "pending_cod", "cancelled"},
+    # approved: the New tab's "Approved" action - straight to Approved
+    # for an order dispatched without a courier booking.
+    # city_issue: Approve on an order whose city isn't on the couriers'
+    # city list (see acknowledge_order).
+    "new": {"awaiting_assigning", "pending_cc", "pending_cod", "city_issue", "approved", "cancelled"},
     "pending_cc": {"awaiting_assigning", "city_issue", "cancelled"},
     "pending_cod": {"awaiting_assigning", "city_issue", "cancelled"},
     "city_issue": {"awaiting_assigning", "cancelled"},
@@ -144,6 +150,33 @@ ALLOWED_TRANSITIONS = {
     "cancelled": set(),
     "returned": set(),
 }
+
+
+# The Orders page's cards, each the statuses it lists. Every status is in
+# exactly one, so an order never shows under two cards - except that an
+# out-for-delivery order the courier is bringing back (return_in_progress_
+# at) moves from Dispatched/Undelivered to Return in Transit, which has no
+# status of its own (see workflow_card / card_queryset). "all" is every
+# order.
+WORKFLOW_CARD_STATUSES = {
+    "awaiting_confirmation": {"new", "pending_cc", "pending_cod", "city_issue", "awaiting_approval"},
+    "approved": {"awaiting_assigning", "approved"},
+    "assigning_courier": {
+        "booking_pending", "ready_to_print", "ready_to_pick", "awaiting_dispatched", "dispatch_issue",
+    },
+    "dispatched": {"dispatched", "out_for_delivery"},
+    "undelivered": {"attempt"},
+    "delivered": {"delivered"},
+    "returned": {"returned"},
+    "cancelled": {"cancelled"},
+}
+# Out with the courier - where a return can be under way before the order
+# is Returned.
+RETURNABLE_STATUSES = {"dispatched", "out_for_delivery", "attempt"}
+WORKFLOW_CARDS = [
+    "awaiting_confirmation", "approved", "assigning_courier", "dispatched", "undelivered",
+    "delivered", "return_in_transit", "returned", "cancelled",
+]
 
 
 class InvalidTransition(Exception):
@@ -193,12 +226,23 @@ def _apply_transition(order, to_status, *, actor_user_id=None, note="", extra_fi
     """All the bookkeeping a transition needs, minus the legality check -
     shared by _transition (checked) and _force_transition (unchecked)."""
     from_status = order.status
+    extra_fields = dict(extra_fields or {})
+    # Each move into Out for Delivery is one delivery attempt. Counted on the
+    # move itself, so a courier repeating the same status (poll + webhook)
+    # never counts it twice. A parcel going out again isn't on its way back.
+    if to_status == "out_for_delivery" and from_status != "out_for_delivery":
+        extra_fields.setdefault("delivery_attempts", (order.delivery_attempts or 0) + 1)
+        if order.return_in_progress_at:
+            extra_fields.setdefault("return_in_progress_at", None)
+    # The Approved card's "Cancelled from Assigning Courier" / "Courier
+    # Change Failed" only describe an order still sitting there.
+    if order.workflow_flag and to_status not in WORKFLOW_CARD_STATUSES["approved"]:
+        extra_fields.setdefault("workflow_flag", "")
     order.status = to_status
     update_fields = ["status", "updated_at"]
-    if extra_fields:
-        for field, value in extra_fields.items():
-            setattr(order, field, value)
-            update_fields.append(field)
+    for field, value in extra_fields.items():
+        setattr(order, field, value)
+        update_fields.append(field)
     order.save(update_fields=update_fields)
 
     OrderStatusEvent.objects.create(
@@ -285,9 +329,22 @@ def _apply_transition(order, to_status, *, actor_user_id=None, note="", extra_fi
 
 
 def acknowledge_order(order, *, actor_user_id=None):
-    """New -> Awaiting Assigning. The CS team taking an order out of the
-    untouched inbox and starting work on it. (This used to stop in Pending
-    CC/COD first, needing a separate Confirm - that step is gone.)"""
+    """New -> Awaiting Assigning: the Awaiting Confirmation card's Approve,
+    which puts the order in the Approved card, ready for a courier. (This
+    used to stop in Pending CC/COD first, needing a separate Confirm - that
+    step is gone.) Same checks as approve_order - only a correct order is
+    approved. An order whose only problem is its city goes to City Issue
+    instead, to be fixed there (resolve_city_issue) and then approved."""
+    from .approval_checks import approval_problems, city_problem
+
+    problems = approval_problems(order, include_city=False)
+    if problems:
+        raise InvalidTransition("Can't approve - " + "; ".join(problems))
+    problem = city_problem(order.city)
+    if problem:
+        if order.status == "city_issue":
+            raise InvalidTransition(f"Can't approve - {problem}")
+        return _transition(order, "city_issue", actor_user_id=actor_user_id, note=problem)
     return _transition(order, "awaiting_assigning", actor_user_id=actor_user_id)
 
 
@@ -297,11 +354,26 @@ def confirm_order(order, *, city_ok=True, actor_user_id=None):
 
 
 def resolve_city_issue(order, *, new_city, actor_user_id=None):
+    """City Issue -> Awaiting Assigning (the Approved card), with the city
+    corrected - only to a city on the couriers' list, and only if the rest
+    of the order passes the approval checks too."""
+    from .approval_checks import approval_problems, city_key, city_problem
+    from .models import City
+
+    new_city = " ".join((new_city or "").split())
+    problem = city_problem(new_city)
+    if problem:
+        raise InvalidTransition(f"Can't approve - {problem}")
+    problems = approval_problems(order, include_city=False)
+    if problems:
+        raise InvalidTransition("Can't approve - " + "; ".join(problems))
+    # Saved as the list spells it ("lahore" -> "Lahore").
+    listed = City.objects.filter(name_key=city_key(new_city)).values_list("name", flat=True).first()
     return _transition(
         order,
         "awaiting_assigning",
         actor_user_id=actor_user_id,
-        extra_fields={"city": new_city},
+        extra_fields={"city": listed or new_city},
     )
 
 
@@ -364,6 +436,15 @@ def ensure_default_couriers(organization_id):
 
 
 def approve_order(order, *, actor_user_id=None):
+    """Only a fully correct order reaches Approved - name, an 11-digit
+    phone, an address, a city on the city list, and no receivable left
+    on a prepaid order (oms.approval_checks). Anything wrong keeps it where
+    it is, with every problem listed."""
+    from .approval_checks import approval_problems
+
+    problems = approval_problems(order)
+    if problems:
+        raise InvalidTransition("Can't approve - " + "; ".join(problems))
     return _transition(order, "approved", actor_user_id=actor_user_id)
 
 
@@ -381,6 +462,150 @@ def mark_dispatch_issue(order, *, note="", actor_user_id=None):
     )
 
 
+def set_order_tag(order, *, tag, actor_user_id=None):
+    """Update Tag: the order's own free-form tag (Order.tag - the orders
+    table's Tag column). The status doesn't change; the change is in the
+    order log."""
+    tag = (tag or "").strip()[:100]
+    if tag == order.tag:
+        return order
+    old = order.tag
+    order.tag = tag
+    order.save(update_fields=["tag", "updated_at"])
+    OrderStatusEvent.objects.create(
+        organization_id=order.organization_id,
+        order=order,
+        from_status=order.status,
+        to_status=order.status,
+        note=f"Tag changed from {old or '(none)'} to {tag or '(none)'}",
+        actor_user_id=actor_user_id,
+    )
+    publish_event(
+        "order.updated",
+        {
+            "organization_id": str(order.organization_id),
+            "order_id": str(order.id),
+            "order_number": order.order_number,
+            "source": "tag",
+        },
+    )
+    return order
+
+
+# The day an order "is on" for date filters and the Dashboard - Pakistan's,
+# not the server's UTC, so an order placed at 2 AM is today's, not
+# yesterday's (UTC is 5 hours behind).
+BUSINESS_TZ = ZoneInfo("Asia/Karachi")
+
+REVERT_NOTE_PREFIX = "Reverted to "
+
+# Before a courier booking exists - where Revert is offered. (Same set as
+# DISPATCH_REQUESTABLE_STATUSES further down, which it would be a forward
+# reference to here.)
+_PRE_BOOKING_STATUSES = {
+    "new", "pending_cc", "pending_cod", "city_issue", "awaiting_assigning",
+    "awaiting_approval", "approved",
+}
+# Statuses before a courier is assigned at all - reverting into one of
+# these drops a manually assigned (not yet booked) courier too.
+_BEFORE_COURIER_STATUSES = {"new", "pending_cc", "pending_cod", "city_issue", "awaiting_assigning"}
+
+
+def previous_status(order):
+    """The status `order` came from into its current one, for Revert - or
+    None when there's nothing to go back to (booked already, or no earlier
+    pre-booking status on record). Earlier reverts are skipped, so reverting
+    twice walks two steps back instead of undoing the first revert."""
+    if order.status not in _PRE_BOOKING_STATUSES or order.tracking_number:
+        return None
+    events = OrderStatusEvent.all_objects.filter(
+        order_id=order.id, to_status=order.status
+    ).exclude(note__startswith=REVERT_NOTE_PREFIX).order_by("-created_at")
+    for event in events[:5]:
+        if event.from_status in _PRE_BOOKING_STATUSES and event.from_status != order.status:
+            return event.from_status
+    return None
+
+
+def revert_to_previous_status(order, *, actor_user_id=None):
+    """Moves an order that isn't booked yet back to the status it came
+    from (see previous_status)."""
+    target = previous_status(order)
+    if not target:
+        raise InvalidTransition(
+            f"Order {order.order_number} has no earlier status to revert to."
+        )
+    label = dict(Order.STATUS_CHOICES).get(target, target)
+    extra = {"courier_id": None} if target in _BEFORE_COURIER_STATUSES and order.courier_id else None
+    return _force_transition(
+        order, target, actor_user_id=actor_user_id, note=f"{REVERT_NOTE_PREFIX}{label}", extra_fields=extra
+    )
+
+
+SHIPPER_ADVICES = ("Reattempt", "Return")
+
+
+def set_shipper_advice(order, *, advice, remarks="", actor_user_id=None):
+    """Undelivered's Shipper Advice: what the store wants the courier to do
+    after a failed delivery - Reattempt or Return - with remarks (a new
+    time, a corrected address, ...). Saved on the order and in its log;
+    the status doesn't change."""
+    advice = (advice or "").strip()
+    remarks = (remarks or "").strip()[:255]
+    if advice not in SHIPPER_ADVICES:
+        raise InvalidTransition("Pick Reattempt or Return.")
+    # The card, not just the status - a failed attempt already on its way
+    # back sits in Return in Transit instead.
+    if workflow_card(order) != "undelivered":
+        raise InvalidTransition(
+            f"Order {order.order_number} isn't in Undelivered - Shipper Advice is only for "
+            "Undelivered orders."
+        )
+    order.shipper_advice = advice
+    order.shipper_advice_remarks = remarks
+    order.shipper_advice_at = timezone.now()
+    order.save(update_fields=["shipper_advice", "shipper_advice_remarks", "shipper_advice_at", "updated_at"])
+    OrderStatusEvent.objects.create(
+        organization_id=order.organization_id,
+        order=order,
+        from_status=order.status,
+        to_status=order.status,
+        note=f"Shipper advice: {advice}" + (f" - {remarks}" if remarks else ""),
+        actor_user_id=actor_user_id,
+    )
+    publish_event(
+        "order.updated",
+        {
+            "organization_id": str(order.organization_id),
+            "order_id": str(order.id),
+            "order_number": order.order_number,
+            "source": "shipper_advice",
+        },
+    )
+    return order
+
+
+def revert_to_awaiting_confirmation(order, *, tag, actor_user_id=None):
+    """The Approved card's Revert: back to New (Awaiting Confirmation) with
+    a tag saying why, to be checked and approved again. Only before a
+    courier booking - nothing is booked or taken from stock in this card."""
+    tag = (tag or "").strip()[:100]
+    if not tag:
+        raise InvalidTransition("Pick a tag for the revert.")
+    if order.status not in WORKFLOW_CARD_STATUSES["approved"]:
+        raise InvalidTransition(
+            f"Order {order.order_number} is {order.get_status_display()} - only Approved orders "
+            "can go back to Awaiting Confirmation."
+        )
+    extra = {"tag": tag}
+    if order.courier_id:
+        extra["courier_id"] = None
+    return _force_transition(
+        order, "new", actor_user_id=actor_user_id,
+        note=f"{REVERT_NOTE_PREFIX}Awaiting Confirmation - tag: {tag}", extra_fields=extra,
+    )
+
+
 def retry_dispatch(order, *, actor_user_id=None):
     return _transition(order, "awaiting_dispatched", actor_user_id=actor_user_id)
 
@@ -392,7 +617,21 @@ def mark_delivered(order, *, actor_user_id=None):
     )
 
 
-def cancel_order(order, *, reason="", actor_user_id=None, propagate_to_courier=True):
+def _release_courier_booking(order, *, actor_user_id=None, propagate_to_courier=True,
+                             note="Order cancelled by Smartlane/staff", strict=False):
+    """Undoes the courier side of a booking: asks the courier to cancel it
+    (propagate_to_courier - off when the courier itself reported the
+    cancel), puts the stock the booking consumed back, and deactivates the
+    courier's shipment row. Shared by cancel_order, unbook_from_assigning
+    and unbook_cancelled_by_courier. Does nothing for an order with no
+    courier.
+
+    Returns a warning when Smartlane didn't confirm its cancel (that call is
+    best-effort), else "". strict raises SmartlaneBookingError instead - for
+    Change Courier / Edit Order, where the order is about to be booked again
+    and a booking Smartlane still holds would leave two live consignments.
+    """
+    warning = ""
     # Smartlane-booked orders (Booking Pending / Ready to Print / Ready to
     # Pick - the only statuses cancel is even reachable from once Smartlane
     # is involved, per ALLOWED_TRANSITIONS) have a live consignment on
@@ -406,16 +645,22 @@ def cancel_order(order, *, reason="", actor_user_id=None, propagate_to_courier=T
     if order.courier_id and order.courier.name in _smartlane_courier_names():
         from wms import services as wms_services
 
-        try:
-            from integrations import smartlane_client
-            from integrations.models import SmartlaneConnection
+        if propagate_to_courier:
+            try:
+                from integrations import smartlane_client
+                from integrations.models import SmartlaneConnection
 
-            connection = SmartlaneConnection.for_order(order)
-            smartlane_client.cancel_consignment(
-                connection.api_key, SmartlaneConnection.reference_for(order)
-            )
-        except Exception:
-            pass
+                connection = SmartlaneConnection.for_order(order)
+                smartlane_client.cancel_consignment(
+                    connection.api_key, SmartlaneConnection.reference_for(order)
+                )
+            except Exception as exc:
+                if strict:
+                    raise SmartlaneBookingError(
+                        f"Smartlane didn't cancel the booking for {order.order_number}: {exc}"
+                    ) from exc
+                warning = f"Smartlane didn't confirm the booking cancel: {exc}"[:200]
+                logger.warning("order %s: %s", order.order_number, warning)
         # consume_for_order only ever runs for a Smartlane courier (push_
         # order_to_smartlane/absorb_smartlane_booking, both set that courier
         # in the same breath as consuming), so this is exactly
@@ -423,7 +668,7 @@ def cancel_order(order, *, reason="", actor_user_id=None, propagate_to_courier=T
         # (release_order_stock checks for its own prior reversal), so this
         # is safe even if abandon_smartlane_booking already released it.
         wms_services.release_order_stock(
-            order, actor_user_id=actor_user_id, note="Order cancelled by Smartlane/staff"
+            order, actor_user_id=actor_user_id, note=note
         )
     # Additive, BarqRaftar-only branch (integrations/barqraftar/) - kept
     # entirely separate from the Smartlane branch above, an `elif` so the
@@ -477,7 +722,225 @@ def cancel_order(order, *, reason="", actor_user_id=None, propagate_to_courier=T
         if propagate_to_courier:
             leopards_services.cancel_on_leopards(order)
         leopards_services.release_shipment_stock_and_deactivate(order, actor_user_id=actor_user_id)
-    return _transition(order, "cancelled", actor_user_id=actor_user_id, note=reason)
+    return warning
+
+
+def cancel_order(order, *, reason="", actor_user_id=None, propagate_to_courier=True):
+    warning = _release_courier_booking(
+        order, actor_user_id=actor_user_id, propagate_to_courier=propagate_to_courier
+    )
+    # A Smartlane cancel that wasn't confirmed stays on the order's log, so
+    # nobody takes the booking for cancelled on Smartlane's side.
+    note = f"{reason} ({warning})" if warning else reason
+    return _transition(
+        order,
+        "cancelled",
+        actor_user_id=actor_user_id,
+        note=note,
+        extra_fields={"cancel_reason": (reason or "")[:255]},
+    )
+
+
+# Why an order came back to Approved with its booking cancelled - see
+# Order.workflow_flag.
+FLAG_CANCELLED_FROM_ASSIGNING = "cancelled_from_assigning"
+FLAG_COURIER_CHANGE_FAILED = "courier_change_failed"
+# Auto Book found the order's city on neither BarqRaftar's nor PostEx's
+# list (see auto_book_routes).
+FLAG_NO_CITY_MATCH = "no_city_match"
+# A booking was refused because the warehouse doesn't hold enough of the
+# order's items - it stays in Approved until there is (see
+# flag_stock_shortages).
+FLAG_NO_STOCK = "no_stock"
+
+# Everything a booking leaves on the order - cleared when the booking is
+# undone, so no old courier or tracking number lingers as the active one.
+_BOOKING_FIELDS_CLEARED = {
+    "courier_id": None,
+    "tracking_number": "",
+    "platform_reference": "",
+    "courier_status": "",
+    "booked_at": None,
+    "dispatched_at": None,
+    "hub_dispatched_at": None,
+    "packed_at": None,
+    "packed_by_email": "",
+}
+
+
+def auto_book_routes(organization_id, order_ids, *, via_platform=False):
+    """Auto Book's routing: an order whose city is spelled exactly as one
+    of BarqRaftar's cities goes to BarqRaftar, else exactly as one of
+    PostEx's to PostEx (only case, extra spaces and dots are ignored - no
+    short forms or aliases). An order on neither list stays where it is,
+    tagged No City Matched. Returns (barqraftar_ids, postex_ids,
+    unmatched_ids, error) - error instead when either list can't be read,
+    so nothing is routed on a guess."""
+    from integrations.barqraftar import services as barqraftar_services
+    from integrations.barqraftar.models import BarqRaftarConnection
+    from integrations.postex import services as postex_services
+    from integrations.postex.models import PostExConnection
+
+    from .approval_checks import city_key
+
+    lists = {}
+    for name, module, model, read in (
+        ("BarqRaftar", barqraftar_services, BarqRaftarConnection, lambda c: [x["name"] for x in barqraftar_services.get_cities(c)]),
+        ("PostEx", postex_services, PostExConnection, postex_services.get_cities),
+    ):
+        connection = (
+            module.platform_connection() if via_platform
+            else model.objects.filter(organization_id=organization_id, is_connected=True).first()
+        )
+        if connection is None:
+            return [], [], [], f"Connect {name} from the Integrations page first - Auto Book needs its city list."
+        try:
+            lists[name] = {city_key(c) for c in read(connection)}
+        except Exception as exc:
+            return [], [], [], f"Could not load {name} cities: {exc}"
+
+    cities = {
+        str(oid): city
+        for oid, city in Order.objects.filter(
+            organization_id=organization_id, id__in=order_ids
+        ).values_list("id", "city")
+    }
+    barqraftar_ids, postex_ids, unmatched_ids = [], [], []
+    for order_id in order_ids:
+        key = city_key(cities.get(str(order_id), ""))
+        if key and key in lists["BarqRaftar"]:
+            barqraftar_ids.append(order_id)
+        elif key and key in lists["PostEx"]:
+            postex_ids.append(order_id)
+        else:
+            unmatched_ids.append(order_id)
+    if unmatched_ids:
+        Order.objects.filter(
+            organization_id=organization_id, id__in=unmatched_ids, status="awaiting_assigning"
+        ).update(workflow_flag=FLAG_NO_CITY_MATCH, updated_at=timezone.now())
+    return barqraftar_ids, postex_ids, unmatched_ids, None
+
+
+def _stock_priority(order):
+    """Who gets limited stock first: prepaid before COD, then oldest first
+    (FIFO). Internal only - never shown in the UI."""
+    prepaid = order.payment_gateway != "cod" or order.payment_status == "paid"
+    return (0 if prepaid else 1, order.placed_at or order.created_at)
+
+
+def allocate_stock(orders):
+    """Shares the warehouse's stock among `orders` (about to be booked) in
+    _stock_priority order, each order holding its units so the next one
+    only sees what's left - a bulk booking can't promise the same units
+    twice, and a prepaid order is never left short for a COD one. Returns
+    (fitting orders in priority order, [(order, shortages)])."""
+    from wms import services as wms_services
+
+    reserved = {}
+    fits, short = [], []
+    for order in sorted(orders, key=_stock_priority):
+        shortages = wms_services.check_order_stock(
+            order, reserved=reserved.setdefault(order.organization_id, {})
+        )
+        if shortages:
+            short.append((order, shortages))
+        else:
+            fits.append(order)
+    return fits, short
+
+
+def flag_stock_shortages(results):
+    """Tags the orders a booking refused for stock (error_code
+    insufficient_stock) Stock Not Available, so they're told apart in
+    Approved. The tag clears once the order is booked (see _transition)."""
+    short = [r["order_id"] for r in results if r.get("error_code") == "insufficient_stock"]
+    if short:
+        rows = Order.objects.filter(id__in=short, status="awaiting_assigning")
+        tagged = list(rows.only("id", "organization_id", "order_number"))
+        rows.update(workflow_flag=FLAG_NO_STOCK, updated_at=timezone.now())
+        # A queryset update, so oms.signals' change log doesn't see it.
+        for order in tagged:
+            _log_order_change(order, "Tagged Stock Not Available")
+
+
+def _log_order_change(order, what, *, actor_user_id=None):
+    """A Logs-tab row for an order change made with a queryset update,
+    which oms.signals' change log can't see."""
+    try:
+        from core.rbac import write_audit_log
+
+        write_audit_log(
+            organization_id=order.organization_id,
+            action="order.updated",
+            summary=f"Order {order.order_number}: {what}",
+            actor_user_id=actor_user_id,
+            entity_type="order",
+            entity_id=str(order.id),
+            metadata={"order_number": order.order_number},
+        )
+    except Exception:
+        logger.exception("Failed to log change to order %s", order.order_number)
+
+
+def unbook_from_assigning(order, *, flag, reason, actor_user_id=None):
+    """Assigning Courier's Edit Order and Change Courier: cancels the
+    order's booking with its courier (strictly - a courier that refuses,
+    e.g. the parcel is already picked up, leaves the order exactly as it
+    was), puts its stock back, and returns it to Approved (awaiting_
+    assigning) with no courier or tracking number and `flag` set. The old
+    courier and tracking number stay on its log."""
+    if order.status not in WORKFLOW_CARD_STATUSES["assigning_courier"]:
+        raise InvalidTransition(
+            f"Order {order.order_number} is {order.get_status_display()} - only orders in "
+            "Assigning Courier can have their booking cancelled here."
+        )
+    old_booking = " ".join(
+        part for part in (order.courier.name if order.courier_id else "", order.tracking_number) if part
+    )
+    with transaction.atomic():
+        _release_courier_booking(
+            order, actor_user_id=actor_user_id, note=f"{reason} - booking cancelled", strict=True
+        )
+        return _force_transition(
+            order,
+            "awaiting_assigning",
+            actor_user_id=actor_user_id,
+            note=f"{reason} - booking {old_booking or '(none)'} cancelled",
+            extra_fields={**_BOOKING_FIELDS_CLEARED, "workflow_flag": flag},
+        )
+
+
+# Statuses an order can be in when its courier cancels the booking - booked,
+# not yet with the customer or back.
+_UNBOOKABLE_STATUSES = {
+    "booking_pending", "ready_to_print", "ready_to_pick", "awaiting_dispatched",
+    "dispatch_issue", "dispatched", "out_for_delivery", "attempt",
+}
+
+
+def unbook_cancelled_by_courier(order, *, courier_label, actor_user_id=None):
+    """The courier cancelled the booking on its own portal: the order itself
+    isn't cancelled - only its booking is. The stock goes back, the courier,
+    consignment/tracking number and booking stamps are cleared, and the
+    order returns to Awaiting Assigning to be booked again. Returns True if
+    the order changed; an order already past booking's reach (delivered,
+    returned, cancelled) or not booked is left alone."""
+    if order.status not in _UNBOOKABLE_STATUSES:
+        return False
+    _release_courier_booking(
+        order,
+        actor_user_id=actor_user_id,
+        propagate_to_courier=False,
+        note=f"Booking cancelled on {courier_label}",
+    )
+    _force_transition(
+        order,
+        "awaiting_assigning",
+        actor_user_id=actor_user_id,
+        note=f"Booking cancelled on {courier_label} - booking and tracking number removed",
+        extra_fields=dict(_BOOKING_FIELDS_CLEARED),
+    )
+    return True
 
 
 def mark_returned_by_courier(order, *, reason="", actor_user_id=None):
@@ -490,10 +953,16 @@ def mark_returned_by_courier(order, *, reason="", actor_user_id=None):
     attempt, both of which a courier status feed reports routinely.
     Additive - used only by integrations.barqraftar.services.
     apply_barqraftar_status; Smartlane's own returned handling
-    (integrations/services.py) is unaffected and unchanged."""
+    (integrations/services.py) is unaffected and unchanged. The courier's
+    own remark, kept while the parcel was on its way back
+    (record_return_reason), stays the return reason over the generic
+    `reason`."""
     return _transition(
         order, "returned", actor_user_id=actor_user_id, note=reason,
-        extra_fields={"returned_at": timezone.now(), "return_reason": (reason or "")[:255]},
+        extra_fields={
+            "returned_at": timezone.now(),
+            "return_reason": ((order.return_reason or "").strip() or reason or "")[:255],
+        },
     )
 
 
@@ -854,12 +1323,243 @@ def awaiting_dispatch_orders(qs):
     )
 
 
+# The New tab lists these together - there's no separate Awaiting
+# Confirmation (awaiting_approval) tab any more.
+NEW_TAB_STATUSES = ["new", "awaiting_approval"]
+
+
+def workflow_card(order):
+    """Which Orders card `order` sits under (WORKFLOW_CARD_STATUSES)."""
+    if order.return_in_progress_at and order.status in RETURNABLE_STATUSES:
+        return "return_in_transit"
+    for card, statuses in WORKFLOW_CARD_STATUSES.items():
+        if order.status in statuses:
+            return card
+    return ""
+
+
+def card_queryset(qs, card):
+    """`qs` narrowed to one card's orders - the database twin of
+    workflow_card."""
+    in_return = Q(return_in_progress_at__isnull=False, status__in=RETURNABLE_STATUSES)
+    if card == "return_in_transit":
+        return qs.filter(in_return)
+    # The returns desk's Total Returns: on the way back, or back.
+    if card == "all_returns":
+        return qs.filter(in_return | Q(status="returned"))
+    statuses = WORKFLOW_CARD_STATUSES[card]
+    qs = qs.filter(status__in=statuses)
+    if statuses & RETURNABLE_STATUSES:
+        qs = qs.exclude(in_return)
+    return qs
+
+
+def workflow_tag(order):
+    """The order's tag on its card: where in that card it is - To Be Packed
+    or Packed, In Transit or Out for Delivery, or the courier's own word
+    for a failed attempt or a return."""
+    card = workflow_card(order)
+    status = order.status
+    courier_word = (order.courier_status or "").strip()
+    if card == "awaiting_confirmation":
+        if status == "new":
+            return "New"
+        if status == "city_issue":
+            return "City Issue"
+        return "Pending Approval"
+    if card == "approved":
+        if order.workflow_flag == FLAG_CANCELLED_FROM_ASSIGNING:
+            return "Cancelled from Assigning Courier"
+        if order.workflow_flag == FLAG_COURIER_CHANGE_FAILED:
+            return "Courier Change Failed"
+        if order.workflow_flag == FLAG_NO_CITY_MATCH:
+            return "No City Matched"
+        if order.workflow_flag == FLAG_NO_STOCK:
+            return "Stock Not Available"
+        return "Approved"
+    if card == "assigning_courier":
+        if status == "dispatch_issue":
+            return "Dispatch Issue"
+        # Not To Be Packed until the courier has actually given a tracking
+        # number - a Smartlane booking waits for one in Booking Pending.
+        if status == "booking_pending" or not order.tracking_number:
+            return "Awaiting Tracking"
+        return "Packed" if order.packed_at else "To Be Packed"
+    if card == "dispatched":
+        return "Out for Delivery" if status == "out_for_delivery" else "In Transit"
+    if card == "undelivered":
+        return courier_word or "Delivery Attempt Failed"
+    if card == "return_in_transit":
+        return (order.return_reason or "").strip() or courier_word or "Return in Transit"
+    if card == "returned":
+        return (order.return_reason or "").strip() or courier_word or "Returned"
+    if card == "cancelled":
+        return (order.cancel_reason or "").strip() or "Cancelled"
+    if card == "delivered":
+        return "Delivered"
+    return ""
+
+
+# The Dashboard's cards (same statuses as its KPI_GROUPS) and, per card,
+# the OMS types a click on it breaks its orders into - the card's tags,
+# cancel reasons, return reasons or couriers. dashboard_types counts them;
+# filter_dashboard_type lists one (the Orders list's dash_group/dash_type).
+DASHBOARD_GROUPS = {
+    "total": None,
+    "pending": ["pending_cc", "pending_cod", "city_issue", "awaiting_assigning", "awaiting_approval"],
+    "cancelled": ["cancelled"],
+    "dispatched": ["approved", "awaiting_dispatched", "dispatched", "dispatch_issue"],
+    "delivered": ["delivered"],
+    "returned": ["returned"],
+}
+
+# Same list as the frontend's CANCEL_REASONS (components/orders/statusConfig.js).
+CANCEL_REASONS = ["Customer Cancelled", "On Seller Request", "Order Price Issue", "Fake/Test Order"]
+
+# Cards broken down by a field's own values instead of fixed types:
+# (field, label for an empty value).
+_DASHBOARD_VALUE_TYPES = {
+    "delivered": ("courier__name", "No Courier"),
+    "returned": ("return_reason", "No Reason"),
+}
+_NO_VALUE = "_none"
+
+
+def _dashboard_fixed_types(group):
+    """[(key, label, Q)] for the cards with a fixed list of types."""
+    def flagged(flag):
+        return Q(status="awaiting_assigning", workflow_flag=flag)
+
+    if group == "pending":
+        return [
+            ("city_issue", "City Issue", Q(status="city_issue")),
+            ("pending_approval", "Pending Approval",
+             Q(status__in=["pending_cc", "pending_cod", "awaiting_approval"])),
+            ("approved", "Approved (Awaiting Courier)", flagged("")),
+            ("no_city_match", "No City Matched", flagged(FLAG_NO_CITY_MATCH)),
+            ("no_stock", "Stock Not Available", flagged(FLAG_NO_STOCK)),
+            ("cancelled_from_assigning", "Cancelled from Assigning Courier", flagged(FLAG_CANCELLED_FROM_ASSIGNING)),
+            ("courier_change_failed", "Courier Change Failed", flagged(FLAG_COURIER_CHANGE_FAILED)),
+        ]
+    if group == "cancelled":
+        return [(reason, reason, Q(cancel_reason=reason)) for reason in CANCEL_REASONS] + [
+            ("other", "Other / No Reason", ~Q(cancel_reason__in=CANCEL_REASONS)),
+        ]
+    if group == "dispatched":
+        return [
+            ("approved", "Approved (Ship Without Booking)", Q(status="approved")),
+            ("awaiting_dispatched", "Awaiting Dispatched", Q(status="awaiting_dispatched")),
+            ("dispatched", "In Transit", Q(status="dispatched")),
+            ("dispatch_issue", "Dispatch Issue", Q(status="dispatch_issue")),
+        ]
+    if group == "total":
+        named = [g for g in DASHBOARD_GROUPS if DASHBOARD_GROUPS[g]]
+        every = [s for g in named for s in DASHBOARD_GROUPS[g]]
+        return [(g, g.title(), Q(status__in=DASHBOARD_GROUPS[g])) for g in named] + [
+            ("other", "Other (New, Booked, Out for Delivery, ...)", ~Q(status__in=every)),
+        ]
+    return []
+
+
+def _in_dashboard_group(qs, group):
+    statuses = DASHBOARD_GROUPS[group]
+    return qs.filter(status__in=statuses) if statuses else qs
+
+
+def dashboard_types(qs, group):
+    """[{key, label, count}] - the card's orders in `qs` (already narrowed
+    to the date range etc.) split into its types, every fixed type listed
+    even at 0."""
+    if group not in DASHBOARD_GROUPS:
+        return []
+    qs = _in_dashboard_group(qs, group).order_by()
+    if group in _DASHBOARD_VALUE_TYPES:
+        field, empty_label = _DASHBOARD_VALUE_TYPES[group]
+        rows = qs.values_list(field).annotate(n=Count("id")).order_by("-n")
+        merged = {}
+        for value, n in rows:
+            value = (value or "").strip()
+            key = value or _NO_VALUE
+            label, count = merged.get(key, (value or empty_label, 0))
+            merged[key] = (label, count + n)
+        return [{"key": k, "label": label, "count": n} for k, (label, n) in merged.items()]
+    return [
+        {"key": key, "label": label, "count": qs.filter(q).count()}
+        for key, label, q in _dashboard_fixed_types(group)
+    ]
+
+
+def filter_dashboard_type(qs, group, key=""):
+    """`qs` narrowed to a Dashboard card, and to one of its types when
+    `key` is given (see dashboard_types). An unknown card or type matches
+    nothing rather than everything."""
+    if group not in DASHBOARD_GROUPS:
+        return qs.none()
+    qs = _in_dashboard_group(qs, group)
+    if not key:
+        return qs
+    if group in _DASHBOARD_VALUE_TYPES:
+        field, _ = _DASHBOARD_VALUE_TYPES[group]
+        if key == _NO_VALUE:
+            return qs.filter(Q(**{f"{field}__isnull": True}) | Q(**{field: ""}))
+        return qs.filter(**{field: key})
+    for type_key, _label, q in _dashboard_fixed_types(group):
+        if type_key == key:
+            return qs.filter(q)
+    return qs.none()
+
+
+def with_card_counts(counts, qs):
+    """Adds each card's count to the per-status `counts` under
+    "card:<card>" - kept apart from the status keys, since Approved and
+    Dispatched as cards hold more than the status of the same name. `all`
+    must already be summed."""
+    returning = dict(
+        qs.filter(return_in_progress_at__isnull=False, status__in=RETURNABLE_STATUSES)
+        .order_by()
+        .values_list("status")
+        .annotate(n=Count("id"))
+    )
+    for card, statuses in WORKFLOW_CARD_STATUSES.items():
+        counts[f"card:{card}"] = sum(counts.get(s, 0) - returning.get(s, 0) for s in statuses)
+    counts["card:return_in_transit"] = sum(returning.values())
+    counts["card:all"] = counts.get("all", 0)
+    return counts
+
+
+def with_ticket_counts(qs):
+    """Annotates each order with how many tickets it has, and how many of
+    those aren't resolved yet - the orders table's ticket symbol. One
+    subquery each, not a join, so nothing else on the queryset (search,
+    filters, distinct) can multiply them."""
+    from .models import Ticket
+
+    def count(tickets):
+        return Coalesce(
+            Subquery(
+                tickets.filter(order_id=OuterRef("pk"))
+                .order_by()
+                .values("order_id")
+                .annotate(n=Count("id"))
+                .values("n")[:1]
+            ),
+            0,
+        )
+
+    return qs.annotate(
+        _ticket_count=count(Ticket.all_objects.all()),
+        _open_ticket_count=count(Ticket.all_objects.exclude(status="resolved")),
+    )
+
+
 def with_courier_tab_counts(counts, qs):
     """Overwrites counts' Booking Pending and Awaiting Dispatched with what
-    those tabs list (above), rather than the plain status count. `all` must
-    already be summed - these overlap Ready to Print."""
+    those tabs list (above), rather than the plain status count, and New
+    with NEW_TAB_STATUSES together. `all` must already be summed - these
+    overlap other statuses."""
     counts["booking_pending"] = booking_pending_orders(qs).count()
     counts["awaiting_dispatched"] = awaiting_dispatch_orders(qs).count()
+    counts["new"] = sum(counts.get(s, 0) for s in NEW_TAB_STATUSES)
     return counts
 
 
@@ -975,6 +1675,69 @@ def mark_delivery_attempt_failed(order, *, actor_user_id=None):
     return _transition(order, "attempt", actor_user_id=actor_user_id)
 
 
+def mark_return_in_progress(order, *, courier_label, tracking_number=""):
+    """The courier reports the parcel is on its way back: stamps
+    Order.return_in_progress_at once, which moves the order to the Return
+    in Transit card (workflow_card). Not a status change - the order stays
+    in its dispatch sub-stage until the courier says Returned - but it is
+    logged and pushed to open Orders pages like one. An order the courier
+    already has but we never saw leave (still on the shelf here) is first
+    caught up to Dispatched, so it doesn't sit in Assigning Courier.
+    Returns whether anything changed; repeats of the same report don't."""
+    if order.return_in_progress_at or order.status in ("delivered", "returned", "cancelled"):
+        return False
+    if order.status in ("ready_to_print", "ready_to_pick", "approved", "awaiting_dispatched"):
+        dispatch_order(order, tracking_number=tracking_number)
+    order.return_in_progress_at = timezone.now()
+    order.save(update_fields=["return_in_progress_at", "updated_at"])
+    OrderStatusEvent.objects.create(
+        organization_id=order.organization_id,
+        order=order,
+        from_status=order.status,
+        to_status=order.status,
+        note=f"Return in transit - reported by {courier_label}",
+    )
+    publish_event(
+        "order.updated",
+        {
+            "organization_id": str(order.organization_id),
+            "order_id": str(order.id),
+            "order_number": order.order_number,
+            "source": "return_in_progress",
+        },
+    )
+    return True
+
+
+def clear_return_in_progress(order, *, courier_label):
+    """The courier is trying delivery again (a re-attempt was requested)
+    after reporting a return: clears Order.return_in_progress_at, which
+    moves the order from Return in Transit back to its own card
+    (Undelivered for a failed attempt). Returns whether anything changed."""
+    if not order.return_in_progress_at or order.status not in RETURNABLE_STATUSES:
+        return False
+    order.return_in_progress_at = None
+    order.return_reason = ""
+    order.save(update_fields=["return_in_progress_at", "return_reason", "updated_at"])
+    OrderStatusEvent.objects.create(
+        organization_id=order.organization_id,
+        order=order,
+        from_status=order.status,
+        to_status=order.status,
+        note=f"Re-attempt - return cancelled by {courier_label}",
+    )
+    publish_event(
+        "order.updated",
+        {
+            "organization_id": str(order.organization_id),
+            "order_id": str(order.id),
+            "order_number": order.order_number,
+            "source": "return_in_progress",
+        },
+    )
+    return True
+
+
 def record_courier_status(order, label):
     """Keeps Order.courier_status - the courier's own word for where the
     parcel is, the orders list's Sub Status - in step with what the courier
@@ -993,6 +1756,34 @@ def record_courier_status(order, label):
             "order_id": str(order.id),
             "order_number": order.order_number,
             "source": "courier_status",
+        },
+    )
+    return True
+
+
+def record_return_reason(order, reason):
+    """Keeps Order.return_reason - the courier's latest remark on why the
+    parcel is coming back ("REFUSED TO RECEIVE") - on an order in Return in
+    Transit, where it's the card's tag (workflow_tag). Pollers call it with
+    every remark they read; it only saves when the remark changed. Returns
+    whether it did."""
+    reason = (reason or "").strip()[:255]
+    if (
+        not reason
+        or reason == order.return_reason
+        or not order.return_in_progress_at
+        or order.status not in RETURNABLE_STATUSES
+    ):
+        return False
+    order.return_reason = reason
+    order.save(update_fields=["return_reason", "updated_at"])
+    publish_event(
+        "order.updated",
+        {
+            "organization_id": str(order.organization_id),
+            "order_id": str(order.id),
+            "order_number": order.order_number,
+            "source": "return_reason",
         },
     )
     return True
@@ -1026,6 +1817,54 @@ def scan_dispatch(*, organization_id, order_number, tracking_number="", actor_us
         extra["tracking_number"] = tracking_number
     order = _transition(order, "dispatched", actor_user_id=actor_user_id, extra_fields=extra)
     return {"success": True, "order_id": str(order.id), "order_number": order.order_number}
+
+
+def scan_pack(order, *, code, actor_user_id=None, actor_email=""):
+    """Assigning Courier's Scan: the parcel's barcode (its tracking number,
+    or the order number) scanned at the bench turns its tag from To Be
+    Packed to Packed. Only stamps packed_at - the status stays, so printing
+    and the load sheet carry on exactly as before. Returns a structured
+    result instead of raising, like scan_dispatch."""
+    if order is None:
+        return {"success": False, "reason": "Unknown barcode - no order has this tracking or order number", "order_number": code}
+    result = {"order_id": str(order.id), "order_number": order.order_number}
+    if workflow_card(order) != "assigning_courier":
+        return {**result, "success": False, "reason": f"Order is {order.get_status_display()}, not in Assigning Courier"}
+    if order.status == "booking_pending" or not order.tracking_number:
+        return {**result, "success": False, "reason": "No tracking number from the courier yet - can't pack it"}
+    if order.status == "dispatch_issue":
+        return {**result, "success": False, "reason": "Order has a dispatch issue - resolve it first"}
+    if order.packed_at:
+        return {**result, "success": False, "reason": "Already packed"}
+
+    # Conditional, so two scans of the same parcel landing together can't
+    # both pack it.
+    now = timezone.now()
+    packed = Order.all_objects.filter(id=order.id, packed_at__isnull=True).update(
+        packed_at=now, packed_by_email=(actor_email or "")[:255], updated_at=now
+    )
+    if not packed:
+        return {**result, "success": False, "reason": "Already packed"}
+    OrderStatusEvent.objects.create(
+        organization_id=order.organization_id,
+        order=order,
+        from_status=order.status,
+        to_status=order.status,
+        note=f"Packed (scanned {code})",
+        actor_user_id=actor_user_id,
+    )
+    # A queryset update, so oms.signals' change log doesn't see it.
+    _log_order_change(order, f"Packed (scanned {code})", actor_user_id=actor_user_id)
+    publish_event(
+        "order.updated",
+        {
+            "organization_id": str(order.organization_id),
+            "order_id": str(order.id),
+            "order_number": order.order_number,
+            "source": "scan_pack",
+        },
+    )
+    return {**result, "success": True, "tracking_number": order.tracking_number}
 
 
 def scan_return(*, organization_id, order_number, reason="", actor_user_id=None):
@@ -1088,12 +1927,22 @@ def get_probability_map(*, organization_filter, phone_numbers):
 
 # --- Order detail panel --------------------------------------------------
 
+# With the courier or past it - the parcel's details are on the courier's
+# booking now, so the order can't be edited here any more.
+EDIT_LOCKED_STATUSES = {"dispatched", "out_for_delivery", "attempt", "delivered", "returned"}
+
+
 def update_order_detail(order, *, fields, items=None):
     """Applies the editable profile/money fields from the detail panel's
     single Edit toggle. `items` (when provided) fully replaces the order's
     line items - same delete+recreate strategy as
     integrations.services.upsert_order_from_shopify, simpler and safer than
-    diffing."""
+    diffing. Refused once the order is dispatched (EDIT_LOCKED_STATUSES)."""
+    if order.status in EDIT_LOCKED_STATUSES:
+        raise InvalidTransition(
+            f"Order {order.order_number} is {dict(Order.STATUS_CHOICES).get(order.status, order.status)} "
+            "- it can't be edited once dispatched."
+        )
     for field, value in fields.items():
         setattr(order, field, value)
     order.save()
@@ -1297,4 +2146,179 @@ def compute_order_counts(organization_id):
     for row in rows:
         counts[row["status"]] = row["count"]
     counts["all"] = sum(counts.values())
-    return with_courier_tab_counts(counts, Order.objects.filter(organization_id=organization_id))
+    qs = Order.objects.filter(organization_id=organization_id)
+    # Cards first - they add up the plain status counts, which the courier
+    # tabs below then overwrite.
+    with_card_counts(counts, qs)
+    return with_courier_tab_counts(counts, qs)
+
+
+# --------------------------------------------------- Critical Orders page --
+# Each card on the Critical Orders page: (key, label, what it means, a
+# function narrowing an Order queryset to its orders). An order can sit
+# under more than one card. The page lists them with
+# ?critical_reason=<key> (OrderViewSet._apply_filters).
+STUCK_BOOKING_HOURS = 24
+COURIER_CANCEL_NOTE_PREFIX = "Booking cancelled on "
+
+
+def _stuck_in_booking(qs):
+    return qs.filter(
+        status="booking_pending",
+        updated_at__lt=timezone.now() - timedelta(hours=STUCK_BOOKING_HOURS),
+    )
+
+
+def _booking_cancelled_by_courier(qs):
+    # Back in Approved because the courier cancelled the booking
+    # (unbook_cancelled_by_courier) and not booked again since.
+    from django.db.models import Exists
+
+    latest_move_here = (
+        OrderStatusEvent.all_objects.filter(order_id=OuterRef("pk"), to_status="awaiting_assigning")
+        .order_by("-created_at")
+        .values("note")[:1]
+    )
+    return (
+        qs.filter(status="awaiting_assigning")
+        .annotate(_last_note=Subquery(latest_move_here))
+        .filter(_last_note__startswith=COURIER_CANCEL_NOTE_PREFIX)
+    )
+
+
+CRITICAL_REASONS = [
+    (
+        "in_transit",
+        f"In transit {CRITICAL_TRANSIT_DAYS}+ days",
+        f"Dispatched more than {CRITICAL_TRANSIT_DAYS} days ago and still not delivered.",
+        lambda qs: critical_transit_orders(qs).order_by("_in_transit_since"),
+    ),
+    (
+        "attempt",
+        "Delivery attempt failed",
+        "The courier couldn't deliver - needs a call to the customer.",
+        lambda qs: qs.filter(status="attempt"),
+    ),
+    (
+        "dispatch_issue",
+        "Dispatch issue",
+        "Marked with a dispatch issue and not dispatched yet.",
+        lambda qs: qs.filter(status="dispatch_issue"),
+    ),
+    (
+        "city_issue",
+        "City issue",
+        "The city needs fixing before it can go to a courier.",
+        lambda qs: qs.filter(status="city_issue"),
+    ),
+    (
+        "stuck_booking",
+        f"Stuck in booking {STUCK_BOOKING_HOURS}h+",
+        f"In Awaiting Booking for more than {STUCK_BOOKING_HOURS} hours.",
+        _stuck_in_booking,
+    ),
+    (
+        "courier_cancelled",
+        "Booking cancelled by courier",
+        "The courier cancelled the booking - back in Approved to book again.",
+        _booking_cancelled_by_courier,
+    ),
+]
+CRITICAL_REASON_FILTERS = {key: fn for key, _label, _hint, fn in CRITICAL_REASONS}
+
+
+def critical_summary(qs):
+    """[{key, label, description, count}] for the Critical Orders page's
+    cards, over `qs` (already scoped to the store / Dispatch Hub)."""
+    return [
+        {"key": key, "label": label, "description": hint, "count": fn(qs).count()}
+        for key, label, hint, fn in CRITICAL_REASONS
+    ]
+
+
+# ----------------------------------------------- Dashboard: delivery rate --
+def _rate(delivered, returned):
+    """Delivered out of the orders that reached an outcome (delivered or
+    returned) - None while none has."""
+    done = delivered + returned
+    return round(delivered * 100 / done, 1) if done else None
+
+
+def _share(part, whole):
+    return round(part * 100 / whole, 1) if whole else 0.0
+
+
+# The couriers the Top couriers card names (matched ignoring case and
+# spaces); every other courier name, and orders with none, show as "Others".
+DASHBOARD_COURIERS = {
+    re.sub(r"[^a-z]", "", name.lower()): name
+    for name in ("PostEx", "BarqRaftar", "Smartlane", "Leopards")
+}
+DASHBOARD_OTHER_COURIERS = "Others"
+
+
+def _dashboard_courier(name):
+    return DASHBOARD_COURIERS.get(re.sub(r"[^a-z]", "", (name or "").lower()), DASHBOARD_OTHER_COURIERS)
+
+
+def delivery_performance(qs):
+    """The Dashboard's Delivery performance section, over `qs` (the picked
+    date range): overall, each courier's share of the orders and delivery
+    rate, and the same by Pakistani province - overall and per courier.
+    One grouped query (courier, city, status), folded here."""
+    from .pakistan_provinces import province_for_city
+
+    rows = qs.order_by().values("courier__name", "city", "status").annotate(n=Count("id"))
+
+    def bucket():
+        return {"orders": 0, "delivered": 0, "returned": 0}
+
+    total = bucket()
+    # The named couriers always show, at 0% when they had no orders.
+    couriers = {name: bucket() for name in DASHBOARD_COURIERS.values()}
+    provinces, courier_provinces = {}, {name: {} for name in DASHBOARD_COURIERS.values()}
+    for row in rows:
+        courier = _dashboard_courier(row["courier__name"])
+        province = province_for_city(row["city"])
+        n = row["n"]
+        for b in (
+            total,
+            couriers.setdefault(courier, bucket()),
+            provinces.setdefault(province, bucket()),
+            courier_provinces.setdefault(courier, {}).setdefault(province, bucket()),
+        ):
+            b["orders"] += n
+            if row["status"] == "delivered":
+                b["delivered"] += n
+            elif row["status"] == "returned":
+                b["returned"] += n
+
+    def summary(name, b, whole):
+        return {
+            "name": name,
+            "orders": b["orders"],
+            "delivered": b["delivered"],
+            "returned": b["returned"],
+            "share_pct": _share(b["orders"], whole),
+            "delivery_pct": _rate(b["delivered"], b["returned"]),
+        }
+
+    def by_province(groups, whole):
+        return sorted(
+            (summary(name, b, whole) for name, b in groups.items()),
+            key=lambda r: (r["name"] == "Unknown", -r["orders"]),
+        )
+
+    return {
+        "overall": summary("Overall", total, total["orders"]),
+        "couriers": [
+            {
+                **summary(name, b, total["orders"]),
+                "provinces": by_province(courier_provinces[name], b["orders"]),
+            }
+            for name, b in sorted(
+                couriers.items(), key=lambda kv: (kv[0] == DASHBOARD_OTHER_COURIERS, -kv[1]["orders"])
+            )
+        ],
+        "provinces": by_province(provinces, total["orders"]),
+    }

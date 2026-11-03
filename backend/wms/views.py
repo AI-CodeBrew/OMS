@@ -2,7 +2,10 @@ import csv
 
 from django.db import transaction
 from django.db.models import Count, F, Q, Sum
-from django.db.models.functions import TruncDate
+from django.db.models.functions import Coalesce, TruncDate
+from django.utils.dateparse import parse_datetime
+from django.utils.text import slugify
+from rest_framework.exceptions import ValidationError
 from django.http import StreamingHttpResponse
 from django.utils import timezone
 from rest_framework import status, viewsets
@@ -18,8 +21,14 @@ from oms import services as oms_services
 from oms.models import Order
 
 from . import services
-from .models import StockItem, StockMovement, Warehouse
-from .serializers import StockItemSerializer, StockMovementSerializer, WarehouseSerializer
+from .models import PurchaseOrder, StockItem, StockMovement, Supplier, Warehouse
+from .serializers import (
+    PurchaseOrderSerializer,
+    StockItemSerializer,
+    StockMovementSerializer,
+    SupplierSerializer,
+    WarehouseSerializer,
+)
 
 
 class WmsPagination(PageNumberPagination):
@@ -37,7 +46,161 @@ class WarehouseViewSet(viewsets.ModelViewSet):
         return Warehouse.objects.filter(organization_id=self.request.organization_id)
 
     def perform_create(self, serializer):
+        # Add Warehouse (Purchase Orders page) asks for no code - one is made
+        # from the name, unique within the store. The store's first
+        # warehouse is its default.
+        existing = Warehouse.objects.filter(organization_id=self.request.organization_id)
+        code = (serializer.validated_data.get("code") or "").strip()
+        if not code:
+            base = slugify(serializer.validated_data.get("name") or "warehouse").upper()[:40] or "WAREHOUSE"
+            code, n = base, 2
+            while existing.filter(code=code).exists():
+                code, n = f"{base}-{n}", n + 1
+        extra = {} if existing.exists() else {"is_default": True}
+        serializer.save(organization_id=self.request.organization_id, code=code, **extra)
+
+
+class SupplierViewSet(viewsets.ModelViewSet):
+    serializer_class = SupplierSerializer
+    permission_classes = [RequireModule]
+    required_module = "wms"
+
+    def get_queryset(self):
+        return Supplier.objects.filter(organization_id=self.request.organization_id)
+
+    def perform_create(self, serializer):
+        if not (serializer.validated_data.get("name") or "").strip():
+            raise ValidationError({"name": "Name is required."})
         serializer.save(organization_id=self.request.organization_id)
+
+
+class PurchaseOrderViewSet(viewsets.ReadOnlyModelViewSet):
+    """The Purchase Orders page. Created and received through the actions
+    below (wms.services), which add the good units to stock."""
+
+    serializer_class = PurchaseOrderSerializer
+    permission_classes = [RequireModule]
+    required_module = "wms"
+    pagination_class = WmsPagination
+
+    def _base_qs(self):
+        received = Coalesce(Sum(F("lines__good_received") + F("lines__damaged_received")), 0)
+        return PurchaseOrder.objects.filter(organization_id=self.request.organization_id).annotate(
+            _total=Coalesce(Sum("lines__quantity_ordered"), 0), _received=received
+        )
+
+    def _state_filter(self, qs, state):
+        if state == "not_received":
+            return qs.filter(_received=0)
+        if state == "partial":
+            return qs.filter(_received__gt=0, _received__lt=F("_total"))
+        if state == "received":
+            return qs.filter(_received__gt=0, _received__gte=F("_total"))
+        return qs
+
+    def get_queryset(self):
+        params = self.request.query_params
+        qs = self._state_filter(self._base_qs(), params.get("state"))
+        search = (params.get("search") or "").strip()
+        if search:
+            condition = Q(supplier__name__icontains=search) | Q(lines__sku__icontains=search)
+            digits = search.upper().removeprefix("PO-").lstrip("0")
+            if digits.isdigit():
+                condition |= Q(number=int(digits))
+            qs = qs.filter(id__in=PurchaseOrder.objects.filter(condition).values("id"))
+        return qs.select_related("supplier", "warehouse").prefetch_related("lines")
+
+    @action(detail=False, methods=["get"])
+    def summary(self, request):
+        qs = self._base_qs()
+        return Response(
+            {
+                "total": qs.count(),
+                "received": self._state_filter(qs, "received").count(),
+                "partial": self._state_filter(qs, "partial").count(),
+                "not_received": self._state_filter(qs, "not_received").count(),
+            }
+        )
+
+    def create(self, request, *args, **kwargs):
+        data = request.data
+        supplier = Supplier.objects.filter(
+            organization_id=request.organization_id, id=data.get("supplier")
+        ).first()
+        warehouse = Warehouse.objects.filter(
+            organization_id=request.organization_id, id=data.get("warehouse")
+        ).first()
+        if supplier is None or warehouse is None:
+            return Response(
+                {"detail": "Pick a supplier and a receiving warehouse."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        ordered_at = parse_datetime(data.get("ordered_at") or "") if data.get("ordered_at") else None
+        try:
+            po = services.create_purchase_order(
+                organization_id=request.organization_id,
+                supplier=supplier,
+                warehouse=warehouse,
+                ordered_at=ordered_at,
+                lines=[row for row in (data.get("lines") or []) if isinstance(row, dict)],
+                note=data.get("note") or "",
+                actor_user_id=request.user_id,
+            )
+        except services.PurchaseOrderError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(self.get_serializer(self.get_queryset().get(id=po.id)).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"])
+    def receive(self, request, pk=None):
+        """Another delivery: {receipts: [{line, good, damaged}]}, added to
+        what's already received - good units go into stock."""
+        po = self.get_object()
+        receipts = {
+            str(row.get("line")): row
+            for row in (request.data.get("receipts") or [])
+            if isinstance(row, dict) and row.get("line")
+        }
+        try:
+            services.receive_purchase_order(po, receipts, actor_user_id=request.user_id)
+        except services.PurchaseOrderError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(self.get_serializer(self.get_queryset().get(id=po.id)).data)
+
+    @action(detail=False, methods=["get"])
+    def product(self, request):
+        """Add PO's autofill: the stock item with exactly this SKU (name and
+        Shopify image), or 404."""
+        sku = (request.query_params.get("sku") or "").strip()
+        item = (
+            StockItem.objects.filter(organization_id=request.organization_id, sku__iexact=sku)
+            .exclude(sku="")
+            .order_by(F("shopify_inventory_item_id").asc(nulls_last=True))
+            .first()
+            if sku
+            else None
+        )
+        if item is None:
+            return Response({"detail": "No product with that SKU."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"sku": item.sku, "product_name": item.product_name, "image_url": item.image_url})
+
+    @action(detail=False, methods=["post"], url_path="sync-shopify")
+    def sync_shopify(self, request):
+        """Sync from Shopify: every product and its stock (the Inventory
+        page's own sync), then each one's first image."""
+        from integrations.services import (
+            InventorySyncError,
+            sync_inventory_from_shopify,
+            sync_product_images_from_shopify,
+        )
+
+        try:
+            result = sync_inventory_from_shopify(request.organization_id)
+            result.update(sync_product_images_from_shopify(request.organization_id))
+        except InventorySyncError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:  # noqa: BLE001 - surface Shopify API failures to the user, not a 500
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response(result)
 
 
 class StockItemViewSet(viewsets.ModelViewSet):
@@ -149,6 +312,83 @@ class StockItemViewSet(viewsets.ModelViewSet):
         date_from = request.query_params.get("date_from") or "all"
         date_to = request.query_params.get("date_to") or "all"
         response["Content-Disposition"] = f'attachment; filename="wms_report_{date_from}_to_{date_to}.csv"'
+        return response
+
+    @action(detail=False, methods=["get"])
+    def overview(self, request):
+        """The Inventory page's table and cards (services.inventory_overview),
+        paginated here since its numbers are worked out per item."""
+        params = request.query_params
+        rows, summary = services.inventory_overview(
+            request.organization_id, search=params.get("search") or "", activity=params.get("activity") or ""
+        )
+        try:
+            page_size = min(max(int(params.get("page_size") or 25), 1), 500)
+            page = max(int(params.get("page") or 1), 1)
+        except ValueError:
+            page_size, page = 25, 1
+        start = (page - 1) * page_size
+        return Response({"count": len(rows), "results": rows[start : start + page_size], "summary": summary})
+
+    @action(detail=True, methods=["get"])
+    def report(self, request, pk=None):
+        """One item's details - the eye icon - or, with export=csv, the
+        same as a downloadable report."""
+        item = self.get_object()
+        report = services.inventory_item_report(item)
+        if request.query_params.get("export") != "csv":
+            return Response(report)
+
+        row = report["item"]
+
+        def lines():
+            yield ["Inventory report", row["sku"] or row["product_name"]]
+            yield ["Product", row["product_name"]]
+            yield ["Warehouse", row["warehouse_name"]]
+            yield ["Generated", timezone.localtime().strftime("%Y-%m-%d %H:%M")]
+            yield []
+            for label, key in (
+                ("Total inbound (PO good)", "total_inbound"),
+                ("Available stock", "available"),
+                ("Delivered", "delivered"),
+                ("Dispatched", "dispatched"),
+                ("Failed delivery", "failed_delivery"),
+                ("Return in transit", "return_in_transit"),
+                ("Damaged (returns)", "returns_damaged"),
+                ("Lost (returns)", "returns_lost"),
+                ("Damaged (purchase orders)", "po_damaged"),
+            ):
+                yield [label, row[key]]
+            yield []
+            yield ["Orders"]
+            yield ["Order", "Customer", "Order Date", "Created At", "Total", "Courier", "Tracking", "Status", "Quantity"]
+            for o in report["orders"]:
+                status_label = o["status_label"] + (" (return in transit)" if o["returning"] else "")
+                yield [
+                    o["order_number"], o["customer_name"],
+                    o["date"].strftime("%Y-%m-%d %H:%M") if o["date"] else "",
+                    o["created_at"].strftime("%Y-%m-%d %H:%M") if o["created_at"] else "",
+                    o["total"], o["courier"], o["tracking_number"], status_label, o["quantity"],
+                ]
+            yield []
+            yield ["Purchase orders"]
+            yield ["PO", "Supplier", "Date", "Ordered", "Good", "Damaged", "Unit price"]
+            for p in report["purchases"]:
+                yield [p["po_number"], p["supplier"], p["ordered_at"].strftime("%Y-%m-%d %H:%M"), p["quantity_ordered"], p["good"], p["damaged"], p["unit_price"]]
+            yield []
+            yield ["Stock movements"]
+            yield ["Date", "Reason", "Change", "Balance", "Reference", "Note"]
+            for m in report["movements"]:
+                yield [m["date"].strftime("%Y-%m-%d %H:%M"), m["reason"], m["delta"], m["balance_after"], m["reference"], m["note"]]
+
+        class Echo:
+            def write(self, value):
+                return value
+
+        writer = csv.writer(Echo())
+        response = StreamingHttpResponse((writer.writerow(r) for r in lines()), content_type="text/csv")
+        name = slugify(row["sku"] or row["product_name"] or "item") or "item"
+        response["Content-Disposition"] = f'attachment; filename="inventory_{name}.csv"'
         return response
 
     @action(detail=False, methods=["post"], url_path="import-skus")
@@ -401,10 +641,18 @@ def _lookup_return(order, raw_identifier):
         }
     if order.return_received_at:
         return {"success": False, "reason": "Already received", "order_number": order.order_number}
-    return {"success": True, "order_number": order.order_number, "tracking_number": order.tracking_number}
+    return {
+        "success": True,
+        "order_number": order.order_number,
+        "tracking_number": order.tracking_number,
+        # The popup's rows - each line's units start as Good.
+        "lines": services.return_line_summary(order),
+    }
 
 
-def _receive_return(order, raw_identifier, *, condition, actor_user_id, actor_email="", note=""):
+def _receive_return(
+    order, raw_identifier, *, condition="good", counts=None, actor_user_id, actor_email="", note=""
+):
     """One order's worth of the returns-desk workflow, in the
     {success, order_number, reason} shape the scan panel renders. Shared
     by the single scan and the bulk action so both answer identically.
@@ -420,10 +668,15 @@ def _receive_return(order, raw_identifier, *, condition, actor_user_id, actor_em
             "order_number": order.order_number,
         }
 
+    try:
+        breakdown = services.build_return_breakdown(order, counts, condition=condition)
+    except services.InvalidReturnBreakdown as exc:
+        return {"success": False, "reason": str(exc), "order_number": order.order_number}
+
     unmatched = []
     movements = services.restock_from_return(
         order,
-        condition=condition,
+        breakdown=breakdown,
         actor_user_id=actor_user_id,
         actor_email=actor_email,
         note=note,
@@ -431,12 +684,11 @@ def _receive_return(order, raw_identifier, *, condition, actor_user_id, actor_em
     )
     if movements is None:
         return {"success": False, "reason": "Already received", "order_number": order.order_number}
-    if condition == "bad":
-        return {"success": True, "order_number": order.order_number, "condition": "bad", "restocked": []}
     return {
         "success": True,
         "order_number": order.order_number,
-        "condition": "good",
+        "condition": order.return_condition,
+        "breakdown": breakdown,
         "restocked": [
             {
                 "sku": m.stock_item.sku,
@@ -477,12 +729,25 @@ class ReturnRestockView(viewsets.ViewSet):
 
     @action(detail=False, methods=["post"], url_path="scan")
     def scan(self, request):
-        condition = (request.data.get("condition") or "").strip()
+        """Receives one parcel. `breakdown` is the popup's count per line -
+        [{key, good, damaged, lost}] - and only good units are restocked.
+        Without it, `condition` ("good"/"bad") applies to every unit."""
+        condition = (request.data.get("condition") or "good").strip()
+        raw_breakdown = request.data.get("breakdown")
         if not (request.data.get("tracking_number") or request.data.get("order_number")):
             return Response(
                 {"detail": "tracking_number is required"}, status=status.HTTP_400_BAD_REQUEST
             )
-        if condition not in ("good", "bad"):
+        counts = None
+        if raw_breakdown is not None:
+            if not isinstance(raw_breakdown, list):
+                return Response(
+                    {"detail": "breakdown must be a list"}, status=status.HTTP_400_BAD_REQUEST
+                )
+            counts = {
+                str(row.get("key")): row for row in raw_breakdown if isinstance(row, dict)
+            }
+        elif condition not in ("good", "bad"):
             return Response(
                 {"detail": "condition must be 'good' or 'bad'"}, status=status.HTTP_400_BAD_REQUEST
             )
@@ -493,6 +758,7 @@ class ReturnRestockView(viewsets.ViewSet):
                 order,
                 raw_identifier,
                 condition=condition,
+                counts=counts,
                 actor_user_id=request.user_id,
                 actor_email=getattr(request, "auth_email", "") or "",
                 note=(request.data.get("note") or "")[:255],

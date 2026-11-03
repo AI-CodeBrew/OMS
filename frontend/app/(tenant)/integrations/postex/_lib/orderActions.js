@@ -37,6 +37,10 @@ const BOOK_THROUGH_OMS = {
   label: "Book with PostEx (OMS Courier)",
 };
 
+// BarqRaftar for orders in one of BarqRaftar's cities, PostEx for one in
+// PostEx's, else tagged No City Matched (backend: oms.services.auto_book_routes).
+const AUTO_BOOK = { key: "auto_book", action: "auto_book", label: "Auto Book (BarqRaftar / PostEx)" };
+
 // Wrap ACTIONS_BY_STATUS[status] (already wrapped with BarqRaftar's, if
 // any) with this - `connected` (the store's own PostEx) and `omsConnected`
 // (PostEx through OMS Courier) come from _lib/postexStatusStore.js. Either
@@ -47,5 +51,11 @@ export function withPostExActions(status, baseActions, connected, omsConnected =
     (a) => connected || a.action !== "push_to_postex"
   );
   if (omsConnected && status === "awaiting_assigning") extra.push(BOOK_THROUGH_OMS);
-  return extra.length ? [...baseActions, ...extra] : baseActions;
+  // Auto Book needs both of the store's own accounts - BarqRaftar's
+  // "Book" is already in baseActions when its own account is connected.
+  const autoBook =
+    connected && status === "awaiting_assigning" && baseActions.some((a) => a.action === "push_to_barqraftar")
+      ? [AUTO_BOOK]
+      : [];
+  return extra.length || autoBook.length ? [...autoBook, ...baseActions, ...extra] : baseActions;
 }

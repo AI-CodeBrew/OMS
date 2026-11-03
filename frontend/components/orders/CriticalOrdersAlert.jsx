@@ -105,7 +105,7 @@ export default function CriticalOrdersAlert() {
           type="button"
           onClick={() => {
             setAlertCount(0);
-            router.push("/orders?status=critical");
+            router.push("/critical-orders?reason=in_transit");
           }}
           className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700"
         >

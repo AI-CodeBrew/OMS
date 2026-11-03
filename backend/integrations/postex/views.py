@@ -5,7 +5,6 @@ import logging
 import threading
 from datetime import date, timedelta
 
-from django.core.files.base import ContentFile
 from django.http import HttpResponse, JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
@@ -498,31 +497,15 @@ class PostExShipmentActionView(APIView):
 
 
 def _save_print_batch(*, organization_id, order_numbers, content, actor_user_id, kind):
-    """Same shape as BarqRaftar's own copy (oms/views.py's is private to
-    OrderViewSet). Best-effort: a storage hiccup must not block the PDF the
-    user is downloading."""
-    from oms.models import PrintBatch
+    """oms.batch_services.save_print_batch, as postex - files the PDF
+    into its dispatch batch. Best-effort: a storage hiccup must not block
+    the PDF the user is downloading."""
+    from oms.batch_services import save_print_batch
 
-    try:
-        sorted_numbers = sorted(str(n) for n in order_numbers)
-        existing = PrintBatch.all_objects.filter(
-            organization_id=organization_id, kind=kind, courier="postex", order_numbers=sorted_numbers,
-        ).first() if sorted_numbers else None
-        if existing:
-            batch = existing
-            if batch.file:
-                batch.file.delete(save=False)
-            batch.content_type = "application/pdf"
-            batch.created_by_user_id = actor_user_id
-        else:
-            batch = PrintBatch.all_objects.create(
-                organization_id=organization_id, kind=kind, courier="postex",
-                order_count=len(sorted_numbers), order_numbers=sorted_numbers,
-                content_type="application/pdf", created_by_user_id=actor_user_id,
-            )
-        batch.file.save(f"postex_{kind}.pdf", ContentFile(content), save=True)
-    except Exception:
-        logger.exception("postex: failed to save print batch")
+    save_print_batch(
+        organization_id=organization_id, kind=kind, courier="postex", order_numbers=order_numbers,
+        content=content, actor_user_id=actor_user_id, filename=f"postex_{kind}.pdf",
+    )
 
 
 def _shipments_by_account(order_ids):
@@ -588,6 +571,28 @@ def _airway_bill_pdf(connection, tracking_numbers):
     return buffer.getvalue()
 
 
+def render_airway_bills(order_ids, actor_user_id):
+    """The airway bills of `order_ids`, per (store, booking account) - a
+    Dispatch Hub selection booked through FynkTech's account prints through
+    it. Returns (pdf parts, error response)."""
+    groups, error = _shipments_by_account(order_ids)
+    if error:
+        return None, error
+    pdf_parts = []
+    for organization_id, connection, shipments in groups:
+        try:
+            pdf_bytes = _airway_bill_pdf(connection, [s.tracking_number for s in shipments])
+        except PostExAPIError as exc:
+            return None, _bad_gateway(exc)
+        _save_print_batch(
+            organization_id=organization_id,
+            order_numbers=[s.order.order_number for s in shipments],
+            content=pdf_bytes, actor_user_id=actor_user_id, kind="airway_bill",
+        )
+        pdf_parts.append(pdf_bytes)
+    return pdf_parts, None
+
+
 class PostExAirwayBillView(APIView):
     """POST {order_ids} or {tracking_numbers} -> one merged PDF of PostEx
     airway bills. PostEx prints at most 10 per call, so this chunks and
@@ -604,23 +609,9 @@ class PostExAirwayBillView(APIView):
                 {"detail": "order_ids or tracking_numbers is required"}, status=http_status.HTTP_400_BAD_REQUEST
             )
         if order_ids:
-            # Per (store, booking account) - a Dispatch Hub selection booked
-            # through FynkTech's account prints through it.
-            groups, error = _shipments_by_account(order_ids)
+            pdf_parts, error = render_airway_bills(order_ids, request.user_id)
             if error:
                 return error
-            pdf_parts = []
-            for organization_id, connection, shipments in groups:
-                try:
-                    pdf_bytes = _airway_bill_pdf(connection, [s.tracking_number for s in shipments])
-                except PostExAPIError as exc:
-                    return _bad_gateway(exc)
-                _save_print_batch(
-                    organization_id=organization_id,
-                    order_numbers=[s.order.order_number for s in shipments],
-                    content=pdf_bytes, actor_user_id=request.user_id, kind="airway_bill",
-                )
-                pdf_parts.append(pdf_bytes)
             return HttpResponse(_merge_pdfs(pdf_parts), content_type="application/pdf")
 
         connection = _connection(request)
@@ -680,6 +671,61 @@ def _saved_load_sheets(organization_id, shipments):
     return parts, missing
 
 
+def render_load_sheets(order_ids, actor_user_id):
+    """The load sheets of `order_ids`, per (store, booking account), same
+    as the airway bills above. Generating one hands the parcels over.
+    Returns (pdf parts, error response)."""
+    from oms import services as oms_services
+
+    groups, error = _shipments_by_account(order_ids)
+    if error:
+        return None, error
+    pdf_parts = []
+    for organization_id, connection, shipments in groups:
+        handed_over = [s for s in shipments if s.load_sheet_at]
+        if handed_over:
+            saved, missing = _saved_load_sheets(organization_id, handed_over)
+            if missing:
+                return None, Response(
+                    {"detail": (
+                        f"PostEx already has these on a load sheet ({', '.join(missing)}) and "
+                        "can't make another - the earlier one isn't saved here, so download it "
+                        "from the PostEx portal."
+                    )},
+                    status=http_status.HTTP_409_CONFLICT,
+                )
+            pdf_parts += saved
+
+        # One sheet per pickup address the parcels were booked from:
+        # without pickupAddress PostEx heads the sheet with the
+        # account's default address - which, on FynkTech's account,
+        # isn't the store the rider is collecting from.
+        by_address = {}
+        for shipment in shipments:
+            if not shipment.load_sheet_at:
+                by_address.setdefault(shipment.pickup_address_code or "", []).append(shipment)
+        for address_code, fresh in by_address.items():
+            try:
+                pdf_bytes = _generate_load_sheet(connection, fresh, address_code)
+            except PostExAPIError as exc:
+                return None, _bad_gateway(exc)
+
+            services.mark_load_sheet_generated(fresh)
+            _save_print_batch(
+                organization_id=organization_id,
+                order_numbers=[s.order.order_number for s in fresh],
+                content=pdf_bytes, actor_user_id=actor_user_id, kind="loadsheet",
+            )
+            pdf_parts.append(pdf_bytes)
+
+        # Every one of them is on a load sheet now - handed over, so out
+        # of Ready to Print and into Awaiting Dispatched.
+        oms_services.mark_orders_handed_over(
+            [s.order for s in shipments], actor_user_id=actor_user_id, note="PostEx load sheet",
+        )
+    return pdf_parts, None
+
+
 class PostExLoadSheetView(APIView):
     """POST {order_ids} -> PostEx's own load sheet PDF for the selected
     orders' active shipments. This is the hand-over step on PostEx's side
@@ -692,59 +738,13 @@ class PostExLoadSheetView(APIView):
     required_module = "oms"
 
     def post(self, request):
-        from oms import services as oms_services
-
         order_ids = request.data.get("order_ids") or []
         if not order_ids:
             return Response({"detail": "order_ids is required"}, status=http_status.HTTP_400_BAD_REQUEST)
 
-        # Per (store, booking account), same as the airway bills above.
-        groups, error = _shipments_by_account(order_ids)
+        pdf_parts, error = render_load_sheets(order_ids, request.user_id)
         if error:
             return error
-        pdf_parts = []
-        for organization_id, connection, shipments in groups:
-            handed_over = [s for s in shipments if s.load_sheet_at]
-            if handed_over:
-                saved, missing = _saved_load_sheets(organization_id, handed_over)
-                if missing:
-                    return Response(
-                        {"detail": (
-                            f"PostEx already has these on a load sheet ({', '.join(missing)}) and "
-                            "can't make another - the earlier one isn't saved here, so download it "
-                            "from the PostEx portal."
-                        )},
-                        status=http_status.HTTP_409_CONFLICT,
-                    )
-                pdf_parts += saved
-
-            # One sheet per pickup address the parcels were booked from:
-            # without pickupAddress PostEx heads the sheet with the
-            # account's default address - which, on FynkTech's account,
-            # isn't the store the rider is collecting from.
-            by_address = {}
-            for shipment in shipments:
-                if not shipment.load_sheet_at:
-                    by_address.setdefault(shipment.pickup_address_code or "", []).append(shipment)
-            for address_code, fresh in by_address.items():
-                try:
-                    pdf_bytes = _generate_load_sheet(connection, fresh, address_code)
-                except PostExAPIError as exc:
-                    return _bad_gateway(exc)
-
-                services.mark_load_sheet_generated(fresh)
-                _save_print_batch(
-                    organization_id=organization_id,
-                    order_numbers=[s.order.order_number for s in fresh],
-                    content=pdf_bytes, actor_user_id=request.user_id, kind="loadsheet",
-                )
-                pdf_parts.append(pdf_bytes)
-
-            # Every one of them is on a load sheet now - handed over, so out
-            # of Ready to Print and into Awaiting Dispatched.
-            oms_services.mark_orders_handed_over(
-                [s.order for s in shipments], actor_user_id=request.user_id, note="PostEx load sheet",
-            )
         return HttpResponse(_merge_pdfs(pdf_parts), content_type="application/pdf")
 
 

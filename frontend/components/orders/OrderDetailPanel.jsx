@@ -1,17 +1,24 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Button from "../shared/Button";
 import Modal from "../shared/Modal";
 import ordersService from "../../services/ordersService";
 import CustomerDetailPanel from "./CustomerDetailPanel";
-import OrderDetailHeader from "./OrderDetailHeader";
+import OrderDetailHeader, { OrderStatusBadge } from "./OrderDetailHeader";
 import OrderDetailTabs from "./OrderDetailTabs";
-import OrderItemsEditor from "./OrderItemsEditor";
+import OrderMoneySummary from "./OrderMoneySummary";
+import OrderActionsMenu from "./OrderActionsMenu";
+import LineItemsTab from "./tabs/LineItemsTab";
+import { draftGrandTotal } from "./orderMoney";
 import OrderActionModal from "./OrderActionModal";
 import VerifyDispatchModal from "./VerifyDispatchModal";
 import StockShortageModal from "./StockShortageModal";
 import {
   BOOKING_ACCOUNTS,
+  MOVE_TO_ASSIGNING,
+  EDITABLE_STATUSES,
+  EDIT_LOCKED_STATUSES,
   SMARTLANE_LOAD_SHEET_COURIERS,
   isBookingAccountCourier,
 } from "./statusConfig";
@@ -51,17 +58,56 @@ const EDITABLE_FIELDS = [
   "amount_paid",
 ];
 
+// The fields the line-items write takes - same full-replace shape the
+// backend expects (services.update_order_detail recreates every item).
+function serializeItem(item) {
+  return {
+    product_name: item.product_name,
+    quantity: Number(item.quantity) || 1,
+    unit_price: item.unit_price || 0,
+    vendor: item.vendor ?? "",
+    barcode: item.barcode ?? "",
+    compare_at_price: item.compare_at_price ?? null,
+    discount_amount: item.discount_amount || 0,
+    weight_grams: item.weight_grams ?? null,
+  };
+}
+
 function buildDraft(order) {
   const draft = {};
   EDITABLE_FIELDS.forEach((field) => {
     draft[field] = order[field];
   });
+  draft.items = order.items.map((item) => ({ ...item }));
   return draft;
+}
+
+// What Save sends: the draft minus the view-only receivable, and items only
+// when one actually changed (an untouched list would still be recreated).
+function buildPatch(order, draft) {
+  const { items, amount_receivable: _receivable, ...fields } = draft;
+  const before = JSON.stringify(order.items.map(serializeItem));
+  const after = items.map(serializeItem);
+  return JSON.stringify(after) === before ? fields : { ...fields, items: after };
 }
 
 // bookingAccounts: the connected entries of statusConfig's BOOKING_ACCOUNTS
 // (see connectedBookingAccounts), resolved once by the orders page.
-export default function OrderDetailPanel({ orderId, couriers, bookingAccounts = [], onClose, onOrderChanged }) {
+// startEditing: open straight into Edit - Assigning Courier's Edit Order,
+// once the booking is cancelled.
+// readOnly: opened from All Orders, which is for looking only - no
+// Actions and no Edit.
+// onRaiseTicket(order): the page's Raise ticket dialog.
+export default function OrderDetailPanel({
+  orderId,
+  couriers,
+  bookingAccounts = [],
+  startEditing = false,
+  readOnly = false,
+  onRaiseTicket,
+  onClose,
+  onOrderChanged,
+}) {
   const [order, setOrder] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -70,6 +116,8 @@ export default function OrderDetailPanel({ orderId, couriers, bookingAccounts = 
   const [saving, setSaving] = useState(false);
   const [stockShortfall, setStockShortfall] = useState(null);
   const [pendingAction, setPendingAction] = useState(null);
+  // Move to Assigning Courier's booking choices (OrderActionsMenu).
+  const [moveChoices, setMoveChoices] = useState([]);
   const [working, setWorking] = useState(false);
   const [scanOpen, setScanOpen] = useState(false);
 
@@ -82,6 +130,7 @@ export default function OrderDetailPanel({ orderId, couriers, bookingAccounts = 
       const data = await ordersService.get(orderId);
       setOrder(data);
       setDraft(buildDraft(data));
+      if (startEditing && !quiet) setEditing(true);
     } catch (err) {
       setError(err.message || "Failed to load order");
     } finally {
@@ -95,7 +144,30 @@ export default function OrderDetailPanel({ orderId, couriers, bookingAccounts = 
   }, [orderId]);
 
   function onDraftChange(field, value) {
-    setDraft((d) => ({ ...d, [field]: value }));
+    // Amount Receivable (editable while partially paid) isn't a stored
+    // field - typing it sets Amount Paid to whatever leaves that much
+    // receivable. Any other change drops the typed figure so the cell
+    // goes back to being worked out from the draft.
+    if (field === "amount_receivable") {
+      setDraft((d) => ({
+        ...d,
+        amount_receivable: value,
+        amount_paid: Math.max(draftGrandTotal(d) - (Number(value) || 0), 0).toFixed(2),
+      }));
+      return;
+    }
+    // Marking it Paid records the whole grand total as paid; from then on
+    // Amount Paid stays fixed and the receivable follows any later change.
+    if (field === "payment_status" && value === "paid") {
+      setDraft((d) => ({
+        ...d,
+        amount_receivable: undefined,
+        payment_status: value,
+        amount_paid: d.payment_status === "paid" ? d.amount_paid : draftGrandTotal(d).toFixed(2),
+      }));
+      return;
+    }
+    setDraft((d) => ({ ...d, amount_receivable: undefined, [field]: value }));
   }
 
   function toggleEdit() {
@@ -107,7 +179,7 @@ export default function OrderDetailPanel({ orderId, couriers, bookingAccounts = 
     setSaving(true);
     setError("");
     try {
-      const updated = await ordersService.update(orderId, draft);
+      const updated = await ordersService.update(orderId, buildPatch(order, draft));
       setOrder(updated);
       setDraft(buildDraft(updated));
       setEditing(false);
@@ -124,7 +196,8 @@ export default function OrderDetailPanel({ orderId, couriers, bookingAccounts = 
     onOrderChanged?.();
   }
 
-  function startAction(action) {
+  function startAction(action, choices) {
+    if (choices) setMoveChoices(choices);
     // Airway bill needs no courier param (Smartlane returns whichever
     // courier actually booked it) - fetch the real document directly,
     // same shortcut the orders page takes, bypassing the bulk-action
@@ -204,6 +277,13 @@ export default function OrderDetailPanel({ orderId, couriers, bookingAccounts = 
     // shows progress and nothing else is blocked meanwhile.
     const action = pendingAction;
     setPendingAction(null);
+    // Move to Assigning Courier: run the booking it was asked for - Assign
+    // courier (Smartlane / OMS Courier) still asks for its account.
+    if (action === MOVE_TO_ASSIGNING) {
+      if (params.courier === "assign_courier") setPendingAction("assign_courier");
+      else runAction(params.courier, {});
+      return;
+    }
     runAction(action, params);
   }
 
@@ -288,7 +368,16 @@ export default function OrderDetailPanel({ orderId, couriers, bookingAccounts = 
       <Modal
         open={Boolean(orderId)}
         onClose={onClose}
-        title={order ? `Order ${order.order_number}` : "Order detail"}
+        title={
+          order ? (
+            <span className="flex flex-wrap items-center gap-2">
+              Order {order.order_number}
+              <OrderStatusBadge order={order} />
+            </span>
+          ) : (
+            "Order detail"
+          )
+        }
         width="max-w-6xl"
       >
         {loading ? (
@@ -305,26 +394,61 @@ export default function OrderDetailPanel({ orderId, couriers, bookingAccounts = 
               <CustomerDetailPanel order={order} draft={draft} editing={editing} onChange={onDraftChange} />
 
               <div className="min-w-0 flex-1">
-                <OrderDetailHeader
+                <OrderDetailTabs
                   order={order}
-                  draft={draft}
                   editing={editing}
-                  onChange={onDraftChange}
-                  onToggleEdit={toggleEdit}
-                  onSave={onSave}
-                  saving={saving}
-                />
+                  actions={
+                    readOnly ? null : (
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+                        {/* Edit sits up here beside the actions (Save /
+                            Cancel while editing); dispatched or later
+                            can't be edited. */}
+                        {editing ? (
+                          <>
+                            <Button variant="secondary" onClick={toggleEdit} disabled={saving} className="px-3 py-1.5">
+                              Cancel Edit
+                            </Button>
+                            <Button onClick={onSave} loading={saving} className="px-3 py-1.5">
+                              Save
+                            </Button>
+                          </>
+                        ) : EDIT_LOCKED_STATUSES.has(order.status) ? null : (
+                          <Button variant="secondary" onClick={toggleEdit} className="px-3 py-1.5">
+                            Edit
+                          </Button>
+                        )}
+                        {editing ? null : (
+                          <OrderActionsMenu
+                            order={order}
+                            onAction={startAction}
+                            onScan={() => setScanOpen(true)}
+                            onRaiseTicket={onRaiseTicket ? () => onRaiseTicket(order) : undefined}
+                            working={working}
+                          />
+                        )}
+                      </div>
+                    )
+                  }
+                  lineItems={
+                    <>
+                      {/* Items stay locked once a courier is on the order - stock
+                          is deducted from then on (see EDITABLE_STATUSES). */}
+                      <LineItemsTab
+                        order={order}
+                        draft={draft}
+                        editing={editing && EDITABLE_STATUSES.has(order.status)}
+                        onChange={onDraftChange}
+                      />
+                      <OrderMoneySummary order={order} draft={draft} editing={editing} onChange={onDraftChange} />
+                      <OrderDetailHeader order={order} draft={draft} editing={editing} onChange={onDraftChange} />
 
-                <OrderDetailTabs order={order} onOrderChanged={refreshAfterChange} />
-
-                <OrderItemsEditor
-                  order={order}
-                  draft={draft}
-                  editing={editing}
-                  onChange={onDraftChange}
-                  onAction={startAction}
-                  onScan={() => setScanOpen(true)}
-                  working={working}
+                      {readOnly ? (
+                        <p className="mt-4 border-t border-surface-border pt-4 text-right text-sm text-slate-500">
+                          All Orders is view only - open the order from its status card to make changes.
+                        </p>
+                      ) : null}
+                    </>
+                  }
                 />
               </div>
             </div>
@@ -346,6 +470,7 @@ export default function OrderDetailPanel({ orderId, couriers, bookingAccounts = 
               ]
             : couriers
         }
+        options={pendingAction === MOVE_TO_ASSIGNING ? moveChoices : undefined}
         onClose={() => setPendingAction(null)}
         onSubmit={onSubmitPendingAction}
       />

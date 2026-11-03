@@ -1,5 +1,6 @@
 "use client";
 
+import Button from "../shared/Button";
 import EditableField from "../shared/EditableField";
 
 const FIELD_ROWS = [
@@ -9,6 +10,8 @@ const FIELD_ROWS = [
   ["secondary_phone", "Secondary Number"],
   ["city", "City"],
   ["address_line1", "Address 1"],
+  // Shopify's "Apartment, suite, etc." (its address2).
+  ["address_line2", "Address 2"],
   ["customer_tags", "Customer Tags"],
 ];
 
@@ -41,6 +44,19 @@ export default function CustomerDetailPanel({ order, draft, editing, onChange })
             ? "N/A"
             : `${order.acceptance_pct}%`}
         </div>
+      </div>
+
+      <div>
+        {/* Set when the order is created (Storefront, Manual, WhatsApp...)
+            and never changed afterwards. */}
+        <div className="text-xs text-slate-500">Order Source</div>
+        <div className="text-sm text-slate-900">{order.order_source || "N/A"}</div>
+      </div>
+
+      <div className="pt-2">
+        <Button variant="secondary" disabled title="No telephony provider configured">
+          Initiate IVR Call
+        </Button>
       </div>
     </div>
   );

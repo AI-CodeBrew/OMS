@@ -53,6 +53,8 @@ TERMINAL_STATUSES = {"delivered", "returned", "cancelled"}
 _DISPATCH_CODES = {3, 30, 31, 32}  # picked_up, rfc_origin, in_transit, received_at_fc
 _OUT_FOR_DELIVERY_CODES = {4}  # dispatched (rider assigned/out)
 _ATTEMPT_CODES = {5, 6, 7, 14}  # return_by_consignee, re_attempt_requested, hold_requested, re_attempt_approval
+# A re-attempt after a return was started: the parcel isn't coming back.
+_RE_ATTEMPT_CODES = {6, 14}
 _RETURN_IN_PROGRESS_CODES = {8, 10, 11, 12, 13}  # return_requested..return_rfc_origin
 _DELIVERED_CODES = {9}
 _RETURNED_CODES = {98}  # returned_to_shipper
@@ -87,6 +89,9 @@ _STATUSES = [
     (99, "cancelled", "Cancelled"),
 ]
 _SLUG_TO_CODE = {slug: code for code, slug, _ in _STATUSES}
+# BarqRaftar calls Out for Delivery "dispatched" (4); the usual spellings
+# resolve to it too.
+_SLUG_TO_CODE.update({"out_for_delivery": 4, "ofd": 4})
 _CODE_TO_LABEL = {code: label for code, _, label in _STATUSES}
 
 
@@ -155,8 +160,11 @@ def extract_webhook_event(payload):
 def _normalize_phone(phone):
     """Pakistani mobile number -> "92XXXXXXXXXX" (12 digits), or None if it
     can't be made into one. BarqRaftar's own example
-    ("923001234567") is exactly this shape."""
-    digits = re.sub(r"\D", "", phone or "")
+    ("923001234567") is exactly this shape. Read the same way as Approve
+    reads it (+92, 0092, +91, no leading 0, ...)."""
+    from oms.approval_checks import normalize_phone
+
+    digits = normalize_phone(phone)
     if digits.startswith("0092"):
         digits = digits[2:]
     if digits.startswith("92") and len(digits) == 12:
@@ -942,12 +950,11 @@ def apply_barqraftar_status(order, shipment, status_code, *, tracking_number="",
     from oms import services as oms_services
 
     if status_code in _RETURN_IN_PROGRESS_CODES:
-        # Informational only, same role as Order.return_in_progress_at for
-        # Smartlane - never itself a status transition.
-        if not order.return_in_progress_at:
-            order.return_in_progress_at = timezone.now()
-            order.save(update_fields=["return_in_progress_at", "updated_at"])
-        return False
+        # Not a status transition - stamps Order.return_in_progress_at, which
+        # puts the order under Return in Transit.
+        return oms_services.mark_return_in_progress(
+            order, courier_label="BarqRaftar", tracking_number=tracking_number
+        )
 
     if status_code in _DELIVERED_CODES:
         if order.status == "delivered":
@@ -964,19 +971,18 @@ def apply_barqraftar_status(order, shipment, status_code, *, tracking_number="",
         return True
 
     if status_code in _CANCELLED_CODES:
-        if order.status == "cancelled":
-            return False
-        # propagate_to_courier=False: BarqRaftar has already told us it's
-        # cancelled - calling their API again here would be pointless.
-        oms_services.cancel_order(
-            order, reason="Cancelled by BarqRaftar", actor_user_id=actor_user_id,
-            propagate_to_courier=False,
+        # Cancelled on BarqRaftar's side: the booking is gone, not the
+        # order - it goes back to Awaiting Assigning to be booked again.
+        return oms_services.unbook_cancelled_by_courier(
+            order, courier_label="BarqRaftar", actor_user_id=actor_user_id
         )
-        return True
 
     if status_code in _OUT_FOR_DELIVERY_CODES or status_code in _ATTEMPT_CODES:
         target = "out_for_delivery" if status_code in _OUT_FOR_DELIVERY_CODES else "attempt"
-        return _advance_to_dispatch_substate(order, target, tracking_number)
+        moved = _advance_to_dispatch_substate(order, target, tracking_number)
+        if status_code in _RE_ATTEMPT_CODES:
+            moved = oms_services.clear_return_in_progress(order, courier_label="BarqRaftar") or moved
+        return moved
 
     if status_code in _DISPATCH_CODES:
         if order.status == "dispatched":
@@ -1059,6 +1065,9 @@ def _apply_fetched_status(shipment, row):
             "barqraftar: order %s at %s, ignoring status %s (stale/out of order)",
             order.order_number, order.status, status_code,
         )
+    # The Return in Transit tag: BarqRaftar's own remark, when it gives one.
+    if isinstance(row, dict):
+        oms_services.record_return_reason(order, str(row.get("remarks") or ""))
 
     order.refresh_from_db(fields=["status"])
     return filled_tracking or (order.status != before_status)

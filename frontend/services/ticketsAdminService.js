@@ -34,12 +34,27 @@ async function request(url, options = {}) {
 
 class TicketsAdminService {
   // Cross-org - every organization's tickets, not just one.
-  // params: {status, priority, assigned, q, page, page_size}.
+  // params: {status, q, page, page_size}.
   list(params = {}) {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.tickets}${buildQuery(params)}`);
   }
 
-  // Opening a ticket is also how it flips open -> seen on the backend.
+  // FynkTech raising a ticket to a store: {organization_id, order?,
+  // category, sub_category, description} - always saved "By Admin".
+  create(payload) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.tickets}`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }).then((data) => data.ticket);
+  }
+
+  // One store's orders matching q - the New ticket form's order picker.
+  searchStoreOrders(organizationId, q) {
+    return request(
+      `${apiConfig.baseUrl}${API_ENDPOINTS.admin.ticketStoreOrders}${buildQuery({ organization_id: organizationId, q })}`
+    ).then((data) => data.orders || []);
+  }
+
   get(id) {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.ticket(id)}`);
   }
@@ -51,18 +66,11 @@ class TicketsAdminService {
     });
   }
 
-  // Toggles - calling this again while already assigned to you unassigns.
-  assignToMe(id) {
-    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.ticketAssign(id)}`, {
+  // Any of TICKET_STATUSES - the admin's ticket actions.
+  setStatus(id, status) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.ticketStatus(id)}`, {
       method: "POST",
-      body: JSON.stringify({}),
-    });
-  }
-
-  setPriority(id, priority) {
-    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.ticketPriority(id)}`, {
-      method: "POST",
-      body: JSON.stringify({ priority }),
+      body: JSON.stringify({ status }),
     });
   }
 

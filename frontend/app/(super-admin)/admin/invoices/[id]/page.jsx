@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import invoicesAdminService from "../../../../../services/invoicesAdminService";
 import Button from "../../../../../components/shared/Button";
+import DateInput from "../../../../../components/shared/DateInput";
 
 function emptyLine() {
   return { description: "", quantity: "1", unit_price: "0", kind: "manual" };
@@ -290,8 +291,7 @@ export default function InvoiceDetailPage() {
         <h2 className="text-sm font-semibold text-slate-900">Notes &amp; due date</h2>
         <label className="block text-sm">
           <span className="mb-1 block text-slate-600">Due date</span>
-          <input
-            type="date"
+          <DateInput
             value={dueDate}
             onChange={(e) => setDueDate(e.target.value)}
             className="rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"

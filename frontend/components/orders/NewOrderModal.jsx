@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Modal from "../shared/Modal";
 import Button from "../shared/Button";
+import DateInput from "../shared/DateInput";
 import ordersService from "../../services/ordersService";
 
 const ImportNewOrdersModal = dynamic(() => import("./ImportNewOrdersModal"), { ssr: false });
@@ -120,8 +121,31 @@ const UploadIcon = (
  * the same editable grid as the courier-sheet import before anything is
  * created).
  */
-export default function NewOrderModal({ open, recreateFrom = null, onClose, onCreated }) {
+const RECREATE_TITLES = { replacement: "Replacement for", new: "New order from" };
+
+const RECREATE_CHOICES = [
+  {
+    value: "replacement",
+    title: "Replacement",
+    text: "Sent in place of this order - marked with an R next to its order ID.",
+  },
+  { value: "new", title: "New order", text: "A separate new order for the same customer and products." },
+];
+
+// recreateFrom: an order's "Recreate order". The first screen asks
+// Replacement or New order; the order is saved with that type (a
+// replacement gets an "R" by its number) and never created on Shopify -
+// the Shopify option isn't offered.
+//
+// stores: only passed in the Dispatch Hub ([{id, name, store_code}]). The
+// Hub has no store of its own, so the form opens straight on Book Manual
+// with a Store picker; the Store ID is asked only when two stores share
+// the picked name, otherwise it's filled in.
+export default function NewOrderModal({ open, recreateFrom = null, stores = null, onClose, onCreated }) {
+  const [recreateType, setRecreateType] = useState(null);
   const [view, setView] = useState("methods"); // "methods" | "manual"
+  const [storeName, setStoreName] = useState("");
+  const [storeId, setStoreId] = useState("");
   const [form, setForm] = useState(emptyForm);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
@@ -135,15 +159,57 @@ export default function NewOrderModal({ open, recreateFrom = null, onClose, onCr
   // the number after the store's newest order (still editable).
   async function openManual() {
     setView("manual");
+    if (stores) return; // waits for a store to be picked - see pickStore
+    loadOrderInfo("");
+  }
+
+  async function loadOrderInfo(organizationId, { renumber = false } = {}) {
     try {
-      const info = await ordersService.getNewOrderInfo();
-      setShopifyConnected(Boolean(info.shopify_connected));
-      setOnShopify(Boolean(info.shopify_connected));
-      setForm((f) => (f.order_number ? f : { ...f, order_number: info.next_order_number || "" }));
+      const info = await ordersService.getNewOrderInfo(organizationId);
+      setShopifyConnected(Boolean(info.shopify_connected) && !recreateFrom);
+      setOnShopify(Boolean(info.shopify_connected) && !recreateFrom);
+      setForm((f) =>
+        f.order_number && !renumber ? f : { ...f, order_number: info.next_order_number || "" }
+      );
     } catch {
       // Leaves the number blank - the server fills one in on create.
     }
   }
+
+  // Hub: the stores carrying `name`, oldest Store ID first.
+  const sameName = (name) =>
+    (stores || [])
+      .filter((s) => s.name === name)
+      .sort((a, b) => (a.store_code || 0) - (b.store_code || 0));
+  const storeNames = [...new Set((stores || []).map((s) => s.name))].sort((a, b) => a.localeCompare(b));
+
+  function pickStore(id) {
+    setStoreId(id);
+    setShopifyConnected(false);
+    setOnShopify(false);
+    // The order number runs per store, so a new store means a new number.
+    if (id) loadOrderInfo(id, { renumber: true });
+    else setForm((f) => ({ ...f, order_number: "" }));
+  }
+
+  function pickStoreName(name) {
+    setStoreName(name);
+    const matches = sameName(name);
+    pickStore(matches.length === 1 ? matches[0].id : "");
+  }
+
+  // Hub: no Booking Methods screen (the Hub has its own Import) - straight
+  // to the form. A recreated order stays in its own store.
+  useEffect(() => {
+    if (!open || !stores) return;
+    setView("manual");
+    const from = recreateFrom && stores.find((s) => s.id === recreateFrom.organization_id);
+    if (from) {
+      setStoreName(from.name);
+      pickStore(from.id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, stores, recreateFrom]);
 
   // Straight to the filled-in form. The full order is fetched because a
   // list row may not carry every field the form copies.
@@ -166,6 +232,9 @@ export default function NewOrderModal({ open, recreateFrom = null, onClose, onCr
 
   function resetAll() {
     setView("methods");
+    setStoreName("");
+    setStoreId("");
+    setRecreateType(null);
     setOnShopify(false);
     setForm(emptyForm());
     setError("");
@@ -208,11 +277,17 @@ export default function NewOrderModal({ open, recreateFrom = null, onClose, onCr
 
   async function onSubmit(e) {
     e.preventDefault();
+    if (stores && !storeId) {
+      setError(storeName ? "Pick the Store ID - more than one store has this name." : "Pick a store.");
+      return;
+    }
     setCreating(true);
     setError("");
     try {
       await ordersService.create({
-        create_on_shopify: onShopify,
+        ...(stores ? { organization_id: storeId } : {}),
+        ...(recreateFrom ? { recreate_type: recreateType, recreated_from: recreateFrom.id } : {}),
+        create_on_shopify: onShopify && !recreateFrom,
         order_number: onShopify ? "" : form.order_number.trim(),
         order_date: form.order_date,
         payment_gateway: form.payment_gateway,
@@ -284,6 +359,37 @@ export default function NewOrderModal({ open, recreateFrom = null, onClose, onCr
     <p className="mb-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
   ) : null;
 
+  if (recreateFrom && !recreateType) {
+    return (
+      <Modal open={open} onClose={close} title={`Recreate order ${recreateFrom.order_number}`} width="max-w-xl">
+        <p className="mb-4 text-sm text-slate-600">What is the new order?</p>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          {RECREATE_CHOICES.map((choice) => (
+            <button
+              key={choice.value}
+              type="button"
+              onClick={() => setRecreateType(choice.value)}
+              className="rounded-lg border border-surface-border bg-white p-4 text-left transition hover:border-brand-500 hover:bg-brand-50"
+            >
+              <span className="flex items-center gap-2 text-base font-semibold text-slate-900">
+                {choice.title}
+                {choice.value === "replacement" ? (
+                  <span className="rounded bg-orange-100 px-1 text-[11px] font-bold text-orange-700">R</span>
+                ) : null}
+              </span>
+              <span className="mt-1 block text-xs text-slate-500">{choice.text}</span>
+            </button>
+          ))}
+        </div>
+        <div className="mt-5 flex justify-end">
+          <Button variant="secondary" onClick={close}>
+            Cancel
+          </Button>
+        </div>
+      </Modal>
+    );
+  }
+
   if (view === "methods") {
     return (
       <Modal open={open} onClose={close} title="Manual order" width="max-w-3xl">
@@ -318,12 +424,60 @@ export default function NewOrderModal({ open, recreateFrom = null, onClose, onCr
     <Modal
       open={open}
       onClose={close}
-      title={recreateFrom ? `Recreate order ${recreateFrom.order_number}` : "Book manual order"}
+      title={
+        recreateFrom
+          ? `${RECREATE_TITLES[recreateType] || "Recreate"} order ${recreateFrom.order_number}`
+          : "Book manual order"
+      }
       width="max-w-3xl"
     >
       {errorBox}
       <form onSubmit={onSubmit} className="space-y-5">
-        {shopifyConnected ? (
+        {stores ? (
+          <section>
+            <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Store</h4>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <Field label="Store" required className="sm:col-span-2">
+                <select
+                  required
+                  value={storeName}
+                  onChange={(e) => pickStoreName(e.target.value)}
+                  disabled={Boolean(recreateFrom)}
+                  className={INPUT}
+                >
+                  <option value="">Select a store</option>
+                  {storeNames.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                      {sameName(name).length > 1 ? ` (${sameName(name).length} stores)` : ""}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Store ID" required>
+                {sameName(storeName).length > 1 && !recreateFrom ? (
+                  <select required value={storeId} onChange={(e) => pickStore(e.target.value)} className={INPUT}>
+                    <option value="">Select ID</option>
+                    {sameName(storeName).map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.store_code ?? "—"}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    disabled
+                    value={(stores.find((s) => s.id === storeId) || {}).store_code ?? ""}
+                    placeholder="Filled in from the store"
+                    className={`${INPUT} bg-surface text-slate-500`}
+                  />
+                )}
+              </Field>
+            </div>
+          </section>
+        ) : null}
+
+        {shopifyConnected && !recreateFrom ? (
           <label className="flex items-start gap-2 rounded-md border border-surface-border bg-surface px-3 py-2.5">
             <input
               type="checkbox"
@@ -352,9 +506,8 @@ export default function NewOrderModal({ open, recreateFrom = null, onClose, onCr
               )}
             </Field>
             <Field label="Order date" required>
-              <input
+              <DateInput
                 required
-                type="date"
                 value={form.order_date}
                 onChange={updateField("order_date")}
                 className={INPUT}
@@ -552,8 +705,12 @@ export default function NewOrderModal({ open, recreateFrom = null, onClose, onCr
             <span className="font-semibold text-slate-900">{grandTotal.toFixed(2)}</span>
           </div>
           <div className="flex gap-2">
-            <Button type="button" variant="secondary" onClick={recreateFrom ? close : () => setView("methods")}>
-              {recreateFrom ? "Cancel" : "Back"}
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={recreateFrom || stores ? close : () => setView("methods")}
+            >
+              {recreateFrom || stores ? "Cancel" : "Back"}
             </Button>
             <Button type="submit" loading={creating}>
               {onShopify ? "Create order & push to Shopify" : "Create order"}
