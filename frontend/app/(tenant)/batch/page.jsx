@@ -9,6 +9,7 @@ import Modal from "../../../components/shared/Modal";
 import Button, { Spinner } from "../../../components/shared/Button";
 import Checkbox from "../../../components/shared/Checkbox";
 import DateRangeFilter from "../../../components/orders/DateRangeFilter";
+import { useSessionDateRange } from "../../../store/dateFilterStore";
 import { SMARTLANE_LOAD_SHEET_COURIERS } from "../../../components/orders/statusConfig";
 import { DownloadIcon, HistoryIcon, PrinterIcon } from "../../../components/layout/navIcons";
 import { orderBookingAccount } from "../../../components/orders/orderBookingAccount";
@@ -306,8 +307,8 @@ function HistorySection() {
   const [kind, setKind] = useState("");
   const [courier, setCourier] = useState("");
   const [couriers, setCouriers] = useState([]);
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  // Shared across screens for the session (store/dateFilterStore).
+  const { dateFrom, dateTo, setDateFrom, setDateTo } = useSessionDateRange();
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const [batches, setBatches] = useState([]);
@@ -736,8 +737,8 @@ function DailyCourierGroup({
 }
 
 function DailyBatchSection() {
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  // Shared across screens for the session (store/dateFilterStore).
+  const { dateFrom, dateTo, setDateFrom, setDateTo } = useSessionDateRange();
   const [days, setDays] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -809,7 +810,7 @@ function DailyBatchSection() {
 
   return (
     <>
-      <div className="mt-5 flex flex-wrap items-center gap-3">
+      <div className="mt-3 flex flex-wrap items-center gap-3">
         <DateRangeFilter
           dateFrom={dateFrom}
           dateTo={dateTo}
@@ -931,14 +932,11 @@ export default function BatchPage() {
 
   return (
     <div>
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex items-center justify-between gap-3">
         <div>
-          <h1 className="text-[28px] font-semibold leading-8 text-slate-900">Batch</h1>
-          <p className="mt-1 text-sm text-slate-500">
-            {showHistory
+          <h1 className="text-2xl font-semibold text-slate-900" title={showHistory
               ? "Every batch ever printed, by day - its load sheet and airway bill side by side, re-downloaded or reprinted exactly as generated, never regenerated."
-              : "Every order that reached Ready to Print, grouped by day - (re-)generate an airway bill or load sheet for the whole day, whether or not anyone has printed one yet."}
-          </p>
+              : "Every order that reached Ready to Print, grouped by day - (re-)generate an airway bill or load sheet for the whole day, whether or not anyone has printed one yet."}>Batch</h1>
         </div>
         <button
           type="button"

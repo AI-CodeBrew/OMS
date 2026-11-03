@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Button from "../../../../../components/shared/Button";
 import Modal from "../../../../../components/shared/Modal";
 import postexService from "../_lib/postexService";
+import DateInput from "../../../../../components/shared/DateInput";
 
 // PostEx's orderStatusId filter values (from their guide, each one checked
 // against the account's real orders). The labels in brackets are how the
@@ -302,8 +303,7 @@ export default function ShipmentsTab({ onError, onNotice }) {
       <form onSubmit={onFilter} className="mb-4 flex flex-wrap items-end gap-3">
         <label className="block">
           <span className="mb-1 block text-xs font-medium text-slate-600">From</span>
-          <input
-            type="date"
+          <DateInput
             value={filters.dateFrom}
             onChange={(e) => setFilters((f) => ({ ...f, dateFrom: e.target.value }))}
             className="rounded-md border border-surface-border px-3 py-1.5 text-sm outline-none focus:border-brand-500"
@@ -311,8 +311,7 @@ export default function ShipmentsTab({ onError, onNotice }) {
         </label>
         <label className="block">
           <span className="mb-1 block text-xs font-medium text-slate-600">To</span>
-          <input
-            type="date"
+          <DateInput
             value={filters.dateTo}
             onChange={(e) => setFilters((f) => ({ ...f, dateTo: e.target.value }))}
             className="rounded-md border border-surface-border px-3 py-1.5 text-sm outline-none focus:border-brand-500"

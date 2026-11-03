@@ -123,16 +123,65 @@ def _normalize_status(label):
     return re.sub(r"\s+", " ", str(label or "").strip().lower())
 
 
+def _return_under_way(history):
+    """True when the newest history entry that says which way the parcel is
+    heading is a return one. Transit codes (0003/0031/0033/0035) are used
+    both ways, so they're skipped; a later delivery code (a re-attempt after
+    a return was started) means it isn't returning any more."""
+    for entry in reversed(history or []):
+        if not isinstance(entry, dict):
+            continue
+        stage = _STAGE_BY_HISTORY_CODE.get(str(entry.get("transactionStatusMessageCode") or ""))
+        if stage in (None, "dispatched"):
+            continue
+        return stage == "return_in_progress"
+    return False
+
+
+_ATTEMPT_REMARK = re.compile(r"^attempt made:\s*([^()]*?)\s*(?:\(([^()]+)\))?\s*$", re.IGNORECASE)
+
+
+def latest_remark(history):
+    """The newest failed-attempt remark in the history - "REFUSED TO
+    RECEIVE" out of "Attempt Made: RFD(REFUSED TO RECEIVE)" - or "". A bare
+    "Attempt Made: RFD" is spelled out from an earlier attempt with the same
+    code; "Delivery Under Review" and the like aren't remarks."""
+    spelled = {}
+    latest = None
+    for entry in history or []:
+        if not isinstance(entry, dict):
+            continue
+        match = _ATTEMPT_REMARK.match(str(entry.get("transactionStatusMessage") or "").strip())
+        if not match:
+            continue
+        code, text = match.group(1).strip(), (match.group(2) or "").strip()
+        if code and text:
+            spelled[code.upper()] = text
+        latest = (code, text)
+    if not latest:
+        return ""
+    code, text = latest
+    return text or spelled.get(code.upper()) or code
+
+
 def status_stage(label, history=None):
     """PostEx status text (+ its history, as a fallback) -> one of pending /
     dispatched / out_for_delivery / attempt / return_in_progress / returned
     / delivered / cancelled, or None if it can't be told."""
     normalized = _normalize_status(label)
     stage = _STAGE_BY_STATUS.get(normalized)
+    # PostEx keeps the same transit text on the way back - a returning parcel
+    # reads "En-Route to Lahore warehouse" or "PostEx WareHouse" just like an
+    # outgoing one - so a transit text defers to a return in the history.
+    is_transit = stage == "dispatched" or (
+        stage is None and (normalized.startswith("en-route to") or normalized.startswith("at postex"))
+    )
+    if is_transit and _return_under_way(history):
+        return "return_in_progress"
     if stage:
         return stage
     # "En-Route to Lahore warehouse" - the city is filled in per parcel.
-    if normalized.startswith("en-route to") or normalized.startswith("at postex"):
+    if is_transit:
         return "dispatched"
     for entry in reversed(history or []):
         if isinstance(entry, dict):
@@ -146,12 +195,11 @@ def status_stage(label, history=None):
 
 def _normalize_phone(phone):
     """Pakistani mobile number -> "03XXXXXXXXX" (PostEx's documented
-    customerPhone format), or None if it can't be made into one."""
-    digits = re.sub(r"\D", "", phone or "")
-    if digits.startswith("0092"):
-        digits = digits[4:]
-    elif digits.startswith("92") and len(digits) == 12:
-        digits = digits[2:]
+    customerPhone format), or None if it can't be made into one. Read the
+    same way as Approve reads it (+92, 0092, +91, no leading 0, ...)."""
+    from oms.approval_checks import normalize_phone
+
+    digits = normalize_phone(phone)
     if len(digits) == 10 and digits.startswith("3"):
         return "0" + digits
     if len(digits) == 11 and digits.startswith("03"):
@@ -779,6 +827,12 @@ def _apply_fetched_status(shipment, row):
     except oms_services.InvalidTransition:
         logger.info("postex: order %s at %s, ignoring %r (stale/out of order)",
                     order.order_number, order.status, label)
+    # A re-attempt ("Merchant Request For Re-Attempt") after a return was
+    # started: it isn't coming back any more - back to Undelivered.
+    if stage == "attempt" and not _return_under_way(history):
+        oms_services.clear_return_in_progress(order, courier_label="PostEx")
+    # The Return in Transit tag: why it's coming back.
+    oms_services.record_return_reason(order, latest_remark(history))
 
     order.refresh_from_db(fields=["status"])
     return filled_tracking or (order.status != before_status)

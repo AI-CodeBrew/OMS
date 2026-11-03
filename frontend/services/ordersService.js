@@ -126,6 +126,20 @@ class OrdersService {
     return data;
   }
 
+  // A Dashboard card's orders split into its OMS types:
+  // {group, types: [{key, label, count}], total}.
+  async dashboardBreakdown(params = {}) {
+    const response = await fetch(
+      `${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderDashboardBreakdown}${buildQuery(params)}`,
+      { headers: authService.getAuthHeaders() }
+    );
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.detail || "Failed to load the breakdown");
+    }
+    return data;
+  }
+
   async counts(params = {}) {
     const response = await fetch(
       `${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderCounts}${buildQuery(params)}`,
@@ -140,8 +154,11 @@ class OrdersService {
 
   // Whether the store can also create a manual order on Shopify, and the
   // order number it gets otherwise (the one after the newest order).
-  async getNewOrderInfo() {
-    const response = await fetch(`${apiConfig.baseUrl}${API_ENDPOINTS.oms.orders}new-order-info/`, {
+  // organizationId: the Dispatch Hub's picked store (the Hub has no store
+  // of its own).
+  async getNewOrderInfo(organizationId = "") {
+    const query = organizationId ? `?organization_id=${encodeURIComponent(organizationId)}` : "";
+    const response = await fetch(`${apiConfig.baseUrl}${API_ENDPOINTS.oms.orders}new-order-info/${query}`, {
       headers: authService.getAuthHeaders(),
     });
     const data = await response.json().catch(() => ({}));
@@ -161,6 +178,18 @@ class OrdersService {
       throw new Error(data.detail || "Failed to load cities");
     }
     return data.cities || [];
+  }
+
+  // The tags this store's orders already carry - Update Tag's dropdown.
+  async getOrderTags() {
+    const response = await fetch(`${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderTags}`, {
+      headers: authService.getAuthHeaders(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.detail || "Failed to load tags");
+    }
+    return data.results || [];
   }
 
   async create(order) {
@@ -258,7 +287,10 @@ class OrdersService {
   }
 
   async _postAndDownloadDocument(url, body, filename) {
-    const blob = await this._postForDocument(url, body);
+    this._saveBlob(await this._postForDocument(url, body), filename);
+  }
+
+  _saveBlob(blob, filename) {
     const blobUrl = window.URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = blobUrl;
@@ -286,6 +318,27 @@ class OrdersService {
       { order_ids: orderIds },
       `airway-bill${suffix}-${dateStamp}.pdf`
     );
+  }
+
+  // Dispatch Hub: one PDF, courier after courier, whichever courier booked
+  // each order. kind: "loadsheet" | "airway_bill". `label` is a filename
+  // hint. Returns which couriers failed ("" when none did) - the rest still
+  // downloaded.
+  async printByCourier(kind, orderIds, label = "by-courier") {
+    const response = await fetch(`${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderPrintByCourier}`, {
+      method: "POST",
+      headers: authService.getAuthHeaders(),
+      body: JSON.stringify({ kind, order_ids: orderIds }),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.detail || "Failed to generate document");
+    }
+    const dateStamp = new Date().toISOString().slice(0, 10);
+    const suffix = label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+    const name = kind === "loadsheet" ? "loadsheet" : "airway-bill";
+    this._saveBlob(await response.blob(), `${name}-${suffix}-${dateStamp}.pdf`);
+    return response.headers.get("X-Print-Failed") || "";
   }
 
   async printSmartlaneLoadSheet(orderIds, courier) {

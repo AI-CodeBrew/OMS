@@ -145,6 +145,10 @@ export const EDITABLE_STATUSES = new Set([
   "awaiting_assigning",
 ]);
 
+// Dispatched or later - no Edit at all (backend: oms.services.
+// EDIT_LOCKED_STATUSES).
+export const EDIT_LOCKED_STATUSES = new Set(["dispatched", "out_for_delivery", "attempt", "delivered", "returned"]);
+
 // Assigning Courier's own three, offered first for any selection that is
 // all in that card (whatever each order's own status there) - the orders
 // page puts the statuses' print/load-sheet actions after them.
@@ -158,49 +162,65 @@ export const ASSIGNING_COURIER_ACTIONS = [
 // Actions dropdown from offering transitions the backend would reject.
 export const REVERT_ACTION = { action: "revert_status", label: "Revert to previous status" };
 
+const REVERT_TO_CONFIRMATION = { action: "revert_to_confirmation", label: "Revert to Awaiting Confirmation" };
+
+// Every way of booking an Approved order with a courier - the store's own
+// accounts, OMS Courier's, Auto Book, and Assign courier (Smartlane / OMS
+// Courier through its own picker).
+const BOOKING_CHOICE_ACTIONS = new Set([
+  "auto_book",
+  "push_to_barqraftar",
+  "push_to_barqraftar_oms",
+  "push_to_postex",
+  "push_to_postex_oms",
+  "assign_courier",
+]);
+
+export const MOVE_TO_ASSIGNING = "move_to_assigning";
+
+// Folds an action list's booking actions (after the BarqRaftar / PostEx
+// wrappers added theirs) into one "Move to Assigning Courier", whose
+// `choices` are the bookings it can run - its popup asks which.
+export function withMoveToAssigning(actions) {
+  const choices = actions.filter((a) => BOOKING_CHOICE_ACTIONS.has(a.action));
+  if (!choices.length) return actions;
+  return [
+    {
+      key: MOVE_TO_ASSIGNING,
+      action: MOVE_TO_ASSIGNING,
+      label: "Move to Assigning Courier",
+      choices: choices.map((a) => ({
+        value: a.action,
+        label: a.action === "assign_courier" ? "Smartlane / OMS Courier" : a.label.replace(/^Book with /, ""),
+      })),
+    },
+    ...actions.filter((a) => !BOOKING_CHOICE_ACTIONS.has(a.action)),
+  ];
+}
+
+// Every status in the Awaiting Confirmation card gets the same three:
+// Approve (checks the order, then Approved - or City Issue when only the
+// city is wrong; a City Issue order is fixed with Edit, then Approve),
+// Update Tag and Cancel. Raise ticket sits beside them in both menus.
+const AWAITING_CONFIRMATION_ACTIONS = [
+  { action: "acknowledge", label: "Approve" },
+  { action: "update_tag", label: "Update Tag" },
+  { action: "cancel", label: "Cancel Order" },
+];
+
 export const ACTIONS_BY_STATUS = {
-  // Untouched inbox - CS picks the order up into Pending CC/COD (whichever
-  // matches its gateway) before working it. An order already handled
-  // outside OMS can instead be marked straight to its outcome (backend:
-  // oms.services.set_outcome_by_hand).
-  new: [
-    { action: "acknowledge", label: "Approve" },
-    { action: "approve", label: "Approve (ship without booking)" },
-    { action: "mark_dispatched_by_hand", label: "Mark Dispatched" },
-    { action: "mark_delivered_by_hand", label: "Mark Delivered" },
-    { action: "mark_returned_by_hand", label: "Mark Returned" },
-    { action: "cancel", label: "Cancel Order" },
-  ],
-  // Revert (to the status the order came from) is offered on every status
-  // before a courier booking exists - the order detail names the status,
-  // e.g. "Revert to Pending COD" (backend: oms.services.previous_status).
-  pending_cc: [{ action: "confirm", label: "Confirm" }, REVERT_ACTION, { action: "cancel", label: "Cancel Order" }],
-  pending_cod: [{ action: "confirm", label: "Confirm" }, REVERT_ACTION, { action: "cancel", label: "Cancel Order" }],
-  // Approve here re-checks an order whose city was fixed by Edit Order.
-  city_issue: [
-    { action: "resolve_city_issue", label: "Resolve city issue" },
-    { action: "acknowledge", label: "Approve" },
-    REVERT_ACTION,
-    { action: "cancel", label: "Cancel Order" },
-  ],
-  awaiting_assigning: [
-    { action: "assign_courier", label: "Assign courier" },
-    REVERT_ACTION,
-    { action: "cancel", label: "Cancel Order" },
-  ],
-  awaiting_approval: [{ action: "approve", label: "Approve" }, REVERT_ACTION, { action: "cancel", label: "Cancel Order" }],
-  approved: [
-    { key: "dispatch", action: "dispatch", label: "Dispatch" },
-    { key: "invoice_n_dispatch", action: "dispatch", label: "Invoice N Dispatch" },
-    { key: "invoice", action: "invoice", label: "Invoice", disabled: true },
-    { key: "airway_bill", action: "airway_bill", label: "Airway Bill", disabled: true },
-    { key: "sticker_invoice", action: "sticker_invoice", label: "Sticker Invoice", disabled: true },
-    { key: "generate_picklist", action: "generate_picklist", label: "Generate Picklist", disabled: true },
-    { key: "apply_tag", action: "apply_tag", label: "Apply Tag", disabled: true },
-    { key: "cancel_fulfillment", action: "cancel_fulfillment", label: "Cancel Fulfillment" },
-    { key: "revert_status", ...REVERT_ACTION },
-    { key: "cancel", action: "cancel", label: "Cancel Order" },
-  ],
+  new: AWAITING_CONFIRMATION_ACTIONS,
+  pending_cc: AWAITING_CONFIRMATION_ACTIONS,
+  pending_cod: AWAITING_CONFIRMATION_ACTIONS,
+  city_issue: AWAITING_CONFIRMATION_ACTIONS,
+  awaiting_approval: AWAITING_CONFIRMATION_ACTIONS,
+  // The Approved card: book a courier (withMoveToAssigning folds every
+  // booking action into one Move to Assigning Courier, which asks which),
+  // or back to Awaiting Confirmation with a tag saying why (backend:
+  // oms.services.revert_to_awaiting_confirmation). An order in plain
+  // Approved (shipped without booking) can only be sent back.
+  awaiting_assigning: [{ action: "assign_courier", label: "Assign courier" }, REVERT_TO_CONFIRMATION],
+  approved: [REVERT_TO_CONFIRMATION],
   // Handed to the courier (its load sheet made, or the courier reports it
   // Booked / Awaiting Pickup) and waiting for the rider. The documents stay
   // on offer here for a re-print - the Batch page keeps every one as well.
@@ -254,7 +274,11 @@ export const ACTIONS_BY_STATUS = {
   // available, since staff may need to mark delivered by hand regardless
   // of which sub-stage the courier last reported.
   out_for_delivery: [{ action: "mark_delivered", label: "Mark delivered" }],
-  attempt: [{ action: "mark_delivered", label: "Mark delivered" }],
+  // Undelivered: tell the courier Reattempt or Return (Shipper Advice).
+  attempt: [
+    { action: "shipper_advice", label: "Shipper Advice" },
+    { action: "mark_delivered", label: "Mark delivered" },
+  ],
   delivered: [],
   cancelled: [],
   returned: [],

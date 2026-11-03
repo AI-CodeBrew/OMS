@@ -1,6 +1,7 @@
 "use client";
 
 import Button from "../shared/Button";
+import DateInput from "../shared/DateInput";
 
 export default function OrdersFilterPanel({ filters, onChange, onApply, onClear, couriers, stores }) {
   function update(field) {
@@ -65,8 +66,7 @@ export default function OrdersFilterPanel({ filters, onChange, onApply, onClear,
       <div className="grid grid-cols-2 gap-2">
         <label className="block">
           <span className="mb-1 block text-xs font-medium text-slate-700">From</span>
-          <input
-            type="date"
+          <DateInput
             value={filters.date_from}
             onChange={update("date_from")}
             className="w-full rounded-md border border-surface-border px-2 py-2 text-sm outline-none focus:border-brand-500"
@@ -74,8 +74,7 @@ export default function OrdersFilterPanel({ filters, onChange, onApply, onClear,
         </label>
         <label className="block">
           <span className="mb-1 block text-xs font-medium text-slate-700">To</span>
-          <input
-            type="date"
+          <DateInput
             value={filters.date_to}
             onChange={update("date_to")}
             className="w-full rounded-md border border-surface-border px-2 py-2 text-sm outline-none focus:border-brand-500"

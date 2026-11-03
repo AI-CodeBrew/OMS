@@ -6,6 +6,7 @@ import wmsService from "../../../../services/wmsService";
 import Button from "../../../../components/shared/Button";
 import Pagination from "../../../../components/shared/Pagination";
 import DateRangeFilter from "../../../../components/orders/DateRangeFilter";
+import { useSessionDateRange } from "../../../../store/dateFilterStore";
 import ScanPanel from "../../../../components/wms/ScanPanel";
 import { SEARCH_FIELDS } from "../../../../components/orders/statusConfig";
 
@@ -35,8 +36,8 @@ export default function PackingPage() {
   const [search, setSearch] = useState("");
   const [searchField, setSearchField] = useState("order_number");
   const [appliedSearch, setAppliedSearch] = useState("");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  // Shared across screens for the session (store/dateFilterStore).
+  const { dateFrom, dateTo, setDateFrom, setDateTo } = useSessionDateRange();
 
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -134,13 +135,9 @@ export default function PackingPage() {
 
   return (
     <div>
-      <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-[28px] font-semibold leading-8 text-slate-900">Packing</h1>
-          <p className="mt-1 text-sm text-slate-500">
-            Orders picked and waiting to be packed. Scan a parcel once it is packed to move it into
-            Awaiting Dispatched, ready for the courier.
-          </p>
+          <h1 className="text-2xl font-semibold text-slate-900" title={"Orders picked and waiting to be packed. Scan a parcel once it is packed to move it into Awaiting Dispatched, ready for the courier."}>Packing</h1>
         </div>
         <DateRangeFilter
           dateFrom={dateFrom}
@@ -165,7 +162,7 @@ export default function PackingPage() {
         <p className="mt-4 rounded-md bg-green-50 px-3 py-2 text-sm text-green-700">{notice}</p>
       ) : null}
 
-      <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-[340px_1fr]">
+      <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-[340px_1fr]">
         <ScanPanel
           title="Scan packed parcel"
           hint="Only orders sitting in Ready to Pick can be packed. A repeat scan of the same parcel is ignored."

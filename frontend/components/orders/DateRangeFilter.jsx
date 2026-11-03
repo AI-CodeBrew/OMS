@@ -2,6 +2,8 @@
 
 import { useState, useRef, useEffect } from "react";
 import Button from "../shared/Button";
+import { DASHBOARD_PRESETS, dashboardRangeForPreset } from "../../lib/viewCache";
+import DateInput, { formatDmy } from "../shared/DateInput";
 
 function pad(n) {
   return String(n).padStart(2, "0");
@@ -11,6 +13,31 @@ function formatDate(d) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+function monthRange(offset) {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth() + offset, 1);
+  // The current month runs to today; a past month to its last day.
+  const end = offset === 0 ? now : new Date(start.getFullYear(), start.getMonth() + 1, 0);
+  return { date_from: formatDate(start), date_to: formatDate(end) };
+}
+
+// Same choices as the Dashboard's date filter (Today / Yesterday / Last 7 /
+// Last 30 days, then Custom), plus the two month presets and All time -
+// these lists start unfiltered, unlike the Dashboard.
+const PRESETS = [
+  { key: "all", label: "All time", range: () => ({ date_from: "", date_to: "" }) },
+  ...DASHBOARD_PRESETS.map((p) => ({ ...p, range: () => dashboardRangeForPreset(p.key) })),
+  { key: "this_month", label: "This month", range: () => monthRange(0) },
+  { key: "last_month", label: "Last month", range: () => monthRange(-1) },
+];
+
+function presetFor(dateFrom, dateTo) {
+  return PRESETS.find((p) => {
+    const r = p.range();
+    return r.date_from === (dateFrom || "") && r.date_to === (dateTo || "");
+  });
+}
+
 export default function DateRangeFilter({
   dateFrom,
   dateTo,
@@ -18,250 +45,124 @@ export default function DateRangeFilter({
   onClearDateRange,
 }) {
   const [open, setOpen] = useState(false);
-  const [fromInput, setFromInput] = useState(dateFrom || "");
-  const [toInput, setToInput] = useState(dateTo || "");
-  const containerRef = useRef(null);
+  const preset = presetFor(dateFrom, dateTo);
+  const activeKey = preset ? preset.key : "custom";
+  const [showCustom, setShowCustom] = useState(activeKey === "custom");
+  const [draft, setDraft] = useState({ date_from: dateFrom || "", date_to: dateTo || "" });
+  const ref = useRef(null);
 
-  // Sync inputs when props change
   useEffect(() => {
-    setFromInput(dateFrom || "");
-    setToInput(dateTo || "");
+    setDraft({ date_from: dateFrom || "", date_to: dateTo || "" });
   }, [dateFrom, dateTo]);
 
-  // Handle outside click to close popover
   useEffect(() => {
-    function handleClickOutside(e) {
-      if (containerRef.current && !containerRef.current.contains(e.target)) {
-        setOpen(false);
-      }
+    if (!open) return undefined;
+    function onPointerDown(e) {
+      if (!ref.current?.contains(e.target)) setOpen(false);
     }
-    if (open) {
-      document.addEventListener("mousedown", handleClickOutside);
-      return () => document.removeEventListener("mousedown", handleClickOutside);
+    function onKeyDown(e) {
+      if (e.key === "Escape") setOpen(false);
     }
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
   }, [open]);
 
-  // Quick Preset Helper Functions
-  const setPreviousMonth = () => {
-    const now = new Date();
-    const prevMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    const start = new Date(prevMonthDate.getFullYear(), prevMonthDate.getMonth(), 1);
-    const end = new Date(prevMonthDate.getFullYear(), prevMonthDate.getMonth() + 1, 0);
-    const from = formatDate(start);
-    const to = formatDate(end);
-    setFromInput(from);
-    setToInput(to);
-    onApplyDateRange(from, to);
+  function pick(p) {
+    setShowCustom(false);
     setOpen(false);
-  };
-
-  const setCurrentMonth = () => {
-    const now = new Date();
-    const start = new Date(now.getFullYear(), now.getMonth(), 1);
-    const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-    const from = formatDate(start);
-    const to = formatDate(end);
-    setFromInput(from);
-    setToInput(to);
-    onApplyDateRange(from, to);
-    setOpen(false);
-  };
-
-  const setSpecificMonth = (monthIndex, year = new Date().getFullYear()) => {
-    const start = new Date(year, monthIndex, 1);
-    const end = new Date(year, monthIndex + 1, 0);
-    const from = formatDate(start);
-    const to = formatDate(end);
-    setFromInput(from);
-    setToInput(to);
-    onApplyDateRange(from, to);
-    setOpen(false);
-  };
-
-  const setLastNDays = (days) => {
-    const end = new Date();
-    const start = new Date();
-    start.setDate(end.getDate() - days);
-    const from = formatDate(start);
-    const to = formatDate(end);
-    setFromInput(from);
-    setToInput(to);
-    onApplyDateRange(from, to);
-    setOpen(false);
-  };
-
-  const handleApply = (e) => {
-    e?.preventDefault();
-    onApplyDateRange(fromInput, toInput);
-    setOpen(false);
-  };
-
-  const handleClear = () => {
-    setFromInput("");
-    setToInput("");
-    onClearDateRange();
-    setOpen(false);
-  };
-
-  const hasActiveFilter = Boolean(dateFrom || dateTo);
-
-  const getLabel = () => {
-    if (!dateFrom && !dateTo) return "Filter by Date";
-    if (dateFrom && dateTo) {
-      return `${dateFrom} to ${dateTo}`;
+    if (p.key === "all") {
+      onClearDateRange();
+      return;
     }
-    if (dateFrom) return `From ${dateFrom}`;
-    return `To ${dateTo}`;
-  };
+    const r = p.range();
+    onApplyDateRange(r.date_from, r.date_to);
+  }
 
-  const now = new Date();
-  const currentMonthName = now.toLocaleString("default", { month: "short" });
-  const prevMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-  const prevMonthName = prevMonthDate.toLocaleString("default", { month: "short" });
+  const label = preset
+    ? preset.label
+    : `${formatDmy(dateFrom) || "Start"} to ${formatDmy(dateTo) || "Today"}`;
+
+  const dateInput =
+    "w-full rounded-md border border-surface-border px-2.5 py-1.5 text-sm outline-none focus:border-brand-500";
 
   return (
-    <div className="relative inline-block text-left" ref={containerRef}>
+    <div ref={ref} className="relative">
       <button
         type="button"
-        onClick={() => setOpen((prev) => !prev)}
-        className={`inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 ${
-          hasActiveFilter
-            ? "border-brand-500 bg-brand-50 text-brand-700 font-semibold"
-            : "border-surface-border bg-white text-slate-700 hover:bg-slate-50"
-        }`}
+        onClick={() => setOpen((o) => !o)}
+        className="inline-flex items-center gap-2 rounded-md border border-surface-border bg-white px-3.5 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
       >
-        <svg
-          className={`h-4 w-4 ${hasActiveFilter ? "text-brand-600" : "text-slate-500"}`}
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth="2"
-            d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
-          />
+        <svg viewBox="0 0 20 20" fill="none" className="h-4 w-4 text-slate-400" aria-hidden="true">
+          <rect x="3" y="4.5" width="14" height="12" rx="2" stroke="currentColor" strokeWidth="1.5" />
+          <path d="M3 8.5h14M7 3v3M13 3v3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
         </svg>
-        <span>{getLabel()}</span>
-        {hasActiveFilter ? (
-          <span
-            role="button"
-            tabIndex={0}
-            onClick={(e) => {
-              e.stopPropagation();
-              handleClear();
-            }}
-            className="ml-1 flex h-4 w-4 items-center justify-center rounded-full hover:bg-brand-200 text-brand-700 text-xs"
-            title="Clear date filter"
-          >
-            ×
-          </span>
-        ) : (
-          <svg className="h-3.5 w-3.5 text-slate-400" viewBox="0 0 20 20" fill="currentColor">
-            <path
-              fillRule="evenodd"
-              d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z"
-              clipRule="evenodd"
-            />
-          </svg>
-        )}
+        {label}
+        <span className="text-xs text-slate-400">▾</span>
       </button>
-
-      {open && (
-        <div className="absolute right-0 z-50 mt-2 w-80 rounded-lg border border-surface-border bg-white p-4 shadow-xl animate-in fade-in zoom-in-95">
-          <div className="mb-3 flex items-center justify-between border-b border-surface-border pb-2">
-            <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-              Query Orders by Date
-            </h4>
-            {hasActiveFilter && (
+      {open ? (
+        <div className="absolute right-0 z-30 mt-1 w-64 rounded-md border border-surface-border bg-white py-1 shadow-lg">
+          {PRESETS.map((p) => {
+            const selected = p.key === activeKey && !showCustom;
+            return (
               <button
+                key={p.key}
                 type="button"
-                onClick={handleClear}
-                className="text-xs text-red-600 hover:underline"
+                onClick={() => pick(p)}
+                className={`flex w-full items-center justify-between px-3 py-1.5 text-left text-sm hover:bg-surface ${
+                  selected ? "font-medium text-brand-800" : "text-slate-700"
+                }`}
               >
-                Clear Filter
+                {p.label}
+                {selected ? <span className="text-brand-700">✓</span> : null}
               </button>
-            )}
-          </div>
-
-          {/* Quick Presets */}
-          <div className="mb-3">
-            <label className="mb-1.5 block text-xs font-medium text-slate-600">Quick Range Presets</label>
-            <div className="grid grid-cols-2 gap-1.5">
-              <button
-                type="button"
-                onClick={setCurrentMonth}
-                className="rounded border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-brand-50 hover:border-brand-300 hover:text-brand-700 text-left transition"
-              >
-                🗓️ This Month ({currentMonthName})
-              </button>
-              <button
-                type="button"
-                onClick={setPreviousMonth}
-                className="rounded border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-brand-50 hover:border-brand-300 hover:text-brand-700 text-left transition"
-              >
-                🗓️ Previous Month ({prevMonthName})
-              </button>
-              <button
-                type="button"
-                onClick={() => setLastNDays(7)}
-                className="rounded border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-brand-50 hover:border-brand-300 hover:text-brand-700 text-left transition"
-              >
-                Last 7 Days
-              </button>
-              <button
-                type="button"
-                onClick={() => setLastNDays(30)}
-                className="rounded border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-brand-50 hover:border-brand-300 hover:text-brand-700 text-left transition"
-              >
-                Last 30 Days
-              </button>
-            </div>
-          </div>
-
-          {/* Custom Date Form */}
-          <form onSubmit={handleApply} className="space-y-3">
-            <div className="grid grid-cols-2 gap-2">
+            );
+          })}
+          <button
+            type="button"
+            onClick={() => setShowCustom(true)}
+            className={`flex w-full items-center justify-between px-3 py-1.5 text-left text-sm hover:bg-surface ${
+              activeKey === "custom" || showCustom ? "font-medium text-brand-800" : "text-slate-700"
+            }`}
+          >
+            Custom
+            {activeKey === "custom" || showCustom ? <span className="text-brand-700">✓</span> : null}
+          </button>
+          {showCustom ? (
+            <div className="mt-1 space-y-2 border-t border-surface-border px-3 pb-2 pt-3">
               <label className="block">
-                <span className="mb-1 block text-xs font-medium text-slate-600">From Date</span>
-                <input
-                  type="date"
-                  value={fromInput}
-                  onChange={(e) => setFromInput(e.target.value)}
-                  className="w-full rounded-md border border-surface-border px-2.5 py-1.5 text-xs outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500"
+                <span className="mb-1 block text-xs font-medium text-slate-600">From</span>
+                <DateInput
+                  value={draft.date_from}
+                  onChange={(e) => setDraft((d) => ({ ...d, date_from: e.target.value }))}
+                  className={dateInput}
                 />
               </label>
               <label className="block">
-                <span className="mb-1 block text-xs font-medium text-slate-600">To Date</span>
-                <input
-                  type="date"
-                  value={toInput}
-                  onChange={(e) => setToInput(e.target.value)}
-                  className="w-full rounded-md border border-surface-border px-2.5 py-1.5 text-xs outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500"
+                <span className="mb-1 block text-xs font-medium text-slate-600">To</span>
+                <DateInput
+                  value={draft.date_to}
+                  onChange={(e) => setDraft((d) => ({ ...d, date_to: e.target.value }))}
+                  className={dateInput}
                 />
               </label>
-            </div>
-
-            <div className="flex gap-2 pt-2 border-t border-surface-border">
               <Button
-                type="submit"
-                className="flex-1 justify-center py-1.5 text-xs"
+                className="w-full"
+                disabled={!draft.date_from && !draft.date_to}
+                onClick={() => {
+                  onApplyDateRange(draft.date_from, draft.date_to);
+                  setOpen(false);
+                }}
               >
-                Apply Query
-              </Button>
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={handleClear}
-                className="py-1.5 text-xs"
-              >
-                Reset
+                Apply
               </Button>
             </div>
-          </form>
+          ) : null}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

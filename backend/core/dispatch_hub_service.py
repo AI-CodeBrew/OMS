@@ -48,6 +48,7 @@ def list_hub_stores():
         {
             "id": str(entry.organization_id),
             "name": entry.organization.name,
+            "store_code": entry.organization.store_code,
             "slug": entry.organization.slug,
             "is_active": entry.organization.is_active,
             "per_order_rate": str(entry.per_order_rate),

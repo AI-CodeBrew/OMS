@@ -201,6 +201,16 @@ BULK_ACTIONS = {
     ),
     "retry_dispatch": lambda order, params, actor: services.retry_dispatch(order, actor_user_id=actor),
     "mark_delivered": lambda order, params, actor: services.mark_delivered(order, actor_user_id=actor),
+    "shipper_advice": lambda order, params, actor: services.set_shipper_advice(
+        order, advice=str(params.get("advice") or ""), remarks=str(params.get("remarks") or ""),
+        actor_user_id=actor,
+    ),
+    "revert_to_confirmation": lambda order, params, actor: services.revert_to_awaiting_confirmation(
+        order, tag=str(params.get("tag") or ""), actor_user_id=actor
+    ),
+    "update_tag": lambda order, params, actor: services.set_order_tag(
+        order, tag=str(params.get("tag") or ""), actor_user_id=actor
+    ),
     # New orders handled outside OMS - see services.set_outcome_by_hand.
     "mark_dispatched_by_hand": lambda order, params, actor: services.set_outcome_by_hand(
         order, "dispatched", actor_user_id=actor
@@ -266,6 +276,12 @@ CHANGE_COURIER_TARGETS = {
 }
 
 
+# The Dispatch Hub's print-by-courier: the order couriers come in the PDF,
+# and each Courier row's name (lowercase) to its place there.
+PRINT_COURIER_ORDER = ("BarqRaftar", "PostEx", "Smartlane", "OMS Courier")
+PRINT_COURIER_LABELS = {name.lower(): name for name in PRINT_COURIER_ORDER}
+
+
 class OrderPagination(PageNumberPagination):
     page_size = 10
     page_size_query_param = "page_size"
@@ -294,7 +310,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         if self.action in self.returns_associate_actions:
             self.required_any_module = ("oms", "wms", "returns")
             return [RequireAnyModule()]
-        if self.action in ("warmup", "counts", "dashboard"):
+        if self.action in ("warmup", "counts", "dashboard", "dashboard_breakdown"):
             return [RequireAnyModule()]
         return super().get_permissions()
 
@@ -507,10 +523,10 @@ class OrderViewSet(viewsets.ModelViewSet):
         return Response(payload)
 
     def _apply_filters(self, qs, params):
-        # Dispatch Hub: only the orders a store sent for dispatch, plus any
-        # the Hub booked itself - never a store's other orders.
-        if is_hub_request(self.request):
-            qs = qs.filter(Q(dispatch_requested_at__isnull=False) | Q(hub_dispatched_at__isnull=False))
+        # A Dashboard card (and one of its types) - see
+        # services.filter_dashboard_type.
+        if params.get("dash_group"):
+            qs = services.filter_dashboard_type(qs, params["dash_group"], params.get("dash_type") or "")
         status_param = params.get("status")
         if status_param:
             status_list = [s.strip() for s in status_param.split(",") if s.strip()]
@@ -690,6 +706,19 @@ class OrderViewSet(viewsets.ModelViewSet):
             .order_by("product_name")
             .values_list("product_name", flat=True)
             .distinct()[:10]
+        )
+        return Response({"results": list(names)})
+
+    @action(detail=False, methods=["get"], url_path="tags")
+    def tags(self, request):
+        """The tags this store's orders already carry - Update Tag's
+        dropdown (a new one can still be typed)."""
+        names = (
+            Order.objects.filter(**org_filter(request))
+            .exclude(tag="")
+            .order_by("tag")
+            .values_list("tag", flat=True)
+            .distinct()[:200]
         )
         return Response({"results": list(names)})
 
@@ -878,6 +907,11 @@ class OrderViewSet(viewsets.ModelViewSet):
         except InventorySyncError as exc:
             # Shopify refused it (or isn't connected) - nothing was created.
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        if is_hub_request(request):
+            # Made by the Hub for the Hub to ship - counts as sent for
+            # dispatch, like a store's own "Send for dispatch".
+            order.dispatch_requested_at = timezone.now()
+            Order.all_objects.filter(id=order.id).update(dispatch_requested_at=order.dispatch_requested_at)
         output = self.get_serializer(order)
         return Response(output.data, status=status.HTTP_201_CREATED)
 
@@ -927,7 +961,10 @@ class OrderViewSet(viewsets.ModelViewSet):
         items = serializer.validated_data.pop("items", None)
         before = {field: getattr(instance, field) for field in serializer.validated_data}
         items_before = services.order_items_summary(instance) if items is not None else None
-        order = services.update_order_detail(instance, fields=serializer.validated_data, items=items)
+        try:
+            order = services.update_order_detail(instance, fields=serializer.validated_data, items=items)
+        except services.InvalidTransition as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         if getattr(request, "is_super_admin", False):
             self._notify_store_of_edit(request, order, services.order_changes(order, before, items_before))
         output = self.get_serializer(
@@ -961,6 +998,21 @@ class OrderViewSet(viewsets.ModelViewSet):
             )
         except Exception:
             logger.exception("could not notify the store about the edit to %s", order.order_number)
+
+    @action(detail=False, methods=["get"], url_path="dashboard-breakdown")
+    def dashboard_breakdown(self, request):
+        """GET ?group=<card>&date_from&date_to - the Dashboard card's orders
+        split into its OMS types (services.dashboard_types), for the popup
+        a card click opens."""
+        group = request.query_params.get("group") or ""
+        if group not in services.DASHBOARD_GROUPS:
+            return Response({"detail": "Unknown dashboard card."}, status=status.HTTP_400_BAD_REQUEST)
+        params = request.query_params.copy()
+        for key in ("group", "dash_group", "dash_type", "status"):
+            params.pop(key, None)
+        qs = self._apply_filters(Order.objects.filter(**org_filter(request)), params)
+        types = services.dashboard_types(qs, group)
+        return Response({"group": group, "types": types, "total": sum(t["count"] for t in types)})
 
     @action(detail=False, methods=["get"])
     def counts(self, request):
@@ -1904,9 +1956,6 @@ class OrderViewSet(viewsets.ModelViewSet):
         and merged into one PDF (see _group_orders_by_org/_merge_pdfs); a
         single-store selection (every non-Hub request) takes the same one
         group, no-merge path it always did."""
-        from integrations import smartlane_client
-        from integrations.models import SmartlaneConnection
-
         order_ids = request.data.get("order_ids") or []
         if not order_ids:
             return Response({"detail": "order_ids is required"}, status=status.HTTP_400_BAD_REQUEST)
@@ -1917,18 +1966,28 @@ class OrderViewSet(viewsets.ModelViewSet):
         if not orders:
             return Response({"detail": "No matching orders"}, status=status.HTTP_404_NOT_FOUND)
 
+        pdf_parts, error = self._render_smartlane_airway_bills(orders, request.user_id)
+        if error:
+            return error
+        return HttpResponse(self._merge_pdfs(pdf_parts), content_type="application/pdf")
+
+    def _render_smartlane_airway_bills(self, orders, actor_user_id):
+        """Returns (pdf parts, error response), one store at a time."""
+        from integrations import smartlane_client
+        from integrations.models import SmartlaneConnection
+
         pdf_parts = []
         for organization_id, org_orders in self._group_orders_by_org(orders):
             connection, error = self._smartlane_connection_or_error(org_orders)
             if error:
-                return error
+                return None, error
             org_order_numbers = [o.order_number for o in org_orders]
             try:
                 pdf_bytes = smartlane_client.render_airway_bill_pdf(
                     connection.api_key, [SmartlaneConnection.reference_for(o) for o in org_orders]
                 )
             except smartlane_client.SmartlaneAPIError as exc:
-                return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+                return None, Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
             self._save_print_batch(
                 organization_id=organization_id,
                 kind="airway_bill",
@@ -1936,11 +1995,10 @@ class OrderViewSet(viewsets.ModelViewSet):
                 order_numbers=org_order_numbers,
                 content=pdf_bytes,
                 content_type="application/pdf",
-                actor_user_id=request.user_id,
+                actor_user_id=actor_user_id,
             )
             pdf_parts.append(pdf_bytes)
-
-        return HttpResponse(self._merge_pdfs(pdf_parts), content_type="application/pdf")
+        return pdf_parts, None
 
     @action(detail=False, methods=["post"], url_path="smartlane-load-sheet")
     def smartlane_load_sheet(self, request):
@@ -2011,11 +2069,24 @@ class OrderViewSet(viewsets.ModelViewSet):
         if not orders:
             return Response({"detail": "No matching orders"}, status=status.HTTP_404_NOT_FOUND)
 
+        pdf_parts, error = self._render_smartlane_load_sheets(
+            orders, courier, request.user_id, start_date=start_date, end_date=end_date,
+        )
+        if error:
+            return error
+        return HttpResponse(self._merge_pdfs(pdf_parts), content_type="application/pdf")
+
+    def _render_smartlane_load_sheets(self, orders, courier, actor_user_id, start_date=None, end_date=None):
+        """One Smartlane courier's load sheets for `orders`, a store at a
+        time. Hands the orders over. Returns (pdf parts, error response)."""
+        from integrations import smartlane_client
+        from integrations.models import SmartlaneConnection
+
         pdf_parts = []
         for organization_id, org_orders in self._group_orders_by_org(orders):
             connection, error = self._smartlane_connection_or_error(org_orders)
             if error:
-                return error
+                return None, error
             org_order_numbers = [o.order_number for o in org_orders]
             try:
                 pdf_bytes = smartlane_client.render_load_sheet_pdf(
@@ -2024,7 +2095,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                     start_date=start_date, end_date=end_date,
                 )
             except smartlane_client.SmartlaneAPIError as exc:
-                return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+                return None, Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
             self._save_print_batch(
                 organization_id=organization_id,
                 kind="loadsheet",
@@ -2032,15 +2103,96 @@ class OrderViewSet(viewsets.ModelViewSet):
                 order_numbers=org_order_numbers,
                 content=pdf_bytes,
                 content_type="application/pdf",
-                actor_user_id=request.user_id,
+                actor_user_id=actor_user_id,
             )
             pdf_parts.append(pdf_bytes)
             # Handed over - out of Ready to Print, into Awaiting Dispatched.
             services.mark_orders_handed_over(
-                org_orders, actor_user_id=request.user_id, note="Smartlane load sheet",
+                org_orders, actor_user_id=actor_user_id, note="Smartlane load sheet",
             )
+        return pdf_parts, None
 
-        return HttpResponse(self._merge_pdfs(pdf_parts), content_type="application/pdf")
+    def _render_smartlane_load_sheets_any_courier(self, orders, actor_user_id):
+        """Smartlane makes a load sheet for one courier at a time and we
+        don't know which one it booked each order with, so ask for every
+        courier and keep whichever come back. A courier with none of these
+        orders is refused by Smartlane - only an error if all of them are."""
+        from integrations import smartlane_client
+
+        pdf_parts, first_error = [], None
+        for courier in sorted(smartlane_client.SUPPORTED_COURIERS):
+            parts, error = self._render_smartlane_load_sheets(orders, courier, actor_user_id)
+            if error:
+                first_error = first_error or error
+            else:
+                pdf_parts += parts
+        return (pdf_parts, None) if pdf_parts else (None, first_error)
+
+    @action(detail=False, methods=["post"], url_path="print-by-courier")
+    def print_by_courier(self, request):
+        """Dispatch Hub: {kind: loadsheet|airway_bill, order_ids} -> one
+        PDF, courier after courier (PRINT_COURIER_ORDER). A courier that
+        fails is left out and named in the X-Print-Failed header, so the
+        others still download; a load sheet that already worked is safe to
+        ask for again. Stores keep their own per-courier print."""
+        if not is_hub_request(request):
+            return Response(
+                {"detail": "Only the Dispatch Hub prints by courier."}, status=status.HTTP_403_FORBIDDEN
+            )
+        kind = request.data.get("kind")
+        order_ids = request.data.get("order_ids") or []
+        if kind not in ("loadsheet", "airway_bill") or not order_ids:
+            return Response(
+                {"detail": "kind (loadsheet or airway_bill) and order_ids are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        orders = list(
+            Order.objects.filter(id__in=order_ids, **org_filter(request)).select_related("courier")
+        )
+        if not orders:
+            return Response({"detail": "No matching orders"}, status=status.HTTP_404_NOT_FOUND)
+
+        # An order no integration booked goes to Smartlane, same as the
+        # stores' print picker.
+        by_courier = {}
+        for order in orders:
+            name = order.courier.name.strip() if order.courier_id else ""
+            label = PRINT_COURIER_LABELS.get(name.lower(), "Smartlane")
+            by_courier.setdefault(label, []).append(order)
+
+        from integrations.barqraftar import views as barqraftar_views
+        from integrations.postex import views as postex_views
+
+        pdf_parts, failed = [], []
+        for label in PRINT_COURIER_ORDER:
+            group = by_courier.get(label)
+            if not group:
+                continue
+            ids = [str(o.id) for o in group]
+            if label == "BarqRaftar":
+                render = barqraftar_views.render_load_sheets if kind == "loadsheet" else barqraftar_views.render_labels
+                parts, error = render(ids, request.user_id)
+            elif label == "PostEx":
+                render = postex_views.render_load_sheets if kind == "loadsheet" else postex_views.render_airway_bills
+                parts, error = render(ids, request.user_id)
+            elif kind == "loadsheet":
+                parts, error = self._render_smartlane_load_sheets_any_courier(group, request.user_id)
+            else:
+                parts, error = self._render_smartlane_airway_bills(group, request.user_id)
+            if error:
+                detail = str((error.data or {}).get("detail") or "failed")
+                failed.append(f"{label}: {detail}")
+            else:
+                pdf_parts += parts
+
+        if not pdf_parts:
+            return Response({"detail": "; ".join(failed)}, status=status.HTTP_502_BAD_GATEWAY)
+        response = HttpResponse(self._merge_pdfs(pdf_parts), content_type="application/pdf")
+        if failed:
+            # A header can't carry a line break or non-latin text.
+            text = "; ".join(failed).encode("ascii", "replace").decode()
+            response["X-Print-Failed"] = " ".join(text.split())[:1000]
+        return response
 
     @action(detail=True, methods=["get", "post"])
     def notes(self, request, pk=None):

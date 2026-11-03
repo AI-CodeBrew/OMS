@@ -1,8 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
+// The most rows a page shows - a preset or a custom number, never more.
+const MAX_PAGE_SIZE = 100;
 
 function buildPageList(current, total) {
   if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
@@ -16,23 +18,25 @@ function buildPageList(current, total) {
   return withGaps;
 }
 
-// maxPageSize must match the backend's own PageNumberPagination.max_page_size
-// for whichever endpoint this table reads from (OrderPagination=1000,
-// WmsPagination=500, ...) - "All" requests min(count, maxPageSize) rather
-// than the true row count, so a big unfiltered list doesn't try to pull
-// and render thousands of rows in one go. Getting this wrong doesn't
-// break anything - the API just clamps a too-high request - but the
-// "Showing X to Y of Z" label would then quietly overstate what's really
-// on screen, so keep it in sync with the real backend cap.
+// Rows per page: 10 / 25 / 50 / 100 or a custom number up to 100 - no
+// "All", so a big list never pulls thousands of rows at once.
+// maxPageSize: a lower cap for an endpoint that allows fewer than 100.
 export default function Pagination({
   page,
   pageSize,
   count,
   onPageChange,
   onPageSizeChange,
-  maxPageSize = 1000,
+  maxPageSize = MAX_PAGE_SIZE,
   itemLabel = "orders",
 }) {
+  const cap = Math.min(maxPageSize, MAX_PAGE_SIZE);
+  // A larger size remembered from before (the old "All") comes back down.
+  useEffect(() => {
+    if (pageSize > cap) onPageSizeChange(cap);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pageSize, cap]);
+
   const [customMode, setCustomMode] = useState(false);
   const [customValue, setCustomValue] = useState("");
 
@@ -44,16 +48,10 @@ export default function Pagination({
     if (p >= 1 && p <= totalPages) onPageChange(p);
   }
 
-  const allSize = Math.max(1, Math.min(count, maxPageSize));
-
   function onSelectChange(e) {
     if (e.target.value === "custom") {
       setCustomValue(String(pageSize));
       setCustomMode(true);
-      return;
-    }
-    if (e.target.value === "all") {
-      onPageSizeChange(allSize);
       return;
     }
     onPageSizeChange(Number(e.target.value));
@@ -62,7 +60,7 @@ export default function Pagination({
   function applyCustom() {
     const n = Math.floor(Number(customValue));
     if (n > 0) {
-      onPageSizeChange(n);
+      onPageSizeChange(Math.min(n, cap));
       setCustomMode(false);
     }
   }
@@ -79,11 +77,12 @@ export default function Pagination({
             <input
               type="number"
               min="1"
+              max={cap}
               autoFocus
               value={customValue}
               onChange={(e) => setCustomValue(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && applyCustom()}
-              placeholder="Rows"
+              placeholder={`1-${cap}`}
               className="w-20 rounded-md border border-surface-border px-2 py-1 text-sm outline-none focus:border-brand-500"
             />
             <button
@@ -104,26 +103,19 @@ export default function Pagination({
           </div>
         ) : (
           <select
-            value={
-              PAGE_SIZE_OPTIONS.includes(pageSize)
-                ? pageSize
-                : pageSize === allSize && count > 100
-                  ? "all"
-                  : "custom"
-            }
+            value={pageSize}
             onChange={onSelectChange}
             className="rounded-md border border-surface-border px-2 py-1 text-sm outline-none focus:border-brand-500"
           >
-            {PAGE_SIZE_OPTIONS.map((n) => (
+            {PAGE_SIZE_OPTIONS.filter((n) => n <= cap).map((n) => (
               <option key={n} value={n}>
                 {n} per page
               </option>
             ))}
-            {!PAGE_SIZE_OPTIONS.includes(pageSize) && !(pageSize === allSize && count > 100) ? (
+            {!PAGE_SIZE_OPTIONS.includes(pageSize) ? (
               <option value={pageSize}>{pageSize} per page</option>
             ) : null}
-            <option value="all">All ({allSize < count ? `first ${allSize}` : count})</option>
-            <option value="custom">Custom…</option>
+            <option value="custom">Custom (up to {cap})…</option>
           </select>
         )}
       </div>

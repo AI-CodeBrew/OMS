@@ -55,13 +55,64 @@ export default function ReturnBreakdownModal({ request, onConfirm, onClose }) {
 
   const input =
     "w-16 rounded-md border border-surface-border px-2 py-1 text-right text-sm tabular-nums outline-none focus:border-brand-500";
+  const phoneInput =
+    "w-full rounded-md border border-surface-border px-2 py-1.5 text-right text-sm tabular-nums outline-none focus:border-brand-500";
 
   return (
     <Modal open title={`Receive return ${request.orderNumber}`} onClose={onClose}>
       <p className="mb-3 text-sm text-slate-500">
         Every unit starts as Good. Enter any damaged or lost/missing units - only good units go back into stock.
       </p>
-      <div className="overflow-x-auto">
+      {/* Phones: one card per line with Good / Damaged / Lost underneath,
+          so nothing sits off-screen to the right. */}
+      <div className="divide-y divide-surface-border border-y border-surface-border sm:hidden">
+        {rows.map((row) => (
+          <div key={row.key} className="py-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="font-medium text-slate-800">{row.sku || "—"}</div>
+                <div className="text-xs text-slate-500">{row.product_name}</div>
+              </div>
+              <div className="shrink-0 text-right text-xs text-slate-500">
+                Qty <span className="text-sm font-medium tabular-nums text-slate-800">{row.quantity}</span>
+              </div>
+            </div>
+            <div className="mt-2 grid grid-cols-3 gap-2">
+              <div>
+                <div className="mb-1 text-[11px] font-medium uppercase text-green-700">Good</div>
+                <div className="rounded-md border border-green-200 bg-green-50 px-2 py-1.5 text-right text-sm font-medium tabular-nums text-green-700">
+                  {row.good}
+                </div>
+              </div>
+              <label className="block">
+                <span className="mb-1 block text-[11px] font-medium uppercase text-red-700">Damaged</span>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min={0}
+                  max={row.quantity}
+                  value={row.damaged}
+                  onChange={(e) => setCount(row, "damaged", e.target.value)}
+                  className={phoneInput}
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-[11px] font-medium uppercase text-amber-700">Lost</span>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min={0}
+                  max={row.quantity}
+                  value={row.lost}
+                  onChange={(e) => setCount(row, "lost", e.target.value)}
+                  className={phoneInput}
+                />
+              </label>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="hidden overflow-x-auto sm:block">
         <table className="w-full text-sm">
           <thead className="border-b border-surface-border text-[11px] font-medium uppercase tracking-wide text-slate-500">
             <tr>

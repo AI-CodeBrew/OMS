@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Button from "../../../../../components/shared/Button";
 import Modal from "../../../../../components/shared/Modal";
 import barqraftarService from "../_lib/barqraftarService";
+import DateInput from "../../../../../components/shared/DateInput";
 
 function todayMinus(days) {
   const d = new Date();
@@ -67,8 +68,7 @@ export default function PaymentsTab({ onError }) {
       <form onSubmit={onFilter} className="mb-4 flex flex-wrap items-end gap-3">
         <label className="block">
           <span className="mb-1 block text-xs font-medium text-slate-600">From</span>
-          <input
-            type="date"
+          <DateInput
             value={dateFrom}
             onChange={(e) => setDateFrom(e.target.value)}
             className="rounded-md border border-surface-border px-3 py-1.5 text-sm outline-none focus:border-brand-500"
@@ -76,8 +76,7 @@ export default function PaymentsTab({ onError }) {
         </label>
         <label className="block">
           <span className="mb-1 block text-xs font-medium text-slate-600">To</span>
-          <input
-            type="date"
+          <DateInput
             value={dateTo}
             onChange={(e) => setDateTo(e.target.value)}
             className="rounded-md border border-surface-border px-3 py-1.5 text-sm outline-none focus:border-brand-500"

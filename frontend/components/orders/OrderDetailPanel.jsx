@@ -5,7 +5,7 @@ import Button from "../shared/Button";
 import Modal from "../shared/Modal";
 import ordersService from "../../services/ordersService";
 import CustomerDetailPanel from "./CustomerDetailPanel";
-import OrderDetailHeader from "./OrderDetailHeader";
+import OrderDetailHeader, { OrderStatusBadge } from "./OrderDetailHeader";
 import OrderDetailTabs from "./OrderDetailTabs";
 import OrderMoneySummary from "./OrderMoneySummary";
 import OrderActionsMenu from "./OrderActionsMenu";
@@ -16,7 +16,9 @@ import VerifyDispatchModal from "./VerifyDispatchModal";
 import StockShortageModal from "./StockShortageModal";
 import {
   BOOKING_ACCOUNTS,
+  MOVE_TO_ASSIGNING,
   EDITABLE_STATUSES,
+  EDIT_LOCKED_STATUSES,
   SMARTLANE_LOAD_SHEET_COURIERS,
   isBookingAccountCourier,
 } from "./statusConfig";
@@ -92,11 +94,16 @@ function buildPatch(order, draft) {
 // (see connectedBookingAccounts), resolved once by the orders page.
 // startEditing: open straight into Edit - Assigning Courier's Edit Order,
 // once the booking is cancelled.
+// readOnly: opened from All Orders, which is for looking only - no
+// Actions and no Edit.
+// onRaiseTicket(order): the page's Raise ticket dialog.
 export default function OrderDetailPanel({
   orderId,
   couriers,
   bookingAccounts = [],
   startEditing = false,
+  readOnly = false,
+  onRaiseTicket,
   onClose,
   onOrderChanged,
 }) {
@@ -108,6 +115,8 @@ export default function OrderDetailPanel({
   const [saving, setSaving] = useState(false);
   const [stockShortfall, setStockShortfall] = useState(null);
   const [pendingAction, setPendingAction] = useState(null);
+  // Move to Assigning Courier's booking choices (OrderActionsMenu).
+  const [moveChoices, setMoveChoices] = useState([]);
   const [working, setWorking] = useState(false);
   const [scanOpen, setScanOpen] = useState(false);
 
@@ -186,7 +195,8 @@ export default function OrderDetailPanel({
     onOrderChanged?.();
   }
 
-  function startAction(action) {
+  function startAction(action, choices) {
+    if (choices) setMoveChoices(choices);
     // Airway bill needs no courier param (Smartlane returns whichever
     // courier actually booked it) - fetch the real document directly,
     // same shortcut the orders page takes, bypassing the bulk-action
@@ -246,6 +256,13 @@ export default function OrderDetailPanel({
     // shows progress and nothing else is blocked meanwhile.
     const action = pendingAction;
     setPendingAction(null);
+    // Move to Assigning Courier: run the booking it was asked for - Assign
+    // courier (Smartlane / OMS Courier) still asks for its account.
+    if (action === MOVE_TO_ASSIGNING) {
+      if (params.courier === "assign_courier") setPendingAction("assign_courier");
+      else runAction(params.courier, {});
+      return;
+    }
     runAction(action, params);
   }
 
@@ -330,7 +347,16 @@ export default function OrderDetailPanel({
       <Modal
         open={Boolean(orderId)}
         onClose={onClose}
-        title={order ? `Order ${order.order_number}` : "Order detail"}
+        title={
+          order ? (
+            <span className="flex flex-wrap items-center gap-2">
+              Order {order.order_number}
+              <OrderStatusBadge order={order} />
+            </span>
+          ) : (
+            "Order detail"
+          )
+        }
         width="max-w-6xl"
       >
         {loading ? (
@@ -349,13 +375,38 @@ export default function OrderDetailPanel({
               <div className="min-w-0 flex-1">
                 <OrderDetailTabs
                   order={order}
+                  editing={editing}
                   actions={
-                    <OrderActionsMenu
-                      order={order}
-                      onAction={startAction}
-                      onScan={() => setScanOpen(true)}
-                      working={working}
-                    />
+                    readOnly ? null : (
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+                        {/* Edit sits up here beside the actions (Save /
+                            Cancel while editing); dispatched or later
+                            can't be edited. */}
+                        {editing ? (
+                          <>
+                            <Button variant="secondary" onClick={toggleEdit} disabled={saving} className="px-3 py-1.5">
+                              Cancel Edit
+                            </Button>
+                            <Button onClick={onSave} loading={saving} className="px-3 py-1.5">
+                              Save
+                            </Button>
+                          </>
+                        ) : EDIT_LOCKED_STATUSES.has(order.status) ? null : (
+                          <Button variant="secondary" onClick={toggleEdit} className="px-3 py-1.5">
+                            Edit
+                          </Button>
+                        )}
+                        {editing ? null : (
+                          <OrderActionsMenu
+                            order={order}
+                            onAction={startAction}
+                            onScan={() => setScanOpen(true)}
+                            onRaiseTicket={onRaiseTicket ? () => onRaiseTicket(order) : undefined}
+                            working={working}
+                          />
+                        )}
+                      </div>
+                    )
                   }
                   lineItems={
                     <>
@@ -370,22 +421,11 @@ export default function OrderDetailPanel({
                       <OrderMoneySummary order={order} draft={draft} editing={editing} onChange={onDraftChange} />
                       <OrderDetailHeader order={order} draft={draft} editing={editing} onChange={onDraftChange} />
 
-                      <div className="mt-4 flex justify-end gap-2 border-t border-surface-border pt-4">
-                        {editing ? (
-                          <>
-                            <Button variant="secondary" onClick={toggleEdit} disabled={saving}>
-                              Cancel
-                            </Button>
-                            <Button onClick={onSave} loading={saving}>
-                              Save
-                            </Button>
-                          </>
-                        ) : (
-                          <Button variant="secondary" onClick={toggleEdit}>
-                            Edit
-                          </Button>
-                        )}
-                      </div>
+                      {readOnly ? (
+                        <p className="mt-4 border-t border-surface-border pt-4 text-right text-sm text-slate-500">
+                          All Orders is view only - open the order from its status card to make changes.
+                        </p>
+                      ) : null}
                     </>
                   }
                 />
@@ -409,6 +449,7 @@ export default function OrderDetailPanel({
               ]
             : couriers
         }
+        options={pendingAction === MOVE_TO_ASSIGNING ? moveChoices : undefined}
         onClose={() => setPendingAction(null)}
         onSubmit={onSubmitPendingAction}
       />

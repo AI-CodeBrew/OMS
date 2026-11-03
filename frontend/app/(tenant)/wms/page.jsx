@@ -12,12 +12,24 @@ import InventoryItemDetailModal from "../../../components/wms/InventoryItemDetai
 
 // The cards (backend: wms.services.inventory_activity) - each also filters
 // the table. Active: in stock and ordered. Inactive: in stock, never
-// ordered. Out of stock: ordered, none on hand.
+// ordered. Out of stock: none on hand.
+// A status column's cell: units, with how many orders they're on below.
+function UnitsAndOrders({ units, orders }) {
+  return (
+    <td className="whitespace-nowrap px-3 py-1.5 text-right tabular-nums">
+      <div>{units ?? 0}</div>
+      <div className="text-[11px] text-slate-400">
+        {orders ?? 0} {orders === 1 ? "order" : "orders"}
+      </div>
+    </td>
+  );
+}
+
 const ACTIVITY_CARDS = [
   { value: "", key: "total", label: "Total SKUs", tone: "default" },
   { value: "active", key: "active", label: "Active SKUs", tone: "success", hint: "In stock, and ordered" },
   { value: "inactive", key: "inactive", label: "Inactive SKUs", tone: "warning", hint: "In stock, no orders" },
-  { value: "out_of_stock", key: "out_of_stock", label: "Out of Stock", tone: "danger", hint: "Ordered, none in stock" },
+  { value: "out_of_stock", key: "out_of_stock", label: "Out of Stock", tone: "danger", hint: "None in stock" },
 ];
 
 const ACTIVITY_DOT = {
@@ -329,10 +341,10 @@ export default function WmsPage() {
                       >
                         {item.available}
                       </td>
-                      <td className="px-3 py-1.5 text-right tabular-nums">{item.delivered}</td>
-                      <td className="px-3 py-1.5 text-right tabular-nums">{item.dispatched}</td>
-                      <td className="px-3 py-1.5 text-right tabular-nums">{item.failed_delivery}</td>
-                      <td className="px-3 py-1.5 text-right tabular-nums">{item.return_in_transit}</td>
+                      <UnitsAndOrders units={item.delivered} orders={item.delivered_orders} />
+                      <UnitsAndOrders units={item.dispatched} orders={item.dispatched_orders} />
+                      <UnitsAndOrders units={item.failed_delivery} orders={item.failed_delivery_orders} />
+                      <UnitsAndOrders units={item.return_in_transit} orders={item.return_in_transit_orders} />
                       <td className="px-3 py-1.5 text-right tabular-nums">{item.damaged_lost}</td>
                       <td className="px-2 py-1 text-right">
                         <button

@@ -16,7 +16,17 @@ const FIELD_BY_ACTION = {
   // `options` (the couriers this store can book with) comes from the page.
   change_courier: { key: "courier", label: "New courier", type: "option-select" },
   print_loadsheet: { key: "courier", label: "Courier", type: "smartlane-courier-select" },
+  // Suggests the tags the store's orders already carry; a new one can be typed.
+  update_tag: { key: "tag", label: "Tag", type: "tag-input" },
+  // Approved card. `options` (its booking choices) come from the page.
+  move_to_assigning: { key: "courier", label: "Courier", type: "option-select" },
+  revert_to_confirmation: { key: "tag", label: "Tag (why it goes back)", type: "tag-input" },
+  // Undelivered: Reattempt / Return, plus remarks for the courier.
+  shipper_advice: { key: "advice", label: "Shipper advice", type: "advice-select" },
 };
+
+// Shipper Advice's choices (backend: oms.services.SHIPPER_ADVICES).
+const SHIPPER_ADVICES = ["Reattempt", "Return"];
 
 const ACTION_TITLES = {
   assign_courier: "Assign courier",
@@ -25,6 +35,10 @@ const ACTION_TITLES = {
   cancel: "Cancel order(s)",
   change_courier: "Change courier",
   print_loadsheet: "Print Load Sheet",
+  update_tag: "Update tag",
+  move_to_assigning: "Move to Assigning Courier",
+  revert_to_confirmation: "Revert to Awaiting Confirmation",
+  shipper_advice: "Shipper Advice",
 };
 
 // Actions that need no input still get this popup, as a confirm step:
@@ -128,19 +142,22 @@ const CONFIRM_BY_ACTION = {
 export default function OrderActionModal({ action, couriers, options, count, onSubmit, onClose, submitting }) {
   const field = action ? FIELD_BY_ACTION[action] : null;
   const [value, setValue] = useState("");
-  const [cityNames, setCityNames] = useState([]);
+  // Shipper Advice's remarks, beside its dropdown.
+  const [remarks, setRemarks] = useState("");
+  // City Issue's city list, or Update Tag's tags.
+  const [suggestions, setSuggestions] = useState([]);
 
   useEffect(() => {
     setValue("");
+    setRemarks("");
   }, [action]);
 
   useEffect(() => {
-    if (field?.type !== "city-input") return;
+    if (field?.type !== "city-input" && field?.type !== "tag-input") return;
     let alive = true;
-    ordersService
-      .getCityNames()
-      .then((names) => alive && setCityNames(names))
-      .catch(() => alive && setCityNames([]));
+    (field.type === "tag-input" ? ordersService.getOrderTags() : ordersService.getCityNames())
+      .then((names) => alive && setSuggestions(names))
+      .catch(() => alive && setSuggestions([]));
     return () => {
       alive = false;
     };
@@ -221,8 +238,9 @@ export default function OrderActionModal({ action, couriers, options, count, onS
               ))}
             </select>
             <p className="mt-2 text-xs text-slate-500">
-              The current booking is cancelled first, then the order is booked with this courier. If the new
-              booking fails, the order goes back to Approved with no tracking number.
+              {action === "move_to_assigning"
+                ? "The order is booked with this courier and moves to Assigning Courier."
+                : "The current booking is cancelled first, then the order is booked with this courier. If the new booking fails, the order goes back to Approved with no tracking number."}
             </p>
           </>
         ) : field.type === "smartlane-courier-select" ? (
@@ -248,12 +266,57 @@ export default function OrderActionModal({ action, couriers, options, count, onS
               className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
             />
             <datalist id="courier-city-names">
-              {cityNames.map((name) => (
+              {suggestions.map((name) => (
                 <option key={name} value={name} />
               ))}
             </datalist>
             <p className="mt-2 text-xs text-slate-500">
               Pick the city as the couriers spell it - the order then moves to Approved.
+            </p>
+          </>
+        ) : field.type === "advice-select" ? (
+          <>
+            <select
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
+            >
+              <option value="">Select advice…</option>
+              {SHIPPER_ADVICES.map((advice) => (
+                <option key={advice} value={advice}>
+                  {advice}
+                </option>
+              ))}
+            </select>
+            <span className="mb-1 mt-3 block text-xs font-medium text-slate-700">Remarks</span>
+            <textarea
+              value={remarks}
+              onChange={(e) => setRemarks(e.target.value)}
+              maxLength={255}
+              rows={3}
+              placeholder="e.g. Customer available after 5 PM, call before delivery"
+              className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
+            />
+          </>
+        ) : field.type === "tag-input" ? (
+          <>
+            <input
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              list="order-tag-names"
+              maxLength={100}
+              placeholder="Pick a tag or type a new one…"
+              className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
+            />
+            <datalist id="order-tag-names">
+              {suggestions.map((name) => (
+                <option key={name} value={name} />
+              ))}
+            </datalist>
+            <p className="mt-2 text-xs text-slate-500">
+              {action === "revert_to_confirmation"
+                ? "The order goes back to Awaiting Confirmation with this tag, to be checked and approved again."
+                : "Replaces the order's tag. The status doesn't change."}
             </p>
           </>
         ) : (
@@ -271,7 +334,9 @@ export default function OrderActionModal({ action, couriers, options, count, onS
         <Button
           disabled={!canSubmit}
           loading={submitting}
-          onClick={() => onSubmit({ [field.key]: value })}
+          onClick={() =>
+            onSubmit(field.type === "advice-select" ? { advice: value, remarks } : { [field.key]: value })
+          }
         >
           Apply
         </Button>

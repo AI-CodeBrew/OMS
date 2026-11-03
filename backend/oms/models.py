@@ -180,6 +180,11 @@ class Order(TenantScopedModel):
     smartlane_checked_at = models.DateTimeField(null=True, blank=True)
     issue_note = models.CharField(max_length=255, blank=True, default="")
     return_reason = models.CharField(max_length=255, blank=True, default="")
+    # Undelivered's Shipper Advice - what the store tells the courier to do
+    # after a failed delivery (Reattempt / Return) and its remarks.
+    shipper_advice = models.CharField(max_length=20, blank=True, default="", db_default="")
+    shipper_advice_remarks = models.CharField(max_length=255, blank=True, default="", db_default="")
+    shipper_advice_at = models.DateTimeField(null=True, blank=True)
     # The note the customer left at checkout (Shopify's order `note`),
     # refreshed on every Shopify sync. Distinct from issue_note, which is
     # our own team's.

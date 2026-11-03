@@ -42,12 +42,12 @@ function SummaryCard({ label, value, tone = "default", active, onClick }) {
     <button
       type="button"
       onClick={onClick}
-      className={`rounded-lg border bg-white p-4 text-left transition ${
+      className={`flex items-center justify-between gap-2 rounded-md border bg-white px-3 py-1.5 text-left transition ${
         active ? "border-brand-800 ring-1 ring-brand-800" : "border-surface-border hover:bg-surface"
       }`}
     >
-      <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{label}</p>
-      <p className={`mt-1 text-2xl font-semibold ${tones[tone]}`}>{value}</p>
+      <span className="truncate text-[11px] font-medium uppercase tracking-wide text-slate-500">{label}</span>
+      <span className={`text-lg font-semibold tabular-nums ${tones[tone]}`}>{value}</span>
     </button>
   );
 }
@@ -136,12 +136,9 @@ export default function PurchaseOrdersPage() {
 
   return (
     <div>
-      <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-[28px] font-semibold leading-8 text-slate-900">Purchase Orders</h1>
-          <p className="mt-1 text-sm text-slate-500">
-            Stock bought from suppliers. Good units received are added to the receiving warehouse&apos;s stock.
-          </p>
+          <h1 className="text-2xl font-semibold text-slate-900" title={"Stock bought from suppliers. Good units received are added to the receiving warehouse's stock."}>Purchase Orders</h1>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button variant="secondary" loading={syncing} onClick={syncShopify}>
@@ -160,7 +157,7 @@ export default function PurchaseOrdersPage() {
       {error ? <p className="mt-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
       {notice ? <p className="mt-4 rounded-md bg-green-50 px-3 py-2 text-sm text-green-700">{notice}</p> : null}
 
-      <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
         <SummaryCard label="Total POs" value={summary.total ?? 0} active={state === ""} onClick={() => applyState("")} />
         <SummaryCard
           label="Received"

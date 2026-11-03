@@ -6,15 +6,22 @@ import wmsService from "../../../services/wmsService";
 import Button from "../../../components/shared/Button";
 import Pagination from "../../../components/shared/Pagination";
 import DateRangeFilter from "../../../components/orders/DateRangeFilter";
+import { useSessionDateRange } from "../../../store/dateFilterStore";
 import ScanPanel from "../../../components/wms/ScanPanel";
 import ReturnBreakdownModal from "../../../components/wms/ReturnBreakdownModal";
-import { SEARCH_FIELDS } from "../../../components/orders/statusConfig";
 
 // Every return is in exactly one of three buckets - "" (Total) is all of
 // them: Awaiting Scan (the courier says returned, not scanned in yet),
 // Received (scanned in), Not Received (Return in Transit - the courier is
 // still bringing it back). Drives both the summary cards and the table
 // filter, so a card click and its badge always agree.
+
+const SCAN_LAYOUT_KEY = "returns:scan-layout";
+const SCAN_WIDTH_DEFAULT = 340;
+
+function clampScanWidth(width) {
+  return Math.min(Math.max(Number(width) || SCAN_WIDTH_DEFAULT, 240), 560);
+}
 
 function formatDate(value) {
   return value ? new Date(value).toLocaleString() : "—";
@@ -66,13 +73,13 @@ function SummaryCard({ label, value, tone = "default", hint, active = false, onC
     <button
       type="button"
       onClick={onClick}
-      className={`rounded-lg border bg-white p-4 text-left transition ${
+      title={hint || undefined}
+      className={`flex items-center justify-between gap-2 rounded-md border bg-white px-3 py-1.5 text-left transition ${
         active ? "border-brand-800 ring-1 ring-brand-800" : "border-surface-border hover:bg-surface"
       }`}
     >
-      <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{label}</p>
-      <p className={`mt-1 text-2xl font-semibold ${tones[tone]}`}>{value}</p>
-      {hint ? <p className="mt-0.5 text-xs text-slate-400">{hint}</p> : null}
+      <span className="truncate text-[11px] font-medium uppercase tracking-wide text-slate-500">{label}</span>
+      <span className={`text-lg font-semibold tabular-nums ${tones[tone]}`}>{value}</span>
     </button>
   );
 }
@@ -96,10 +103,9 @@ export default function ReturnsPage() {
   const [error, setError] = useState("");
 
   const [search, setSearch] = useState("");
-  const [searchField, setSearchField] = useState("order_number");
   const [appliedSearch, setAppliedSearch] = useState("");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  // Shared across screens for the session (store/dateFilterStore).
+  const { dateFrom, dateTo, setDateFrom, setDateTo } = useSessionDateRange();
 
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [confirmCondition, setConfirmCondition] = useState(null); // set to "good" | "bad" to open the dialog
@@ -109,13 +115,52 @@ export default function ReturnsPage() {
   const [notice, setNotice] = useState("");
   // The parcel being counted in the receive popup: { orderNumber, lines }.
   const [receiving, setReceiving] = useState(null);
+  // Scan panel width beside the list (desktop), dragged by its edge and
+  // remembered per browser; collapsed gives the list the whole row.
+  const [scanWidth, setScanWidth] = useState(SCAN_WIDTH_DEFAULT);
+  const [scanCollapsed, setScanCollapsed] = useState(false);
+
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(SCAN_LAYOUT_KEY) || "null");
+      if (saved) {
+        setScanWidth(clampScanWidth(saved.width ?? SCAN_WIDTH_DEFAULT));
+        setScanCollapsed(Boolean(saved.collapsed));
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SCAN_LAYOUT_KEY, JSON.stringify({ width: scanWidth, collapsed: scanCollapsed }));
+    } catch {}
+  }, [scanWidth, scanCollapsed]);
+
+  function startResize(e) {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = scanWidth;
+    function onMove(ev) {
+      setScanWidth(clampScanWidth(startWidth + ev.clientX - startX));
+    }
+    function onUp() {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      document.body.style.userSelect = "";
+    }
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }
 
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
     const filters = {
       search: appliedSearch || undefined,
-      search_field: appliedSearch ? searchField : undefined,
+      // One box, every field: order, customer, phone, tracking ID, city,
+      // product, SKU (backend: OrderViewSet._apply_filters, "all").
+      search_field: appliedSearch ? "all" : undefined,
       date_from: dateFrom || undefined,
       date_to: dateTo || undefined,
     };
@@ -138,7 +183,18 @@ export default function ReturnsPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, pageSize, bucket, appliedSearch, searchField, dateFrom, dateTo]);
+  }, [page, pageSize, bucket, appliedSearch, dateFrom, dateTo]);
+
+  // Searches as you type, once typing pauses.
+  useEffect(() => {
+    const term = search.trim();
+    if (term === appliedSearch) return undefined;
+    const timer = setTimeout(() => {
+      setAppliedSearch(term);
+      setPage(1);
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [search, appliedSearch]);
 
   useEffect(() => {
     load();
@@ -245,13 +301,9 @@ export default function ReturnsPage() {
 
   return (
     <div>
-      <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-[28px] font-semibold leading-8 text-slate-900">Returns</h1>
-          <p className="mt-1 text-sm text-slate-500">
-            Scan a returned parcel when it arrives, then count each SKU as good, damaged or lost/missing.
-            Only good units go back into stock.
-          </p>
+          <h1 className="text-2xl font-semibold text-slate-900" title={"Scan a returned parcel when it arrives, then count each SKU as good, damaged or lost/missing. Only good units go back into stock."}>Returns</h1>
         </div>
         <DateRangeFilter
           dateFrom={dateFrom}
@@ -279,9 +331,12 @@ export default function ReturnsPage() {
       {/* One grid so phones can reorder it: Scan first (what the desk does
           all day), then the report cards, then the orders list. From lg the
           cards span the top and Scan sits beside the list, as before. */}
-      <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-[340px_1fr]">
+      <div
+        className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-[var(--scan-w)_1fr]"
+        style={{ "--scan-w": scanCollapsed ? "0px" : `${scanWidth}px` }}
+      >
         <div className="order-2 lg:order-1 lg:col-span-2">
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             <SummaryCard
               label="Total Returns"
               value={summary.total_returns ?? 0}
@@ -332,7 +387,24 @@ export default function ReturnsPage() {
           ) : null}
         </div>
 
-        <div className="order-1 lg:order-2">
+        <div className={`relative order-1 lg:order-2 ${scanCollapsed ? "lg:hidden" : ""}`}>
+          {/* Drag to share the width between Scan and the list; « hides
+              Scan so the list gets it all. Desktop only. */}
+          <div
+            onPointerDown={startResize}
+            title="Drag to resize"
+            className="absolute -right-3 top-0 z-10 hidden h-full w-3 cursor-col-resize items-start justify-center lg:flex"
+          >
+            <span className="mt-12 h-10 w-1 rounded-full bg-slate-300 hover:bg-brand-500" />
+          </div>
+          <button
+            type="button"
+            onClick={() => setScanCollapsed(true)}
+            title="Hide scan panel"
+            className="absolute -right-3 top-2 z-20 hidden h-6 w-6 items-center justify-center rounded-full border border-surface-border bg-white text-xs text-slate-500 shadow-sm hover:text-slate-800 lg:flex"
+          >
+            «
+          </button>
           <ScanPanel
             title="Scan returned parcel"
             hint="Scanning only finds the parcel - nothing is recorded until you confirm its count in the popup."
@@ -354,34 +426,30 @@ export default function ReturnsPage() {
 
         <div className="order-3 min-w-0">
           <div className="mb-3 flex flex-wrap items-center gap-2">
+            {scanCollapsed ? (
+              <button
+                type="button"
+                onClick={() => setScanCollapsed(false)}
+                className="hidden rounded-md border border-surface-border bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 lg:inline-flex"
+              >
+                Show scan »
+              </button>
+            ) : null}
             <form
               onSubmit={(e) => {
                 e.preventDefault();
-                setAppliedSearch(search);
+                setAppliedSearch(search.trim());
                 setPage(1);
               }}
               className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap"
             >
               <input
+                type="search"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search returns"
-                className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500 sm:w-56"
+                placeholder="Search order, customer, phone, tracking ID, product…"
+                className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500 sm:w-80"
               />
-              <select
-                value={searchField}
-                onChange={(e) => setSearchField(e.target.value)}
-                className="rounded-md border border-surface-border px-2 py-2 text-sm outline-none focus:border-brand-500"
-              >
-                {SEARCH_FIELDS.map((f) => (
-                  <option key={f.value} value={f.value}>
-                    {f.label}
-                  </option>
-                ))}
-              </select>
-              <Button type="submit" variant="secondary">
-                Search
-              </Button>
               {appliedSearch ? (
                 <button
                   type="button"
@@ -430,7 +498,7 @@ export default function ReturnsPage() {
           ) : null}
 
           <div className="overflow-x-auto rounded-lg border border-surface-border bg-white">
-            <table className="w-full text-sm">
+            <table className="w-full whitespace-nowrap text-sm">
               <thead className="border-b border-surface-border bg-surface text-[11px] font-medium uppercase tracking-wide text-slate-500">
                 <tr>
                   <th className="px-3 py-2 text-left">
@@ -445,6 +513,7 @@ export default function ReturnsPage() {
                     ) : null}
                   </th>
                   <th className="px-3 py-2 text-left">Order</th>
+                  <th className="px-3 py-2 text-left">Tracking ID</th>
                   <th className="px-3 py-2 text-left">Customer</th>
                   <th className="px-3 py-2 text-left">Courier</th>
                   <th className="px-3 py-2 text-left">{isInProgress ? "In Progress Since" : "Returned"}</th>
@@ -457,13 +526,13 @@ export default function ReturnsPage() {
               <tbody>
                 {loading && orders.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="px-3 py-6 text-center text-slate-500">
+                    <td colSpan={10} className="px-3 py-6 text-center text-slate-500">
                       Loading…
                     </td>
                   </tr>
                 ) : orders.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="px-3 py-6 text-center text-slate-500">
+                    <td colSpan={10} className="px-3 py-6 text-center text-slate-500">
                       {bucket === "not_received"
                         ? "No returns in transit."
                         : bucket === "awaiting"
@@ -488,6 +557,7 @@ export default function ReturnsPage() {
                         ) : null}
                       </td>
                       <td className="px-3 py-2 font-medium text-slate-800">{order.order_number}</td>
+                      <td className="px-3 py-2 font-mono text-xs text-slate-700">{order.tracking_number || "—"}</td>
                       <td className="px-3 py-2 text-slate-600">{order.customer_name}</td>
                       <td className="px-3 py-2 text-slate-600">{order.courier_name || "—"}</td>
                       <td className="px-3 py-2 text-slate-500">

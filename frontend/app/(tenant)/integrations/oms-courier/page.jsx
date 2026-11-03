@@ -439,7 +439,7 @@ export default function OmsCourierPage() {
       </Link>
 
       <div className="mt-3">
-        <h1 className="text-[28px] font-semibold leading-8 text-slate-900">OMS Courier</h1>
+        <h1 className="text-2xl font-semibold text-slate-900">OMS Courier</h1>
         <p className="mt-1 max-w-2xl text-sm text-slate-500">
           Let FynkTech dispatch your orders through its own courier accounts - no courier signup
           of your own. Turn on the couriers you want and add your details; tracking numbers and

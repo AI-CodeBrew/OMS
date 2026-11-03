@@ -94,14 +94,11 @@ export default function CriticalOrdersPage() {
   return (
     <div>
       <div>
-        <h1 className="text-[28px] font-semibold leading-8 text-slate-900">Critical Orders</h1>
-        <p className="mt-1 text-sm text-slate-500">
-          Orders that need attention, by reason. Pick a card to see its orders.
-        </p>
+        <h1 className="text-2xl font-semibold text-slate-900" title={"Orders that need attention, by reason. Pick a card to see its orders."}>Critical Orders</h1>
       </div>
 
       {/* One row of small cards, like the All Orders status tabs. */}
-      <div className="mt-6 flex gap-2 overflow-x-auto pb-1">
+      <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
         {(reasons || Array.from({ length: 6 }, (_, i) => ({ key: `loading-${i}` }))).map((r) => {
           const isActive = r.key === active;
           const loaded = r.count !== undefined;
@@ -112,19 +109,19 @@ export default function CriticalOrdersPage() {
               disabled={!loaded}
               onClick={() => pick(r.key)}
               title={r.description}
-              className={`relative h-[60px] min-w-[128px] flex-1 shrink-0 rounded-md border border-l-4 text-left transition ${
+              className={`flex flex-1 shrink-0 items-center justify-between gap-3 rounded-md border border-l-4 px-2.5 py-1.5 text-left transition ${
                 REASON_TONE[r.key] || "border-l-slate-300"
               } ${isActive ? "border-brand-600 bg-brand-50" : "border-surface-border bg-white hover:border-slate-300"}`}
             >
-              <div
-                className={`absolute left-2 right-2 top-2 text-[10px] font-medium uppercase leading-tight ${
+              <span
+                className={`whitespace-nowrap text-[10px] font-medium uppercase leading-tight ${
                   isActive ? "text-brand-700" : "text-slate-500"
                 }`}
               >
                 {r.label || "…"}
-              </div>
-              <div
-                className={`absolute bottom-1.5 right-2 text-lg font-semibold ${
+              </span>
+              <span
+                className={`text-base font-semibold tabular-nums ${
                   isActive
                     ? "text-brand-700"
                     : !loaded
@@ -135,7 +132,7 @@ export default function CriticalOrdersPage() {
                 }`}
               >
                 {loaded ? r.count : "—"}
-              </div>
+              </span>
             </button>
           );
         })}
@@ -143,7 +140,7 @@ export default function CriticalOrdersPage() {
 
       {error ? <p className="mt-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
 
-      <div className="mt-6">
+      <div className="mt-3">
         {activeReason ? (
           <div className="mb-3">
             <h2 className="text-base font-semibold text-slate-900">{activeReason.label}</h2>

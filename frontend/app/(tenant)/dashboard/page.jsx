@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useRouter, useSearchParams } from "next/navigation";
 import ordersService from "../../../services/ordersService";
@@ -18,10 +18,11 @@ import {
 } from "../../../lib/viewCache";
 import { warmupViewsInBackground } from "../../../lib/warmupViews";
 import Button from "../../../components/shared/Button";
-import Pagination from "../../../components/shared/Pagination";
-import OrdersTable from "../../../components/orders/OrdersTable";
+import { useDateFilterStore } from "../../../store/dateFilterStore";
 import { useEffectiveUser } from "../../../store/authStore";
 import DeliveryPerformance from "../../../components/dashboard/DeliveryPerformance";
+import { CardBreakdownModal, TypeOrdersModal } from "../../../components/dashboard/CardBreakdownModal";
+import DateInput, { formatDmy } from "../../../components/shared/DateInput";
 
 // recharts is a large library - loading it on demand instead of eagerly
 // means the KPI cards and header render immediately on the very first page
@@ -153,8 +154,7 @@ function RangeDropdown({ activeRange, rangeLabel, customDraft, onDraftChange, on
             <div className="mt-1 space-y-2 border-t border-surface-border px-3 pb-2 pt-3">
               <label className="block">
                 <span className="mb-1 block text-xs font-medium text-slate-600">From</span>
-                <input
-                  type="date"
+                <DateInput
                   value={customDraft.date_from}
                   onChange={(e) => onDraftChange((d) => ({ ...d, date_from: e.target.value }))}
                   className={dateInput}
@@ -162,8 +162,7 @@ function RangeDropdown({ activeRange, rangeLabel, customDraft, onDraftChange, on
               </label>
               <label className="block">
                 <span className="mb-1 block text-xs font-medium text-slate-600">To</span>
-                <input
-                  type="date"
+                <DateInput
                   value={customDraft.date_to}
                   onChange={(e) => onDraftChange((d) => ({ ...d, date_to: e.target.value }))}
                   className={dateInput}
@@ -200,15 +199,29 @@ function Dashboard() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const user = useEffectiveUser();
-  // The range lives in the URL too, so a reload keeps it.
-  const [activeRange, setActiveRange] = useState(() =>
-    RANGE_BUTTONS.some((r) => r.key === searchParams.get("range")) ? searchParams.get("range") : DEFAULT_RANGE
-  );
-  const [customRange, setCustomRange] = useState(() => {
-    const date_from = searchParams.get("date_from") || "";
-    const date_to = searchParams.get("date_to") || "";
-    return date_from || date_to ? { date_from, date_to } : null;
+  // The range lives in the URL too, so a reload keeps it. Without one it
+  // opens on the session's shared date filter (store/dateFilterStore) -
+  // a range picked on Orders or any other screen - else the default.
+  const setSessionRange = useDateFilterStore((s) => s.setRange);
+  const [initial] = useState(() => {
+    const urlRange = searchParams.get("range");
+    if (RANGE_BUTTONS.some((r) => r.key === urlRange)) {
+      const date_from = searchParams.get("date_from") || "";
+      const date_to = searchParams.get("date_to") || "";
+      return { range: urlRange, custom: date_from || date_to ? { date_from, date_to } : null };
+    }
+    const shared = useDateFilterStore.getState();
+    if (!shared.chosen) return { range: DEFAULT_RANGE, custom: null };
+    const preset = DASHBOARD_PRESETS.find((p) => {
+      const r = dashboardRangeForPreset(p.key);
+      return r.date_from === shared.dateFrom && r.date_to === shared.dateTo;
+    });
+    return preset
+      ? { range: preset.key, custom: null }
+      : { range: "custom", custom: { date_from: shared.dateFrom, date_to: shared.dateTo } };
   });
+  const [activeRange, setActiveRange] = useState(initial.range);
+  const [customRange, setCustomRange] = useState(initial.custom);
   const [customDraft, setCustomDraft] = useState(() => customRange || { date_from: "", date_to: "" });
 
   function rememberRange(query) {
@@ -220,29 +233,23 @@ function Dashboard() {
     if (key === "custom") return; // waits for its dates + Apply below
     setCustomRange(null);
     rememberRange({ range: key });
+    const range = dashboardRangeForPreset(key);
+    setSessionRange(range.date_from, range.date_to);
   }
 
   function applyCustom() {
     if (!customDraft.date_from && !customDraft.date_to) return;
     setCustomRange({ ...customDraft });
     rememberRange({ range: "custom", ...customDraft });
+    setSessionRange(customDraft.date_from, customDraft.date_to);
   }
 
-  // A card's orders are listed right here under the cards, not on All
-  // Orders - clicking the same card again closes them.
+  // A card click opens its types (CardBreakdownModal); a type's eye opens
+  // that type's orders (TypeOrdersModal).
   const [openGroup, setOpenGroup] = useState(null);
-  const [groupOrders, setGroupOrders] = useState([]);
-  const [groupCount, setGroupCount] = useState(0);
-  const [groupPage, setGroupPage] = useState(1);
-  const [groupPageSize, setGroupPageSize] = useState(10);
-  const [groupLoading, setGroupLoading] = useState(false);
+  const [openType, setOpenType] = useState(null);
   const [detailOrderId, setDetailOrderId] = useState(null);
   const [couriers, setCouriers] = useState([]);
-
-  function openOrders(group) {
-    setGroupPage(1);
-    setOpenGroup((current) => (current?.key === group.key ? null : group));
-  }
 
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -333,36 +340,6 @@ function Dashboard() {
     couriersService.list().then(setCouriers).catch(() => {});
   }, []);
 
-  const loadGroupOrders = useCallback(async () => {
-    if (!openGroup) return;
-    setGroupLoading(true);
-    try {
-      const result = await ordersService.list({
-        ...(openGroup.statuses ? { status: openGroup.statuses.join(",") } : {}),
-        date_from: params.date_from || undefined,
-        date_to: params.date_to || undefined,
-        page: groupPage,
-        page_size: groupPageSize,
-      });
-      setGroupOrders(result.results || []);
-      setGroupCount(result.count || 0);
-    } catch (err) {
-      setError(err.message || "Failed to load orders");
-    } finally {
-      setGroupLoading(false);
-    }
-  }, [openGroup, params, groupPage, groupPageSize]);
-
-  useEffect(() => {
-    if (openGroup) loadGroupOrders();
-    else setGroupOrders([]);
-  }, [openGroup, loadGroupOrders]);
-
-  // A new range keeps the open card, back on its first page.
-  useEffect(() => {
-    setGroupPage(1);
-  }, [params]);
-
   const statusBreakdown = data?.status_breakdown || {};
   const kpis = KPI_GROUPS.map((g) => ({
     ...g,
@@ -370,7 +347,7 @@ function Dashboard() {
   }));
 
   const rangeLabel = customRange
-    ? `${customRange.date_from || "Start"} to ${customRange.date_to || "Today"}`
+    ? `${formatDmy(customRange.date_from) || "Start"} to ${formatDmy(customRange.date_to) || "Today"}`
     : RANGE_BUTTONS.find((r) => r.key === (activeRange === "custom" ? DEFAULT_RANGE : activeRange))?.label;
 
   return (
@@ -400,48 +377,13 @@ function Dashboard() {
             value={k.value}
             color={k.color}
             active={openGroup?.key === k.key}
-            onClick={() => openOrders(k)}
+            onClick={() => {
+              setOpenType(null);
+              setOpenGroup(k);
+            }}
           />
         ))}
       </div>
-
-      {openGroup ? (
-        <div className="mt-5">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <h2 className="text-base font-semibold text-slate-900">
-              {openGroup.label} <span className="font-normal text-slate-500">· {rangeLabel}</span>
-            </h2>
-            <button
-              type="button"
-              onClick={() => setOpenGroup(null)}
-              className="text-sm font-medium text-slate-500 hover:text-slate-800"
-            >
-              ✕ Close
-            </button>
-          </div>
-          <OrdersTable
-            orders={groupOrders}
-            loading={groupLoading}
-            selectedIds={new Set()}
-            onToggleSelect={() => {}}
-            onToggleSelectAll={() => {}}
-            onOpenDetail={setDetailOrderId}
-            showStoreColumn={Boolean(user?.isDispatchHub)}
-          />
-          {groupOrders.length > 0 ? (
-            <Pagination
-              page={groupPage}
-              pageSize={groupPageSize}
-              count={groupCount}
-              onPageChange={setGroupPage}
-              onPageSizeChange={(size) => {
-                setGroupPageSize(size);
-                setGroupPage(1);
-              }}
-            />
-          ) : null}
-        </div>
-      ) : null}
 
       {loading ? (
         <div className="mt-5 h-[260px] animate-pulse rounded-lg border border-surface-border bg-surface" />
@@ -452,11 +394,25 @@ function Dashboard() {
         />
       )}
 
+      <CardBreakdownModal
+        group={openType ? null : openGroup}
+        range={params}
+        onClose={() => setOpenGroup(null)}
+        onOpenType={setOpenType}
+      />
+      <TypeOrdersModal
+        group={openGroup}
+        type={openType}
+        range={params}
+        onClose={() => setOpenType(null)}
+        onOpenDetail={setDetailOrderId}
+        showStoreColumn={Boolean(user?.isDispatchHub)}
+      />
+
       <OrderDetailPanel
         orderId={detailOrderId}
         couriers={couriers}
         onClose={() => setDetailOrderId(null)}
-        onOrderChanged={loadGroupOrders}
       />
     </div>
   );

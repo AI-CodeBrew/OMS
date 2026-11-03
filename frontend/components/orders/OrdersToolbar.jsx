@@ -48,7 +48,7 @@ export default function OrdersToolbar({
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-2 py-3">
+    <div className="flex flex-wrap items-center gap-2 py-2">
       {/* w-64 on the input alone used to force this whole form wider than
           a phone screen, since the form itself had no flex-wrap of its
           own - the outer container wrapping the form as one unit didn't
@@ -67,7 +67,7 @@ export default function OrdersToolbar({
             onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
             placeholder="Search order, customer, phone, product…"
             title="Searches order no., customer, phone, product, SKU, tracking and city. Separate multiple values with commas, e.g. 87364,7386473,8343"
-            className="w-full rounded-l-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
+            className="w-full rounded-l-md border border-surface-border px-3 py-1.5 text-sm outline-none focus:border-brand-500"
           />
           {showSuggestions && suggestions.length > 0 ? (
             <ul className="absolute z-20 mt-1 w-full rounded-md border border-surface-border bg-white py-1 shadow-lg">
@@ -120,14 +120,19 @@ export default function OrdersToolbar({
               )
             : [{ key: "none", label: noActionsReason || "No actions available", disabled: true }]),
           // Not a status change, so it's offered for any status - but a
-          // ticket is about one order.
-          { key: "divider", divider: true },
-          {
-            key: "raise_ticket",
-            label: selectedCount === 1 ? "Raise ticket" : "Raise ticket (select one order)",
-            disabled: selectedCount !== 1,
-            onClick: onRaiseTicket,
-          },
+          // ticket is about one order. Left out where the page gives no
+          // onRaiseTicket (All Orders, which is view only).
+          ...(onRaiseTicket
+            ? [
+                { key: "divider", divider: true },
+                {
+                  key: "raise_ticket",
+                  label: selectedCount === 1 ? "Raise ticket" : "Raise ticket (select one order)",
+                  disabled: selectedCount !== 1,
+                  onClick: onRaiseTicket,
+                },
+              ]
+            : []),
         ]}
       />
 

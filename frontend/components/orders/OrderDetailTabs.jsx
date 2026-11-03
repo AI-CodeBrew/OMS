@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import OrderLogTab from "./tabs/OrderLogTab";
 import OrderTicketsTab from "./tabs/OrderTicketsTab";
 
@@ -13,8 +13,14 @@ const TABS = [
 // lineItems: the whole order-details view (items, money, status, Edit) -
 // shown only on its own tab, so Order Log / Tickets show nothing but
 // their own content. actions: the Actions dropdown, beside the tabs.
-export default function OrderDetailTabs({ order, lineItems, actions }) {
+// editing: Edit was clicked (it sits beside the actions, above every tab) -
+// back to Line Items, where the editing happens.
+export default function OrderDetailTabs({ order, lineItems, actions, editing = false }) {
   const [active, setActive] = useState("line_items");
+
+  useEffect(() => {
+    if (editing) setActive("line_items");
+  }, [editing]);
 
   return (
     <div>

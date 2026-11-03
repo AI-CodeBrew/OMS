@@ -561,6 +561,45 @@ def _merge_pdfs(pdf_byte_list):
     return buffer.getvalue()
 
 
+def render_load_sheets(order_ids, actor_user_id):
+    """Our own Goods Load Sheet for `order_ids`, per (store, booking
+    account). Hands the parcels over. Returns (pdf parts, error response)."""
+    from core.models import Organization
+    from oms import services as oms_services
+
+    from . import loadsheet
+
+    groups, error = _shipments_by_account(order_ids)
+    if error:
+        return None, error
+
+    pdf_parts = []
+    for organization_id, connection, shipments in groups:
+        try:
+            rows, shipper_name = loadsheet.build_rows(connection, shipments)
+            org = Organization.objects.filter(id=organization_id).first()
+            html_doc = loadsheet.build_html(
+                customer_name=shipper_name or (org.name if org else ""),
+                account_number=connection.account_number,
+                rows=rows,
+            )
+            pdf_bytes = loadsheet.render_pdf(html_doc)
+        except BarqRaftarAPIError as exc:
+            return None, Response({"detail": str(exc)}, status=http_status.HTTP_502_BAD_GATEWAY)
+
+        _save_print_batch(
+            organization_id=organization_id,
+            order_numbers=[s.order.order_number for s in shipments],
+            content=pdf_bytes, actor_user_id=actor_user_id, kind="loadsheet",
+        )
+        pdf_parts.append(pdf_bytes)
+        # Handed over - out of Ready to Print, into Awaiting Dispatched.
+        oms_services.mark_orders_handed_over(
+            [s.order for s in shipments], actor_user_id=actor_user_id, note="BarqRaftar load sheet",
+        )
+    return pdf_parts, None
+
+
 class BarqRaftarLoadSheetView(APIView):
     """POST {order_ids} -> our own Goods Load Sheet PDF for the selected
     orders' active BarqRaftar shipments, in the same layout as BarqRaftar's
@@ -572,44 +611,35 @@ class BarqRaftarLoadSheetView(APIView):
     required_module = "oms"
 
     def post(self, request):
-        from core.models import Organization
-        from oms import services as oms_services
-
-        from . import loadsheet
-
         order_ids = request.data.get("order_ids") or []
         if not order_ids:
             return Response({"detail": "order_ids is required"}, status=http_status.HTTP_400_BAD_REQUEST)
 
-        groups, error = _shipments_by_account(order_ids)
+        pdf_parts, error = render_load_sheets(order_ids, request.user_id)
         if error:
             return error
-
-        pdf_parts = []
-        for organization_id, connection, shipments in groups:
-            try:
-                rows, shipper_name = loadsheet.build_rows(connection, shipments)
-                org = Organization.objects.filter(id=organization_id).first()
-                html_doc = loadsheet.build_html(
-                    customer_name=shipper_name or (org.name if org else ""),
-                    account_number=connection.account_number,
-                    rows=rows,
-                )
-                pdf_bytes = loadsheet.render_pdf(html_doc)
-            except BarqRaftarAPIError as exc:
-                return Response({"detail": str(exc)}, status=http_status.HTTP_502_BAD_GATEWAY)
-
-            _save_print_batch(
-                organization_id=organization_id,
-                order_numbers=[s.order.order_number for s in shipments],
-                content=pdf_bytes, actor_user_id=request.user_id, kind="loadsheet",
-            )
-            pdf_parts.append(pdf_bytes)
-            # Handed over - out of Ready to Print, into Awaiting Dispatched.
-            oms_services.mark_orders_handed_over(
-                [s.order for s in shipments], actor_user_id=request.user_id, note="BarqRaftar load sheet",
-            )
         return HttpResponse(_merge_pdfs(pdf_parts), content_type="application/pdf")
+
+
+def render_labels(order_ids, actor_user_id):
+    """The labels of `order_ids`, per (store, booking account). Returns
+    (pdf parts, error response)."""
+    groups, error = _shipments_by_account(order_ids)
+    if error:
+        return None, error
+    pdf_parts = []
+    for organization_id, connection, shipments in groups:
+        try:
+            pdf_bytes = _print_label_chunks(connection, [s.tracking_number for s in shipments])
+        except BarqRaftarAPIError as exc:
+            return None, Response({"detail": str(exc)}, status=http_status.HTTP_502_BAD_GATEWAY)
+        _save_print_batch(
+            organization_id=organization_id,
+            order_numbers=[s.order.order_number for s in shipments],
+            content=pdf_bytes, actor_user_id=actor_user_id,
+        )
+        pdf_parts.append(pdf_bytes)
+    return pdf_parts, None
 
 
 def _print_label_chunks(connection, tracking_numbers):
@@ -667,21 +697,9 @@ class BarqRaftarLabelsView(APIView):
             )
 
         if order_ids:
-            groups, error = _shipments_by_account(order_ids)
+            pdf_parts, error = render_labels(order_ids, request.user_id)
             if error:
                 return error
-            pdf_parts = []
-            for organization_id, connection, shipments in groups:
-                try:
-                    pdf_bytes = _print_label_chunks(connection, [s.tracking_number for s in shipments])
-                except BarqRaftarAPIError as exc:
-                    return Response({"detail": str(exc)}, status=http_status.HTTP_502_BAD_GATEWAY)
-                _save_print_batch(
-                    organization_id=organization_id,
-                    order_numbers=[s.order.order_number for s in shipments],
-                    content=pdf_bytes, actor_user_id=request.user_id,
-                )
-                pdf_parts.append(pdf_bytes)
             return HttpResponse(_merge_pdfs(pdf_parts), content_type="application/pdf")
 
         # tracking_numbers: the Shipments tab, i.e. one account's own listing.

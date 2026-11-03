@@ -119,12 +119,15 @@ export default function OrdersTable({
   onToggleSelectAll,
   onOpenDetail,
   showStoreColumn = false,
-  // Product names of the order's line items (Dispatch Hub).
+  // Product names of the order's line items (a store's own Orders page,
+  // not the Dispatch Hub).
   showProductColumn = false,
   showTransitColumn = false,
   // The courier's own word for where the parcel is (Order.courier_status) -
   // shown on the tabs after dispatch, where several of them share one status.
   showSubStatusColumn = false,
+  // Undelivered: the store's Shipper Advice (Reattempt / Return + remarks).
+  showShipperAdviceColumn = false,
   // Row ⋮ menu: "Recreate order" - the form then asks Replacement or New
   // order before opening pre-filled from this order.
   onRecreate,
@@ -135,7 +138,8 @@ export default function OrdersTable({
     (showStoreColumn ? 17 : 16) +
     (showProductColumn ? 1 : 0) +
     (showTransitColumn ? 1 : 0) +
-    (showSubStatusColumn ? 1 : 0);
+    (showSubStatusColumn ? 1 : 0) +
+    (showShipperAdviceColumn ? 1 : 0);
 
   return (
     <div className="max-h-[70vh] overflow-auto rounded-lg border border-surface-border bg-white">
@@ -158,11 +162,12 @@ export default function OrdersTable({
             <th className="w-40 px-3 py-2">Date &amp; Time</th>
             <th className="w-24 px-3 py-2">Fulfillment</th>
             <th className="w-36 px-3 py-2">Status</th>
+            {showSubStatusColumn ? <th className="w-40 px-3 py-2">Sub Status</th> : null}
+            {showShipperAdviceColumn ? <th className="w-44 px-3 py-2">Shipper Advice</th> : null}
             <th className="w-40 px-3 py-2">Tag</th>
             <th className="w-28 px-3 py-2">Store Name</th>
             <th className="w-28 px-3 py-2">City</th>
             <th className="w-24 px-3 py-2">Courier</th>
-            {showSubStatusColumn ? <th className="w-40 px-3 py-2">Sub Status</th> : null}
             {showTransitColumn ? <th className="w-24 px-3 py-2">In Transit</th> : null}
             <th className="w-32 px-3 py-2">Tracking ID (CN)</th>
             <th className="w-24 px-3 py-2 text-right">Amount</th>
@@ -285,6 +290,37 @@ export default function OrdersTable({
                     );
                   })()}
                 </td>
+                {/* Sub Status (the courier's own word) right beside Status. */}
+                {showSubStatusColumn ? (
+                  <td className="px-3 py-1.5 text-slate-700">
+                    <div className="truncate" title={order.courier_status || undefined}>
+                      {order.courier_status || "—"}
+                    </div>
+                  </td>
+                ) : null}
+                {showShipperAdviceColumn ? (
+                  <td className="px-3 py-1.5 text-slate-700">
+                    {order.shipper_advice ? (
+                      <div
+                        className="max-w-[11rem]"
+                        title={[order.shipper_advice, order.shipper_advice_remarks].filter(Boolean).join(" - ")}
+                      >
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                            order.shipper_advice === "Return" ? "bg-red-50 text-red-700" : "bg-emerald-50 text-emerald-700"
+                          }`}
+                        >
+                          {order.shipper_advice}
+                        </span>
+                        {order.shipper_advice_remarks ? (
+                          <div className="mt-0.5 truncate text-xs text-slate-500">{order.shipper_advice_remarks}</div>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <span className="text-slate-300">—</span>
+                    )}
+                  </td>
+                ) : null}
                 {/* Tag sits right after Status: where the order is within
                     its card (To Be Packed, Out for Delivery, the cancel
                     reason, the courier's remark, ...), then the order's own
@@ -320,13 +356,6 @@ export default function OrdersTable({
                 <td className="px-3 py-1.5 text-slate-700">
                   <div className="truncate">{order.courier_name || "—"}</div>
                 </td>
-                {showSubStatusColumn ? (
-                  <td className="px-3 py-1.5 text-slate-700">
-                    <div className="truncate" title={order.courier_status || undefined}>
-                      {order.courier_status || "—"}
-                    </div>
-                  </td>
-                ) : null}
                 {showTransitColumn ? (
                   <td className="whitespace-nowrap px-3 py-1.5 font-medium text-red-600">
                     {order.in_transit_days != null

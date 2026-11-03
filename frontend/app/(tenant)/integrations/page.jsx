@@ -237,7 +237,7 @@ export default function IntegrationsOverviewPage() {
 
       <div className="flex flex-wrap items-center gap-6">
         <div className="max-w-xl">
-          <h1 className="text-[28px] font-semibold leading-9 text-slate-900">Connect your services</h1>
+          <h1 className="text-2xl font-semibold text-slate-900">Connect your services</h1>
           <p className="mt-2 text-sm text-slate-500">
             Integrate with your favorite platforms and logistics partners to streamline your
             operations.

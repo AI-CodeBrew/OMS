@@ -11,7 +11,6 @@ PROVINCES = [
     "Sindh",
     "Khyber Pakhtunkhwa",
     "Balochistan",
-    "Islamabad",
     "Gilgit-Baltistan",
     "Azad Kashmir",
 ]
@@ -39,7 +38,8 @@ _CITIES = {
         Pindigheb, Jand, Chhachh, Kahuta, Kotli Sattian, Taxila Cantt, Hasan Abdal, Kot Sultan,
         Karor Lal Esan, Chaubara, Fatehpur, Rojhan, Kot Mithan, Uch Sharif, Khairpur Tamewali,
         Minchinabad, Dahranwala, Marot, Jahanian, Tibba Sultanpur, Luddan, Gaggo Mandi,
-        Pirmahal, Rajana, Kamir, Harappa, Iqbal Nagar, Noorshah, Bahawalpur Cantt
+        Pirmahal, Rajana, Kamir, Harappa, Iqbal Nagar, Noorshah, Bahawalpur Cantt,
+        Islamabad, Islamabad Capital Territory, ICT
     """,
     "Sindh": """
         Karachi, Hyderabad, Sukkur, Larkana, Nawabshah, Shaheed Benazirabad, Benazirabad,
@@ -74,9 +74,6 @@ _CITIES = {
         Musakhel, Barkhan, Sherani, Qila Abdullah, Duki, Kachhi, Bolan, Machh, Sui, Gandava,
         Jhal Magsi, Winder, Taftan, Nokkundi
     """,
-    "Islamabad": """
-        Islamabad, Islamabad Capital Territory, ICT
-    """,
     "Gilgit-Baltistan": """
         Gilgit, Skardu, Hunza, Ghizer, Chilas, Astore, Khaplu, Aliabad, Karimabad, Shigar,
         Gahkuch, Diamer, Nagar, Gupis, Sost, Passu, Danyore, Jaglot
@@ -93,7 +90,7 @@ _CITIES = {
 _ALIASES = {
     "lhr": "Punjab", "rwp": "Punjab", "pindi": "Punjab", "fsd": "Punjab", "mul": "Punjab",
     "skt": "Punjab", "grw": "Punjab", "dgk": "Punjab", "rykhan": "Punjab", "ryk": "Punjab",
-    "khi": "Sindh", "hyd": "Sindh", "isb": "Islamabad", "pew": "Khyber Pakhtunkhwa",
+    "khi": "Sindh", "hyd": "Sindh", "isb": "Punjab", "pew": "Khyber Pakhtunkhwa",
     "dik": "Khyber Pakhtunkhwa", "uet": "Balochistan",
 }
 

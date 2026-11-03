@@ -29,9 +29,12 @@ import OrdersTable from "../../../components/orders/OrdersTable";
 import HubOrderFilters from "../../../components/orders/HubOrderFilters";
 import CsvExportButton from "../../../components/orders/CsvExportButton";
 import DateRangeFilter from "../../../components/orders/DateRangeFilter";
+import { useDateFilterStore } from "../../../store/dateFilterStore";
 import {
   ACTIONS_BY_STATUS,
   ASSIGNING_COURIER_ACTIONS,
+  MOVE_TO_ASSIGNING,
+  withMoveToAssigning,
   ASSIGNING_COURIER_TAB,
   BOOKING_ACCOUNTS,
   SMARTLANE_LOAD_SHEET_COURIERS,
@@ -102,6 +105,26 @@ const EMPTY_FILTERS = {
 const CRITICAL_TAB = "critical";
 const TAB_STATUSES = STATUS_TABS.map((tab) => tab.value).filter((v) => v !== CRITICAL_TAB);
 const IN_TRANSIT_STATUSES = new Set(["dispatched"]);
+// Assigning Courier's two prints, the same for the Hub and a store (see
+// availableActions). Each one covers every courier - the Hub's courier by
+// courier in one PDF, a store's through PrintByCourierModal - so they replace
+// the couriers' own print actions, whatever the order's status.
+const ASSIGNING_PRINT_ACTIONS = [
+  { key: "print_loadsheet", action: "print_loadsheet", label: "Print Loadsheet" },
+  { key: "print_airway_bill", action: "print_airway_bill", label: "Print Airway Bill" },
+];
+const ASSIGNING_HIDDEN_ACTIONS = new Set([
+  "print_loadsheet",
+  "print_airway_bill",
+  "print_barqraftar_labels",
+  "print_barqraftar_loadsheet",
+  "print_postex_airway_bill",
+  "print_postex_loadsheet",
+  "barqraftar_ready_for_pickup",
+  "mark_dispatch_issue",
+  "cancel_fulfillment",
+]);
+
 // Tabs from booking on - where the courier's own word for where the parcel
 // is (its Sub Status) tells apart orders that share one of our statuses.
 const SUB_STATUS_TABS = new Set([
@@ -192,16 +215,18 @@ export default function OrdersPage() {
   // A dashboard card links here with its date range (and its statuses as
   // the tab) - read once on arrival; after that the date filter is the
   // user's to change.
-  const [filters, setFilters] = useState(() => ({
-    ...EMPTY_FILTERS,
-    date_from: searchParams.get("date_from") || "",
-    date_to: searchParams.get("date_to") || "",
-  }));
-  const [appliedFilters, setAppliedFilters] = useState(() => ({
-    ...EMPTY_FILTERS,
-    date_from: searchParams.get("date_from") || "",
-    date_to: searchParams.get("date_to") || "",
-  }));
+  // Otherwise it opens on the session's shared date filter
+  // (store/dateFilterStore), whichever screen it was picked on.
+  const setSessionRange = useDateFilterStore((s) => s.setRange);
+  const [initialRange] = useState(() => {
+    const linked = searchParams.has("date_from") || searchParams.has("date_to");
+    const shared = useDateFilterStore.getState();
+    return linked
+      ? { date_from: searchParams.get("date_from") || "", date_to: searchParams.get("date_to") || "" }
+      : { date_from: shared.dateFrom, date_to: shared.dateTo };
+  });
+  const [filters, setFilters] = useState(() => ({ ...EMPTY_FILTERS, ...initialRange }));
+  const [appliedFilters, setAppliedFilters] = useState(() => ({ ...EMPTY_FILTERS, ...initialRange }));
   const fromDashboard = searchParams.get("from") === "dashboard";
   const dashboardGroup = searchParams.get("group") || "";
 
@@ -476,7 +501,9 @@ export default function OrdersPage() {
     if (!user?.isDispatchHub) return;
     dispatchHubAdminService
       .listStores()
-      .then((stores) => setHubStoreOptions(stores.map((s) => ({ id: s.id, name: s.name }))))
+      .then((stores) =>
+        setHubStoreOptions(stores.map((s) => ({ id: s.id, name: s.name, store_code: s.store_code })))
+      )
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.isDispatchHub]);
@@ -597,8 +624,12 @@ export default function OrdersPage() {
     [user?.isDispatchHub, smartlaneConnected, omsCourierConnected]
   );
 
+  // All Orders is for looking only - no actions on the list or in an order
+  // opened from it; changes are made from the order's own status card.
+  const viewOnly = activeStatus === "all";
+
   const availableActions = useMemo(() => {
-    if (selectedOrders.length === 0) return [];
+    if (selectedOrders.length === 0 || viewOnly) return [];
     // Each courier's own actions are only offered when a selected order was
     // booked with it. Where the plain Print Loadsheet / Print Airway Bill are
     // on offer they already ask which courier (see PrintByCourierModal), so
@@ -636,19 +667,23 @@ export default function OrdersPage() {
       // courier's pickup notice is still on each order's own menu.
       covered.add("barqraftar_ready_for_pickup");
     }
+    // Shipper Advice: only when every selected order is in Undelivered.
+    if (!selectedOrders.every((o) => o.workflow_card === "undelivered")) covered.add("shipper_advice");
     const plain = actions.filter((a) => !covered.has(a.action));
-    // All in Assigning Courier: its own Cancel / Change Courier / Edit Order
-    // come first, then whatever the statuses offer (printing, load sheet,
-    // ...), whichever status each order has within the card.
+    // All in Assigning Courier: the two prints, its own Cancel / Change Courier /
+    // Edit Order, then what else the statuses offer (Not booked - retry,
+    // Retry dispatch, ...), whichever status each order has. Manual Ready to
+    // Pick / Dispatch aren't offered from this card.
     if (selectedOrders.every((o) => o.workflow_card === "assigning_courier")) {
-      const rest = plain.filter((a) => a.action !== "cancel");
+      const hidden = new Set(["cancel", "mark_ready_to_pick", "dispatch"]);
       return [
+        ...ASSIGNING_PRINT_ACTIONS,
         ...ASSIGNING_COURIER_ACTIONS,
-        ...(rest.length ? [{ key: "assigning_courier_divider", divider: true }, ...rest] : []),
+        ...plain.filter((a) => !hidden.has(a.action) && !ASSIGNING_HIDDEN_ACTIONS.has(a.action)),
       ];
     }
-    return plain;
-  }, [selectedOrders, barqraftarConnected, barqraftarOmsConnected, postexConnected, postexOmsConnected]);
+    return withMoveToAssigning(plain);
+  }, [selectedOrders, viewOnly, barqraftarConnected, barqraftarOmsConnected, postexConnected, postexOmsConnected]);
 
   // Change Courier's picker: every courier this store can book with right
   // now. Values are the backend's CHANGE_COURIER_TARGETS keys.
@@ -668,11 +703,12 @@ export default function OrdersPage() {
   // statuses with none in common.
   const noActionsReason = useMemo(() => {
     if (selectedOrders.length === 0 || availableActions.length > 0) return "";
+    if (viewOnly) return "All Orders is view only - open a status card to make changes";
     const labels = Array.from(new Set(selectedOrders.map((o) => STATUS_LABELS[o.status] || o.status)));
     return labels.length === 1
       ? `No actions for ${labels[0]} orders`
       : `No action fits all of: ${labels.join(", ")} - select orders of one status`;
-  }, [selectedOrders, availableActions]);
+  }, [selectedOrders, availableActions, viewOnly]);
 
   // The couriers the picker offers: whichever this org can print for.
   const printAccounts = useMemo(
@@ -687,6 +723,34 @@ export default function OrdersPage() {
   // fromBulk: the toolbar/selection bar (several orders, maybe several
   // couriers) rather than one order's own menu.
   async function startAction(action, orderIds, fromBulk = false) {
+    // Dispatch Hub: the load sheet is one PDF, courier after courier, and
+    // the airway bill asks Courier wise or Product wise. Stores keep
+    // PrintByCourierModal below.
+    if (fromBulk && user?.isDispatchHub && action === "print_airway_bill") {
+      setAirwayBillFilterOrders(orders.filter((o) => orderIds.includes(o.id)));
+      return;
+    }
+    if (fromBulk && user?.isDispatchHub && action === "print_loadsheet") {
+      const hasPostEx = orders.some(
+        (o) => orderIds.includes(o.id) && (o.courier_name || "").trim().toLowerCase() === "postex"
+      );
+      // PostEx's load sheet is also their hand-over step - confirmed first.
+      if (hasPostEx && !window.confirm("Generate the load sheets? This hands the PostEx parcels over for pickup.")) {
+        return;
+      }
+      beginLoading("Preparing load sheets");
+      try {
+        const failed = await ordersService.printByCourier("loadsheet", orderIds);
+        if (failed) setError(`Downloaded, but these couriers failed - ${failed}`);
+        await reloadAfterChange();
+      } catch (err) {
+        setError(err.message || "Print failed");
+      } finally {
+        endLoading();
+      }
+      return;
+    }
+
     // Bulk loadsheet / airway bill: ask which courier's to download rather
     // than always going to Smartlane.
     if (fromBulk && (action === "print_loadsheet" || action === "print_airway_bill")) {
@@ -777,6 +841,13 @@ export default function OrdersPage() {
     // the page stays usable meanwhile.
     const { action, orderIds } = pendingAction;
     setPendingAction(null);
+    // Move to Assigning Courier: run the booking it was asked for - Assign
+    // courier (Smartlane / OMS Courier) still asks for its account.
+    if (action === MOVE_TO_ASSIGNING) {
+      if (params.courier === "assign_courier") setPendingAction({ action: "assign_courier", orderIds });
+      else runAction(params.courier, orderIds, {});
+      return;
+    }
     runAction(action, orderIds, params);
   }
 
@@ -931,37 +1002,33 @@ export default function OrdersPage() {
                 </svg>
               </button>
             ) : null}
-            <h1 className="text-[28px] font-semibold leading-8 text-slate-900">
+            <h1 className="text-2xl font-semibold text-slate-900">
               {user?.isDispatchHub ? "Dispatch Hub Orders" : "Local Orders"}
               {dashboardGroup ? <span className="text-slate-400"> · {dashboardGroup}</span> : null}
             </h1>
+            <span className="text-sm text-slate-500">
+              {counts == null ? "Loading…" : `${(counts.all ?? 0).toLocaleString()} orders`}
+            </span>
           </div>
-          <p className="mt-1 text-sm text-slate-500">
-            {counts == null
-              ? "Loading orders…"
-              : user?.isDispatchHub
-                ? `${counts.all ?? 0} orders across every Dispatch Hub store.`
-                : `${counts.all ?? 0} orders for your organization.`}
-          </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <DateRangeFilter
             dateFrom={appliedFilters.date_from}
             dateTo={appliedFilters.date_to}
             onApplyDateRange={(date_from, date_to) => {
+              setSessionRange(date_from, date_to);
               setFilters((f) => ({ ...f, date_from, date_to }));
               setAppliedFilters((f) => ({ ...f, date_from, date_to }));
             }}
             onClearDateRange={() => {
+              setSessionRange("", "");
               setFilters((f) => ({ ...f, date_from: "", date_to: "" }));
               setAppliedFilters((f) => ({ ...f, date_from: "", date_to: "" }));
             }}
           />
-          {!user?.isDispatchHub ? (
-            <Button variant="secondary" onClick={() => setNewOrderOpen(true)}>
-              Manual Order
-            </Button>
-          ) : null}
+          <Button variant="secondary" onClick={() => setNewOrderOpen(true)}>
+            Manual Order
+          </Button>
           <CsvExportButton filterParams={queryParams} />
           {user?.isDispatchHub ? (
             <Button variant="secondary" onClick={() => setImportOpen(true)}>
@@ -983,7 +1050,7 @@ export default function OrdersPage() {
         <p className="mt-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
       ) : null}
 
-      <div className="mt-6">
+      <div className="mt-3">
         <OrderStatusTabs counts={counts} activeStatus={activeStatus} onChange={setActiveStatus} />
 
         <OrdersToolbar
@@ -997,7 +1064,7 @@ export default function OrdersPage() {
           selectedCount={selectedIds.size}
           availableActions={availableActions}
           noActionsReason={noActionsReason}
-          onRaiseTicket={() => setTicketOrder(selectedOrders[0])}
+          onRaiseTicket={viewOnly ? undefined : () => setTicketOrder(selectedOrders[0])}
           onAction={(action) => startAction(action, Array.from(selectedIds), true)}
           onRefresh={() => {
             // A real page reload, like the browser's - the cached view is
@@ -1035,27 +1102,6 @@ export default function OrdersPage() {
           </div>
         ) : null}
 
-        {appliedFilters.date_from || appliedFilters.date_to ? (
-          <div className="mb-3 flex items-center justify-between rounded-md border border-brand-200 bg-brand-50 px-3 py-2 text-xs text-brand-800">
-            <div className="flex items-center gap-2">
-              <span className="font-medium text-brand-900">Active Date Filter:</span>
-              <span className="rounded bg-brand-100 px-1.5 py-0.5 font-semibold text-brand-800">
-                {appliedFilters.date_from || "Start"} to {appliedFilters.date_to || "Today"}
-              </span>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                setFilters((f) => ({ ...f, date_from: "", date_to: "" }));
-                setAppliedFilters((f) => ({ ...f, date_from: "", date_to: "" }));
-              }}
-              className="font-medium text-brand-700 hover:text-brand-900 hover:underline"
-            >
-              Clear Date Filter
-            </button>
-          </div>
-        ) : null}
-
         {selectedIds.size > 0 ? (
           <div className="mb-3 flex items-center justify-between rounded-md border border-brand-200 bg-brand-50 px-4 py-2">
             <span className="text-sm font-medium text-brand-900">
@@ -1084,9 +1130,10 @@ export default function OrdersPage() {
           onToggleSelectAll={onToggleSelectAll}
           onOpenDetail={setDetailOrderId}
           showStoreColumn={Boolean(user?.isDispatchHub)}
-          showProductColumn={Boolean(user?.isDispatchHub)}
+          showProductColumn={!user?.isDispatchHub}
           showTransitColumn={activeStatus === CRITICAL_TAB}
           showSubStatusColumn={SUB_STATUS_TABS.has(activeStatus)}
+          showShipperAdviceColumn={activeStatus === "card:undelivered"}
           onRecreate={(order) => {
             setRecreateFrom(order);
             setNewOrderOpen(true);
@@ -1108,6 +1155,7 @@ export default function OrdersPage() {
       <NewOrderModal
         open={newOrderOpen}
         recreateFrom={recreateFrom}
+        stores={user?.isDispatchHub ? hubStoreOptions || [] : null}
         onClose={() => {
           setNewOrderOpen(false);
           setRecreateFrom(null);
@@ -1144,7 +1192,13 @@ export default function OrdersPage() {
               ]
             : couriers
         }
-        options={pendingAction?.action === "change_courier" ? changeCourierOptions : undefined}
+        options={
+          pendingAction?.action === "change_courier"
+            ? changeCourierOptions
+            : pendingAction?.action === MOVE_TO_ASSIGNING
+              ? availableActions.find((a) => a.action === MOVE_TO_ASSIGNING)?.choices
+              : undefined
+        }
         onClose={() => setPendingAction(null)}
         onSubmit={onSubmitPendingAction}
       />
@@ -1164,6 +1218,7 @@ export default function OrdersPage() {
       />
       <AirwayBillFilterModal
         orders={airwayBillFilterOrders}
+        byCourier={Boolean(user?.isDispatchHub)}
         onClose={() => setAirwayBillFilterOrders(null)}
       />
       <OrderDetailPanel
@@ -1171,6 +1226,8 @@ export default function OrdersPage() {
         couriers={couriers}
         bookingAccounts={bookingAccounts}
         startEditing={detailStartEditing}
+        readOnly={viewOnly}
+        onRaiseTicket={setTicketOrder}
         onClose={() => {
           setDetailOrderId(null);
           setDetailStartEditing(false);

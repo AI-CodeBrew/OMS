@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import integrationsService from "../../../../services/integrationsService";
 import Button from "../../../../components/shared/Button";
 import PasswordInput from "../../../../components/shared/PasswordInput";
+import DateInput from "../../../../components/shared/DateInput";
 
 const SHOPIFY_ERROR_MESSAGES = {
   invalid_request: "The Shopify install request could not be verified. Please try again.",
@@ -682,8 +683,7 @@ export default function IntegrationsPage() {
                     <div className="flex gap-2">
                       <label className="flex-1 text-xs text-slate-500">
                         From
-                        <input
-                          type="date"
+                        <DateInput
                           value={dateFrom}
                           onChange={(e) => setDateFrom(e.target.value)}
                           className="mt-0.5 w-full rounded-md border border-surface-border px-2 py-1 text-sm outline-none focus:border-brand-500"
@@ -691,8 +691,7 @@ export default function IntegrationsPage() {
                       </label>
                       <label className="flex-1 text-xs text-slate-500">
                         To
-                        <input
-                          type="date"
+                        <DateInput
                           value={dateTo}
                           onChange={(e) => setDateTo(e.target.value)}
                           className="mt-0.5 w-full rounded-md border border-surface-border px-2 py-1 text-sm outline-none focus:border-brand-500"

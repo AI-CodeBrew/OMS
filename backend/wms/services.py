@@ -679,13 +679,18 @@ def _empty_metrics():
         "returns_lost": 0,
         "po_damaged": 0,
         "ordered": 0,
+        # How many orders (not units) are in each column.
+        "delivered_orders": 0,
+        "dispatched_orders": 0,
+        "failed_delivery_orders": 0,
+        "return_in_transit_orders": 0,
     }
 
 
 def _order_metrics(organization_id):
     """{match key: metrics} from every order that isn't cancelled, plus
     the damaged / lost units its returns desk counted."""
-    from django.db.models import BooleanField, ExpressionWrapper, Q, Sum
+    from django.db.models import BooleanField, Count, ExpressionWrapper, Q, Sum
 
     from oms.models import Order, OrderItem
 
@@ -699,7 +704,7 @@ def _order_metrics(organization_id):
             )
         )
         .values("barcode", "product_name", "order__status", "_returning")
-        .annotate(qty=Sum("quantity"))
+        .annotate(qty=Sum("quantity"), orders=Count("order", distinct=True))
         .order_by()
     )
     for row in rows:
@@ -708,6 +713,7 @@ def _order_metrics(organization_id):
         bucket = _order_bucket(row["order__status"], row["_returning"])
         if bucket:
             m[bucket] += row["qty"] or 0
+            m[f"{bucket}_orders"] += row["orders"] or 0
 
     received = Order.all_objects.filter(
         organization_id=organization_id, return_breakdown__isnull=False
@@ -741,11 +747,11 @@ def _purchase_metrics(organization_id):
 
 def inventory_activity(quantity, ordered):
     """Active: in stock and ordered. Inactive: in stock, never ordered.
-    Out of stock: ordered, none on hand. "" for neither (nothing on hand,
-    never ordered) - only in Total."""
+    Out of stock: none on hand, ordered or not - so the three always add
+    up to Total."""
     if quantity > 0:
         return "active" if ordered else "inactive"
-    return "out_of_stock" if ordered else ""
+    return "out_of_stock"
 
 
 def _inventory_row(item, order_metrics, purchase_metrics):

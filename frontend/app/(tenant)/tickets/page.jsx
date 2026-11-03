@@ -69,13 +69,12 @@ export default function TicketsPage() {
     <div>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-[28px] font-semibold leading-8 text-slate-900">Tickets</h1>
-          <p className="mt-1 text-sm text-slate-500">{VIEWS.find((v) => v.value === view).hint}</p>
+          <h1 className="text-2xl font-semibold text-slate-900" title={VIEWS.find((v) => v.value === view).hint}>Tickets</h1>
         </div>
         <Button onClick={() => setCreating(true)}>New ticket</Button>
       </div>
 
-      <div className="mt-4 flex flex-wrap items-center gap-2 py-3">
+      <div className="mt-2 flex flex-wrap items-center gap-2 py-2">
         <select
           value={view}
           onChange={(e) => {

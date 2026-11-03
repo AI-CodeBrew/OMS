@@ -69,6 +69,7 @@ export const API_ENDPOINTS = {
   oms: {
     orders: "/api/oms/orders/",
     orderCounts: "/api/oms/orders/counts/",
+    orderDashboardBreakdown: "/api/oms/orders/dashboard-breakdown/",
     orderWarmup: "/api/oms/orders/warmup/",
     orderDashboard: "/api/oms/orders/dashboard/",
     orderReturnsSummary: "/api/oms/orders/returns-summary/",
@@ -79,6 +80,7 @@ export const API_ENDPOINTS = {
     orderScanPack: "/api/oms/orders/scan-pack/",
     orderExport: "/api/oms/orders/export/",
     orderProductNames: "/api/oms/orders/product-names/",
+    orderTags: "/api/oms/orders/tags/",
     orderStoreProducts: "/api/oms/orders/store-products/",
     orderCriticalSummary: "/api/oms/orders/critical-summary/",
     orderImport: "/api/oms/orders/import-csv/",
@@ -86,6 +88,7 @@ export const API_ENDPOINTS = {
     orderImportTemplate: "/api/oms/orders/import-template/",
     orderSmartlaneAirwayBill: "/api/oms/orders/smartlane-airway-bill/",
     orderSmartlaneLoadSheet: "/api/oms/orders/smartlane-load-sheet/",
+    orderPrintByCourier: "/api/oms/orders/print-by-courier/",
     couriers: "/api/oms/couriers/",
     report: "/api/oms/report/",
     cities: "/api/oms/cities/",

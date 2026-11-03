@@ -9,7 +9,6 @@ import re
 from decimal import Decimal
 
 PHONE_DIGITS = 11
-ADDRESS_MIN_CHARS = 20
 # Whether an order's city must be on the super admin's city list (Cities
 # page, filled from PostEx's and BarqRaftar's own city lists) to be
 # Approved. An order failing only this goes to City Issue instead (see
@@ -17,15 +16,32 @@ ADDRESS_MIN_CHARS = 20
 CHECK_CITY = True
 
 
+# Country codes a customer may type in front of a local number - Pakistan's
+# own, and India's, which a checkout's country picker often fills in by
+# mistake.
+_COUNTRY_CODES = ("92", "91")
+
+
 def normalize_phone(raw):
-    """Digits only, with Pakistan's +92 / 0092 country code turned back
-    into the leading 0 - "+92 305-4094932" -> "03054094932"."""
+    """Digits only, as the local 11-digit number - "+92 305-4094932",
+    "0092 305...", "+92 0305...", "+91 305...", "923054094932" and
+    "3054094932" all -> "03054094932". A number that can't be read as one
+    comes back as its leftover digits (never 11 of them), so the length
+    check refuses it."""
     digits = re.sub(r"\D", "", raw or "")
-    if digits.startswith("0092"):
-        digits = "0" + digits[4:]
-    elif digits.startswith("92") and len(digits) == PHONE_DIGITS + 1:
-        digits = "0" + digits[2:]
-    return digits
+    # Already local (0 + 10 digits) - kept as is, so an area code like
+    # Peshawar's 091 is never mistaken for a country code.
+    if len(digits) == PHONE_DIGITS and digits.startswith("0") and not digits.startswith("00"):
+        return digits
+    local = digits.lstrip("0")
+    for code in _COUNTRY_CODES:
+        if local.startswith(code) and len(local.lstrip("0")) > PHONE_DIGITS - 1:
+            local = local[len(code):]
+            break
+    local = local.lstrip("0")
+    if len(local) == PHONE_DIGITS - 1:
+        return "0" + local
+    return local
 
 
 def city_key(name):
@@ -67,8 +83,10 @@ def approval_problems(order, *, include_city=True):
         problems.append(f"Phone must be {PHONE_DIGITS} digits ({order.customer_phone!r} has {len(phone)})")
 
     address = (order.address_line1 or "").strip()
-    if len(address) < ADDRESS_MIN_CHARS:
-        problems.append(f"Address must be at least {ADDRESS_MIN_CHARS} characters (has {len(address)})")
+    # Any address will do - no minimum length (removed at the user's
+    # request); it just can't be blank.
+    if not address:
+        problems.append("Address is missing")
 
     if include_city:
         problem = city_problem(order.city)

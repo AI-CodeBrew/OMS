@@ -6,6 +6,7 @@ import ordersService from "../../../services/ordersService";
 import wmsService from "../../../services/wmsService";
 import Button from "../../../components/shared/Button";
 import DateRangeFilter from "../../../components/orders/DateRangeFilter";
+import { useSessionDateRange } from "../../../store/dateFilterStore";
 
 const EMPTY_ORDERS = {
   total_orders: 0,
@@ -73,9 +74,9 @@ function Tile({ label, value, tone }) {
     muted: "text-slate-400",
   };
   return (
-    <div className="rounded-lg border border-surface-border bg-white p-4">
-      <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{label}</p>
-      <p className={`mt-1 text-2xl font-semibold ${tones[tone] || "text-slate-900"}`}>{value}</p>
+    <div className="flex items-center justify-between gap-2 rounded-md border border-surface-border bg-white px-3 py-1.5">
+      <span className="truncate text-[11px] font-medium uppercase tracking-wide text-slate-500">{label}</span>
+      <span className={`text-lg font-semibold tabular-nums ${tones[tone] || "text-slate-900"}`}>{value}</span>
     </div>
   );
 }
@@ -99,7 +100,7 @@ function Section({
   onDownloadCsv,
 }) {
   return (
-    <section className="mt-8 first:mt-6">
+    <section className="mt-5 first:mt-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-base font-semibold text-slate-900">{title}</h2>
@@ -122,7 +123,7 @@ function Section({
         <p className="mt-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
       ) : null}
 
-      <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+      <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
         {loading
           ? Array.from({ length: tileCount }).map((_, i) => (
               <div key={i} className="h-[74px] animate-pulse rounded-lg border border-surface-border bg-surface" />
@@ -137,8 +138,8 @@ function Section({
 // "not available to this user" (403) handling, own CSV download. Only the
 // data source and empty/tile config differ per section.
 function useReportSection({ fetchSummary, downloadCsv, emptyValue }) {
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  // Shared across screens for the session (store/dateFilterStore).
+  const { dateFrom, dateTo, setDateFrom, setDateTo } = useSessionDateRange();
   const [summary, setSummary] = useState(emptyValue);
   const [loading, setLoading] = useState(true);
   // 403s (user's role lacks this section's module - see moduleNav.js,
@@ -219,10 +220,7 @@ export default function ReportsPage() {
 
   return (
     <div>
-      <h1 className="text-[28px] font-semibold leading-8 text-slate-900">Report</h1>
-      <p className="mt-1 text-sm text-slate-500">
-        Orders, warehouse stock and returns - each filterable to its own date range.
-      </p>
+      <h1 className="text-2xl font-semibold text-slate-900" title={"Orders, warehouse stock and returns - each filterable to its own date range."}>Report</h1>
 
       {orders.loading || orders.available ? (
         <Section title="Orders" hint="Order totals by status." tiles={ORDER_TILES} tileCount={9} {...orders} />
