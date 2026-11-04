@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 from decimal import Decimal
 
 from django.db import transaction
-from django.db.models import Count, DateTimeField, OuterRef, Q, Subquery
+from django.db.models import BooleanField, Count, DateTimeField, ExpressionWrapper, OuterRef, Q, Subquery
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
@@ -2382,7 +2382,8 @@ def critical_summary(qs):
 # ----------------------------------------------- Dashboard: delivery rate --
 def _rate(delivered, returned):
     """Delivered out of the orders that reached an outcome (delivered or
-    returned) - None while none has."""
+    returned - including ones already on their way back, see
+    delivery_performance) - None while none has."""
     done = delivered + returned
     return round(delivered * 100 / done, 1) if done else None
 
@@ -2408,32 +2409,55 @@ def delivery_performance(qs):
     """The Dashboard's Delivery performance section, over `qs` (the picked
     date range): overall, each courier's share of the orders and delivery
     rate, and the same by Pakistani province - overall and per courier.
-    One grouped query (courier, city, status), folded here."""
+    One grouped query (courier, city, status, returning), folded here.
+
+    - A parcel on its way back (the Return in Transit card) counts as
+      returned already - otherwise the delivery rate reads high until the
+      courier finally marks it returned.
+    - A courier's share is of the orders that have a courier: New, pending
+      and cancelled orders were never shipped by anyone, so they'd only
+      shrink every courier's share. Orders whose courier isn't one of
+      DASHBOARD_COURIERS still count under Others."""
     from .pakistan_provinces import province_for_city
 
-    rows = qs.order_by().values("courier__name", "city", "status").annotate(n=Count("id"))
+    rows = (
+        qs.order_by()
+        .values("courier__name", "city", "status")
+        .annotate(
+            returning=ExpressionWrapper(
+                Q(return_in_progress_at__isnull=False, status__in=RETURNABLE_STATUSES),
+                output_field=BooleanField(),
+            ),
+        )
+        .values("courier__name", "city", "status", "returning")
+        .annotate(n=Count("id"))
+    )
 
     def bucket():
         return {"orders": 0, "delivered": 0, "returned": 0}
 
     total = bucket()
+    # Orders with a courier at all - what a courier's share is out of.
+    with_courier = 0
     # The named couriers always show, at 0% when they had no orders.
     couriers = {name: bucket() for name in DASHBOARD_COURIERS.values()}
     provinces, courier_provinces = {}, {name: {} for name in DASHBOARD_COURIERS.values()}
     for row in rows:
-        courier = _dashboard_courier(row["courier__name"])
         province = province_for_city(row["city"])
         n = row["n"]
-        for b in (
-            total,
-            couriers.setdefault(courier, bucket()),
-            provinces.setdefault(province, bucket()),
-            courier_provinces.setdefault(courier, {}).setdefault(province, bucket()),
-        ):
+        targets = [total, provinces.setdefault(province, bucket())]
+        if row["courier__name"]:
+            courier = _dashboard_courier(row["courier__name"])
+            with_courier += n
+            targets += [
+                couriers.setdefault(courier, bucket()),
+                courier_provinces.setdefault(courier, {}).setdefault(province, bucket()),
+            ]
+        for b in targets:
             b["orders"] += n
             if row["status"] == "delivered":
                 b["delivered"] += n
-            elif row["status"] == "returned":
+            elif row["status"] == "returned" or row["returning"]:
                 b["returned"] += n
 
     def summary(name, b, whole):
@@ -2456,8 +2480,8 @@ def delivery_performance(qs):
         "overall": summary("Overall", total, total["orders"]),
         "couriers": [
             {
-                **summary(name, b, total["orders"]),
-                "provinces": by_province(courier_provinces[name], b["orders"]),
+                **summary(name, b, with_courier),
+                "provinces": by_province(courier_provinces.get(name, {}), b["orders"]),
             }
             for name, b in sorted(
                 couriers.items(), key=lambda kv: (kv[0] == DASHBOARD_OTHER_COURIERS, -kv[1]["orders"])

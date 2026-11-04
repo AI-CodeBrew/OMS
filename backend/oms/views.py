@@ -956,6 +956,15 @@ class OrderViewSet(viewsets.ModelViewSet):
         )
         return Response(serializer.data)
 
+    def destroy(self, request, *args, **kwargs):
+        # Orders are never deleted - cancel them instead. A deleted order
+        # would leave a hole in the OMS Order IDs (supabase_order_no, kept
+        # gapless) and take its history, payments and stock moves with it.
+        return Response(
+            {"detail": "Orders can't be deleted - cancel the order instead."},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+
     def update(self, request, *args, **kwargs):
         # Default ModelSerializer.update() can't handle the nested `items`
         # write (it's a reverse FK manager, not a plain attribute) - bypass

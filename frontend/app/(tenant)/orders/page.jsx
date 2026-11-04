@@ -332,13 +332,16 @@ export default function OrdersPage() {
   }, [queryParams, user?.isDispatchHub]);
   const countsTimer = useRef(null);
 
-  // Any filter change invalidates the current page.
+  // Any filter change invalidates the current page - and the selection:
+  // it's kept across pages of the same list (pick 10 here, 10 on the next
+  // page...), but not carried into a different tab, search or filter.
   useEffect(() => {
     setPage(1);
+    setSelectedIds(new Set());
   }, [queryParams]);
 
   const applyCachedTab = useCallback(
-    (keepSelection = false) => {
+    () => {
       const key = ordersListKey({
         status: queryParams.status,
         page,
@@ -352,7 +355,6 @@ export default function OrdersPage() {
         setOrderCount(cachedList.orderCount);
       }
       if (cachedCounts && isPlainTabQuery(queryParams)) setCounts(cachedCounts);
-      if (!keepSelection) setSelectedIds(new Set());
       return Boolean(cachedList);
     },
     [queryParams, page, pageSize]
@@ -382,7 +384,6 @@ export default function OrdersPage() {
         setOrders([]);
         setOrderCount(0);
         if (!alreadyWarm) setCounts(null);
-        setSelectedIds(new Set());
         setLoading(true);
       }
       try {
@@ -403,7 +404,6 @@ export default function OrdersPage() {
         setCounts(countData);
         if (cacheable) setCachedOrdersList(key, { orders: nextOrders, orderCount: nextCount });
         setCachedCounts(countData);
-        if (!force) setSelectedIds(new Set());
       } catch (err) {
         if (gen !== loadGen.current) return;
         setError(err.message || "Failed to load orders");
@@ -426,13 +426,11 @@ export default function OrdersPage() {
       if (cachedList) {
         setOrders(cachedList.orders);
         setOrderCount(cachedList.orderCount);
-        setSelectedIds(new Set());
         setLoading(false);
         return;
       }
       setOrders([]);
       setOrderCount(0);
-      setSelectedIds(new Set());
       setLoading(true);
     }
     try {
@@ -444,7 +442,6 @@ export default function OrdersPage() {
       setOrders(orderData.results || []);
       setOrderCount(orderData.count || 0);
       setCounts(countData);
-      if (!force) setSelectedIds(new Set());
       if (cacheable) {
         setCachedOrdersList(key, { orders: orderData.results || [], orderCount: orderData.count || 0 });
       }
@@ -600,18 +597,31 @@ export default function OrdersPage() {
     });
   }
 
+  // This page's checkbox: adds this page's orders to the selection, or -
+  // when they're all already in it - takes just them out. Other pages'
+  // picks stay.
   function onToggleSelectAll(visibleOrders) {
     setSelectedIds((prev) => {
-      const allSelected = visibleOrders.every((o) => prev.has(o.id));
-      if (allSelected) return new Set();
-      return new Set(visibleOrders.map((o) => o.id));
+      const next = new Set(prev);
+      const allSelected = visibleOrders.length > 0 && visibleOrders.every((o) => prev.has(o.id));
+      visibleOrders.forEach((o) => (allSelected ? next.delete(o.id) : next.add(o.id)));
+      return next;
     });
   }
 
-  const selectedOrders = useMemo(
-    () => orders.filter((o) => selectedIds.has(o.id)),
-    [orders, selectedIds]
-  );
+  // Every order seen on any page of this list, so selected orders from
+  // other pages still count for which actions are offered (the list only
+  // holds the page on screen). Freshest copy wins.
+  const seenOrders = useRef(new Map());
+  useEffect(() => {
+    seenOrders.current = new Map();
+  }, [queryParams]);
+  const selectedOrders = useMemo(() => {
+    orders.forEach((o) => seenOrders.current.set(o.id, o));
+    return Array.from(selectedIds)
+      .map((id) => seenOrders.current.get(id))
+      .filter(Boolean);
+  }, [orders, selectedIds]);
 
   const barqraftarConnected = useBarqRaftarStatusStore((s) => s.connected);
   const barqraftarOmsConnected = useBarqRaftarStatusStore((s) => s.omsConnected);

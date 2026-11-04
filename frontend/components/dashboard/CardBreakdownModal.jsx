@@ -22,6 +22,27 @@ function EyeIcon({ className }) {
   );
 }
 
+// Whole-number percentages that add up to exactly 100 when the counts make
+// up the total (largest remainder) - rounding each on its own could show
+// 99% or 101%. Otherwise each is simply rounded.
+function wholePercents(counts, total) {
+  if (!total) return counts.map(() => 0);
+  const exact = counts.map((c) => (c / total) * 100);
+  if (counts.reduce((a, b) => a + b, 0) !== total) return exact.map(Math.round);
+  const result = exact.map(Math.floor);
+  let left = 100 - result.reduce((a, b) => a + b, 0);
+  exact
+    .map((x, i) => [x - Math.floor(x), i])
+    .sort((a, b) => b[0] - a[0])
+    .forEach(([, i]) => {
+      if (left > 0) {
+        result[i] += 1;
+        left -= 1;
+      }
+    });
+  return result;
+}
+
 /**
  * A Dashboard card's orders split into its OMS types (backend:
  * oms.services.dashboard_types) - the card's tags, cancel reasons, return
@@ -56,6 +77,8 @@ export function CardBreakdownModal({ group, range, onClose, onOpenType }) {
 
   if (!group) return null;
 
+  const pcts = wholePercents(types.map((t) => t.count), total);
+
   return (
     <Modal
       open
@@ -78,8 +101,8 @@ export function CardBreakdownModal({ group, range, onClose, onOpenType }) {
       ) : (
         <div className="space-y-4">
           {types.length === 0 ? <p className="text-sm text-slate-500">No orders in this range.</p> : null}
-          {types.map((t) => {
-            const pct = total ? Math.round((t.count / total) * 100) : 0;
+          {types.map((t, i) => {
+            const pct = pcts[i];
             return (
               <div key={t.key}>
                 <div className="flex items-center justify-between gap-3">

@@ -64,7 +64,7 @@ function ProvincesPopup({ data, initialCourier, onClose }) {
               <span className={`font-semibold ${rateTone(subject.delivery_pct)}`}>
                 {formatPct(subject.delivery_pct)}
               </span>{" "}
-              delivery · {courier ? `${courier.share_pct.toFixed(1)}% of orders · ` : ""}
+              delivery · {courier ? `${courier.share_pct.toFixed(1)}% of booked orders · ` : ""}
               {subject.orders.toLocaleString()} orders · {subject.provinces.length} province
               {subject.provinces.length === 1 ? "" : "s"}
             </p>
