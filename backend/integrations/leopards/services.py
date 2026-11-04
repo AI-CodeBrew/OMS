@@ -37,7 +37,6 @@ from core.events import publish_event
 from core.platform_service import (
     is_platform_organization,
     platform_organization_id,
-    platform_reference,
 )
 
 from . import client
@@ -408,15 +407,13 @@ def _shipments_for(connection):
     return qs.filter(organization_id=connection.organization_id, order__platform_reference="")
 
 
-def _next_reference(order, *, via_platform=False):
+def _next_reference(order):
     """order.order_number (without '#'), or -R2/-R3/... if an earlier,
     since-cancelled booking already used the plain form - the old shipment
-    row stays as history and is never reused. Through FynkTech's account it
-    carries the store code in front (core.platform_service.
-    platform_reference)."""
+    row stays as history and is never reused. The same through FynkTech's
+    account: two stores' parcels can share this reference there, so nothing
+    may look one up by it - the CN is what identifies a parcel."""
     base = order.order_number.lstrip("#") or order.order_number
-    if via_platform:
-        base = platform_reference(order, base)
     existing = set(
         LeopardsShipment.all_objects.filter(organization_id=order.organization_id, order=order)
         .values_list("reference", flat=True)
@@ -636,7 +633,7 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False, 
             continue
 
         try:
-            reference = _next_reference(order, via_platform=via_platform)
+            reference = _next_reference(order)
             packet = _build_packet(order, connection, city, reference, shipper)
         except LeopardsBookingError as exc:
             results.append({**base, "success": False, "error": str(exc)})

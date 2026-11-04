@@ -48,23 +48,19 @@ def is_platform_organization(organization_id):
 
 
 def store_reference_code(organization_id):
-    """Six characters that identify a store inside FynkTech's own courier
-    accounts: the first three letters of its slug, then the first three hex
+    """Six characters that identify a store inside FynkTech's own Smartlane
+    account: the first three letters of its slug, then the first three hex
     digits of its id ("ACM3FA"). Needed because every Shopify store starts
-    at #1001, so two Hub stores' order numbers collide once both are booked
-    through the same FynkTech account. Fixed length, so a code followed by
-    an order number can never equal another store's code + number."""
+    at #1001 and Smartlane reports a consignment by store_order_id alone (a
+    booking returns no consignment number). Fixed length, so a code followed
+    by an order number can never equal another store's code + number.
+
+    PostEx, BarqRaftar and Leopards don't use this: they accept the same
+    order number from several stores and return a tracking number per
+    booking, which is what identifies the parcel from then on."""
     slug = Organization.objects.filter(id=organization_id).values_list("slug", flat=True).first()
     letters = re.sub(r"[^A-Za-z]", "", slug or "").upper()[:3].ljust(3, "X")
     return f"{letters}{uuid.UUID(str(organization_id)).hex[:3].upper()}"
-
-
-def platform_reference(order, base=None):
-    """The reference a Dispatch Hub booking goes to FynkTech's PostEx or
-    BarqRaftar account under: store code, a dash, then `base` (the order
-    number without '#', plus any -R2 rebook suffix)."""
-    base = base or order.order_number.lstrip("#") or order.order_number
-    return f"{store_reference_code(order.organization_id)}-{base}"
 
 
 def platform_smartlane_reference(order):

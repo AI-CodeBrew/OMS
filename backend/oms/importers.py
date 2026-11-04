@@ -1281,9 +1281,9 @@ def _match_courier_rows(organization_id, rows):
     """(matches, unresolved, ambiguous). A row is placed by, in order:
 
     1. its order reference - our order number (either '#' spelling), a
-       Dispatch Hub booking's store-coded reference (Order.
-       platform_reference), or Shopify's own order id, which couriers'
-       Shopify apps can book under;
+       Dispatch Hub booking's reference (Order.platform_reference - store
+       coded on Smartlane and on older bookings), or Shopify's own order id,
+       which couriers' Shopify apps can book under;
     2. its consignment number, when exactly one of our orders carries it;
     3. failing both, the customer's details (_match_by_details) - only
        ever onto a single order, never a guess between several.

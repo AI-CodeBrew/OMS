@@ -154,8 +154,10 @@ class Order(TenantScopedModel):
     # Set when the Dispatch Hub booked this order through FynkTech's own
     # courier account (the super admin's OMS Couriers tab - see core.
     # platform_service) instead of the store's: the reference that account
-    # knows it by, store code + order number, since several stores' order
-    # numbers collide inside one FynkTech account. While set, tracking,
+    # knows it by. For Smartlane that's store code + order number, since it
+    # reports by this id alone. For PostEx, BarqRaftar and Leopards it's the
+    # plain order number (older bookings: store code-number) and may repeat
+    # across stores - they go by tracking number. While set, tracking,
     # printing, cancelling and status sync all go through FynkTech's
     # account. Empty for a booking made through the store's own account.
     platform_reference = models.CharField(max_length=100, blank=True, default="", db_index=True)

@@ -1079,11 +1079,19 @@ def find_platform_order(reference):
     """The order a Dispatch Hub booking through FynkTech's own Smartlane
     account was sent as `reference` (Order.platform_reference - a store
     code then digits, never a '#'). Searches every store: that account's
-    bookings belong to many."""
+    bookings belong to many. PostEx, BarqRaftar and Leopards Hub bookings
+    keep a plain order number in that same field - never Smartlane's, even
+    once cancelled, so they're left out."""
     value = (reference or "").strip().lstrip("#")
     if not value:
         return None
-    return Order.all_objects.filter(platform_reference=value).first()
+    return (
+        Order.all_objects.filter(platform_reference=value)
+        .exclude(postex_shipments__reference=value)
+        .exclude(barqraftar_shipments__reference_id=value)
+        .exclude(leopards_shipments__reference=value)
+        .first()
+    )
 
 
 def _catch_up_to_dispatched(order, tracking_number=""):

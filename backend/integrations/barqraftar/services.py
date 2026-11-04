@@ -32,7 +32,6 @@ from core.events import publish_event
 from core.platform_service import (
     is_platform_organization,
     platform_organization_id,
-    platform_reference,
 )
 
 from .client import BarqRaftarAPIError
@@ -307,9 +306,10 @@ def _cod_amount(order):
 # A store's orders book through its own BarqRaftar account - or, from the
 # Dispatch Hub, through FynkTech's own (the super admin's OMS Couriers tab,
 # held by the platform org - see core.platform_service). Such a booking
-# keeps the store-coded reference it went out under on
-# Order.platform_reference, which is how everything after booking (track,
-# print, cancel, the poller, the webhook) knows to use FynkTech's account.
+# keeps the reference it went out under on Order.platform_reference, which is
+# how everything after booking (track, print, cancel, the poller, the webhook)
+# knows to use FynkTech's account. Two stores can share that reference there,
+# so on that account a parcel is only ever found by its tracking number.
 
 def platform_connection():
     """FynkTech's own connected BarqRaftar account, or None."""
@@ -372,18 +372,14 @@ def _as_int(value):
     return int(value) if str(value).strip().isdigit() else value
 
 
-def _next_reference_id(order, *, via_platform=False):
+def _next_reference_id(order):
     """order.order_number (without '#'), or -R2/-R3/... if an earlier
     attempt already used the plain form and was cancelled (see
     cancel_on_barqraftar/release_shipment_stock_and_deactivate - the old
     shipment row stays as history, never deleted or reused). Rebooking with
     the same reference id a second time is exactly what produces
-    BarqRaftar's "Order already exist" error. Through FynkTech's account
-    it carries the store code in front (core.platform_service.
-    platform_reference)."""
+    BarqRaftar's "Order already exist" error."""
     base = order.order_number.lstrip("#") or order.order_number
-    if via_platform:
-        base = platform_reference(order, base)
     existing = set(
         BarqRaftarShipment.all_objects.filter(
             organization_id=order.organization_id, order=order
@@ -563,7 +559,7 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False, 
             continue
 
         try:
-            reference_id = _next_reference_id(order, via_platform=via_platform)
+            reference_id = _next_reference_id(order)
             payload = _build_order_payload(order, connection, city, reference_id, from_city_id)
         except BarqRaftarBookingError as exc:
             results.append({
@@ -634,6 +630,15 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False, 
                     pass
                 else:
                     error_message = message or "BarqRaftar rejected this order."
+
+            if via_platform and not tracking_number and not error_message:
+                # FynkTech's account holds many stores' orders and two of them
+                # can share this reference, so the lookup below could return
+                # another store's parcel - never guess on this account.
+                error_message = (
+                    "BarqRaftar didn't confirm this booking - check FynkTech's BarqRaftar portal "
+                    "before booking it again."
+                )
 
             if not tracking_number and not error_message:
                 # Not matched in the response at all, or BarqRaftar's
@@ -1086,6 +1091,12 @@ def handle_webhook_event(connection, payload):
     tracking_number, reference_id, _status_code, _status_label = extract_webhook_event(payload)
     if not tracking_number and not reference_id:
         logger.warning("barqraftar webhook: payload had neither a tracking number nor a reference id")
+        return
+    if not tracking_number and is_platform_organization(connection.organization_id):
+        # Two stores can share a reference on FynkTech's account - the poller
+        # will pick this parcel's status up by its tracking number instead.
+        logger.warning("barqraftar webhook: reference %r without a tracking number on FynkTech's account - ignored",
+                       reference_id)
         return
 
     # FynkTech's own account (OMS Couriers) reports on Hub bookings that
