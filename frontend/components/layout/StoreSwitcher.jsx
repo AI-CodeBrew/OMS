@@ -18,7 +18,7 @@ function ChevronIcon({ className }) {
 
 /** Store name on the header's right, with a switcher dropdown for org
  * admins who belong to more than one store. A super admin operating a
- * store (see ActingStoreBanner) just sees that store's name - their own
+ * store (see the back arrow in TenantHeader) just sees that store's name - their own
  * stores aren't the point while they're acting as someone else's. Same
  * for a plain staff login, which only ever belongs to one store. */
 export default function StoreSwitcher() {

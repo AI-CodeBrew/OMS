@@ -6,7 +6,8 @@ import Dropdown from "../shared/Dropdown";
 import StoreSwitcher from "./StoreSwitcher";
 import NotificationBell from "./NotificationBell";
 import authService from "../../services/authService";
-import { useEffectiveUser } from "../../store/authStore";
+import useAuthStore, { useEffectiveUser } from "../../store/authStore";
+import { invalidateViewCache } from "../../lib/viewCache";
 import useCriticalOrdersStore from "../../store/criticalOrdersStore";
 import { getVisibleModules } from "./moduleNav";
 
@@ -18,12 +19,32 @@ function ChevronIcon({ className }) {
   );
 }
 
+function BackArrowIcon({ className }) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" className={className} aria-hidden="true">
+      <path d="M12.5 15 7.5 10l5-5" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 export default function TenantHeader({ activeModule }) {
   const router = useRouter();
   const user = useEffectiveUser();
   const modules = getVisibleModules(user);
   const criticalCount = useCriticalOrdersStore((s) => s.count);
   const activeModuleLabel = modules.find((m) => m.key === activeModule)?.label || "Menu";
+  // A super admin inside a store or the Dispatch Hub: the back arrow is the
+  // way back out to the admin panel.
+  const actingStore = useAuthStore((s) => s.actingStore);
+  const exitStore = useAuthStore((s) => s.exitStore);
+  const exitLabel = actingStore?.hub ? "Exit Dispatch Hub" : "Exit store";
+
+  function exitActingStore() {
+    const target = actingStore?.hub ? "/admin/dispatch-hub" : "/admin/stores";
+    exitStore();
+    invalidateViewCache();
+    router.push(target);
+  }
 
   function logout() {
     authService.logout();
@@ -39,7 +60,20 @@ export default function TenantHeader({ activeModule }) {
           sticky/relative to it) forced the page wider than the viewport
           instead of just wrapping. */}
       <div className="flex h-16 items-center justify-between gap-2 px-3 sm:px-6">
-        <span className="shrink-0 text-lg font-bold tracking-tight text-white">OMS</span>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {actingStore ? (
+            <button
+              type="button"
+              onClick={exitActingStore}
+              title={exitLabel}
+              aria-label={exitLabel}
+              className="-ml-1 rounded-md p-1.5 text-white transition hover:bg-white/15"
+            >
+              <BackArrowIcon className="h-5 w-5" />
+            </button>
+          ) : null}
+          <span className="text-lg font-bold tracking-tight text-white">OMS</span>
+        </div>
 
         {/* Desktop: every module as its own tab. Below md that's replaced
             by the compact dropdown underneath - same items, same

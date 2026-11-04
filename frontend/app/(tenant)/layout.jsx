@@ -6,7 +6,6 @@ import ProtectedRoute from "../../components/shared/ProtectedRoute";
 import LoadingOverlay from "../../components/shared/LoadingOverlay";
 import TenantHeader from "../../components/layout/TenantHeader";
 import ModuleSidebar, { MobileNav } from "../../components/layout/ModuleSidebar";
-import ActingStoreBanner from "../../components/layout/ActingStoreBanner";
 import CriticalOrdersAlert from "../../components/orders/CriticalOrdersAlert";
 import {
   canAccessPath,
@@ -126,7 +125,6 @@ function TenantShell({ children }) {
     <div className="min-h-screen bg-brand-800">
       <LoadingOverlay />
       <CriticalOrdersAlert />
-      <ActingStoreBanner />
       <TenantHeader activeModule={navModule} />
       <MobileNav activeModule={navModule} />
       <div className="flex">

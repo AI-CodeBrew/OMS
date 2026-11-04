@@ -545,11 +545,152 @@ def revert_to_previous_status(order, *, actor_user_id=None):
 SHIPPER_ADVICES = ("Reattempt", "Return")
 
 
+def _active_shipment(model, order):
+    """The order's live booking row on one courier, or None. all_objects +
+    an explicit store filter, so it works the same inside the Dispatch Hub."""
+    return (
+        model.all_objects.filter(organization_id=order.organization_id, order=order, is_active=True)
+        .exclude(tracking_number="")
+        .order_by("-id")
+        .first()
+    )
+
+
+def _courier_refused(courier, exc):
+    return InvalidTransition(f"{courier} didn't accept the shipper advice: {exc}")
+
+
+def send_shipper_advice_to_courier(order, *, advice, remarks):
+    """Sends Reattempt / Return to the courier the order is booked with,
+    through the account it was booked on (the store's own, or FynkTech's for
+    a Dispatch Hub booking). Returns the courier's name when it was sent, or
+    "" for an order with no courier API booking (manual couriers, sheet
+    imports) - those keep the advice in OMS only. Raises InvalidTransition
+    with the courier's own message when it refuses, so nothing is saved
+    locally that the courier never got."""
+    courier_name = (order.courier.name or "").strip() if order.courier_id else ""
+    key = courier_name.lower()
+    # Remarks are required by PostEx and Leopards; the advice itself is a
+    # fine default when the user left them blank.
+    remarks = remarks or advice
+
+    if key == "postex":
+        from integrations.postex import client as postex_client
+        from integrations.postex import services as postex_services
+        from integrations.postex.exceptions import PostExAPIError
+        from integrations.postex.models import PostExShipment
+
+        shipment = _active_shipment(PostExShipment, order)
+        if not shipment:
+            return ""
+        connection = postex_services.connection_for_order(order)
+        if not connection:
+            raise InvalidTransition("PostEx isn't connected - can't send the shipper advice.")
+        status_id = (
+            postex_client.SHIPPER_ADVICE_REATTEMPT if advice == "Reattempt"
+            else postex_client.SHIPPER_ADVICE_RETURN
+        )
+        try:
+            postex_client.save_shipper_advice(
+                connection.api_token, shipment.tracking_number, status_id=status_id, remarks=remarks[:500],
+            )
+        except PostExAPIError as exc:
+            raise _courier_refused("PostEx", exc) from exc
+        return "PostEx"
+
+    if key == "barqraftar":
+        from integrations.barqraftar import client as barq_client
+        from integrations.barqraftar import services as barq_services
+        from integrations.barqraftar.exceptions import BarqRaftarAPIError
+        from integrations.barqraftar.models import BarqRaftarShipment
+
+        shipment = _active_shipment(BarqRaftarShipment, order)
+        if not shipment:
+            return ""
+        connection = barq_services.connection_for_order(order)
+        if not connection:
+            raise InvalidTransition("BarqRaftar isn't connected - can't send the shipper advice.")
+        reattempt = advice == "Reattempt"
+        try:
+            result = barq_client.add_shipper_advice(
+                connection.api_key, connection.api_secret,
+                tracking_number=shipment.tracking_number,
+                shipper_advice="re_attempt" if reattempt else "return",
+                re_attempt_reason="same_address" if reattempt else None,
+                re_attempt_reason_text=remarks[:255] if reattempt else None,
+            )
+        except BarqRaftarAPIError as exc:
+            raise _courier_refused("BarqRaftar", exc) from exc
+        # Refusals can come back as HTTP 200 with success: false.
+        if isinstance(result, dict) and result.get("success") is False:
+            raise _courier_refused("BarqRaftar", result.get("message") or result.get("error") or "refused")
+        return "BarqRaftar"
+
+    if key == "leopards":
+        from integrations.leopards import client as leopards_client
+        from integrations.leopards import services as leopards_services
+        from integrations.leopards.exceptions import LeopardsAPIError
+        from integrations.leopards.models import LeopardsShipment
+
+        # "Leopards" is also every store's manual courier - only a real API
+        # booking (a LeopardsShipment row) goes to Leopards.
+        shipment = _active_shipment(LeopardsShipment, order)
+        if not shipment:
+            return ""
+        connection = leopards_services.connection_for_order(order)
+        if not connection:
+            raise InvalidTransition("Leopards isn't connected - can't send the shipper advice.")
+        try:
+            rows = leopards_client.shipper_advice_list(connection, shipment.tracking_number)
+            request_row = next((r for r in rows if isinstance(r, dict) and r.get("id")), None)
+            if request_row is None:
+                raise InvalidTransition(
+                    "Leopards hasn't asked for shipper advice on this parcel yet - it only accepts "
+                    "advice once it opens a request for an undelivered parcel."
+                )
+            leopards_client.update_shipper_advice(
+                connection, advice_id=request_row["id"], cn_number=shipment.tracking_number,
+                status="RA" if advice == "Reattempt" else "RT", remarks=remarks[:500],
+            )
+        except LeopardsAPIError as exc:
+            raise _courier_refused("Leopards", exc) from exc
+        return "Leopards"
+
+    if courier_name in _smartlane_courier_names():
+        from integrations import smartlane_client
+        from integrations.models import SmartlaneConnection, SmartlaneShipment
+
+        shipment = SmartlaneShipment.all_objects.filter(order=order).first()
+        consignment = (shipment.consignment_number if shipment else "") or order.tracking_number
+        if not consignment:
+            return ""
+        connection = SmartlaneConnection.for_order(order)
+        if not connection:
+            raise InvalidTransition(f"{courier_name} isn't connected - can't send the shipper advice.")
+        try:
+            smartlane_client.update_shipper_advice(
+                connection.api_key,
+                consignment_number=consignment,
+                store_order_id=SmartlaneConnection.reference_for(order),
+                courier=(shipment.carrier if shipment else "") or "",
+                reason=(shipment.advice_reason if shipment else "") or remarks,
+                remarks=remarks,
+                action=advice,
+            )
+        except smartlane_client.SmartlaneAPIError as exc:
+            raise _courier_refused(courier_name, exc) from exc
+        return courier_name
+
+    return ""
+
+
 def set_shipper_advice(order, *, advice, remarks="", actor_user_id=None):
     """Undelivered's Shipper Advice: what the store wants the courier to do
     after a failed delivery - Reattempt or Return - with remarks (a new
-    time, a corrected address, ...). Saved on the order and in its log;
-    the status doesn't change."""
+    time, a corrected address, ...). Sent to the courier's portal first
+    (send_shipper_advice_to_courier) - if the courier refuses, nothing is
+    saved. Then saved on the order and in its log; the status doesn't
+    change."""
     advice = (advice or "").strip()
     remarks = (remarks or "").strip()[:255]
     if advice not in SHIPPER_ADVICES:
@@ -561,6 +702,7 @@ def set_shipper_advice(order, *, advice, remarks="", actor_user_id=None):
             f"Order {order.order_number} isn't in Undelivered - Shipper Advice is only for "
             "Undelivered orders."
         )
+    sent_to = send_shipper_advice_to_courier(order, advice=advice, remarks=remarks)
     order.shipper_advice = advice
     order.shipper_advice_remarks = remarks
     order.shipper_advice_at = timezone.now()
@@ -570,7 +712,8 @@ def set_shipper_advice(order, *, advice, remarks="", actor_user_id=None):
         order=order,
         from_status=order.status,
         to_status=order.status,
-        note=f"Shipper advice: {advice}" + (f" - {remarks}" if remarks else ""),
+        note=f"Shipper advice: {advice}" + (f" - {remarks}" if remarks else "")
+        + (f" (sent to {sent_to})" if sent_to else " (saved in OMS only - no courier booking to send it to)"),
         actor_user_id=actor_user_id,
     )
     publish_event(

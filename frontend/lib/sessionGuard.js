@@ -9,6 +9,12 @@ import { getSupabaseBrowserClient } from "./supabaseClient";
 // this exact detail. Other 403s (suspended org, no permission) differ.
 const NOT_AUTHENTICATED_DETAIL = "Authentication credentials were not provided.";
 
+// Auto sign-out is switched OFF for now (user request, 2026-11-04): when the
+// token can't be renewed, the user stays on the page instead of being sent
+// to the login screen - API calls then fail until they log out and back in.
+// Set back to true to restore the "Your session has expired" sign-out.
+const AUTO_SIGN_OUT_ON_EXPIRY = false;
+
 let installed = false;
 let refreshing = null;
 let expiring = false;
@@ -52,6 +58,7 @@ function refreshSession() {
 
 // Signs the user out and sends them to the right login page with the reason.
 async function expireSession() {
+  if (!AUTO_SIGN_OUT_ON_EXPIRY) return;
   if (expiring) return;
   expiring = true;
   const wasSuperAdmin = useAuthStore.getState().user?.role === "super_admin";
