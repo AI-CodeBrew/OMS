@@ -29,8 +29,9 @@ class Courier(TenantScopedModel):
 
 
 def _next_supabase_order_no():
-    """No longer the field's default (see Order.supabase_order_no) - kept
-    because migration 0023 imports it.
+    """No longer used (Order.supabase_order_no's numbers now come from
+    oms.next_oms_order_no(), migration 0044) - kept only because migration
+    0023 imports it.
 
     Atomically claims the next value of the oms.orders_supabase_no_seq
     Postgres sequence (created in the migration that adds this field) -
@@ -98,23 +99,26 @@ class Order(TenantScopedModel):
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    # A plain, globally sequential, human-readable order number - unlike
-    # `id` (a random UUID, meaningless to read) or `order_number` (Shopify's
-    # own number, absent/arbitrary for non-Shopify orders). Backed by a real
-    # Postgres sequence (see the migration) so every insert - manual order,
-    # Shopify webhook, CSV import, Smartlane absorb - gets the next number
-    # automatically with no app-level counting/races. Global across every
-    # organization, not per-org, by design (confirmed with the user).
-    # db_default, not a Python default: the number is taken by the INSERT
-    # itself, so an Order only built in memory (and never saved) no longer
-    # uses one up - that left gaps in the count. A failed or rolled-back
-    # insert, or a deleted order, still leaves one: a sequence never rewinds.
+    # The OMS Order ID: a plain, globally sequential, human-readable order
+    # number - unlike `id` (a random UUID, meaningless to read) or
+    # `order_number` (Shopify's own number, absent/arbitrary for
+    # non-Shopify orders). Global across every organization, not per-org,
+    # by design (confirmed with the user).
+    #
+    # Gapless: the database fills it in on INSERT from a one-row counter
+    # (oms.next_oms_order_no(), migration 0044) that is bumped inside the
+    # INSERT itself - a failed or rolled-back insert rolls the counter back
+    # too, so no number is ever skipped, unlike the old nextval() sequence.
+    # Every insert path (manual order, Shopify webhook, CSV import,
+    # Smartlane absorb) gets it with no app-level counting. Orders can't be
+    # deleted through the API (OrderViewSet.destroy), so numbers don't go
+    # missing that way either.
     supabase_order_no = models.PositiveIntegerField(
         null=True,
         blank=True,
         unique=True,
         editable=False,
-        db_default=RawSQL("nextval('oms.orders_supabase_no_seq')", []),
+        db_default=RawSQL("oms.next_oms_order_no()", []),
     )
     order_number = models.CharField(max_length=50)
     customer_name = models.CharField(max_length=255)
