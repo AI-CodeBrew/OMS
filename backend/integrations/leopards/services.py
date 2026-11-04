@@ -429,6 +429,51 @@ def _next_reference(order, *, via_platform=False):
     return f"{base}-R{n}"
 
 
+# Leopards' Product Detail column is filled from bookPacket's
+# `special_instructions` (confirmed by Leopards support). They haven't given a
+# maximum length, so this is a conservative cap - change it here if they do.
+SPECIAL_INSTRUCTIONS_MAX = 250
+_NOTE_MAX = 80
+
+
+def _one_line(text):
+    """Plain single-line text: control characters and line breaks become
+    spaces, runs of spaces collapse."""
+    return " ".join("".join(c if c.isprintable() else " " for c in str(text or "")).split())
+
+
+def _product_details(order, connection):
+    """The bookPacket `special_instructions`: the order's items ("Comb x 2,
+    Brush x 1"), then the connection's default note after " | " when there is
+    one, cut to SPECIAL_INSTRUCTIONS_MAX - at an item boundary where possible,
+    with "..." - and "N/A" when there is nothing at all (Leopards requires
+    the field)."""
+    note = _one_line(connection.default_notes)
+    if len(note) > _NOTE_MAX:
+        note = note[: _NOTE_MAX - 3].rstrip() + "..."
+    suffix = f" | {note}" if note else ""
+    budget = SPECIAL_INSTRUCTIONS_MAX - len(suffix)
+
+    # order.items is prefetched by book_orders - no query per order.
+    parts = [
+        f"{_one_line(item.product_name)} x {item.quantity}"
+        for item in order.items.all()
+        if _one_line(item.product_name)
+    ]
+    items = ", ".join(parts)
+    if len(items) > budget:
+        kept = ""
+        for part in parts:
+            candidate = f"{kept}, {part}" if kept else part
+            if len(candidate) > budget - 3:
+                break
+            kept = candidate
+        if not kept:  # even the first item alone is too long
+            kept = parts[0][: max(budget - 3, 0)].rstrip()
+        items = kept + "..."
+    return (items + suffix) if items else (note or "N/A")
+
+
 def _build_packet(order, connection, city, reference, shipper):
     """The bookPacket body. `shipper` is None for a booking through the
     store's own Leopards account (Leopards fills the shipper in from the
@@ -487,7 +532,7 @@ def _build_packet(order, connection, city, reference, shipper):
         "consignment_phone_two": second if second and second != phone else "",
         "consignment_phone_three": "",
         "consignment_address": address[:500],
-        "special_instructions": connection.default_notes or "N/A",
+        "special_instructions": _product_details(order, connection),
         "shipment_type": connection.default_shipment_type or "",
         "custom_data": [],
         "return_address": "",
