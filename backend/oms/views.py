@@ -1433,9 +1433,20 @@ class OrderViewSet(viewsets.ModelViewSet):
         # Limited stock goes to prepaid orders first, then oldest first
         # (services.allocate_stock); the orders it can't cover are refused
         # here, before any courier is asked.
+        # In the Dispatch Hub the check is strict: nothing reaches Assigning
+        # Courier unless its stock is confirmed in the store's warehouse - a
+        # store with no warehouse, or an item with no SKU, is refused too
+        # (wms.services.check_order_stock). That covers both ways in: a
+        # courier booking from Approved (Awaiting Courier), and Dispatch /
+        # Queue for dispatch on a Self Delivered order.
         stock_refused = []
+        hub = is_hub_request(request)
         if action_name in _BOOKING_ACTIONS:
-            order_ids, stock_refused = self._allocate_stock(request, order_ids)
+            order_ids, stock_refused = self._allocate_stock(request, order_ids, strict=hub)
+        elif hub and action_name in ("dispatch", "queue_for_dispatch"):
+            order_ids, stock_refused = self._allocate_stock(
+                request, order_ids, statuses=("approved",), strict=True
+            )
 
         if action_name in COURIER_BATCH_ACTIONS:
             results = self._courier_batch_action(request, action_name, order_ids, params) + stock_refused
@@ -1469,16 +1480,17 @@ class OrderViewSet(viewsets.ModelViewSet):
         _record_hub_booking(request, action_name, results)
         return Response({"results": results})
 
-    def _allocate_stock(self, request, order_ids):
+    def _allocate_stock(self, request, order_ids, *, statuses=("awaiting_assigning",), strict=False):
         """(order ids to book, in stock priority order; insufficient_stock
-        results for the rest). Only orders still waiting for a courier
-        take part - any other is passed through for the booking to refuse
-        with its own reason."""
+        results for the rest). Only orders in `statuses` (still waiting for
+        a courier, by default) take part - any other is passed through for
+        the action to refuse with its own reason. strict: see
+        wms.services.check_order_stock."""
         orders = list(
-            Order.objects.filter(id__in=order_ids, status="awaiting_assigning", **org_filter(request))
+            Order.objects.filter(id__in=order_ids, status__in=statuses, **org_filter(request))
             .prefetch_related("items")
         )
-        fits, short = services.allocate_stock(orders)
+        fits, short = services.allocate_stock(orders, strict=strict)
         waiting = {str(o.id) for o in orders}
         ids = [str(o.id) for o in fits] + [str(oid) for oid in order_ids if str(oid) not in waiting]
         refused = [

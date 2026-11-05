@@ -17,7 +17,8 @@ class InsufficientStock(Exception):
     def __init__(self, shortages):
         self.shortages = shortages
         summary = ", ".join(
-            f"{s['sku'] or s['product_name']} (need {s['required']}, have {s['available']})"
+            f"{s['sku'] or s['product_name']} ({s['reason']})" if s.get("reason")
+            else f"{s['sku'] or s['product_name']} (need {s['required']}, have {s['available']})"
             for s in shortages
         )
         super().__init__(f"Insufficient stock: {summary}")
@@ -138,21 +139,47 @@ def build_return_breakdown(order, counts=None, *, condition="good"):
     return breakdown
 
 
-def check_order_stock(order, warehouse=None, reserved=None):
+def _unverifiable(product_name, quantity, reason):
+    """A strict-check problem in the shortage dicts' shape: stock that
+    can't be confirmed at all counts as none on hand."""
+    return {
+        "sku": "", "product_name": product_name, "required": quantity,
+        "available": 0, "short_by": quantity, "reason": reason,
+    }
+
+
+def check_order_stock(order, warehouse=None, reserved=None, strict=False):
     """Read-only availability check. Returns a list of shortage dicts -
     empty means everything is in stock. Never mutates anything, so the UI
     can call it to preview before committing.
 
     reserved ({sku: units}) is stock already promised to other orders in
     the same run (oms.services.allocate_stock) - counted as gone, and this
-    order's own units are added to it when it fits."""
+    order's own units are added to it when it fits.
+
+    strict (the Dispatch Hub's bookings): stock that can't be checked
+    counts as missing instead of being waved through - a store with no
+    warehouse, or a line with no SKU to look up, is refused (with a
+    `reason`) rather than booked unchecked."""
     warehouse = warehouse or get_default_warehouse(order.organization_id)
     if warehouse is None:
-        return []
+        if not strict:
+            return []
+        units = sum(item.quantity for item in order.items.all())
+        return [_unverifiable("All items", units, "no warehouse set up for this store in WMS")]
 
-    required, _unmatched = _order_line_requirements(order)
+    required, unmatched = _order_line_requirements(order)
+    problems = []
+    if strict:
+        if not required and not unmatched:
+            return [_unverifiable("No items", 0, "order has no items to check stock for")]
+        for item in order.items.all():
+            if not (item.barcode or "").strip():
+                problems.append(
+                    _unverifiable(item.product_name or "(unnamed item)", item.quantity, "no SKU - can't check stock")
+                )
     if not required:
-        return []
+        return problems
 
     on_hand = {
         item.sku: item
@@ -161,7 +188,7 @@ def check_order_stock(order, warehouse=None, reserved=None):
         )
     }
 
-    shortages = []
+    shortages = problems
     for sku, need in required.items():
         item = on_hand.get(sku)
         available = (item.quantity if item else 0) - (reserved or {}).get(sku, 0)

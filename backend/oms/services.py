@@ -971,19 +971,20 @@ def _stock_priority(order):
     return (0 if prepaid else 1, order.placed_at or order.created_at)
 
 
-def allocate_stock(orders):
+def allocate_stock(orders, *, strict=False):
     """Shares the warehouse's stock among `orders` (about to be booked) in
     _stock_priority order, each order holding its units so the next one
     only sees what's left - a bulk booking can't promise the same units
     twice, and a prepaid order is never left short for a COD one. Returns
-    (fitting orders in priority order, [(order, shortages)])."""
+    (fitting orders in priority order, [(order, shortages)]). strict: see
+    wms.services.check_order_stock - the Dispatch Hub's bookings."""
     from wms import services as wms_services
 
     reserved = {}
     fits, short = [], []
     for order in sorted(orders, key=_stock_priority):
         shortages = wms_services.check_order_stock(
-            order, reserved=reserved.setdefault(order.organization_id, {})
+            order, reserved=reserved.setdefault(order.organization_id, {}), strict=strict
         )
         if shortages:
             short.append((order, shortages))

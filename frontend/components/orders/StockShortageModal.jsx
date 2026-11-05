@@ -34,8 +34,8 @@ export default function StockShortageModal({ shortfalls, onProceed, onClose, sub
         <WarningIcon className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
         <p className="text-sm text-amber-800">
           {shortfalls.length === 1
-            ? "This order needs more units than the warehouse has on hand."
-            : `${shortfalls.length} orders need more units than the warehouse has on hand.`}{" "}
+            ? "This order's stock isn't in the warehouse (or can't be checked)."
+            : `${shortfalls.length} orders' stock isn't in the warehouse (or can't be checked).`}{" "}
           They were not booked and stay in Approved, tagged Stock Not Available - add the stock in WMS, then
           book them again.
         </p>
@@ -60,6 +60,7 @@ export default function StockShortageModal({ shortfalls, onProceed, onClose, sub
                   <td className="px-3 py-2 text-slate-600">
                     {s.product_name || s.sku}
                     {s.sku ? <span className="ml-1 text-xs text-slate-400">({s.sku})</span> : null}
+                    {s.reason ? <span className="block text-xs text-red-600">{s.reason}</span> : null}
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums text-slate-700">{s.required}</td>
                   <td className="px-3 py-2 text-right tabular-nums text-slate-700">{s.available}</td>
