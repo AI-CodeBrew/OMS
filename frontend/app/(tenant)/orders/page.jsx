@@ -42,6 +42,7 @@ import {
   SMARTLANE_LOAD_SHEET_COURIERS,
   STATUS_LABELS,
   STATUS_TABS,
+  cardTab,
   connectedBookingAccounts,
   isBookingAccountCourier,
   orderInTab,
@@ -786,7 +787,7 @@ export default function OrdersPage() {
         (o) => orderIds.includes(o.id) && (o.courier_name || "").trim().toLowerCase() === "postex"
       );
       // PostEx's load sheet is also their hand-over step - confirmed first.
-      if (hasPostEx && !window.confirm("Generate the load sheets? This hands the PostEx parcels over for pickup.")) {
+      if (hasPostEx && !window.confirm("Click to confirm")) {
         return;
       }
       beginLoading("Preparing load sheets");
@@ -865,7 +866,7 @@ export default function OrdersPage() {
       const count = `${orderIds.length} order${orderIds.length === 1 ? "" : "s"}`;
       if (
         isLoadSheet &&
-        !window.confirm(`Generate the PostEx load sheet for ${count}? This hands the parcels over to PostEx for pickup.`)
+        !window.confirm("Click to confirm")
       ) {
         return;
       }
@@ -888,7 +889,7 @@ export default function OrdersPage() {
       const count = `${orderIds.length} order${orderIds.length === 1 ? "" : "s"}`;
       if (
         isLoadSheet &&
-        !window.confirm(`Generate the Leopards load sheet for ${count}? This hands the parcels over to Leopards for pickup.`)
+        !window.confirm("Click to confirm")
       ) {
         return;
       }
@@ -1051,6 +1052,13 @@ export default function OrdersPage() {
     setAppliedSearch(search);
   }
 
+  // The confirm popup's title: the card the orders are moving from.
+  const pendingFromCard = (() => {
+    const cards = new Set(selectedOrders.map((o) => o.workflow_card));
+    if (cards.size === 1) return cardTab([...cards][0])?.label;
+    return activeStatus?.startsWith("card:") ? STATUS_TABS.find((t) => t.value === activeStatus)?.label : undefined;
+  })();
+
   return (
     <div>
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1202,7 +1210,7 @@ export default function OrdersPage() {
           showProductColumn={!user?.isDispatchHub}
           showTransitColumn={activeStatus === CRITICAL_TAB}
           showSubStatusColumn={SUB_STATUS_TABS.has(activeStatus)}
-          showShipperAdviceColumn={activeStatus === "card:undelivered"}
+          showShipperAdviceColumn={activeStatus === "card:undelivered" || activeStatus === "card:return_in_transit"}
           onRecreate={(order) => {
             setRecreateFrom(order);
             setNewOrderOpen(true);
@@ -1245,6 +1253,8 @@ export default function OrdersPage() {
       <OrderActionModal
         action={pendingAction?.action}
         count={pendingAction?.orderIds?.length || 0}
+        fromCard={pendingFromCard}
+        currentCourier={[...new Set(selectedOrders.map((o) => o.courier_name).filter(Boolean))].join(", ")}
         couriers={
           pendingAction?.action === "assign_courier" && bookingAccounts.length
             ? // Only the synthetic booking-account entries actually book

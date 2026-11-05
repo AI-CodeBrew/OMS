@@ -44,7 +44,7 @@ const KPI_GROUPS = [
   { key: "total", label: "Total Orders", statuses: null, color: "#1e40af", static: true },
   {
     key: "pending",
-    label: "Pending",
+    label: "Pending Orders",
     // Everything not yet handed to the courier: New up to Assigning Courier.
     statuses: [
       "new",

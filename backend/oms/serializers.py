@@ -102,6 +102,14 @@ class CourierSerializer(serializers.ModelSerializer):
         read_only_fields = ["id"]
 
 
+def _show_original_number(order, data):
+    """A booking cancel renumbers the order in the database (1001 ->
+    1001-1); screens keep showing the number it had."""
+    if getattr(order, "original_order_number", "") and "order_number" in data:
+        data["order_number"] = order.original_order_number
+    return data
+
+
 class OrderSummarySerializer(serializers.ModelSerializer):
     """Lightweight - used for Split Orders / Customer History tabs, which
     only need to list sibling orders, not their full detail. workflow_card:
@@ -117,6 +125,9 @@ class OrderSummarySerializer(serializers.ModelSerializer):
         from .services import workflow_card
 
         return workflow_card(order)
+
+    def to_representation(self, order):
+        return _show_original_number(order, super().to_representation(order))
 
 
 class OrderStatusEventSerializer(serializers.ModelSerializer):
@@ -402,6 +413,9 @@ class OrderSerializer(serializers.ModelSerializer):
         from .services import DISPATCH_REQUESTABLE_STATUSES
 
         return bool(order.hub_dispatched_at) and order.status not in DISPATCH_REQUESTABLE_STATUSES
+
+    def to_representation(self, order):
+        return _show_original_number(order, super().to_representation(order))
 
     def get_workflow_card(self, order):
         from .services import workflow_card

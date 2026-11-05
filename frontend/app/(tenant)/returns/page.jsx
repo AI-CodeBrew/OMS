@@ -18,10 +18,9 @@ const OrderDetailPanel = dynamic(() => import("../../../components/orders/OrderD
   ssr: false,
 });
 
-// Every return is in exactly one of three buckets - "" (Total) is all of
-// them: Awaiting Scan (the courier says returned, not scanned in yet),
-// Received (scanned in), Not Received (Return in Transit - the courier is
-// still bringing it back). Drives both the summary cards and the table
+// Every returned order is in one of two buckets - "" (Total) is both:
+// Awaiting Scan (the courier says returned, not scanned in yet) and
+// Received (scanned in). Drives both the summary cards and the table
 // filter, so a card click and its badge always agree.
 
 function formatDate(value) {
@@ -66,11 +65,10 @@ function describeOutcome(entry) {
 }
 
 function bucketParams(bucket) {
-  if (bucket === "not_received") return { status: "card:return_in_transit", received: undefined };
   if (bucket === "awaiting") return { status: "returned", received: "no" };
   if (bucket === "received") return { status: "returned", received: "yes" };
-  // Total: returned, or still on the way back.
-  return { status: "card:all_returns", received: undefined };
+  // Total: every returned order, scanned or not.
+  return { status: "returned", received: undefined };
 }
 
 function SummaryCard({ label, value, tone = "default", hint, active = false, onClick }) {
@@ -118,10 +116,6 @@ export default function ReturnsPage() {
   // Shared across screens for the session (store/dateFilterStore).
   const { dateFrom, dateTo, setDateFrom, setDateTo } = useSessionDateRange();
 
-  const [selectedIds, setSelectedIds] = useState(new Set());
-  const [confirmCondition, setConfirmCondition] = useState(null); // set to "good" | "bad" to open the dialog
-  // The condition ("good"/"bad") of the bulk receive in flight, or null.
-  const [bulkBusy, setBulkBusy] = useState(null);
   const [rowBusyId, setRowBusyId] = useState(null);
   const [notice, setNotice] = useState("");
   // The parcel being counted in the receive popup: { orderNumber, lines }.
@@ -178,39 +172,9 @@ export default function ReturnsPage() {
     load();
   }, [load]);
 
-  // A selection only makes sense for the rows currently on screen - drop it
-  // whenever the underlying list changes out from under it.
-  useEffect(() => {
-    setSelectedIds(new Set());
-  }, [orders]);
-
   function applyBucket(value) {
     setBucket(value);
     setPage(1);
-  }
-
-  const isInProgress = bucket === "not_received";
-  // Nothing here has reached status="returned" yet, so there's nothing to
-  // scan/receive - the bulk select/receive UI only applies to the other
-  // buckets, which are all real "returned" rows.
-  // Only parcels the courier has returned can be received - Total also
-  // lists ones still on the way back.
-  const pendingRows = isInProgress ? [] : orders.filter((o) => o.status === "returned" && !o.return_received_at);
-  const selectedRows = orders.filter((o) => selectedIds.has(o.id));
-  const allPendingSelected =
-    pendingRows.length > 0 && pendingRows.every((o) => selectedIds.has(o.id));
-
-  function toggleRow(id) {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
-
-  function toggleAll() {
-    setSelectedIds(allPendingSelected ? new Set() : new Set(pendingRows.map((o) => o.id)));
   }
 
   // A row's Receive: looks the parcel up, then opens the count popup.
@@ -248,35 +212,6 @@ export default function ReturnsPage() {
     }
   }
 
-  async function runBulkReceive() {
-    // Close the confirm popup right away - the Mark buttons' spinner shows
-    // progress, and nothing else on the page is blocked meanwhile.
-    const condition = confirmCondition;
-    setConfirmCondition(null);
-    setBulkBusy(condition);
-    setError("");
-    setNotice("");
-    try {
-      const { results = [] } = await wmsService.bulkReceiveReturns({
-        orderNumbers: selectedRows.map((o) => o.order_number),
-        condition,
-      });
-      const done = results.filter((r) => r.success);
-      const failed = results.filter((r) => !r.success);
-      setNotice(
-        `${condition === "bad" ? "Marked damaged" : "Received"} ${done.length} of ${results.length}.` +
-          (failed.length
-            ? ` Skipped: ${failed.map((f) => `${f.order_number} (${f.reason})`).join(", ")}`
-            : "")
-      );
-      await load();
-    } catch (err) {
-      setError(err.message || "Bulk receive failed");
-    } finally {
-      setBulkBusy(null);
-    }
-  }
-
   return (
     <div>
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -311,7 +246,7 @@ export default function ReturnsPage() {
           cards span the top and Scan sits beside the list, as before. */}
       <div className="mt-3 space-y-3">
         <div>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <div className="grid grid-cols-3 gap-2">
             <SummaryCard
               label="Total Returns"
               value={summary.total_returns ?? 0}
@@ -333,14 +268,6 @@ export default function ReturnsPage() {
               hint="Scanned in and counted"
               active={bucket === "received"}
               onClick={() => applyBucket("received")}
-            />
-            <SummaryCard
-              label="Not Received"
-              value={summary.not_received ?? 0}
-              tone="danger"
-              hint="Return in transit, not back yet"
-              active={bucket === "not_received"}
-              onClick={() => applyBucket("not_received")}
             />
           </div>
 
@@ -401,57 +328,15 @@ export default function ReturnsPage() {
             ) : null}
           </div>
 
-          {selectedRows.length > 0 ? (
-            <div className="mb-3 flex flex-wrap items-center gap-3 rounded-md border border-brand-200 bg-brand-50 px-3 py-2">
-              <span className="text-sm font-medium text-brand-900">
-                {selectedRows.length} selected
-              </span>
-              <Button
-                onClick={() => setConfirmCondition("good")}
-                disabled={Boolean(bulkBusy)}
-                loading={bulkBusy === "good"}
-              >
-                Mark Good
-              </Button>
-              <Button
-                variant="secondary"
-                onClick={() => setConfirmCondition("bad")}
-                disabled={Boolean(bulkBusy)}
-                loading={bulkBusy === "bad"}
-                className="border-red-200 text-red-700 hover:bg-red-50"
-              >
-                Mark Damaged
-              </Button>
-              <button
-                type="button"
-                onClick={() => setSelectedIds(new Set())}
-                className="text-sm text-slate-600 underline"
-              >
-                Clear selection
-              </button>
-            </div>
-          ) : null}
-
           <div className="overflow-x-auto rounded-lg border border-surface-border bg-white">
             <table className="w-full whitespace-nowrap text-sm">
               <thead className="border-b border-surface-border bg-surface text-[11px] font-medium uppercase tracking-wide text-slate-500">
                 <tr>
-                  <th className="px-3 py-2 text-left">
-                    {!isInProgress ? (
-                      <input
-                        type="checkbox"
-                        checked={allPendingSelected}
-                        onChange={toggleAll}
-                        disabled={pendingRows.length === 0}
-                        aria-label="Select all awaiting scan"
-                      />
-                    ) : null}
-                  </th>
                   <th className="px-3 py-2 text-left">Order</th>
                   <th className="px-3 py-2 text-left">Tracking ID</th>
                   <th className="px-3 py-2 text-left">Customer</th>
                   <th className="px-3 py-2 text-left">Courier</th>
-                  <th className="px-3 py-2 text-left">{isInProgress ? "In Progress Since" : "Returned"}</th>
+                  <th className="px-3 py-2 text-left">Returned</th>
                   <th className="px-3 py-2 text-left">Received</th>
                   <th className="px-3 py-2 text-left">Scanned By</th>
                   <th className="px-3 py-2 text-right">Amount</th>
@@ -461,16 +346,14 @@ export default function ReturnsPage() {
               <tbody>
                 {loading && orders.length === 0 ? (
                   <tr>
-                    <td colSpan={10} className="px-3 py-6 text-center text-slate-500">
+                    <td colSpan={9} className="px-3 py-6 text-center text-slate-500">
                       Loading…
                     </td>
                   </tr>
                 ) : orders.length === 0 ? (
                   <tr>
-                    <td colSpan={10} className="px-3 py-6 text-center text-slate-500">
-                      {bucket === "not_received"
-                        ? "No returns in transit."
-                        : bucket === "awaiting"
+                    <td colSpan={9} className="px-3 py-6 text-center text-slate-500">
+                      {bucket === "awaiting"
                           ? "Nothing awaiting scan."
                           : bucket === "received"
                             ? "No returns received yet."
@@ -480,17 +363,6 @@ export default function ReturnsPage() {
                 ) : (
                   orders.map((order) => (
                     <tr key={order.id} className="border-b border-surface-border last:border-0">
-                      <td className="px-3 py-2">
-                        {!isInProgress ? (
-                          <input
-                            type="checkbox"
-                            checked={selectedIds.has(order.id)}
-                            onChange={() => toggleRow(order.id)}
-                            disabled={Boolean(order.return_received_at) || order.status !== "returned"}
-                            aria-label={`Select ${order.order_number}`}
-                          />
-                        ) : null}
-                      </td>
                       <td className="px-3 py-2">
                         <button
                           type="button"
@@ -609,30 +481,6 @@ export default function ReturnsPage() {
       {/* After the Scan popup, so the count popup opens on top of it. */}
       <ReturnBreakdownModal request={receiving} onConfirm={confirmReceive} onClose={() => setReceiving(null)} />
 
-      {confirmCondition ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
-          <div className="w-full max-w-md rounded-lg bg-white p-5 shadow-xl">
-            <h2 className="text-base font-semibold text-slate-900">
-              {confirmCondition === "bad" ? "Mark" : "Receive"} {selectedRows.length}{" "}
-              {selectedRows.length === 1 ? "parcel" : "parcels"} as {confirmCondition === "bad" ? "damaged" : "good"}?
-            </h2>
-            <p className="mt-2 text-sm text-slate-600">
-              {confirmCondition === "bad"
-                ? "These are marked received but their stock is not restored."
-                : "This puts their units back into stock and marks them received."}{" "}
-              Already-received parcels are skipped rather than counted twice.
-            </p>
-            <div className="mt-4 flex justify-end gap-2">
-              <Button variant="secondary" onClick={() => setConfirmCondition(null)}>
-                Cancel
-              </Button>
-              <Button onClick={runBulkReceive}>
-                {confirmCondition === "bad" ? "Mark Damaged" : "Mark Good"}
-              </Button>
-            </div>
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }

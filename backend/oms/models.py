@@ -121,6 +121,11 @@ class Order(TenantScopedModel):
         db_default=RawSQL("oms.next_oms_order_no()", []),
     )
     order_number = models.CharField(max_length=50)
+    # Set the first time a booking cancel renumbers the order (1001 ->
+    # 1001-1, see services._back_to_confirmation_after_cancel): the number
+    # it had before. Screens and the report show this; the database,
+    # couriers and Shopify sync keep order_number.
+    original_order_number = models.CharField(max_length=50, blank=True, default="")
     customer_name = models.CharField(max_length=255)
     customer_phone = models.CharField(max_length=50, blank=True, default="")
     status = models.CharField(max_length=30, choices=STATUS_CHOICES, default="pending_cod")

@@ -130,7 +130,7 @@ export default function WmsPage() {
   }, [page, pageSize, appliedSearch, activity]);
 
   async function onSyncShopify() {
-    if (!window.confirm("Sync stock from Shopify? Quantities here are replaced with Shopify's on-hand counts (plus any adjustments not yet pushed to Shopify).")) {
+    if (!window.confirm("Click to confirm")) {
       return;
     }
     setSyncing(true);

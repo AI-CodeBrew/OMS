@@ -17,19 +17,18 @@ function formatPct(pct) {
 
 const ALL = "__all__";
 
-// One province card in the popup: delivery rate big, share small.
+// One province card in the popup: its delivery rate; the counts on hover.
 function ProvinceCard({ row }) {
   return (
     <div className="group relative rounded-md border border-surface-border bg-white px-3 py-2">
       <div className="truncate text-xs font-medium text-slate-700">{row.name}</div>
       <div className={`text-sm font-semibold ${rateTone(row.delivery_pct)}`}>{formatPct(row.delivery_pct)}</div>
-      <div className="text-[11px] text-slate-400">
-        {row.share_pct.toFixed(1)}%
-      </div>
       {/* Hover tooltip */}
       <div className="pointer-events-none absolute left-0 top-full z-10 mt-1 hidden whitespace-nowrap rounded-md bg-slate-900 px-2.5 py-1.5 text-xs text-white shadow-lg group-hover:block">
         <div>{formatPct(row.delivery_pct)} Delivery Ratio</div>
-        <div>{row.share_pct.toFixed(1)}% of Total Orders</div>
+        <div>
+          {(row.delivered ?? 0).toLocaleString()} Delivered Out of {(row.dispatched ?? 0).toLocaleString()} Dispatched
+        </div>
       </div>
     </div>
   );

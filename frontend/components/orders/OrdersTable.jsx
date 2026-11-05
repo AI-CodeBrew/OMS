@@ -63,6 +63,15 @@ const DISPATCH_REQUESTABLE = new Set([
   "new", "pending_cc", "pending_cod", "city_issue", "awaiting_assigning", "awaiting_approval", "approved",
 ]);
 
+// The truck: a store sent this order to FynkTech. An order the Dispatch
+// Hub made itself is marked sent the moment it's created (so the hub
+// lists it) - no truck for that one.
+function sentByStore(order) {
+  if (!order.dispatch_requested_at || !DISPATCH_REQUESTABLE.has(order.status)) return false;
+  const gap = new Date(order.dispatch_requested_at) - new Date(order.created_at);
+  return !(gap >= 0 && gap < 60 * 1000);
+}
+
 // The "R" beside a replacement order's number (see Order.recreate_type).
 export function ReplacementMark({ order, onDark = false }) {
   // A Replacement's order ID already ends in R (1025R) - the badge only
@@ -162,13 +171,13 @@ export default function OrdersTable({
             <th className="w-28 px-3 py-2">Store Order ID</th>
             <th className="w-40 px-3 py-2">Customer Name</th>
             {showProductColumn ? <th className="w-48 px-3 py-2">Product</th> : null}
-            <th className="w-32 px-3 py-2">Contact</th>
+            <th className="w-28 px-3 py-2">City</th>
             <th className="w-24 px-3 py-2">Fulfillment</th>
             <th className="w-36 px-3 py-2">Status</th>
             {showSubStatusColumn ? <th className="w-40 px-3 py-2">Sub Status</th> : null}
-            {showShipperAdviceColumn ? <th className="w-44 px-3 py-2">Shipper Advice</th> : null}
             <th className="w-40 px-3 py-2">Tag</th>
-            <th className="w-28 px-3 py-2">City</th>
+            {showShipperAdviceColumn ? <th className="w-44 px-3 py-2">Shipper Advice</th> : null}
+            <th className="w-32 px-3 py-2">Contact</th>
             <th className="w-24 px-3 py-2">Courier</th>
             {showTransitColumn ? <th className="w-24 px-3 py-2">In Transit</th> : null}
             <th className="w-32 px-3 py-2">Tracking ID (CN)</th>
@@ -226,7 +235,7 @@ export default function OrdersTable({
                     </button>
                     <ReplacementMark order={order} />
                     <TicketMark order={order} />
-                    {order.dispatch_requested_at && DISPATCH_REQUESTABLE.has(order.status) ? (
+                    {sentByStore(order) ? (
                       <span
                         className="shrink-0 rounded bg-amber-100 px-1 text-xs text-amber-700"
                         title={
@@ -260,7 +269,7 @@ export default function OrdersTable({
                     })()}
                   </td>
                 ) : null}
-                <td className="px-3 py-1.5 text-slate-500">{formatPakPhone(order.customer_phone) || "—"}</td>
+                <td className="px-3 py-1.5 text-slate-700">{order.city || "—"}</td>
                 <td className="px-3 py-1.5 text-slate-700">
                   <div className="capitalize">{order.fulfillment_status}</div>
                   {/* Who ships it - kept off the Courier column, which names
@@ -297,29 +306,6 @@ export default function OrdersTable({
                     </div>
                   </td>
                 ) : null}
-                {showShipperAdviceColumn ? (
-                  <td className="px-3 py-1.5 text-slate-700">
-                    {order.shipper_advice ? (
-                      <div
-                        className="max-w-[11rem]"
-                        title={[order.shipper_advice, order.shipper_advice_remarks].filter(Boolean).join(" - ")}
-                      >
-                        <span
-                          className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
-                            order.shipper_advice === "Return" ? "bg-red-50 text-red-700" : "bg-emerald-50 text-emerald-700"
-                          }`}
-                        >
-                          {order.shipper_advice}
-                        </span>
-                        {order.shipper_advice_remarks ? (
-                          <div className="mt-0.5 truncate text-xs text-slate-500">{order.shipper_advice_remarks}</div>
-                        ) : null}
-                      </div>
-                    ) : (
-                      <span className="text-slate-300">—</span>
-                    )}
-                  </td>
-                ) : null}
                 {/* Tag sits right after Status: where the order is within
                     its card (To Be Packed, Out for Delivery, the cancel
                     reason, the courier's remark, ...), then the order's own
@@ -351,9 +337,30 @@ export default function OrdersTable({
                     );
                   })()}
                 </td>
-                {/* The shop within the organization - one organization can
-                    have several stores. */}
-                <td className="px-3 py-1.5 text-slate-700">{order.city || "—"}</td>
+                {showShipperAdviceColumn ? (
+                  <td className="px-3 py-1.5 text-slate-700">
+                    {order.shipper_advice ? (
+                      <div
+                        className="max-w-[11rem]"
+                        title={[order.shipper_advice, order.shipper_advice_remarks].filter(Boolean).join(" - ")}
+                      >
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                            order.shipper_advice === "Return" ? "bg-red-50 text-red-700" : "bg-emerald-50 text-emerald-700"
+                          }`}
+                        >
+                          {order.shipper_advice}
+                        </span>
+                        {order.shipper_advice_remarks ? (
+                          <div className="mt-0.5 truncate text-xs text-slate-500">{order.shipper_advice_remarks}</div>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <span className="text-slate-300">—</span>
+                    )}
+                  </td>
+                ) : null}
+                <td className="px-3 py-1.5 text-slate-500">{formatPakPhone(order.customer_phone) || "—"}</td>
                 <td className="px-3 py-1.5 text-slate-700">
                   <div className="truncate">{order.courier_name || "—"}</div>
                 </td>

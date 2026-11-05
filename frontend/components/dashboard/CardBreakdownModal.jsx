@@ -65,7 +65,13 @@ export function CardBreakdownModal({ group, range, onClose, onOpenType }) {
       .dashboardBreakdown({ group: group.key, ...range })
       .then((data) => {
         if (cancelled) return;
-        setTypes(data.types || []);
+        // Most orders first; "Other / No Reason" always last.
+        const isOther = (t) => /^other\b/i.test(t.label || "") || /other/i.test(t.key || "");
+        setTypes(
+          [...(data.types || [])].sort(
+            (a, b) => isOther(a) - isOther(b) || (b.count || 0) - (a.count || 0)
+          )
+        );
         setTotal(data.total || 0);
       })
       .catch((err) => !cancelled && setError(err.message || "Failed to load"))

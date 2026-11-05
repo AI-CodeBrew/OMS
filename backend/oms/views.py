@@ -198,6 +198,7 @@ BULK_ACTIONS = {
         order, courier_id=params["courier_id"], actor_user_id=actor
     ),
     "approve": lambda order, params, actor: services.approve_order(order, actor_user_id=actor),
+    "self_deliver": lambda order, params, actor: services.self_deliver(order, actor_user_id=actor),
     "mark_ready_to_pick": lambda order, params, actor: services.mark_ready_to_pick(
         order, actor_user_id=actor
     ),
@@ -1282,8 +1283,8 @@ class OrderViewSet(viewsets.ModelViewSet):
         )
         return Response(
             {
-                # The desk's cards: Total = Awaiting Scan + Received + Not Received.
-                "total_returns": returned + not_received,
+                # The desk's cards: Total = Awaiting Scan + Received.
+                "total_returns": returned,
                 "awaiting_scan": returned - received_all,
                 "received_all": received_all,
                 "not_received": not_received,
@@ -2536,7 +2537,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                     )
                     before_items = [
                         order.supabase_order_no or "",
-                        order.order_number,
+                        order.original_order_number or order.order_number,
                         # The client is the organization (Playback, One
                         # Stations, ...) - the business FynkTech serves; it
                         # can run several stores, each with its own number.

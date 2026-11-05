@@ -128,10 +128,7 @@ export default function PrintByCourierModal({ request, accounts, onClose, onPrin
     if (
       kind === "loadsheet" &&
       (account === "postex" || account === "leopards") &&
-      !window.confirm(
-        `Generate the ${account === "postex" ? "PostEx" : "Leopards"} load sheet for ${plural(accountOrders.length)}? ` +
-          `This hands the parcels over to ${account === "postex" ? "PostEx" : "Leopards"} for pickup.`
-      )
+      !window.confirm("Click to confirm")
     ) {
       return;
     }

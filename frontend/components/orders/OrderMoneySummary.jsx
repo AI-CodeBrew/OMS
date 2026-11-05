@@ -33,7 +33,7 @@ function MoneyInput({ label, value, onChange }) {
       <div className="text-[10px] uppercase tracking-wide text-slate-500">{label}</div>
       <input
         type="number"
-        step="0.01"
+        step="any"
         min="0"
         value={value ?? ""}
         onChange={(e) => onChange(e.target.value)}

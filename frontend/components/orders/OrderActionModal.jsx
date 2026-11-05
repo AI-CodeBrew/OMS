@@ -65,6 +65,7 @@ const CONFIRM_BY_ACTION = {
     result: "go back to the status they were in before this one",
   },
   approve: { title: "Approve order(s)", button: "Approve", result: "move to Approved" },
+  self_deliver: { title: "Self Deliver", button: "Self Deliver", result: "move to Self Delivered" },
   dispatch: { title: "Dispatch order(s)", button: "Dispatch", result: "be marked Dispatched" },
   cancel_fulfillment: {
     title: "Cancel fulfillment",
@@ -149,7 +150,9 @@ const CONFIRM_BY_ACTION = {
   },
 };
 
-export default function OrderActionModal({ action, couriers, options, count, onSubmit, onClose, submitting }) {
+// fromCard: the card the orders are in now - the confirm popup's title.
+// currentCourier: Change Courier's "Previous courier" line.
+export default function OrderActionModal({ action, couriers, options, count, fromCard, currentCourier, onSubmit, onClose, submitting }) {
   const field = action ? FIELD_BY_ACTION[action] : null;
   const [value, setValue] = useState("");
   // Shipper Advice's remarks, beside its dropdown.
@@ -184,10 +187,8 @@ export default function OrderActionModal({ action, couriers, options, count, onS
       result: "be updated",
     };
     return (
-      <Modal open title={confirm.title} onClose={onClose}>
-        <p className="text-sm text-slate-700">
-          {orders} will {confirm.result}. Continue?
-        </p>
+      <Modal open title={fromCard || confirm.title} onClose={onClose}>
+        <p className="text-sm text-slate-700">Click to confirm</p>
         <div className="mt-4 flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose}>
             Cancel
@@ -205,6 +206,14 @@ export default function OrderActionModal({ action, couriers, options, count, onS
   return (
     <Modal open title={ACTION_TITLES[action] || action} onClose={onClose}>
       <p className="mb-3 text-sm text-slate-500">Applying to {orders}.</p>
+      {action === "change_courier" ? (
+        <div className="mb-3">
+          <span className="mb-1 block text-xs font-medium text-slate-700">Previous courier</span>
+          <div className="w-full rounded-md border border-surface-border bg-surface px-3 py-2 text-sm text-slate-700">
+            {currentCourier || "—"}
+          </div>
+        </div>
+      ) : null}
       <label className="block">
         <span className="mb-1 block text-xs font-medium text-slate-700">{field.label}</span>
         {field.type === "courier-select" ? (
@@ -247,11 +256,11 @@ export default function OrderActionModal({ action, couriers, options, count, onS
                 </option>
               ))}
             </select>
-            <p className="mt-2 text-xs text-slate-500">
-              {action === "move_to_assigning"
-                ? "The order is booked with this courier and moves to Assigning Courier."
-                : "The current booking is cancelled first, then the order is booked with this courier. If the new booking fails, the order goes back to Approved with no tracking number."}
-            </p>
+            {action === "move_to_assigning" ? (
+              <p className="mt-2 text-xs text-slate-500">
+                The order is booked with this courier and moves to Assigning Courier.
+              </p>
+            ) : null}
           </>
         ) : field.type === "smartlane-courier-select" ? (
           <select

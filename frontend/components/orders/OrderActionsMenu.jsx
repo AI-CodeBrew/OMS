@@ -51,9 +51,6 @@ export default function OrderActionsMenu({ order, onAction, onScan, onRaiseTicke
     // Shipper Advice is for the Undelivered card only (not a failed attempt
     // already in Return in Transit).
     .filter((a) => a.action !== "shipper_advice" || order.workflow_card === "undelivered")
-    // Awaiting Confirmation's detail: Update Tag / Cancel Order only -
-    // Approve stays on the Orders page.
-    .filter((a) => a.action !== "acknowledge" || order.workflow_card !== "awaiting_confirmation")
     .map((a) => ({
       key: a.key || a.action,
       label:

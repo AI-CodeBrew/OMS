@@ -23,6 +23,7 @@ import {
   ASSIGNING_PRINT_ACTIONS,
   SMARTLANE_LOAD_SHEET_COURIERS,
   isBookingAccountCourier,
+  cardTab,
 } from "./statusConfig";
 import barqraftarService from "../../app/(tenant)/integrations/barq-raftar/_lib/barqraftarService";
 import postexService from "../../app/(tenant)/integrations/postex/_lib/postexService";
@@ -61,17 +62,37 @@ const EDITABLE_FIELDS = [
   "amount_paid",
 ];
 
+// The money boxes: left empty they mean 0, and any decimal is taken
+// (rounded to the 2 places the backend stores).
+const AMOUNT_FIELDS = [
+  "coupon_discount",
+  "extra_discount",
+  "gift_card_discount",
+  "loyalty_amount",
+  "wallet_amount",
+  "total_tax",
+  "donation_amount",
+  "shipping_amount",
+  "express_stitching_amount",
+  "amount_paid",
+];
+
+function toAmount(value) {
+  const n = Number(String(value ?? "").replace(/,/g, "").trim());
+  return Number.isFinite(n) ? n.toFixed(2) : "0.00";
+}
+
 // The fields the line-items write takes - same full-replace shape the
 // backend expects (services.update_order_detail recreates every item).
 function serializeItem(item) {
   return {
     product_name: item.product_name,
     quantity: Number(item.quantity) || 1,
-    unit_price: item.unit_price || 0,
+    unit_price: toAmount(item.unit_price),
     vendor: item.vendor ?? "",
     barcode: item.barcode ?? "",
     compare_at_price: item.compare_at_price ?? null,
-    discount_amount: item.discount_amount || 0,
+    discount_amount: toAmount(item.discount_amount),
     weight_grams: item.weight_grams ?? null,
   };
 }
@@ -91,6 +112,9 @@ function buildPatch(order, draft) {
   const { items, amount_receivable: _receivable, discount_total: _discount, ...fields } = draft;
   const before = JSON.stringify(order.items.map(serializeItem));
   const after = items.map(serializeItem);
+  AMOUNT_FIELDS.forEach((field) => {
+    if (field in fields) fields[field] = toAmount(fields[field]);
+  });
   return JSON.stringify(after) === before ? fields : { ...fields, items: after };
 }
 
@@ -250,7 +274,7 @@ export default function OrderDetailPanel({
       const isLoadSheet = action === "print_postex_loadsheet";
       if (
         isLoadSheet &&
-        !window.confirm("Generate the PostEx load sheet? This hands the parcel over to PostEx for pickup.")
+        !window.confirm("Click to confirm")
       ) {
         return;
       }
@@ -270,7 +294,7 @@ export default function OrderDetailPanel({
       const isLoadSheet = action === "print_leopards_loadsheet";
       if (
         isLoadSheet &&
-        !window.confirm("Generate the Leopards load sheet? This hands the parcel over to Leopards for pickup.")
+        !window.confirm("Click to confirm")
       ) {
         return;
       }
@@ -485,6 +509,8 @@ export default function OrderDetailPanel({
       <OrderActionModal
         action={pendingAction}
         count={1}
+        fromCard={cardTab(order?.workflow_card)?.label}
+        currentCourier={order?.courier_name}
         couriers={
           pendingAction === "assign_courier" && bookingAccounts.length
             ? // Booking accounts stay first/default; real courier rows are

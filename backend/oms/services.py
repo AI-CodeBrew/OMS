@@ -117,7 +117,8 @@ ALLOWED_TRANSITIONS = {
     # pushed to Smartlane instead of assigned to a manual courier - a
     # parallel branch alongside the awaiting_approval path, not a
     # replacement.
-    "awaiting_assigning": {"awaiting_approval", "booking_pending", "cancelled"},
+    # approved: Self Deliver - shipped by the store itself, no booking.
+    "awaiting_assigning": {"awaiting_approval", "booking_pending", "approved", "cancelled"},
     "awaiting_approval": {"approved", "awaiting_assigning", "cancelled"},
     "approved": {"awaiting_dispatched", "cancelled"},
     # Advances to ready_to_print once Smartlane's /track (or webhook)
@@ -446,6 +447,15 @@ def approve_order(order, *, actor_user_id=None):
     if problems:
         raise InvalidTransition("Can't approve - " + "; ".join(problems))
     return _transition(order, "approved", actor_user_id=actor_user_id)
+
+
+def self_deliver(order, *, actor_user_id=None):
+    """The Approved card's Self Deliver: the store ships it itself - no
+    courier booking. Approved (Awaiting Courier) -> Self Delivered (plain
+    Approved)."""
+    if order.status != "awaiting_assigning":
+        raise InvalidTransition("Only orders awaiting a courier can be self delivered.")
+    return _transition(order, "approved", actor_user_id=actor_user_id, note="Self Deliver")
 
 
 def queue_for_dispatch(order, *, actor_user_id=None):
@@ -1027,27 +1037,21 @@ def _log_order_change(order, what, *, actor_user_id=None):
 
 
 # A cancelled booking sends the order back to Awaiting Confirmation with
-# this tag, and a new store order ID: 1001 -> 1001-1 -> 1001-2 ... (the
-# OMS Order ID stays). The note's wording is how the next number is worked
-# out (_next_cancel_number) - keep it.
+# this tag, and a new store order ID in the database: 1001 -> 1001-1 ->
+# 1001-2 ... (the OMS Order ID stays). Screens keep showing 1001
+# (Order.original_order_number), and the order log doesn't mention it.
 BOOKING_CANCELLED_TAG = "Cancelled from Courier Booking"
-_RENUMBER_NOTE = "Store order ID changed"
 
 
 def _next_cancel_number(order):
-    """The order's next store order ID after a booking cancel: the number
-    it had before any such change, plus -1, -2, ... - one more than the
-    times it was changed before, skipping any number the store already
-    has."""
-    from .models import OrderStatusEvent
-
-    changed_before = OrderStatusEvent.all_objects.filter(
-        order=order, note__contains=_RENUMBER_NOTE
-    ).count()
-    base = order.order_number
-    if changed_before:
-        base = re.sub(r"-\d+$", "", base)
-    n = changed_before + 1
+    """The order's next store order ID after a booking cancel: its original
+    number plus -1, -2, ... - one past the one it has now, skipping any
+    number the store already has."""
+    base = order.original_order_number or order.order_number
+    n = 1
+    match = re.fullmatch(re.escape(base) + r"-(\d+)", order.order_number)
+    if order.original_order_number and match:
+        n = int(match.group(1)) + 1
     while Order.all_objects.filter(
         organization_id=order.organization_id, order_number=f"{base}-{n}"
     ).exists():
@@ -1059,18 +1063,19 @@ def _back_to_confirmation_after_cancel(order, *, actor_user_id, note):
     """The booking is already cancelled: the order goes back to Awaiting
     Confirmation (New), tagged BOOKING_CANCELLED_TAG, under its next store
     order ID - courier, tracking number and booking stamps cleared."""
-    old_number = order.order_number
+    original = order.original_order_number or order.order_number
     new_number = _next_cancel_number(order)
     return _force_transition(
         order,
         "new",
         actor_user_id=actor_user_id,
-        note=f"{note} - {_RENUMBER_NOTE}: {old_number} -> {new_number}",
+        note=note,
         extra_fields={
             **_BOOKING_FIELDS_CLEARED,
             "workflow_flag": "",
             "tag": BOOKING_CANCELLED_TAG,
             "order_number": new_number,
+            "original_order_number": original,
         },
     )
 
@@ -2521,12 +2526,12 @@ def delivery_performance(qs):
     rate, and the same by Pakistani province - overall and per courier.
     One grouped query (courier, city, status, returning), folded here.
 
-    - Delivery % is delivered out of dispatched: every order the courier
-      picked up (in transit, delivered or returned).
-    - A courier's share is of the orders that have a courier: New, pending
-      and cancelled orders were never shipped by anyone, so they'd only
-      shrink every courier's share. Orders whose courier isn't one of
-      DASHBOARD_COURIERS still count under Others."""
+    - Only dispatched orders count (_DISPATCHED_STATUSES: in transit,
+      delivered or returned) - pending and cancelled ones are left out, so
+      "orders" and every share are of dispatched orders.
+    - Delivery % is delivered out of those dispatched orders.
+    - Orders whose courier isn't one of DASHBOARD_COURIERS count under
+      Others."""
     from .pakistan_provinces import province_for_city
 
     rows = (
@@ -2552,6 +2557,10 @@ def delivery_performance(qs):
     couriers = {name: bucket() for name in DASHBOARD_COURIERS.values()}
     provinces, courier_provinces = {}, {name: {} for name in DASHBOARD_COURIERS.values()}
     for row in rows:
+        # Only orders the courier picked up count anywhere here - nothing
+        # before Dispatched (pending, booked) and nothing cancelled.
+        if row["status"] not in _DISPATCHED_STATUSES:
+            continue
         province = province_for_city(row["city"])
         n = row["n"]
         targets = [total, provinces.setdefault(province, bucket())]
