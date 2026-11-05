@@ -765,3 +765,27 @@ class City(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class Store(TenantScopedModel):
+    """One store inside an organization, by the name its orders carry
+    (Order.shop) - an organization can run several. store_id is the store's
+    own number, unique across every organization (1, 2, 3 ... from one
+    sequence), shown in the orders report beside Client Name and Store
+    Name. Rows are made by migration 0046 for the stores that already had
+    orders, and on the fly for any new name (services.store_ids_for)."""
+
+    name = models.CharField(max_length=150)
+    store_id = models.PositiveIntegerField(
+        unique=True, editable=False, db_default=RawSQL("nextval('oms.stores_store_id_seq')", [])
+    )
+
+    class Meta:
+        db_table = '"oms"."stores"'
+        ordering = ["store_id"]
+        constraints = [
+            models.UniqueConstraint(fields=["organization", "name"], name="oms_store_name_per_org"),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.store_id})"

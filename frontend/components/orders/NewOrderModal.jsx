@@ -139,7 +139,7 @@ const RECREATE_CHOICES = [
 //
 // stores: only passed in the Dispatch Hub ([{id, name, store_code}]). The
 // Hub has no store of its own, so the form opens straight on Book Manual
-// with a Store picker; the Store ID is asked only when two stores share
+// with a Store picker; the Organization ID is asked only when two stores share
 // the picked name, otherwise it's filled in.
 export default function NewOrderModal({ open, recreateFrom = null, stores = null, onClose, onCreated }) {
   const [recreateType, setRecreateType] = useState(null);
@@ -176,7 +176,7 @@ export default function NewOrderModal({ open, recreateFrom = null, stores = null
     }
   }
 
-  // Hub: the stores carrying `name`, oldest Store ID first.
+  // Hub: the stores carrying `name`, oldest Organization ID first.
   const sameName = (name) =>
     (stores || [])
       .filter((s) => s.name === name)
@@ -278,7 +278,7 @@ export default function NewOrderModal({ open, recreateFrom = null, stores = null
   async function onSubmit(e) {
     e.preventDefault();
     if (stores && !storeId) {
-      setError(storeName ? "Pick the Store ID - more than one store has this name." : "Pick a store.");
+      setError(storeName ? "Pick the Organization ID - more than one organization has this name." : "Pick a store.");
       return;
     }
     setCreating(true);
@@ -454,7 +454,7 @@ export default function NewOrderModal({ open, recreateFrom = null, stores = null
                   ))}
                 </select>
               </Field>
-              <Field label="Store ID" required>
+              <Field label="Organization ID" required>
                 {sameName(storeName).length > 1 && !recreateFrom ? (
                   <select required value={storeId} onChange={(e) => pickStore(e.target.value)} className={INPUT}>
                     <option value="">Select ID</option>

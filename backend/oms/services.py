@@ -2503,3 +2503,34 @@ def delivery_performance(qs):
         ],
         "provinces": by_province(provinces, total["orders"]),
     }
+
+
+def store_ids_for(pairs):
+    """{(organization_id, store name): Store ID} for the given pairs - the
+    orders report's Store ID column. A store name seen for the first time
+    gets its number here (oms.Store), so every report row has one. Blank
+    names have no store and are left out."""
+    from django.db import IntegrityError
+
+    from .models import Store
+
+    pairs = {(str(org_id), name) for org_id, name in pairs if name}
+    if not pairs:
+        return {}
+    org_ids = {org_id for org_id, _ in pairs}
+    found = {
+        (str(org_id), name): store_id
+        for org_id, name, store_id in Store.all_objects.filter(
+            organization_id__in=org_ids, name__in={name for _, name in pairs}
+        ).values_list("organization_id", "name", "store_id")
+    }
+    for org_id, name in sorted(pairs - found.keys()):
+        try:
+            with transaction.atomic():
+                store = Store.all_objects.create(organization_id=org_id, name=name)
+            store.refresh_from_db(fields=["store_id"])
+        except IntegrityError:
+            # Made by a parallel request a moment ago.
+            store = Store.all_objects.get(organization_id=org_id, name=name)
+        found[(org_id, name)] = store.store_id
+    return {pair: found[pair] for pair in pairs}

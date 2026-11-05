@@ -129,6 +129,11 @@ def _hub_push_to_smartlane(order, params, actor):
     )
 
 
+# The Dispatch Hub's stock rule (no booking without stock in the store's
+# warehouse - see bulk_action). Off for now (2026-11-05, until every
+# store's stock is in WMS): set True to turn it back on.
+HUB_STOCK_CHECK_ENABLED = False
+
 _BOOKING_ACTIONS = {
     "push_to_smartlane", "push_to_postex", "push_to_postex_oms", "push_to_barqraftar", "push_to_barqraftar_oms",
     "push_to_leopards", "push_to_leopards_oms",
@@ -1441,9 +1446,16 @@ class OrderViewSet(viewsets.ModelViewSet):
         # Queue for dispatch on a Self Delivered order.
         stock_refused = []
         hub = is_hub_request(request)
-        if action_name in _BOOKING_ACTIONS:
+        if hub and not HUB_STOCK_CHECK_ENABLED and (
+            action_name in _BOOKING_ACTIONS or action_name == "change_courier"
+        ):
+            # Switched off for now: the hub books whatever the stock.
+            # force=True lets each courier's own check through too; stock
+            # is still deducted, so WMS can go negative.
+            params = {**params, "force": True}
+        elif action_name in _BOOKING_ACTIONS:
             order_ids, stock_refused = self._allocate_stock(request, order_ids, strict=hub)
-        elif hub and action_name in ("dispatch", "queue_for_dispatch"):
+        elif hub and HUB_STOCK_CHECK_ENABLED and action_name in ("dispatch", "queue_for_dispatch"):
             order_ids, stock_refused = self._allocate_stock(
                 request, order_ids, statuses=("approved",), strict=True
             )
@@ -2461,6 +2473,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                 "OMS Order ID",
                 "Shopify Order ID",
                 "Client Name",
+                "Store ID",
                 "Store Name",
                 "Order Date (PKT)",
                 "OMS Sync Date (PKT)",
@@ -2500,6 +2513,12 @@ class OrderViewSet(viewsets.ModelViewSet):
             def when(value):
                 return value.astimezone(pkt).strftime("%Y-%m-%d %H:%M") if value else ""
 
+            # Worked out now, not inside rows(): the store numbers are made
+            # here for any store seen for the first time.
+            store_ids = services.store_ids_for(
+                queryset.order_by().values_list("organization_id", "shop").distinct()
+            )
+
             def rows():
                 yield header
                 for order in queryset.iterator(chunk_size=500):
@@ -2510,10 +2529,12 @@ class OrderViewSet(viewsets.ModelViewSet):
                     before_items = [
                         order.supabase_order_no or "",
                         order.order_number,
-                        # The client is the store itself (Playback, One
-                        # Stations, ...) - the business FynkTech serves.
+                        # The client is the organization (Playback, One
+                        # Stations, ...) - the business FynkTech serves; it
+                        # can run several stores, each with its own number.
                         order.organization.name,
-                        order.organization.name,
+                        store_ids.get((str(order.organization_id), order.shop), ""),
+                        order.shop,
                         # Shopify's own order time; a manual order has none,
                         # so it falls back to when it was entered here.
                         when(order.placed_at or order.created_at),

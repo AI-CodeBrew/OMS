@@ -153,7 +153,7 @@ export default function OrdersTable({
                 onChange={() => onToggleSelectAll(orders)}
               />
             </th>
-            {showStoreColumn ? <th className="w-28 px-3 py-2">Store</th> : null}
+            {showStoreColumn ? <th className="w-28 px-3 py-2">Client Name</th> : null}
             <th className="w-16 px-3 py-2">OMS Order ID</th>
             <th className="w-28 px-3 py-2">Store Order ID</th>
             <th className="w-40 px-3 py-2">Customer Name</th>
@@ -351,6 +351,8 @@ export default function OrdersTable({
                     <span className="text-slate-300">—</span>
                   )}
                 </td>
+                {/* The shop within the organization - one organization can
+                    have several stores. */}
                 <td className="px-3 py-1.5 text-slate-700">{order.shop || "—"}</td>
                 <td className="px-3 py-1.5 text-slate-700">{order.city || "—"}</td>
                 <td className="px-3 py-1.5 text-slate-700">
