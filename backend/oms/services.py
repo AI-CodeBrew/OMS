@@ -2486,12 +2486,16 @@ def critical_summary(qs):
 
 
 # ----------------------------------------------- Dashboard: delivery rate --
-def _rate(delivered, returned):
-    """Delivered out of the orders that reached an outcome (delivered or
-    returned - including ones already on their way back, see
-    delivery_performance) - None while none has."""
-    done = delivered + returned
-    return round(delivered * 100 / done, 1) if done else None
+def _rate(delivered, dispatched):
+    """Delivered out of the orders dispatched - every order the courier
+    picked up, whether it's still on the way, delivered or returned (see
+    delivery_performance) - None while none was dispatched."""
+    return round(delivered * 100 / dispatched, 1) if dispatched else None
+
+
+# Every status an order reaches only once the courier has picked it up -
+# the delivery rate's "dispatched".
+_DISPATCHED_STATUSES = {"dispatched", "out_for_delivery", "attempt", "delivered", "returned"}
 
 
 def _share(part, whole):
@@ -2517,9 +2521,8 @@ def delivery_performance(qs):
     rate, and the same by Pakistani province - overall and per courier.
     One grouped query (courier, city, status, returning), folded here.
 
-    - A parcel on its way back (the Return in Transit card) counts as
-      returned already - otherwise the delivery rate reads high until the
-      courier finally marks it returned.
+    - Delivery % is delivered out of dispatched: every order the courier
+      picked up (in transit, delivered or returned).
     - A courier's share is of the orders that have a courier: New, pending
       and cancelled orders were never shipped by anyone, so they'd only
       shrink every courier's share. Orders whose courier isn't one of
@@ -2540,7 +2543,7 @@ def delivery_performance(qs):
     )
 
     def bucket():
-        return {"orders": 0, "delivered": 0, "returned": 0}
+        return {"orders": 0, "dispatched": 0, "delivered": 0, "returned": 0}
 
     total = bucket()
     # Orders with a courier at all - what a courier's share is out of.
@@ -2561,6 +2564,8 @@ def delivery_performance(qs):
             ]
         for b in targets:
             b["orders"] += n
+            if row["status"] in _DISPATCHED_STATUSES:
+                b["dispatched"] += n
             if row["status"] == "delivered":
                 b["delivered"] += n
             elif row["status"] == "returned" or row["returning"]:
@@ -2573,7 +2578,8 @@ def delivery_performance(qs):
             "delivered": b["delivered"],
             "returned": b["returned"],
             "share_pct": _share(b["orders"], whole),
-            "delivery_pct": _rate(b["delivered"], b["returned"]),
+            "dispatched": b["dispatched"],
+            "delivery_pct": _rate(b["delivered"], b["dispatched"]),
         }
 
     def by_province(groups, whole):
