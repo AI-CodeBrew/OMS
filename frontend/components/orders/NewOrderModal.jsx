@@ -127,9 +127,13 @@ const RECREATE_CHOICES = [
   {
     value: "replacement",
     title: "Replacement",
-    text: "Sent in place of this order - marked with an R next to its order ID.",
+    text: "A new order sent in place of this one - its order ID is this one's with an R (1025 → 1025R). Not pushed to Shopify.",
   },
-  { value: "new", title: "New order", text: "A separate new order for the same customer and products." },
+  {
+    value: "new",
+    title: "New order",
+    text: "A separate new order - pushed to Shopify, which gives it its own order ID.",
+  },
 ];
 
 // recreateFrom: an order's "Recreate order". The first screen asks
@@ -143,6 +147,15 @@ const RECREATE_CHOICES = [
 // the picked name, otherwise it's filled in.
 export default function NewOrderModal({ open, recreateFrom = null, stores = null, onClose, onCreated }) {
   const [recreateType, setRecreateType] = useState(null);
+  // The store has Shopify connected - Recreate's New order goes there.
+  const [storeHasShopify, setStoreHasShopify] = useState(false);
+
+  // Recreate's New order is created on Shopify (Shopify numbers it) when
+  // the store has it; a Replacement never is.
+  useEffect(() => {
+    if (!recreateFrom || !recreateType) return;
+    setOnShopify(recreateType === "new" && storeHasShopify);
+  }, [recreateFrom, recreateType, storeHasShopify]);
   const [view, setView] = useState("methods"); // "methods" | "manual"
   const [storeName, setStoreName] = useState("");
   const [storeId, setStoreId] = useState("");
@@ -168,6 +181,7 @@ export default function NewOrderModal({ open, recreateFrom = null, stores = null
       const info = await ordersService.getNewOrderInfo(organizationId);
       setShopifyConnected(Boolean(info.shopify_connected) && !recreateFrom);
       setOnShopify(Boolean(info.shopify_connected) && !recreateFrom);
+      setStoreHasShopify(Boolean(info.shopify_connected));
       setForm((f) =>
         f.order_number && !renumber ? f : { ...f, order_number: info.next_order_number || "" }
       );
@@ -394,9 +408,9 @@ export default function NewOrderModal({ open, recreateFrom = null, stores = null
     return (
       <Modal open={open} onClose={close} title="Manual order" width="max-w-3xl">
         {errorBox}
-        <h3 className="mb-5 text-center text-2xl font-normal text-slate-700">Booking Methods</h3>
+        <h3 className="mb-5 text-center text-2xl font-normal text-slate-700">Manual Order</h3>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <MethodCard title="Book Manual" icon={PlusIcon} onClick={openManual} />
+          <MethodCard title="Create Order" icon={PlusIcon} onClick={openManual} />
           <MethodCard title="Download Sample File" icon={DownloadIcon} onClick={downloadSample} />
         </div>
 
@@ -499,7 +513,13 @@ export default function NewOrderModal({ open, recreateFrom = null, stores = null
           <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Order</h4>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <Field label="Order number" required={!onShopify}>
-              {onShopify ? (
+              {recreateFrom && recreateType === "replacement" ? (
+                <input
+                  disabled
+                  value={`${String(recreateFrom.order_number).replace(/^#/, "")}R`}
+                  className={`${INPUT} bg-surface text-slate-500`}
+                />
+              ) : onShopify ? (
                 <input disabled value="Assigned by Shopify" className={`${INPUT} bg-surface text-slate-500`} />
               ) : (
                 <input required value={form.order_number} onChange={updateField("order_number")} className={INPUT} />
@@ -713,7 +733,11 @@ export default function NewOrderModal({ open, recreateFrom = null, stores = null
               {recreateFrom || stores ? "Cancel" : "Back"}
             </Button>
             <Button type="submit" loading={creating}>
-              {onShopify ? "Create order & push to Shopify" : "Create order"}
+              {recreateFrom && recreateType === "replacement"
+                ? "Create replacement"
+                : onShopify
+                  ? "Create order & push to Shopify"
+                  : "Create order"}
             </Button>
           </div>
         </div>

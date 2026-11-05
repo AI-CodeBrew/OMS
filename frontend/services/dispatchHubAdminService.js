@@ -18,8 +18,10 @@ async function request(url, options = {}) {
 }
 
 class DispatchHubAdminService {
-  async listStores() {
-    const data = await request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.dispatchHub}`);
+  // allStores: every store (the All Orders tab), not just the Hub's.
+  async listStores({ allStores = false } = {}) {
+    const qs = allStores ? "?scope=all" : "";
+    const data = await request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.dispatchHub}${qs}`);
     return data.stores || [];
   }
 

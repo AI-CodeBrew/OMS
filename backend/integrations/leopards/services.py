@@ -517,7 +517,7 @@ def _build_packet(order, connection, city, reference, shipper):
         "booked_packet_vol_weight_w": "",
         "booked_packet_vol_weight_h": "",
         "booked_packet_vol_weight_l": "",
-        "booked_packet_no_piece": _piece_count(order),
+        "booked_packet_no_piece": 1,
         "booked_packet_collect_amount": _cod_amount(order),
         "booked_packet_order_id": reference,
         "origin_city": origin,

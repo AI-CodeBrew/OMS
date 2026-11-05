@@ -255,10 +255,9 @@ BULK_ACTIONS = {
         order, actor_user_id=actor
     ),
     # Assigning Courier's Edit Order: the booking is cancelled first, then
-    # the order is back in Approved for its edit.
-    "edit_order": lambda order, params, actor: services.unbook_from_assigning(
-        order, flag=services.FLAG_CANCELLED_FROM_ASSIGNING, reason="Edit Order", actor_user_id=actor
-    ),
+    # the order is back in Awaiting Confirmation (tagged, store order ID
+    # 1001 -> 1001-1) for its edit - see services.unbook_for_edit.
+    "edit_order": lambda order, params, actor: services.unbook_for_edit(order, actor_user_id=actor),
 }
 
 # Booked (or picked up) one store's batch at a time rather than order by
@@ -804,11 +803,15 @@ class OrderViewSet(viewsets.ModelViewSet):
         if recreate_type:
             if recreate_type not in dict(Order.RECREATE_TYPE_CHOICES):
                 return Response({"detail": "Unknown recreate type."}, status=status.HTTP_400_BAD_REQUEST)
-            if on_shopify:
-                return Response(
-                    {"detail": "Recreated orders are never pushed to Shopify."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+            # Replacement: never on Shopify - it keeps the original's number
+            # plus R. New order: a real new order, pushed to Shopify when the
+            # store has it connected, so Shopify numbers it.
+            if recreate_type == "replacement":
+                on_shopify = False
+            else:
+                on_shopify = ShopifyConnection.all_objects.filter(
+                    organization_id=organization_id, is_connected=True
+                ).exists()
             recreated_from = Order.all_objects.filter(
                 id=request.data.get("recreated_from"), organization_id=organization_id
             ).first()
@@ -822,7 +825,10 @@ class OrderViewSet(viewsets.ModelViewSet):
         serializer.fields["order_number"].allow_blank = True
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        if not on_shopify and not str(data.get("order_number") or "").strip():
+        if recreate_type == "replacement":
+            # The original's store order ID plus R (R2, R3 ... after that).
+            data["order_number"] = services.next_replacement_number(recreated_from)
+        elif not on_shopify and not str(data.get("order_number") or "").strip():
             data["order_number"] = services.next_order_number(organization_id)
 
         # Everything a courier booking needs - the same columns the import
@@ -2477,8 +2483,8 @@ class OrderViewSet(viewsets.ModelViewSet):
                 "Client Name",
                 "Store ID",
                 "Store Name",
+                # When the order landed in OMS (created_at) - one time only.
                 "Order Date (PKT)",
-                "OMS Sync Date (PKT)",
                 "Customer Name",
                 "Phone",
                 "Email",
@@ -2537,9 +2543,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                         order.organization.name,
                         store_ids.get((str(order.organization_id), order.shop), ""),
                         order.shop,
-                        # Shopify's own order time; a manual order has none,
-                        # so it falls back to when it was entered here.
-                        when(order.placed_at or order.created_at),
+                        # When the order landed in OMS.
                         when(order.created_at),
                         order.customer_name,
                         order.customer_phone,

@@ -19,6 +19,7 @@ import { warmupViewsInBackground } from "../../../lib/warmupViews";
 import couriersService from "../../../services/couriersService";
 import integrationsService from "../../../services/integrationsService";
 import dispatchHubAdminService from "../../../services/dispatchHubAdminService";
+import useAuthStore from "../../../store/authStore";
 import useLoadingStore from "../../../store/loadingStore";
 import { useEffectiveUser } from "../../../store/authStore";
 import Button from "../../../components/shared/Button";
@@ -501,7 +502,7 @@ export default function OrdersPage() {
   useEffect(() => {
     if (!user?.isDispatchHub) return;
     dispatchHubAdminService
-      .listStores()
+      .listStores({ allStores: Boolean(useAuthStore.getState().actingStore?.allStores) })
       .then((stores) =>
         setHubStoreOptions(stores.map((s) => ({ id: s.id, name: s.name, store_code: s.store_code })))
       )

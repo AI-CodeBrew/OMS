@@ -453,12 +453,6 @@ export default function OrderDetailPanel({
                       />
                       <OrderMoneySummary order={order} draft={draft} editing={editing} onChange={onDraftChange} />
                       <OrderDetailHeader order={order} draft={draft} editing={editing} onChange={onDraftChange} />
-
-                      {readOnly ? (
-                        <p className="mt-4 border-t border-surface-border pt-4 text-right text-sm text-slate-500">
-                          All Orders is view only - open the order from its status card to make changes.
-                        </p>
-                      ) : null}
                     </>
                   }
                 />

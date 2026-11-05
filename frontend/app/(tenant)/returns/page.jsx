@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import dynamic from "next/dynamic";
 import ordersService from "../../../services/ordersService";
 import wmsService from "../../../services/wmsService";
 import Button from "../../../components/shared/Button";
@@ -9,19 +10,18 @@ import DateRangeFilter from "../../../components/orders/DateRangeFilter";
 import { useSessionDateRange } from "../../../store/dateFilterStore";
 import ScanPanel from "../../../components/wms/ScanPanel";
 import ReturnBreakdownModal from "../../../components/wms/ReturnBreakdownModal";
+import Modal from "../../../components/shared/Modal";
+
+// The order's details, read only - opened by clicking its number.
+const OrderDetailPanel = dynamic(() => import("../../../components/orders/OrderDetailPanel"), {
+  ssr: false,
+});
 
 // Every return is in exactly one of three buckets - "" (Total) is all of
 // them: Awaiting Scan (the courier says returned, not scanned in yet),
 // Received (scanned in), Not Received (Return in Transit - the courier is
 // still bringing it back). Drives both the summary cards and the table
 // filter, so a card click and its badge always agree.
-
-const SCAN_LAYOUT_KEY = "returns:scan-layout";
-const SCAN_WIDTH_DEFAULT = 340;
-
-function clampScanWidth(width) {
-  return Math.min(Math.max(Number(width) || SCAN_WIDTH_DEFAULT, 240), 560);
-}
 
 function formatDate(value) {
   return value ? new Date(value).toLocaleString() : "—";
@@ -41,6 +41,16 @@ function breakdownText(breakdown) {
   ]
     .filter(Boolean)
     .join(" · ");
+}
+
+// The Received badge: just what the parcel came back as - Good, or Damaged
+// / Lost - no unit counts.
+function conditionText(breakdown, condition) {
+  if (!breakdown?.length) return condition === "bad" ? "Damaged" : "Good";
+  const any = (key) => breakdown.some((l) => l[key] > 0);
+  return [any("good") ? "Good" : "", any("damaged") ? "Damaged" : "", any("lost") ? "Lost" : ""]
+    .filter(Boolean)
+    .join(" / ");
 }
 
 function describeOutcome(entry) {
@@ -115,43 +125,10 @@ export default function ReturnsPage() {
   const [notice, setNotice] = useState("");
   // The parcel being counted in the receive popup: { orderNumber, lines }.
   const [receiving, setReceiving] = useState(null);
-  // Scan panel width beside the list (desktop), dragged by its edge and
-  // remembered per browser; collapsed gives the list the whole row.
-  const [scanWidth, setScanWidth] = useState(SCAN_WIDTH_DEFAULT);
-  const [scanCollapsed, setScanCollapsed] = useState(false);
-
-  useEffect(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem(SCAN_LAYOUT_KEY) || "null");
-      if (saved) {
-        setScanWidth(clampScanWidth(saved.width ?? SCAN_WIDTH_DEFAULT));
-        setScanCollapsed(Boolean(saved.collapsed));
-      }
-    } catch {}
-  }, []);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(SCAN_LAYOUT_KEY, JSON.stringify({ width: scanWidth, collapsed: scanCollapsed }));
-    } catch {}
-  }, [scanWidth, scanCollapsed]);
-
-  function startResize(e) {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startWidth = scanWidth;
-    function onMove(ev) {
-      setScanWidth(clampScanWidth(startWidth + ev.clientX - startX));
-    }
-    function onUp() {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      document.body.style.userSelect = "";
-    }
-    document.body.style.userSelect = "none";
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-  }
+  // The Scan popup (Awaiting Scan's Scan button).
+  const [scanOpen, setScanOpen] = useState(false);
+  // The order whose details are open (read only), or null.
+  const [detailOrderId, setDetailOrderId] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -331,11 +308,8 @@ export default function ReturnsPage() {
       {/* One grid so phones can reorder it: Scan first (what the desk does
           all day), then the report cards, then the orders list. From lg the
           cards span the top and Scan sits beside the list, as before. */}
-      <div
-        className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-[var(--scan-w)_1fr]"
-        style={{ "--scan-w": scanCollapsed ? "0px" : `${scanWidth}px` }}
-      >
-        <div className="order-2 lg:order-1 lg:col-span-2">
+      <div className="mt-3 space-y-3">
+        <div>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             <SummaryCard
               label="Total Returns"
@@ -387,54 +361,8 @@ export default function ReturnsPage() {
           ) : null}
         </div>
 
-        <div className={`relative order-1 lg:order-2 ${scanCollapsed ? "lg:hidden" : ""}`}>
-          {/* Drag to share the width between Scan and the list; « hides
-              Scan so the list gets it all. Desktop only. */}
-          <div
-            onPointerDown={startResize}
-            title="Drag to resize"
-            className="absolute -right-3 top-0 z-10 hidden h-full w-3 cursor-col-resize items-start justify-center lg:flex"
-          >
-            <span className="mt-12 h-10 w-1 rounded-full bg-slate-300 hover:bg-brand-500" />
-          </div>
-          <button
-            type="button"
-            onClick={() => setScanCollapsed(true)}
-            title="Hide scan panel"
-            className="absolute -right-3 top-2 z-20 hidden h-6 w-6 items-center justify-center rounded-full border border-surface-border bg-white text-xs text-slate-500 shadow-sm hover:text-slate-800 lg:flex"
-          >
-            «
-          </button>
-          <ScanPanel
-            title="Scan returned parcel"
-            hint="Scanning only finds the parcel - nothing is recorded until you confirm its count in the popup."
-            actionLabel="Check"
-            fieldLabel="Tracking number"
-            onScan={async (trackingNumber) => {
-              const result = await wmsService.lookupReturn({ trackingNumber });
-              // Found and receivable: count it in the popup. The lookup
-              // resolved the tracking number to the real order, so the
-              // receive goes against that exact order_number.
-              if (result.success) {
-                setReceiving({ orderNumber: result.order_number, lines: result.lines || [] });
-              }
-              return result;
-            }}
-            renderSuccess={() => "Found — count the items in the popup"}
-          />
-        </div>
-
-        <div className="order-3 min-w-0">
+        <div className="min-w-0">
           <div className="mb-3 flex flex-wrap items-center gap-2">
-            {scanCollapsed ? (
-              <button
-                type="button"
-                onClick={() => setScanCollapsed(false)}
-                className="hidden rounded-md border border-surface-border bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 lg:inline-flex"
-              >
-                Show scan »
-              </button>
-            ) : null}
             <form
               onSubmit={(e) => {
                 e.preventDefault();
@@ -464,6 +392,12 @@ export default function ReturnsPage() {
                 </button>
               ) : null}
             </form>
+            {/* Awaiting Scan: Scan on the right, opening the scan box in a popup. */}
+            {bucket === "awaiting" ? (
+              <Button onClick={() => setScanOpen(true)} className="ml-auto">
+                Scan
+              </Button>
+            ) : null}
           </div>
 
           {selectedRows.length > 0 ? (
@@ -556,7 +490,16 @@ export default function ReturnsPage() {
                           />
                         ) : null}
                       </td>
-                      <td className="px-3 py-2 font-medium text-slate-800">{order.order_number}</td>
+                      <td className="px-3 py-2">
+                        <button
+                          type="button"
+                          onClick={() => setDetailOrderId(order.id)}
+                          title={`Open order ${order.order_number}`}
+                          className="font-semibold text-brand-600 hover:text-brand-700 hover:underline"
+                        >
+                          {order.order_number}
+                        </button>
+                      </td>
                       <td className="px-3 py-2 font-mono text-xs text-slate-700">{order.tracking_number || "—"}</td>
                       <td className="px-3 py-2 text-slate-600">{order.customer_name}</td>
                       <td className="px-3 py-2 text-slate-600">{order.courier_name || "—"}</td>
@@ -595,8 +538,7 @@ export default function ReturnsPage() {
                                 : "bg-green-100 text-green-700"
                             }`}
                           >
-                            {breakdownText(order.return_breakdown) ||
-                              (order.return_condition === "bad" ? "Damaged" : "Received")}
+                            {conditionText(order.return_breakdown, order.return_condition)}
                           </span>
                         ) : (
                           <button
@@ -629,6 +571,36 @@ export default function ReturnsPage() {
         </div>
       </div>
 
+      <Modal open={scanOpen} onClose={() => setScanOpen(false)} title="Scan" width="max-w-md">
+        <ScanPanel
+          title="Scan returned parcel"
+          hint="Scanning only finds the parcel - nothing is recorded until you confirm its count in the popup."
+          actionLabel="Check"
+          fieldLabel="Tracking number"
+          onScan={async (trackingNumber) => {
+            const result = await wmsService.lookupReturn({ trackingNumber });
+            // Found and receivable: count it in the popup. The lookup
+            // resolved the tracking number to the real order, so the
+            // receive goes against that exact order_number.
+            if (result.success) {
+              setReceiving({ orderNumber: result.order_number, lines: result.lines || [] });
+            }
+            return result;
+          }}
+          renderSuccess={() => "Found — count the items in the popup"}
+        />
+      </Modal>
+
+      {detailOrderId ? (
+        <OrderDetailPanel
+          orderId={detailOrderId}
+          couriers={[]}
+          readOnly
+          onClose={() => setDetailOrderId(null)}
+        />
+      ) : null}
+
+      {/* After the Scan popup, so the count popup opens on top of it. */}
       <ReturnBreakdownModal request={receiving} onConfirm={confirmReceive} onClose={() => setReceiving(null)} />
 
       {confirmCondition ? (

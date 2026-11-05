@@ -133,21 +133,34 @@ export function connectedBookingAccounts({ smartlaneConnected, omsCourierConnect
   );
 }
 
-// New through Awaiting Assigning - no courier on the order yet, so its
-// details and line items can still be edited. Stock isn't deducted until
-// the order is pushed to a courier (wms.services.consume_for_order), so
-// changing items here doesn't leave the ledger out of step.
+// Awaiting Confirmation only - its details and line items can be edited.
+// From Approved on, an order is locked (Assigning Courier's Edit Order
+// cancels the booking and brings it back here first).
 export const EDITABLE_STATUSES = new Set([
   "new",
   "pending_cc",
   "pending_cod",
   "city_issue",
-  "awaiting_assigning",
+  "awaiting_approval",
 ]);
 
-// Dispatched or later - no Edit at all (backend: oms.services.
+// Approved or later - no Edit at all (backend: oms.services.
 // EDIT_LOCKED_STATUSES).
-export const EDIT_LOCKED_STATUSES = new Set(["dispatched", "out_for_delivery", "attempt", "delivered", "returned"]);
+export const EDIT_LOCKED_STATUSES = new Set([
+  "awaiting_assigning",
+  "approved",
+  "booking_pending",
+  "ready_to_print",
+  "ready_to_pick",
+  "awaiting_dispatched",
+  "dispatch_issue",
+  "dispatched",
+  "out_for_delivery",
+  "attempt",
+  "delivered",
+  "returned",
+  "cancelled",
+]);
 
 // Assigning Courier's own three, offered first for any selection that is
 // all in that card (whatever each order's own status there) - the orders
@@ -271,16 +284,11 @@ export const ACTIONS_BY_STATUS = {
     { key: "cancel", action: "cancel", label: "Cancel Order" },
   ],
   dispatch_issue: [{ action: "retry_dispatch", label: "Retry dispatch" }, { action: "cancel", label: "Cancel Order" }],
-  dispatched: [{ action: "mark_delivered", label: "Mark delivered" }],
-  // Smartlane-reported sub-stages of dispatched - same manual fallback
-  // available, since staff may need to mark delivered by hand regardless
-  // of which sub-stage the courier last reported.
-  out_for_delivery: [{ action: "mark_delivered", label: "Mark delivered" }],
+  // No Mark delivered after Approved - delivery comes from the courier.
+  dispatched: [],
+  out_for_delivery: [],
   // Undelivered: tell the courier Reattempt or Return (Shipper Advice).
-  attempt: [
-    { action: "shipper_advice", label: "Shipper Advice" },
-    { action: "mark_delivered", label: "Mark delivered" },
-  ],
+  attempt: [{ action: "shipper_advice", label: "Shipper Advice" }],
   delivered: [],
   cancelled: [],
   returned: [],

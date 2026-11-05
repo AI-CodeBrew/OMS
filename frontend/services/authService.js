@@ -71,7 +71,8 @@ class AuthService {
       headers.Authorization = `Bearer ${token}`;
     }
     if (user?.role === "super_admin" && actingStore?.hub) {
-      headers["X-Dispatch-Hub"] = "1";
+      // "all": the super admin's All Orders - every store, same Hub mode.
+      headers["X-Dispatch-Hub"] = actingStore.allStores ? "all" : "1";
     } else if (user?.role === "super_admin" && actingStore?.id) {
       headers["X-Act-As-Organization"] = actingStore.id;
     }

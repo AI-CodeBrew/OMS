@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import ordersService from "../../../services/ordersService";
-import { STATUS_LABELS } from "../statusConfig";
+import { STATUS_LABELS, cardTab } from "../statusConfig";
 
 export default function CustomerHistoryTab({ orderId }) {
   const [orders, setOrders] = useState([]);
@@ -32,7 +32,7 @@ export default function CustomerHistoryTab({ orderId }) {
         {orders.map((o) => (
           <tr key={o.id} className="border-t border-surface-border">
             <td className="py-1.5 font-medium text-slate-900">{o.order_number}</td>
-            <td className="py-1.5">{STATUS_LABELS[o.status] || o.status}</td>
+            <td className="py-1.5">{cardTab(o.workflow_card)?.label || STATUS_LABELS[o.status] || o.status}</td>
             <td className="py-1.5 text-slate-500">{new Date(o.created_at).toLocaleDateString()}</td>
             <td className="py-1.5 text-right">{o.total_amount}</td>
           </tr>

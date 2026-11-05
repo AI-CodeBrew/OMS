@@ -10,7 +10,7 @@ function buildSocketUrl() {
   const wsBase = apiConfig.baseUrl.replace(/^http/, "ws");
   const url = `${wsBase}/ws/orders/?token=${encodeURIComponent(token)}`;
   if (user?.role === "super_admin" && actingStore?.hub) {
-    return `${url}&hub=1`;
+    return `${url}&hub=${actingStore.allStores ? "all" : "1"}`;
   }
   if (user?.role === "super_admin" && actingStore?.id) {
     return `${url}&org=${encodeURIComponent(actingStore.id)}`;

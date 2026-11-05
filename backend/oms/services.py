@@ -1026,6 +1026,93 @@ def _log_order_change(order, what, *, actor_user_id=None):
         logger.exception("Failed to log change to order %s", order.order_number)
 
 
+# A cancelled booking sends the order back to Awaiting Confirmation with
+# this tag, and a new store order ID: 1001 -> 1001-1 -> 1001-2 ... (the
+# OMS Order ID stays). The note's wording is how the next number is worked
+# out (_next_cancel_number) - keep it.
+BOOKING_CANCELLED_TAG = "Cancelled from Courier Portal"
+_RENUMBER_NOTE = "Store order ID changed"
+
+
+def _next_cancel_number(order):
+    """The order's next store order ID after a booking cancel: the number
+    it had before any such change, plus -1, -2, ... - one more than the
+    times it was changed before, skipping any number the store already
+    has."""
+    from .models import OrderStatusEvent
+
+    changed_before = OrderStatusEvent.all_objects.filter(
+        order=order, note__contains=_RENUMBER_NOTE
+    ).count()
+    base = order.order_number
+    if changed_before:
+        base = re.sub(r"-\d+$", "", base)
+    n = changed_before + 1
+    while Order.all_objects.filter(
+        organization_id=order.organization_id, order_number=f"{base}-{n}"
+    ).exists():
+        n += 1
+    return f"{base}-{n}"[:50]
+
+
+def _back_to_confirmation_after_cancel(order, *, actor_user_id, note):
+    """The booking is already cancelled: the order goes back to Awaiting
+    Confirmation (New), tagged BOOKING_CANCELLED_TAG, under its next store
+    order ID - courier, tracking number and booking stamps cleared."""
+    old_number = order.order_number
+    new_number = _next_cancel_number(order)
+    return _force_transition(
+        order,
+        "new",
+        actor_user_id=actor_user_id,
+        note=f"{note} - {_RENUMBER_NOTE}: {old_number} -> {new_number}",
+        extra_fields={
+            **_BOOKING_FIELDS_CLEARED,
+            "workflow_flag": "",
+            "tag": BOOKING_CANCELLED_TAG,
+            "order_number": new_number,
+        },
+    )
+
+
+def unbook_for_edit(order, *, actor_user_id=None):
+    """Assigning Courier's Edit Order: cancels the booking with its courier
+    (strictly - a courier that refuses, e.g. already picked up, leaves the
+    order exactly as it was), puts its stock back, and sends the order to
+    Awaiting Confirmation to be edited and approved again - see
+    _back_to_confirmation_after_cancel."""
+    if order.status not in WORKFLOW_CARD_STATUSES["assigning_courier"]:
+        raise InvalidTransition(
+            f"Order {order.order_number} is {order.get_status_display()} - only orders in "
+            "Assigning Courier can have their booking cancelled here."
+        )
+    old_booking = " ".join(
+        part for part in (order.courier.name if order.courier_id else "", order.tracking_number) if part
+    )
+    with transaction.atomic():
+        _release_courier_booking(
+            order, actor_user_id=actor_user_id, note="Edit Order - booking cancelled", strict=True
+        )
+        return _back_to_confirmation_after_cancel(
+            order, actor_user_id=actor_user_id,
+            note=f"Edit Order - booking {old_booking or '(none)'} cancelled",
+        )
+
+
+def next_replacement_number(original):
+    """A Replacement's store order ID: the original's, plus R - R2, R3 ...
+    when that's taken (an order replaced more than once)."""
+    base = original.order_number
+    n = 1
+    while True:
+        candidate = f"{base}R{n if n > 1 else ''}"[:50]
+        if not Order.all_objects.filter(
+            organization_id=original.organization_id, order_number=candidate
+        ).exists():
+            return candidate
+        n += 1
+
+
 def unbook_from_assigning(order, *, flag, reason, actor_user_id=None):
     """Assigning Courier's Edit Order and Change Courier: cancels the
     order's booking with its courier (strictly - a courier that refuses,
@@ -1066,7 +1153,8 @@ def unbook_cancelled_by_courier(order, *, courier_label, actor_user_id=None):
     """The courier cancelled the booking on its own portal: the order itself
     isn't cancelled - only its booking is. The stock goes back, the courier,
     consignment/tracking number and booking stamps are cleared, and the
-    order returns to Awaiting Assigning to be booked again. Returns True if
+    order returns to Awaiting Confirmation under a new store order ID
+    (_back_to_confirmation_after_cancel). Returns True if
     the order changed; an order already past booking's reach (delivered,
     returned, cancelled) or not booked is left alone."""
     if order.status not in _UNBOOKABLE_STATUSES:
@@ -1077,12 +1165,9 @@ def unbook_cancelled_by_courier(order, *, courier_label, actor_user_id=None):
         propagate_to_courier=False,
         note=f"Booking cancelled on {courier_label}",
     )
-    _force_transition(
-        order,
-        "awaiting_assigning",
-        actor_user_id=actor_user_id,
+    _back_to_confirmation_after_cancel(
+        order, actor_user_id=actor_user_id,
         note=f"Booking cancelled on {courier_label} - booking and tracking number removed",
-        extra_fields=dict(_BOOKING_FIELDS_CLEARED),
     )
     return True
 
@@ -2086,7 +2171,14 @@ def get_probability_map(*, organization_filter, phone_numbers):
 
 # With the courier or past it - the parcel's details are on the courier's
 # booking now, so the order can't be edited here any more.
-EDIT_LOCKED_STATUSES = {"dispatched", "out_for_delivery", "attempt", "delivered", "returned"}
+# Only Awaiting Confirmation can be edited - from Approved on, an order is
+# locked (Assigning Courier's Edit Order cancels the booking and brings it
+# back to Awaiting Confirmation first - unbook_for_edit).
+EDIT_LOCKED_STATUSES = {
+    "awaiting_assigning", "approved", "booking_pending", "ready_to_print", "ready_to_pick",
+    "awaiting_dispatched", "dispatch_issue", "dispatched", "out_for_delivery", "attempt",
+    "delivered", "returned", "cancelled",
+}
 
 
 def update_order_detail(order, *, fields, items=None):
@@ -2098,7 +2190,7 @@ def update_order_detail(order, *, fields, items=None):
     if order.status in EDIT_LOCKED_STATUSES:
         raise InvalidTransition(
             f"Order {order.order_number} is {dict(Order.STATUS_CHOICES).get(order.status, order.status)} "
-            "- it can't be edited once dispatched."
+            "- only orders in Awaiting Confirmation can be edited."
         )
     for field, value in fields.items():
         setattr(order, field, value)

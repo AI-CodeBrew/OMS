@@ -153,6 +153,9 @@ export default function PrintByCourierModal({ request, accounts, onClose, onPrin
     }
   }
 
+  // Only the couriers the selected orders are actually booked with.
+  const shownAccounts = accounts.filter((account) => groups.byAccount[account].length > 0);
+
   return (
     <>
       {/* No close while the airway bill split step is open on top - Escape
@@ -166,9 +169,13 @@ export default function PrintByCourierModal({ request, accounts, onClose, onPrin
           <p className="rounded-md bg-slate-50 p-3 text-sm text-slate-600">
             No courier is connected - connect one from the Integrations page.
           </p>
+        ) : shownAccounts.length === 0 ? (
+          <p className="rounded-md bg-slate-50 p-3 text-sm text-slate-600">
+            None of the selected orders is booked with a connected courier.
+          </p>
         ) : (
           <div className="rounded-md border border-surface-border">
-            {accounts.map((account) => {
+            {shownAccounts.map((account) => {
               const count = groups.byAccount[account].length;
               const done = count > 0 && printed.has(printedKey(account));
               return (

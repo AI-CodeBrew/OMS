@@ -25,6 +25,27 @@ def active_hub_organization_ids():
     )
 
 
+# X-Dispatch-Hub / ?hub= value for the super admin's All Orders: the same
+# Hub mode, over every store instead of only the Hub's roster.
+ALL_STORES_SCOPE = "all"
+
+
+def all_store_organization_ids():
+    """Every active store (not FynkTech's own platform org) - the super
+    admin's All Orders tab, whether or not the store is in the Hub."""
+    return list(
+        Organization.objects.filter(is_active=True, is_platform=False).values_list("id", flat=True)
+    )
+
+
+def hub_scope_organization_ids(scope):
+    """Org ids for a Hub-mode request: every store for the All Orders tab
+    (scope "all"), else the Dispatch Hub's own stores."""
+    if scope == ALL_STORES_SCOPE:
+        return all_store_organization_ids()
+    return active_hub_organization_ids()
+
+
 def _bank_details_summary(organization_id):
     from finance.models import BankDetails
 
@@ -57,6 +78,16 @@ def list_hub_stores():
             "oms_courier_connected": _oms_courier_connected(entry.organization_id),
         }
         for entry in entries
+    ]
+
+
+def list_all_stores():
+    """Every active store, Hub or not - All Orders' store picker."""
+    return [
+        {"id": str(org_id), "name": name, "store_code": code}
+        for org_id, name, code in Organization.objects.filter(
+            id__in=all_store_organization_ids()
+        ).order_by("name").values_list("id", "name", "store_code")
     ]
 
 

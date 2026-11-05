@@ -12,23 +12,19 @@ const PAYMENT_STATUSES = [
 const SELECT_CLASS =
   "mt-0.5 w-full rounded-md border border-surface-border px-2 py-1 text-sm outline-none focus:border-brand-500";
 
-// Beside the order number at the top of the detail: the card the order is
-// in (Awaiting Confirmation, Dispatched, ...), and its own status too when
-// that says more (City Issue, Out for Delivery, ...).
+// Beside the order number at the top of the detail: Status - only ever
+// one of our cards (Awaiting Confirmation, Approved, Assigning Courier,
+// Dispatched, ...), never the backend's own status (Ready to Print, ...) -
+// then Sub Status (the courier's word) and the Tags (ours and the order's).
 export function OrderStatusBadge({ order }) {
   const card = cardTab(order.workflow_card)?.label;
-  const status = STATUS_LABELS[order.status] || order.status;
   return (
     <>
-      <Badge variant="brand">{card || status}</Badge>
-      {card && card !== status ? <Badge variant="neutral">{status}</Badge> : null}
-      {/* Sub Status: the courier's own word for where the parcel is. */}
+      <Badge variant="brand">{card || STATUS_LABELS[order.status] || order.status}</Badge>
       {order.courier_status ? (
         <span className="text-xs font-normal text-slate-500">Sub status: {order.courier_status}</span>
       ) : null}
-      {/* Both tags: where the order is within its card, then its own tag -
-          the card's tag left out when it only repeats the status. */}
-      {order.workflow_tag && order.workflow_tag !== status && order.workflow_tag !== card ? (
+      {order.workflow_tag && order.workflow_tag !== card ? (
         <Badge variant="amber">{order.workflow_tag}</Badge>
       ) : null}
       {order.tag ? <Badge variant="green">{order.tag}</Badge> : null}

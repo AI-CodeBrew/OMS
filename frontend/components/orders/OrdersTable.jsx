@@ -65,7 +65,9 @@ const DISPATCH_REQUESTABLE = new Set([
 
 // The "R" beside a replacement order's number (see Order.recreate_type).
 export function ReplacementMark({ order, onDark = false }) {
-  if (order.recreate_type !== "replacement") return null;
+  // A Replacement's order ID already ends in R (1025R) - the badge only
+  // for older ones numbered otherwise.
+  if (order.recreate_type !== "replacement" || /R\d*$/.test(String(order.order_number || ""))) return null;
   return (
     <span
       className={`shrink-0 rounded px-1 text-[11px] font-bold ${
@@ -135,7 +137,7 @@ export default function OrdersTable({
   const allSelected = orders.length > 0 && orders.every((o) => selectedIds.has(o.id));
   const someSelected = orders.some((o) => selectedIds.has(o.id));
   const columnCount =
-    (showStoreColumn ? 17 : 16) +
+    (showStoreColumn ? 16 : 15) +
     (showProductColumn ? 1 : 0) +
     (showTransitColumn ? 1 : 0) +
     (showSubStatusColumn ? 1 : 0) +
@@ -161,7 +163,6 @@ export default function OrdersTable({
             <th className="w-40 px-3 py-2">Customer Name</th>
             {showProductColumn ? <th className="w-48 px-3 py-2">Product</th> : null}
             <th className="w-32 px-3 py-2">Contact</th>
-            <th className="w-40 px-3 py-2">Date &amp; Time</th>
             <th className="w-24 px-3 py-2">Fulfillment</th>
             <th className="w-36 px-3 py-2">Status</th>
             {showSubStatusColumn ? <th className="w-40 px-3 py-2">Sub Status</th> : null}
@@ -260,15 +261,6 @@ export default function OrdersTable({
                   </td>
                 ) : null}
                 <td className="px-3 py-1.5 text-slate-500">{formatPakPhone(order.customer_phone) || "—"}</td>
-                <td className="whitespace-nowrap px-3 py-1.5 text-slate-500">
-                  {new Date(order.placed_at || order.created_at).toLocaleString([], {
-                    year: "numeric",
-                    month: "numeric",
-                    day: "numeric",
-                    hour: "numeric",
-                    minute: "2-digit",
-                  })}
-                </td>
                 <td className="px-3 py-1.5 text-slate-700">
                   <div className="capitalize">{order.fulfillment_status}</div>
                   {/* Who ships it - kept off the Courier column, which names
@@ -280,7 +272,8 @@ export default function OrdersTable({
                   ) : null}
                 </td>
                 <td className="px-3 py-1.5">
-                  {/* The card it's under; the exact status on hover. */}
+                  {/* Only our card (Approved, Assigning Courier, ...) - never
+                      the backend status (Ready to Print, ...). */}
                   {(() => {
                     const card = cardTab(order.workflow_card);
                     const label = card ? card.label : statusLabel(order.status);
@@ -289,7 +282,7 @@ export default function OrdersTable({
                         className={`inline-block max-w-full truncate rounded-full px-2 py-0.5 text-[11px] font-medium ${
                           TONE_BADGE[card?.tone] || "bg-slate-100 text-slate-700"
                         }`}
-                        title={`${label} - ${statusLabel(order.status)}`}
+                        title={label}
                       >
                         {label}
                       </span>

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Button from "../../shared/Button";
 import ordersService from "../../../services/ordersService";
-import { STATUS_LABELS } from "../statusConfig";
+import { STATUS_LABELS, cardTab } from "../statusConfig";
 
 export default function SplitOrdersTab({ orderId, items, onSplit }) {
   const [children, setChildren] = useState([]);
@@ -100,7 +100,7 @@ export default function SplitOrdersTab({ orderId, items, onSplit }) {
             {children.map((c) => (
               <tr key={c.id} className="border-t border-surface-border">
                 <td className="py-1.5 font-medium text-slate-900">{c.order_number}</td>
-                <td className="py-1.5">{STATUS_LABELS[c.status] || c.status}</td>
+                <td className="py-1.5">{cardTab(c.workflow_card)?.label || STATUS_LABELS[c.status] || c.status}</td>
                 <td className="py-1.5 text-right">{c.total_amount}</td>
               </tr>
             ))}

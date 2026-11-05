@@ -100,6 +100,9 @@ def dispatch_hub_stores(request):
     """GET the Hub roster; POST {"organization_id", "per_order_rate"} adds
     a store to it (or updates its rate if it's already in)."""
     if request.method == "GET":
+        # ?scope=all: every store (the All Orders tab's store filter).
+        if request.query_params.get("scope") == dispatch_hub_service.ALL_STORES_SCOPE:
+            return Response({"success": True, "stores": dispatch_hub_service.list_all_stores()})
         return Response({"success": True, "stores": dispatch_hub_service.list_hub_stores()})
 
     body = request.data or {}

@@ -104,11 +104,19 @@ class CourierSerializer(serializers.ModelSerializer):
 
 class OrderSummarySerializer(serializers.ModelSerializer):
     """Lightweight - used for Split Orders / Customer History tabs, which
-    only need to list sibling orders, not their full detail."""
+    only need to list sibling orders, not their full detail. workflow_card:
+    the card shown as its status (never the backend's own status)."""
+
+    workflow_card = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
-        fields = ["id", "order_number", "status", "total_amount", "created_at"]
+        fields = ["id", "order_number", "status", "workflow_card", "total_amount", "created_at"]
+
+    def get_workflow_card(self, order):
+        from .services import workflow_card
+
+        return workflow_card(order)
 
 
 class OrderStatusEventSerializer(serializers.ModelSerializer):

@@ -1,4 +1,5 @@
 import logging
+import re
 import time
 import zoneinfo
 from datetime import timedelta
@@ -464,6 +465,16 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
     update_fields = dict(shopify_fields)
     if not update_fields["tracking_number"]:
         del update_fields["tracking_number"]
+    # A cancelled booking gives the order a new store order ID here (#1001 ->
+    # #1001-1, oms.services._next_cancel_number) - kept, not put back to
+    # Shopify's #1001 on the next sync.
+    current_number = (
+        Order.all_objects.filter(organization_id=organization_id, shopify_order_id=shopify_order_id)
+        .values_list("order_number", flat=True)
+        .first()
+    )
+    if current_number and re.fullmatch(re.escape(update_fields["order_number"]) + r"-\d+", current_number):
+        del update_fields["order_number"]
 
     order, created = Order.all_objects.update_or_create(
         organization_id=organization_id,
@@ -668,6 +679,12 @@ def create_order_on_shopify(
     updates = {}
     if extra.get("secondary_phone"):
         updates["secondary_phone"] = extra["secondary_phone"][:50]
+    # Recreate's New order: Shopify numbered it; it's still marked as made
+    # from the order it was recreated from.
+    if extra.get("recreate_type"):
+        updates["recreate_type"] = extra["recreate_type"]
+    if extra.get("recreated_from"):
+        updates["recreated_from"] = extra["recreated_from"]
     if updates:
         Order.all_objects.filter(pk=order.pk).update(**updates)
     # By SKU first: a product line item comes back under the product's own

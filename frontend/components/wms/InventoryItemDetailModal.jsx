@@ -164,7 +164,9 @@ const TABS = [
 // The Inventory table's eye icon: the item's orders (and its purchase
 // orders and stock history), page by page, with the whole lot as a CSV
 // (backend: wms.views.StockItemViewSet.report).
-export default function InventoryItemDetailModal({ item, onClose }) {
+// loadReport: where the details come from - the store's own Inventory by
+// default; the super admin's Inventory passes its own (and no CSV).
+export default function InventoryItemDetailModal({ item, onClose, loadReport }) {
   const [report, setReport] = useState(null);
   const [error, setError] = useState("");
   const [tab, setTab] = useState("orders");
@@ -177,8 +179,7 @@ export default function InventoryItemDetailModal({ item, onClose }) {
     setError("");
     setTab("orders");
     setPage(1);
-    wmsService
-      .inventoryReport(item.id)
+    (loadReport ? loadReport(item.id) : wmsService.inventoryReport(item.id))
       .then(setReport)
       .catch((err) => setError(err.message || "Failed to load details"));
   }, [item]);
@@ -270,10 +271,14 @@ export default function InventoryItemDetailModal({ item, onClose }) {
       </div>
 
       <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-        <Button loading={downloading} onClick={download}>
-          {!downloading ? <DownloadIcon /> : null}
-          Download CSV
-        </Button>
+        {loadReport ? (
+          <span />
+        ) : (
+          <Button loading={downloading} onClick={download}>
+            {!downloading ? <DownloadIcon /> : null}
+            Download CSV
+          </Button>
+        )}
         <Pager page={page} total={totalPages} onChange={setPage} />
       </div>
     </Modal>

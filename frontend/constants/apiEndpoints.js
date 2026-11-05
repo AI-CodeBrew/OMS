@@ -53,6 +53,8 @@ export const API_ENDPOINTS = {
     cities: "/api/core/admin/cities/",
     citiesImport: "/api/core/admin/cities/import/",
     city: (id) => `/api/core/admin/cities/${id}/`,
+    inventory: "/api/core/admin/inventory/",
+    inventoryReport: (id) => `/api/core/admin/inventory/${id}/report/`,
     ticket: (id) => `/api/core/admin/tickets/${id}/`,
     ticketResolve: (id) => `/api/core/admin/tickets/${id}/resolve/`,
     ticketStatus: (id) => `/api/core/admin/tickets/${id}/status/`,

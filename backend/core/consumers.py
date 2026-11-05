@@ -54,10 +54,11 @@ class OrgOrdersConsumer(AsyncJsonWebsocketConsumer):
                 # Never user_metadata - the user can write that themselves.
                 app_meta = claims.get("app_metadata") or {}
                 if app_meta.get("role") == "super_admin":
-                    if unquote(params.get("hub", "")) == "1":
-                        from .dispatch_hub_service import active_hub_organization_ids
+                    hub = unquote(params.get("hub", ""))
+                    if hub:
+                        from .dispatch_hub_service import hub_scope_organization_ids
 
-                        organization_ids = await sync_to_async(active_hub_organization_ids)()
+                        organization_ids = await sync_to_async(hub_scope_organization_ids)(hub)
                     else:
                         organization_id = await sync_to_async(resolve_active_org_id)(
                             unquote(params.get("org", ""))

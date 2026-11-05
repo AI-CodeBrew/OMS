@@ -215,9 +215,11 @@ class TenantMiddleware:
             request.is_org_admin = True
             request.modules = enabled_modules_for_org(org_id)
         elif hub and request.is_super_admin and not is_admin_api:
-            from .dispatch_hub_service import active_hub_organization_ids
+            from .dispatch_hub_service import hub_scope_organization_ids
 
-            org_ids = [str(i) for i in active_hub_organization_ids()]
+            # "all": the super admin's All Orders - every store, same Hub
+            # mode; anything else is the Dispatch Hub's own stores.
+            org_ids = [str(i) for i in hub_scope_organization_ids(hub)]
             if not org_ids:
                 return JsonResponse(
                     {"detail": "No stores in the Dispatch Hub."}, status=403

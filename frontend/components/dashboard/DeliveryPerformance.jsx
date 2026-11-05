@@ -24,7 +24,7 @@ function ProvinceCard({ row }) {
       <div className="truncate text-xs font-medium text-slate-700">{row.name}</div>
       <div className={`text-sm font-semibold ${rateTone(row.delivery_pct)}`}>{formatPct(row.delivery_pct)}</div>
       <div className="text-[11px] text-slate-400">
-        {row.share_pct.toFixed(1)}% · {row.orders.toLocaleString()} Orders
+        {row.share_pct.toFixed(1)}%
       </div>
       {/* Hover tooltip */}
       <div className="pointer-events-none absolute left-0 top-full z-10 mt-1 hidden whitespace-nowrap rounded-md bg-slate-900 px-2.5 py-1.5 text-xs text-white shadow-lg group-hover:block">
