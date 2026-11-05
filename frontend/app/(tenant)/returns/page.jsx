@@ -9,6 +9,7 @@ import Pagination from "../../../components/shared/Pagination";
 import DateRangeFilter from "../../../components/orders/DateRangeFilter";
 import { useSessionDateRange } from "../../../store/dateFilterStore";
 import ScanPanel from "../../../components/wms/ScanPanel";
+import { SCAN_DESKS } from "../../../lib/scanDesks";
 import ReturnBreakdownModal from "../../../components/wms/ReturnBreakdownModal";
 import Modal from "../../../components/shared/Modal";
 
@@ -573,11 +574,17 @@ export default function ReturnsPage() {
 
       <Modal open={scanOpen} onClose={() => setScanOpen(false)} title="Scan" width="max-w-md">
         <ScanPanel
-          title="Scan returned parcel"
-          hint="Scanning only finds the parcel - nothing is recorded until you confirm its count in the popup."
-          actionLabel="Check"
-          fieldLabel="Tracking number"
+          {...SCAN_DESKS.returns}
           onScan={async (trackingNumber) => {
+            // A phone keeps scanning while the laptop's count popup is open -
+            // the next parcel must not replace the one being counted.
+            if (receiving) {
+              return {
+                success: false,
+                order_number: trackingNumber,
+                reason: `Finish counting ${receiving.orderNumber} first`,
+              };
+            }
             const result = await wmsService.lookupReturn({ trackingNumber });
             // Found and receivable: count it in the popup. The lookup
             // resolved the tracking number to the real order, so the
@@ -587,7 +594,6 @@ export default function ReturnsPage() {
             }
             return result;
           }}
-          renderSuccess={() => "Found — count the items in the popup"}
         />
       </Modal>
 

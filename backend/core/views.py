@@ -5,7 +5,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
-from . import store_service
+from . import scan_sessions, store_service
 from .permissions import IsOrgAdmin
 from .store_service import StoreAdminError
 
@@ -18,6 +18,14 @@ def _db_ok():
         return True
     except Exception:
         return False
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def scan_session(request):
+    """A laptop's Scan panel asking to pair a phone as its scanner - see
+    core/scan_sessions.py."""
+    return Response(scan_sessions.create_session())
 
 
 @api_view(["GET"])

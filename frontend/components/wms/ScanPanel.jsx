@@ -1,7 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import Button from "../shared/Button";
+import { CameraViewport, CheckIcon, CloseIcon, CrossIcon, useBarcodeCamera, useBeeper } from "./barcodeCamera";
+import PhoneScanPairing from "./PhoneScanPairing";
+import { describeScanOutcome, SCAN_DESKS } from "../../lib/scanDesks";
+import {
+  claimPhoneDesk,
+  closePhoneScanner,
+  openPhoneScanner,
+  retryPhoneScanner,
+  usePhoneScanStore,
+} from "../../lib/phoneScanSession";
 
 // A barcode gun fires its whole payload in a few milliseconds per keystroke;
 // a person types an order of magnitude slower. Used only to label an entry
@@ -16,104 +26,10 @@ const DUPLICATE_WINDOW_MS = 2000;
 const MIN_CODE_LENGTH = 3;
 const MUTE_STORAGE_KEY = "oms.scanPanel.muted";
 
-// Loaded from a CDN rather than an npm dependency - staff scan from
-// whatever phone they have (Android Chrome, iPhone Safari, ...), and this
-// library's pure-JS barcode decoder runs identically on all of them,
-// unlike the browser's native BarcodeDetector API which Safari doesn't
-// implement at all. Cached at module scope so navigating between Returns
-// and Packing (each with their own ScanPanel) only fetches it once.
-const HTML5_QRCODE_SRC = "https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js";
-let html5QrcodeLoadPromise = null;
-
-function loadHtml5Qrcode() {
-  if (typeof window === "undefined") return Promise.reject(new Error("No window"));
-  if (window.Html5Qrcode) return Promise.resolve();
-  if (html5QrcodeLoadPromise) return html5QrcodeLoadPromise;
-
-  html5QrcodeLoadPromise = new Promise((resolve, reject) => {
-    const existing = document.querySelector(`script[src="${HTML5_QRCODE_SRC}"]`);
-    const script = existing || document.createElement("script");
-    script.addEventListener("load", () => resolve(), { once: true });
-    script.addEventListener("error", () => reject(new Error("Could not load the camera library")), {
-      once: true,
-    });
-    if (!existing) {
-      script.src = HTML5_QRCODE_SRC;
-      script.async = true;
-      document.head.appendChild(script);
-    }
-  }).catch((err) => {
-    html5QrcodeLoadPromise = null; // let a retry try fetching again
-    throw err;
-  });
-  return html5QrcodeLoadPromise;
-}
-
-/**
- * Plays a short tone without any audio asset. Created lazily on the first
- * scan (a user gesture, so autoplay policy is satisfied) and reused after
- * that. Every call is best-effort: a browser with audio blocked or
- * unavailable must still scan normally.
- */
-function useBeeper(muted) {
-  const contextRef = useRef(null);
-
-  return useCallback(
-    (kind) => {
-      if (muted) return;
-      try {
-        const Ctor = window.AudioContext || window.webkitAudioContext;
-        if (!Ctor) return;
-        if (!contextRef.current) contextRef.current = new Ctor();
-        const ctx = contextRef.current;
-        if (ctx.state === "suspended") ctx.resume();
-
-        // Success: a quick rising two-tone chirp. Failure: one lower,
-        // longer buzz - deliberately unlike the success sound so they
-        // can't be confused across a noisy warehouse.
-        const notes =
-          kind === "success"
-            ? [
-                { freq: 880, start: 0, duration: 0.09 },
-                { freq: 1320, start: 0.1, duration: 0.12 },
-              ]
-            : [{ freq: 180, start: 0, duration: 0.42 }];
-
-        notes.forEach(({ freq, start, duration }) => {
-          const oscillator = ctx.createOscillator();
-          const gain = ctx.createGain();
-          oscillator.type = kind === "success" ? "sine" : "square";
-          oscillator.frequency.value = freq;
-          gain.gain.setValueAtTime(0.0001, ctx.currentTime + start);
-          gain.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime + start + 0.01);
-          gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + start + duration);
-          oscillator.connect(gain);
-          gain.connect(ctx.destination);
-          oscillator.start(ctx.currentTime + start);
-          oscillator.stop(ctx.currentTime + start + duration + 0.02);
-        });
-      } catch {
-        // Audio is a convenience - never let it break the scan itself.
-      }
-    },
-    [muted]
-  );
-}
-
-function CheckIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" className="h-7 w-7">
-      <path d="M20 6L9 17l-5-5" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function CrossIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" className="h-7 w-7">
-      <path d="M18 6L6 18M6 6l12 12" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
+// A touch-first device is the phone itself, so Scan opens its camera directly;
+// anything with a mouse gets the QR code that hands scanning to a phone.
+function isTouchDevice() {
+  return Boolean(window.matchMedia?.("(pointer: coarse)").matches);
 }
 
 function SoundIcon({ muted }) {
@@ -142,24 +58,23 @@ function CameraIcon() {
   );
 }
 
-function CloseIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="h-6 w-6">
-      <path d="M18 6L6 18M6 6l12 12" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
 /**
- * Barcode station shared by the Returns Desk and the Packing bench.
+ * Barcode station shared by the Returns Desk, the Packing bench, and the
+ * Orders page's pack and dispatch popups.
  *
  * onScan(code) must resolve to the {success, order_number, reason} shape
  * the wms scan endpoints return; whatever it resolves to is handed
  * straight to renderSuccess for the detail line. `code` is a tracking
  * number (what's actually printed as a barcode on a parcel's courier
  * label) - see fieldLabel below.
+ *
+ * Every way in lands on submit() below - a barcode gun's keystrokes, this
+ * device's camera, or a paired phone's camera - so the flow after it is the
+ * same for all of them. deskId names its entry in lib/scanDesks.js, which is
+ * what a paired phone keeps scanning for once this panel is closed.
  */
 export default function ScanPanel({
+  deskId,
   title,
   hint,
   actionLabel = "Submit",
@@ -168,11 +83,14 @@ export default function ScanPanel({
   renderSuccess,
   onAfterSuccess,
   decision,
+  autoFocusInput = false,
 }) {
   // The camera only ever opens from an explicit tap on the Scan button
   // below - never on mount/default, so landing on the page doesn't throw
   // an unexpected camera-permission prompt at anyone.
   const [scannerOpen, setScannerOpen] = useState(false);
+  // Scan on a laptop: the QR code and phone connection instead of the camera.
+  const [pairingOpen, setPairingOpen] = useState(false);
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
@@ -184,27 +102,32 @@ export default function ScanPanel({
   // (e.g. the Packing station) means this never gets set and the panel
   // behaves exactly as it always has.
   const [pendingDecision, setPendingDecision] = useState(null);
-  // "idle" before the scanner is opened, "loading" while the camera
-  // library loads and permission is requested, "active" once frames are
-  // being decoded, "error" on a denied/unavailable camera.
-  const [cameraStatus, setCameraStatus] = useState("idle");
-  const [cameraError, setCameraError] = useState("");
-  // Bumped by the Try Again button - included in the camera effect's
-  // dependencies purely to force it to re-run after a denied/failed
-  // permission prompt, since scannerOpen is already true and wouldn't
-  // otherwise change.
-  const [cameraRetryCount, setCameraRetryCount] = useState(0);
 
   const inputRef = useRef(null);
   const keyTimesRef = useRef([]);
   const lastSubmitRef = useRef({ code: "", at: 0 });
-  const scannerRef = useRef(null);
-  const submitRef = useRef(null); // always points at the latest submit() - see camera effect below
   // Colons stripped - safe for both getElementById and any internal
   // querySelector the camera library might use, React's default useId()
   // format includes them.
   const cameraElementId = `scan-camera-${useId().replace(/:/g, "")}`;
   const beep = useBeeper(muted);
+
+  // Camera detections have no keystrokes to time - they're always a real
+  // scan, never "typed".
+  const camera = useBarcodeCamera({
+    open: scannerOpen,
+    elementId: cameraElementId,
+    onDecode: (decodedText) => submit(decodedText, { forceScanned: true }),
+  });
+
+  const phone = usePhoneScanStore();
+  const phoneHasPaired = ["paired", "away", "reconnecting"].includes(phone.status);
+  const showPairing = pairingOpen || (phoneHasPaired && phone.deskId === deskId);
+  const phoneElsewhere = phoneHasPaired && phone.deskId && phone.deskId !== deskId;
+
+  const handlePhoneCodeRef = useRef(handlePhoneCode);
+  handlePhoneCodeRef.current = handlePhoneCode;
+  useEffect(() => claimPhoneDesk(deskId, (code) => handlePhoneCodeRef.current(code)), [deskId]);
 
   useEffect(() => {
     try {
@@ -226,102 +149,6 @@ export default function ScanPanel({
     });
   }
 
-  // Opens the phone/webcam camera the moment the operator taps Scan, and
-  // decodes barcodes continuously - every successful decode is handed to
-  // submit() exactly like a hardware scanner's keystrokes were before, so
-  // the rest of the flow (duplicate guard, beep, decision prompt, log) is
-  // unchanged. Stops the moment the overlay is closed or the panel
-  // unmounts, so the camera light doesn't stay on in the background.
-  useEffect(() => {
-    if (!scannerOpen) return;
-
-    let cancelled = false;
-    setCameraStatus("loading");
-    setCameraError("");
-
-    loadHtml5Qrcode()
-      .then(async () => {
-        if (cancelled) return;
-        const { Html5Qrcode, Html5QrcodeSupportedFormats } = window;
-        const formats = Object.values(Html5QrcodeSupportedFormats || {}).filter(
-          (v) => typeof v === "number"
-        );
-        const scanner = new Html5Qrcode(cameraElementId, {
-          formatsToSupport: formats.length ? formats : undefined,
-          verbose: false,
-        });
-        scannerRef.current = scanner;
-
-        // {facingMode: "environment"} is only a hint, and real devices
-        // (confirmed - it opened the front/selfie camera on a test
-        // device) can silently ignore it rather than reject it, so
-        // there's no error to react to, just the wrong camera. Naming an
-        // actual camera id is authoritative instead. getCameras() itself
-        // requests camera access (briefly opening and immediately
-        // releasing a stream) to unlock real device labels before
-        // enumerating, which is also what shows the permission prompt -
-        // start() below then opens the specific device chosen here.
-        let cameraTarget = { facingMode: "environment" };
-        try {
-          const cameras = await Html5Qrcode.getCameras();
-          if (cameras && cameras.length > 0) {
-            const rear = cameras.find((c) => /back|rear|environment/i.test(c.label));
-            cameraTarget = (rear || cameras[cameras.length - 1]).id;
-          }
-        } catch {
-          // Permission denied, or enumeration isn't supported here - the
-          // facingMode hint above still gives start() something to try,
-          // and start() itself will surface a real denial to the caller.
-        }
-        if (cancelled) return;
-
-        return scanner.start(
-          cameraTarget,
-          {
-            fps: 10,
-            // A fixed {width, height} here is a fixed PIXEL size, not a
-            // fraction of the video - on a real phone camera feed
-            // (often 720p+) a flat 260x160 box reads as a tiny square
-            // lost in a huge dark frame, which is exactly what looked
-            // wrong. Sizing it off the actual viewfinder dimensions
-            // (html5-qrcode calls this back with them) makes the box
-            // fill most of the screen on any device instead.
-            qrbox: (viewfinderWidth, viewfinderHeight) => {
-              const width = Math.floor(viewfinderWidth * 0.85);
-              const height = Math.floor(Math.min(viewfinderHeight * 0.45, width * 0.6));
-              return { width, height };
-            },
-          },
-          (decodedText) => submitRef.current?.(decodedText, { forceScanned: true }),
-          () => {} // fires on every frame with no code in view - not an error
-        );
-      })
-      .then(() => {
-        if (!cancelled) setCameraStatus("active");
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setCameraStatus("error");
-        setCameraError(
-          err?.message?.includes("Permission")
-            ? "Camera permission was denied - allow camera access and try again."
-            : err?.message || "Could not open the camera."
-        );
-      });
-
-    return () => {
-      cancelled = true;
-      const scanner = scannerRef.current;
-      scannerRef.current = null;
-      if (scanner) {
-        scanner
-          .stop()
-          .then(() => scanner.clear())
-          .catch(() => {});
-      }
-    };
-  }, [scannerOpen, cameraElementId, cameraRetryCount]);
-
   function wasScanned() {
     const times = keyTimesRef.current;
     if (times.length < MIN_CODE_LENGTH) return false;
@@ -329,6 +156,8 @@ export default function ScanPanel({
     return gaps.every((gap) => gap < SCANNER_KEY_INTERVAL_MS);
   }
 
+  // Resolves to the entry it recorded, or {ignored: "busy" | "repeat"} when
+  // the code didn't count as a scan - the phone needs to hear either way.
   async function submit(raw, { forceScanned } = {}) {
     // The current parcel's decision must be resolved before the next one
     // can be scanned - otherwise a Good/Bad click could land on the wrong
@@ -336,11 +165,9 @@ export default function ScanPanel({
     // which keeps decoding frames continuously - without it, holding a
     // barcode in view a moment too long would fire a second submit while
     // the first is still in flight.
-    if (pendingDecision || busy) return;
+    if (pendingDecision || busy) return { ignored: "busy" };
 
     const code = (raw || "").trim();
-    // Camera detections have no keystrokes to time - they're always a
-    // real scan, never "typed".
     const scanned = forceScanned !== undefined ? forceScanned : wasScanned();
 
     if (code.length < MIN_CODE_LENGTH) {
@@ -348,14 +175,14 @@ export default function ScanPanel({
       // firing a request that can only fail.
       setValue("");
       keyTimesRef.current = [];
-      return;
+      return { ignored: "repeat" };
     }
 
     const now = Date.now();
     if (code === lastSubmitRef.current.code && now - lastSubmitRef.current.at < DUPLICATE_WINDOW_MS) {
       setValue("");
       keyTimesRef.current = [];
-      return;
+      return { ignored: "repeat" };
     }
     lastSubmitRef.current = { code, at: now };
 
@@ -368,10 +195,11 @@ export default function ScanPanel({
         // Pause here instead of finalizing - the tick shows now, but
         // nothing is recorded (and the log line isn't written) until the
         // operator picks an outcome below.
-        setResult({ ...response, order_number: orderNumber, scanned, at: new Date(), pending: true });
+        const pendingEntry = { ...response, order_number: orderNumber, scanned, at: new Date(), pending: true };
+        setResult(pendingEntry);
         setPendingDecision({ orderNumber, scanned });
         beep("success");
-        return;
+        return pendingEntry;
       }
 
       const entry = { ...response, order_number: orderNumber, scanned, at: new Date() };
@@ -379,6 +207,7 @@ export default function ScanPanel({
       setLog((prev) => [entry, ...prev].slice(0, 12));
       beep(entry.success ? "success" : "error");
       if (entry.success) await onAfterSuccess?.();
+      return entry;
     } catch (err) {
       const entry = {
         success: false,
@@ -390,6 +219,7 @@ export default function ScanPanel({
       setResult(entry);
       setLog((prev) => [entry, ...prev].slice(0, 12));
       beep("error");
+      return entry;
     } finally {
       setBusy(false);
       setValue("");
@@ -397,7 +227,24 @@ export default function ScanPanel({
       inputRef.current?.focus();
     }
   }
-  submitRef.current = submit;
+
+  // A code from the paired phone: the normal scan, with its outcome worded
+  // for the phone's screen.
+  async function handlePhoneCode(code) {
+    const outcome = await submit(code, { forceScanned: true });
+    if (outcome.ignored) {
+      return {
+        status: "ignored",
+        order_number: code,
+        message: outcome.ignored === "busy" ? "Laptop is busy with the last parcel - scan this one again." : "",
+      };
+    }
+    return {
+      status: outcome.success ? "ok" : "fail",
+      order_number: outcome.order_number,
+      message: outcome.pending ? `${decision.prompt} (choose on the laptop)` : outcomeText(outcome),
+    };
+  }
 
   async function resolveDecision(choice) {
     if (!pendingDecision) return;
@@ -428,7 +275,23 @@ export default function ScanPanel({
     }
   }
 
-  const notFoundText = `No matching order for that ${fieldLabel.toLowerCase()}`;
+  function outcomeText(entry) {
+    return describeScanOutcome({ renderSuccess, fieldLabel }, entry);
+  }
+
+  function pressScan() {
+    if (isTouchDevice()) {
+      setScannerOpen(true);
+      return;
+    }
+    setPairingOpen(true);
+    openPhoneScanner(deskId);
+  }
+
+  function closePairing() {
+    setPairingOpen(false);
+    closePhoneScanner(deskId);
+  }
 
   const resultCard = result ? (
     <div
@@ -461,9 +324,7 @@ export default function ScanPanel({
             </div>
           </div>
         ) : (
-          <p className="text-xs">
-            {result.success ? renderSuccess?.(result) || "Done" : result.reason === "not_found" ? notFoundText : result.reason}
-          </p>
+          <p className="text-xs">{outcomeText(result)}</p>
         )}
       </div>
     </div>
@@ -491,14 +352,31 @@ export default function ScanPanel({
         </button>
       </div>
 
-      <button
-        type="button"
-        onClick={() => setScannerOpen(true)}
-        className="mt-3 flex w-full items-center justify-center gap-2 rounded-md bg-brand-800 px-4 py-3 text-sm font-semibold text-white transition hover:bg-brand-900"
-      >
-        <CameraIcon />
-        Scan
-      </button>
+      {showPairing ? (
+        <PhoneScanPairing
+          session={phone}
+          onRetry={retryPhoneScanner}
+          onClose={closePairing}
+          onUseThisCamera={() => {
+            closePairing();
+            setScannerOpen(true);
+          }}
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={pressScan}
+          className="mt-3 flex w-full items-center justify-center gap-2 rounded-md bg-brand-800 px-4 py-3 text-sm font-semibold text-white transition hover:bg-brand-900"
+        >
+          <CameraIcon />
+          Scan
+        </button>
+      )}
+      {phoneElsewhere && !showPairing ? (
+        <p className="mt-2 text-xs text-amber-700">
+          Your phone is scanning for &ldquo;{SCAN_DESKS[phone.deskId]?.title}&rdquo;. Press Scan to switch it here.
+        </p>
+      ) : null}
 
       <p className="mt-2 text-[11px] text-slate-400">
         Or type the {fieldLabel.toLowerCase()} below, then press {actionLabel}.
@@ -512,6 +390,7 @@ export default function ScanPanel({
       >
         <input
           ref={inputRef}
+          autoFocus={autoFocusInput}
           value={value}
           disabled={busy || Boolean(pendingDecision)}
           onKeyDown={() => {
@@ -530,14 +409,6 @@ export default function ScanPanel({
 
       {scannerOpen ? (
         <div className="fixed inset-0 z-50 flex flex-col bg-black">
-          <style>{`
-            #${cameraElementId} video {
-              width: 100% !important;
-              height: 100% !important;
-              object-fit: cover !important;
-            }
-          `}</style>
-
           <div className="flex items-center justify-between px-4 py-3">
             <p className="text-sm font-medium text-white">{title}</p>
             <button
@@ -550,21 +421,21 @@ export default function ScanPanel({
             </button>
           </div>
 
-          <div id={cameraElementId} className="relative w-full flex-1 overflow-hidden bg-slate-900" />
+          <CameraViewport id={cameraElementId} />
 
           <div className="space-y-3 bg-black px-4 py-4">
-            <p className={`text-center text-sm ${cameraStatus === "error" ? "text-red-400" : "text-slate-300"}`}>
-              {cameraStatus === "loading"
+            <p className={`text-center text-sm ${camera.status === "error" ? "text-red-400" : "text-slate-300"}`}>
+              {camera.status === "loading"
                 ? "Opening camera…"
-                : cameraStatus === "error"
-                  ? cameraError
+                : camera.status === "error"
+                  ? camera.error
                   : busy || pendingDecision
                     ? "Processing — hold on before scanning the next parcel."
                     : `Point the camera at the ${fieldLabel.toLowerCase()} barcode.`}
-              {cameraStatus === "error" ? (
+              {camera.status === "error" ? (
                 <button
                   type="button"
-                  onClick={() => setCameraRetryCount((n) => n + 1)}
+                  onClick={camera.retry}
                   className="ml-2 font-medium text-brand-300 underline"
                 >
                   Try again

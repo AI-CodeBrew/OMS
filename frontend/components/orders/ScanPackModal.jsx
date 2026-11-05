@@ -3,7 +3,7 @@
 import { useRef } from "react";
 import Modal from "../shared/Modal";
 import ScanPanel from "../wms/ScanPanel";
-import ordersService from "../../services/ordersService";
+import { SCAN_DESKS } from "../../lib/scanDesks";
 
 // Assigning Courier's Scan: each parcel's barcode turns its tag from To Be
 // Packed to Packed (backend: oms.services.scan_pack). The list behind it
@@ -23,12 +23,7 @@ export default function ScanPackModal({ open, onClose, onPacked }) {
   return (
     <Modal open={open} onClose={close} title="Scan to pack">
       <ScanPanel
-        title="Scan parcel"
-        hint="Scan the barcode on the airway bill (or type the tracking or order number). Only orders in Assigning Courier with a tracking number can be packed; a repeat scan is ignored."
-        actionLabel="Mark Packed"
-        fieldLabel="Tracking or order number"
-        onScan={(code) => ordersService.scanPack({ code })}
-        renderSuccess={() => "Packed"}
+        {...SCAN_DESKS.pack}
         onAfterSuccess={() => {
           packedAny.current = true;
         }}

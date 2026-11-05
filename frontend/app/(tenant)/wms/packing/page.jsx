@@ -8,6 +8,7 @@ import Pagination from "../../../../components/shared/Pagination";
 import DateRangeFilter from "../../../../components/orders/DateRangeFilter";
 import { useSessionDateRange } from "../../../../store/dateFilterStore";
 import ScanPanel from "../../../../components/wms/ScanPanel";
+import { SCAN_DESKS } from "../../../../lib/scanDesks";
 import { SEARCH_FIELDS } from "../../../../components/orders/statusConfig";
 
 // The queue is just the OMS pipeline read from the warehouse's side: an
@@ -163,15 +164,7 @@ export default function PackingPage() {
       ) : null}
 
       <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-[340px_1fr]">
-        <ScanPanel
-          title="Scan packed parcel"
-          hint="Only orders sitting in Ready to Pick can be packed. A repeat scan of the same parcel is ignored."
-          actionLabel="Mark Packed"
-          fieldLabel="Tracking number"
-          onScan={(trackingNumber) => wmsService.scanPacked({ trackingNumber })}
-          renderSuccess={() => "Packed — moved to Awaiting Dispatched"}
-          onAfterSuccess={load}
-        />
+        <ScanPanel {...SCAN_DESKS.packed} onAfterSuccess={load} />
 
         <div className="min-w-0">
           <div className="mb-3 flex flex-wrap items-center gap-2">

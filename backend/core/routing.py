@@ -4,4 +4,5 @@ from . import consumers
 
 websocket_urlpatterns = [
     re_path(r"^ws/orders/$", consumers.OrgOrdersConsumer.as_asgi()),
+    re_path(r"^ws/scan-session/$", consumers.ScanSessionConsumer.as_asgi()),
 ]

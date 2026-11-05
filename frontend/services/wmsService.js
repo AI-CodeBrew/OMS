@@ -29,6 +29,11 @@ async function request(url, options = {}) {
 }
 
 class WmsService {
+  // A pair of tokens linking this Scan panel to a phone (ScanPanel's QR code).
+  async createScanSession() {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.scanSessions}`, { method: "POST" });
+  }
+
   // --- Warehouses ---
   async listWarehouses() {
     const data = await request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.warehouses}`);
