@@ -299,6 +299,7 @@ class OrderSerializer(serializers.ModelSerializer):
             "shipper_advice_at",
             "total_amount",
             "coupon_discount",
+            "extra_discount",
             "gift_card_discount",
             "loyalty_amount",
             "wallet_amount",

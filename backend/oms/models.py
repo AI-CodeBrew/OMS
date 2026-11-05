@@ -320,6 +320,11 @@ class Order(TenantScopedModel):
     # are computed (see serializers.py), not stored, to avoid drift with
     # total_amount (treated as Subtotal - the sum of line items). ---
     coupon_discount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    # Discount given here in OMS on top of Shopify's (coupon_discount, which
+    # every Shopify sync overwrites with Shopify's own figure). Lowers only
+    # what's left to collect (amount_receivable) - the grand total stays
+    # Shopify's total. Can be negative: a discount edited below Shopify's.
+    extra_discount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     gift_card_discount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     loyalty_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     wallet_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
@@ -414,7 +419,7 @@ class Order(TenantScopedModel):
         # CSV imports) is taken as paid in full, never as cash to collect.
         if self.payment_status == "paid" and not self.amount_paid:
             return Decimal("0")
-        return max(self.grand_total - self.amount_paid, 0)
+        return max(self.grand_total - self.extra_discount - self.amount_paid, 0)
 
     @property
     def owed_to_customer(self):

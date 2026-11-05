@@ -26,6 +26,12 @@ export function OrderStatusBadge({ order }) {
       {order.courier_status ? (
         <span className="text-xs font-normal text-slate-500">Sub status: {order.courier_status}</span>
       ) : null}
+      {/* Both tags: where the order is within its card, then its own tag -
+          the card's tag left out when it only repeats the status. */}
+      {order.workflow_tag && order.workflow_tag !== status && order.workflow_tag !== card ? (
+        <Badge variant="amber">{order.workflow_tag}</Badge>
+      ) : null}
+      {order.tag ? <Badge variant="green">{order.tag}</Badge> : null}
     </>
   );
 }

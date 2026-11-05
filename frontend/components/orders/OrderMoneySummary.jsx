@@ -1,14 +1,16 @@
 "use client";
 
-import { draftGrandTotal, draftReceivable, draftSubtotal } from "./orderMoney";
+import { draftDiscountTotal, draftGrandTotal, draftReceivable, draftSubtotal } from "./orderMoney";
 
-// Money fields, in the order they're shown - Discount is the order-level
-// coupon_discount (line-item discounts live on the items). Amount Paid is
+// Money fields, in the order they're shown - Discount is Shopify's
+// order-level discount (coupon_discount) plus any given here in OMS
+// (extra_discount); editing it changes only the extra part, so the Grand
+// Total stays Shopify's and only the receivable moves. Amount Paid is
 // typed in only for a partially paid order; on a prepaid one it stays what
 // was paid and the receivable follows the other figures instead.
 const MONEY_FIELDS = [
   ["shipping_amount", "Shipping"],
-  ["coupon_discount", "Discount"],
+  ["discount_total", "Discount"],
   ["amount_paid", "Amount Paid"],
 ];
 
@@ -54,14 +56,26 @@ export default function OrderMoneySummary({ order, draft, editing, onChange }) {
       <MoneyCell label={`Subtotal (${itemCount} items)`} value={subtotal} />
       {MONEY_FIELDS.map(([field, label]) =>
         editing && isEditable(field, draft) ? (
-          <MoneyInput key={field} label={label} value={draft[field]} onChange={(v) => onChange(field, v)} />
+          <MoneyInput
+            key={field}
+            label={label}
+            value={
+              field === "discount_total"
+                ? draft.discount_total ?? draftDiscountTotal(draft).toFixed(2)
+                : draft[field]
+            }
+            onChange={(v) => onChange(field, v)}
+          />
         ) : (
           <MoneyCell
             key={field}
             label={label}
             value={(() => {
-              const value = editing ? draft[field] : order[field];
-              return field === "coupon_discount" && Number(value) > 0 ? `-${value}` : value;
+              if (field === "discount_total") {
+                const value = draftDiscountTotal(editing ? draft : order).toFixed(2);
+                return Number(value) > 0 ? `-${value}` : value;
+              }
+              return editing ? draft[field] : order[field];
             })()}
           />
         )

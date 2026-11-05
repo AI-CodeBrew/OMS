@@ -480,11 +480,13 @@ class OrderViewSet(viewsets.ModelViewSet):
         # total as amount_paid (integrations.services._shopify_payment),
         # which would read as cash collected.
         money = queryset.filter(payment_gateway="cod").aggregate(
-            grand_total_sum=Sum(grand_total_expr), paid_sum=Sum("amount_paid")
+            grand_total_sum=Sum(grand_total_expr), paid_sum=Sum("amount_paid"),
+            extra_discount_sum=Sum("extra_discount"),
         )
         grand_total_sum = money["grand_total_sum"] or 0
         paid_sum = money["paid_sum"] or 0
-        pending_receivable = max(grand_total_sum - paid_sum, 0)
+        # The OMS-side discount lowers only what's left to collect.
+        pending_receivable = max(grand_total_sum - (money["extra_discount_sum"] or 0) - paid_sum, 0)
         city_breakdown = list(
             queryset.exclude(city="")
             .values("city")
@@ -2523,7 +2525,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                 yield header
                 for order in queryset.iterator(chunk_size=500):
                     discount = (
-                        order.coupon_discount + order.gift_card_discount
+                        order.coupon_discount + order.extra_discount + order.gift_card_discount
                         + order.loyalty_amount + order.wallet_amount
                     )
                     before_items = [
@@ -2566,7 +2568,8 @@ class OrderViewSet(viewsets.ModelViewSet):
                         when(order.return_received_at),
                         csv_report.courier_proofs(order),
                     ]
-                    payment = order.get_payment_gateway_display()
+                    # As the order screen says it: paid online is Prepaid.
+                    payment = "COD" if order.payment_gateway == "cod" else "Prepaid"
                     items = list(order.items.all())
                     if not items:
                         yield before_items + ["", "", "", payment, ""] + after_items

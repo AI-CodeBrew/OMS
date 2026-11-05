@@ -24,7 +24,18 @@ export function draftGrandTotal(draft) {
   );
 }
 
+// What the customer actually owes: the grand total (Shopify's) less the
+// discount given here in OMS on top of Shopify's (extra_discount).
+export function draftPayable(draft) {
+  return draftGrandTotal(draft) - n(draft.extra_discount);
+}
+
+// The Discount cell: Shopify's discount plus the one given here.
+export function draftDiscountTotal(draft) {
+  return n(draft.coupon_discount) + n(draft.extra_discount);
+}
+
 export function draftReceivable(draft) {
   if (draft.payment_status === "paid" && !n(draft.amount_paid)) return 0;
-  return Math.max(draftGrandTotal(draft) - n(draft.amount_paid), 0);
+  return Math.max(draftPayable(draft) - n(draft.amount_paid), 0);
 }

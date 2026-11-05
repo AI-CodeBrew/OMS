@@ -10,7 +10,7 @@ import OrderDetailTabs from "./OrderDetailTabs";
 import OrderMoneySummary from "./OrderMoneySummary";
 import OrderActionsMenu from "./OrderActionsMenu";
 import LineItemsTab from "./tabs/LineItemsTab";
-import { draftGrandTotal } from "./orderMoney";
+import { draftPayable } from "./orderMoney";
 import OrderActionModal from "./OrderActionModal";
 import VerifyDispatchModal from "./VerifyDispatchModal";
 import StockShortageModal from "./StockShortageModal";
@@ -48,6 +48,7 @@ const EDITABLE_FIELDS = [
   "order_source",
   "shipping_type",
   "coupon_discount",
+  "extra_discount",
   "gift_card_discount",
   "loyalty_amount",
   "wallet_amount",
@@ -85,7 +86,7 @@ function buildDraft(order) {
 // What Save sends: the draft minus the view-only receivable, and items only
 // when one actually changed (an untouched list would still be recreated).
 function buildPatch(order, draft) {
-  const { items, amount_receivable: _receivable, ...fields } = draft;
+  const { items, amount_receivable: _receivable, discount_total: _discount, ...fields } = draft;
   const before = JSON.stringify(order.items.map(serializeItem));
   const after = items.map(serializeItem);
   return JSON.stringify(after) === before ? fields : { ...fields, items: after };
@@ -152,7 +153,7 @@ export default function OrderDetailPanel({
       setDraft((d) => ({
         ...d,
         amount_receivable: value,
-        amount_paid: Math.max(draftGrandTotal(d) - (Number(value) || 0), 0).toFixed(2),
+        amount_paid: Math.max(draftPayable(d) - (Number(value) || 0), 0).toFixed(2),
       }));
       return;
     }
@@ -163,7 +164,18 @@ export default function OrderDetailPanel({
         ...d,
         amount_receivable: undefined,
         payment_status: value,
-        amount_paid: d.payment_status === "paid" ? d.amount_paid : draftGrandTotal(d).toFixed(2),
+        amount_paid: d.payment_status === "paid" ? d.amount_paid : draftPayable(d).toFixed(2),
+      }));
+      return;
+    }
+    // Discount: Shopify's part stays as it is - what's typed beyond (or
+    // below) it is the OMS discount, which lowers only the receivable.
+    if (field === "discount_total") {
+      setDraft((d) => ({
+        ...d,
+        amount_receivable: undefined,
+        discount_total: value,
+        extra_discount: ((Number(value) || 0) - (Number(d.coupon_discount) || 0)).toFixed(2),
       }));
       return;
     }
@@ -379,6 +391,38 @@ export default function OrderDetailPanel({
           )
         }
         width="max-w-6xl"
+        // The buttons sit in the top bar, beside the order number and
+        // status - above the line, not beside the tabs.
+        headerRight={
+          order && !loading && !readOnly ? (
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {/* Dispatched or later can't be edited. */}
+              {editing ? (
+                <>
+                  <Button variant="secondary" onClick={toggleEdit} disabled={saving} className="px-3 py-1.5">
+                    Cancel Edit
+                  </Button>
+                  <Button onClick={onSave} loading={saving} className="px-3 py-1.5">
+                    Save
+                  </Button>
+                </>
+              ) : EDIT_LOCKED_STATUSES.has(order.status) ? null : (
+                <Button variant="secondary" onClick={toggleEdit} className="px-3 py-1.5">
+                  Edit
+                </Button>
+              )}
+              {editing ? null : (
+                <OrderActionsMenu
+                  order={order}
+                  onAction={startAction}
+                  onScan={() => setScanOpen(true)}
+                  onRaiseTicket={onRaiseTicket ? () => onRaiseTicket(order) : undefined}
+                  working={working}
+                />
+              )}
+            </div>
+          ) : null
+        }
       >
         {loading ? (
           <p className="text-sm text-slate-500">Loading…</p>
@@ -397,38 +441,6 @@ export default function OrderDetailPanel({
                 <OrderDetailTabs
                   order={order}
                   editing={editing}
-                  actions={
-                    readOnly ? null : (
-                      <div className="flex flex-wrap items-center justify-end gap-2">
-                        {/* Edit sits up here beside the actions (Save /
-                            Cancel while editing); dispatched or later
-                            can't be edited. */}
-                        {editing ? (
-                          <>
-                            <Button variant="secondary" onClick={toggleEdit} disabled={saving} className="px-3 py-1.5">
-                              Cancel Edit
-                            </Button>
-                            <Button onClick={onSave} loading={saving} className="px-3 py-1.5">
-                              Save
-                            </Button>
-                          </>
-                        ) : EDIT_LOCKED_STATUSES.has(order.status) ? null : (
-                          <Button variant="secondary" onClick={toggleEdit} className="px-3 py-1.5">
-                            Edit
-                          </Button>
-                        )}
-                        {editing ? null : (
-                          <OrderActionsMenu
-                            order={order}
-                            onAction={startAction}
-                            onScan={() => setScanOpen(true)}
-                            onRaiseTicket={onRaiseTicket ? () => onRaiseTicket(order) : undefined}
-                            working={working}
-                          />
-                        )}
-                      </div>
-                    )
-                  }
                   lineItems={
                     <>
                       {/* Items stay locked once a courier is on the order - stock

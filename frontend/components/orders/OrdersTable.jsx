@@ -154,6 +154,8 @@ export default function OrdersTable({
               />
             </th>
             {showStoreColumn ? <th className="w-28 px-3 py-2">Client Name</th> : null}
+            {/* Store Name up front - right beside Client Name in the hub. */}
+            <th className="w-28 px-3 py-2">Store Name</th>
             <th className="w-16 px-3 py-2">OMS Order ID</th>
             <th className="w-28 px-3 py-2">Store Order ID</th>
             <th className="w-40 px-3 py-2">Customer Name</th>
@@ -165,7 +167,6 @@ export default function OrdersTable({
             {showSubStatusColumn ? <th className="w-40 px-3 py-2">Sub Status</th> : null}
             {showShipperAdviceColumn ? <th className="w-44 px-3 py-2">Shipper Advice</th> : null}
             <th className="w-40 px-3 py-2">Tag</th>
-            <th className="w-28 px-3 py-2">Store Name</th>
             <th className="w-28 px-3 py-2">City</th>
             <th className="w-24 px-3 py-2">Courier</th>
             {showTransitColumn ? <th className="w-24 px-3 py-2">In Transit</th> : null}
@@ -204,6 +205,11 @@ export default function OrdersTable({
                     </div>
                   </td>
                 ) : null}
+                <td className="px-3 py-1.5 text-slate-700">
+                  <div className="truncate" title={order.shop}>
+                    {order.shop || "—"}
+                  </div>
+                </td>
                 <td className="px-3 py-1.5 text-slate-700">{order.supabase_order_no ?? "—"}</td>
                 {/* The store's order number is what opens the order - the
                     rest of the row stays free for selecting and copying. */}
@@ -353,7 +359,6 @@ export default function OrdersTable({
                 </td>
                 {/* The shop within the organization - one organization can
                     have several stores. */}
-                <td className="px-3 py-1.5 text-slate-700">{order.shop || "—"}</td>
                 <td className="px-3 py-1.5 text-slate-700">{order.city || "—"}</td>
                 <td className="px-3 py-1.5 text-slate-700">
                   <div className="truncate">{order.courier_name || "—"}</div>

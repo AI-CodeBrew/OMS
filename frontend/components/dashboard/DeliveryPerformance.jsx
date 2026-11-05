@@ -158,9 +158,6 @@ export default function DeliveryPerformance({ data }) {
             <p className="text-xs text-slate-500">Share of Orders · Click for Provinces</p>
           </div>
           <div className="text-right">
-            <div className="text-sm text-slate-500">
-              <span className="font-semibold text-slate-900">{overall.orders.toLocaleString()}</span> Orders
-            </div>
             <div className="text-xs text-slate-500">
               <span className={`font-semibold ${rateTone(overall.delivery_pct)}`}>
                 {formatPct(overall.delivery_pct)}
