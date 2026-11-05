@@ -11,6 +11,7 @@ urlpatterns = [
     path("team/<uuid:user_id>/", team_views.team_member_detail, name="team-member-detail"),
     path("audit-logs/", team_views.audit_logs, name="audit-logs"),
     path("stores/", views.stores, name="stores"),
+    path("scan-sessions/", views.scan_session, name="scan-session"),
     path("notifications/", notification_views.notifications, name="notifications"),
     path("notifications/read/", notification_views.notifications_read, name="notifications-read"),
     path("stores/switch/", views.switch_store, name="stores-switch"),

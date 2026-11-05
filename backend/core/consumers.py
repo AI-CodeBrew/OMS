@@ -8,11 +8,13 @@ whatever it's given.
 """
 
 import logging
-from urllib.parse import unquote
+import secrets
+from urllib.parse import parse_qs, unquote
 
 from asgiref.sync import sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 
+from . import scan_sessions
 from .jwt_utils import InvalidSupabaseToken, decode_supabase_jwt
 from .middleware import resolve_active_org_id
 
@@ -108,3 +110,120 @@ class OrgOrdersConsumer(AsyncJsonWebsocketConsumer):
         if "order" in message:
             out["order"] = message["order"]
         await self.send_json(out)
+
+
+def _text(value, limit):
+    return value.strip()[:limit] if isinstance(value, str) else ""
+
+
+class ScanSessionConsumer(AsyncJsonWebsocketConsumer):
+    """wss://<host>/ws/scan-session/?token=<token from core.scan_sessions>
+
+    Passes frames between a laptop's browser tab ("host") and the phone it
+    paired with, in both directions and nothing more: the phone reports a
+    code, the laptop runs its normal scan and reports the outcome. Nothing
+    here touches an order - that all happens on the laptop's own API calls.
+
+    Phone -> laptop: {"type": "scan", "id", "code"}, {"type": "here"},
+    {"type": "end"} (forwarded as phone_ended - the operator pressed the cross,
+    as opposed to phone_left, which may only be a dropped connection)
+    Laptop -> phone: {"type": "result", "id", "status", "order_number",
+    "message"}, {"type": "hello", "title", "field"}
+    Sent on joining/leaving: phone_joined / phone_left to the laptop,
+    host_joined / host_left to the phone.
+
+    From this consumer itself: {"type": "qr", "token"} to the laptop, on
+    connecting and whenever it sends {"type": "new_qr"}, and
+    {"type": "session", "token"} to a phone that connected with a QR token -
+    the longer-lived one it reconnects with from then on.
+    """
+
+    async def connect(self):
+        params = parse_qs(self.scope.get("query_string", b"").decode())
+        session = scan_sessions.read_token((params.get("token") or [""])[0])
+        if session is None:
+            # Accept first: a handshake refused outright reaches the browser
+            # as a generic 1006, which looks like a network drop and gets
+            # retried forever. The client needs to see 4401 to know to stop.
+            await self.accept()
+            await self.close(code=4401)
+            return
+
+        self.session_id, self.role, from_qr = session
+        self.is_phone = self.role == scan_sessions.ROLE_PHONE
+        # Only ever shown to the laptop, to tell its phones apart.
+        self.peer_id = secrets.token_hex(4)
+        self.own_group = f"scan_{self.session_id}_{self.role}"
+        other_role = scan_sessions.ROLE_HOST if self.is_phone else scan_sessions.ROLE_PHONE
+        self.other_group = f"scan_{self.session_id}_{other_role}"
+
+        # Before accept: with the channel layer down (Redis unreachable) the
+        # connection must never look open. Accepting first showed the laptop a
+        # QR code that vanished a moment later, over and over.
+        await self.channel_layer.group_add(self.own_group, self.channel_name)
+        await self.accept()
+
+        if not self.is_phone:
+            await self._send_qr()
+        elif from_qr:
+            await self.send_json(
+                {"type": "session", "token": scan_sessions.phone_token(self.session_id)}
+            )
+        await self._announce("joined")
+
+    async def _send_qr(self):
+        await self.send_json({"type": "qr", "token": scan_sessions.qr_token(self.session_id)})
+
+    async def disconnect(self, close_code):
+        if not getattr(self, "own_group", None):
+            return
+        await self._announce("left")
+        await self.channel_layer.group_discard(self.own_group, self.channel_name)
+
+    async def _announce(self, state):
+        if self.is_phone:
+            await self._to_other({"type": f"phone_{state}", "peer": self.peer_id})
+        else:
+            await self._to_other({"type": f"host_{state}"})
+
+    async def _to_other(self, frame):
+        await self.channel_layer.group_send(
+            self.other_group, {"type": "relay.frame", "frame": frame}
+        )
+
+    async def receive_json(self, content, **kwargs):
+        # A connection whose token was refused is on its way out.
+        if not getattr(self, "own_group", None) or not isinstance(content, dict):
+            return
+        kind = content.get("type")
+        if not self.is_phone and kind == "new_qr":
+            await self._send_qr()
+            return
+        frame = None
+        if self.is_phone and kind == "scan":
+            code = _text(content.get("code"), 255)
+            if code:
+                frame = {"type": "scan", "id": _text(content.get("id"), 64), "code": code}
+        elif self.is_phone and kind == "here":
+            frame = {"type": "phone_joined", "peer": self.peer_id}
+        elif self.is_phone and kind == "end":
+            frame = {"type": "phone_ended", "peer": self.peer_id}
+        elif not self.is_phone and kind == "result":
+            frame = {
+                "type": "result",
+                "id": _text(content.get("id"), 64),
+                "status": _text(content.get("status"), 16),
+                "order_number": _text(content.get("order_number"), 255),
+                "message": _text(content.get("message"), 500),
+            }
+        elif not self.is_phone and kind == "hello":
+            frame = {
+                "type": "hello",
+                "title": _text(content.get("title"), 120),
+                "field": _text(content.get("field"), 120),
+            }
+        if frame:
+            await self._to_other(frame)
+
+    async def relay_frame(self, message):
+        await self.send_json(message["frame"])

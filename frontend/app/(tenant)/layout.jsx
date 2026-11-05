@@ -21,6 +21,7 @@ import authService, {
   setLoginNotice,
 } from "../../services/authService";
 import healthService from "../../services/healthService";
+import { resumePhoneScanner } from "../../lib/phoneScanSession";
 
 const LAST_MODULE_KEY = "oms.lastModule";
 
@@ -44,6 +45,11 @@ function TenantShell({ children }) {
   const activeModule = getActiveModule(pathname);
   const [lastModule, setLastModule] = useState(null);
   const superAdminWithoutStore = user?.role === "super_admin" && !actingStore;
+
+  // A phone paired before this page loaded carries on scanning, on any page.
+  useEffect(() => {
+    resumePhoneScanner();
+  }, []);
 
   // Shared pages (Integrations, Logs, Report, Batch, Tickets, Settings)
   // belong to no module, so they keep showing the sidebar - and header tab -
