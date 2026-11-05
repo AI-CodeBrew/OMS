@@ -4,7 +4,7 @@ import Checkbox from "../shared/Checkbox";
 import Dropdown from "../shared/Dropdown";
 import FynkTechDispatchTag from "./FynkTechDispatchTag";
 import { formatPakPhone } from "../../lib/formatPhone";
-import { STATUS_LABELS, cardTab } from "./statusConfig";
+import { STATUS_LABELS, cardTab, latestTag } from "./statusConfig";
 
 // Badge colours for the Status column, by the same tone the status tabs use.
 const TONE_BADGE = {
@@ -325,30 +325,31 @@ export default function OrdersTable({
                     reason, the courier's remark, ...), then the order's own
                     free-form tag. */}
                 <td className="px-3 py-1.5">
-                  {order.tag || order.workflow_tag ? (
-                    <div className="flex flex-col items-start gap-1">
-                      {order.workflow_tag ? (
+                  {/* One tag - the latest (statusConfig.latestTag). */}
+                  {(() => {
+                    const tag = latestTag(order);
+                    if (!tag) return <span className="text-slate-300">—</span>;
+                    if (tag.own) {
+                      return (
                         <span
-                          className={`max-w-full truncate rounded-full px-2 py-0.5 text-[11px] font-medium ${
-                            TONE_BADGE[tagTone(order)] || "bg-slate-100 text-slate-700"
-                          }`}
-                          title={tagText(order)}
+                          className="inline-block max-w-full truncate rounded-full bg-brand-50 px-2 py-0.5 text-[11px] font-medium text-brand-700"
+                          title={tag.text}
                         >
-                          {tagText(order)}
+                          {tag.text}
                         </span>
-                      ) : null}
-                      {order.tag ? (
-                        <span
-                          className="max-w-full truncate rounded-full bg-brand-50 px-2 py-0.5 text-[11px] font-medium text-brand-700"
-                          title={order.tag}
-                        >
-                          {order.tag}
-                        </span>
-                      ) : null}
-                    </div>
-                  ) : (
-                    <span className="text-slate-300">—</span>
-                  )}
+                      );
+                    }
+                    return (
+                      <span
+                        className={`inline-block max-w-full truncate rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                          TONE_BADGE[tagTone(order)] || "bg-slate-100 text-slate-700"
+                        }`}
+                        title={tagText(order)}
+                      >
+                        {tagText(order)}
+                      </span>
+                    );
+                  })()}
                 </td>
                 {/* The shop within the organization - one organization can
                     have several stores. */}

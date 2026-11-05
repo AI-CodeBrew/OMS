@@ -165,10 +165,32 @@ export const EDIT_LOCKED_STATUSES = new Set([
 // Assigning Courier's own three, offered first for any selection that is
 // all in that card (whatever each order's own status there) - the orders
 // page puts the statuses' print/load-sheet actions after them.
+// The ONE tag an order shows - the latest: in Awaiting Confirmation its own
+// tag (a revert reason, Cancelled from Courier Booking, Update Tag, ...) is
+// newer than the card's default (New); from Approved on, the stage's tag
+// (To Be Packed, Stock Not Available, ...) is. Either falls back to the
+// other. Returns { text, own } - own: the order's own tag.
+export function latestTag(order) {
+  if (order.tag && (order.workflow_card === "awaiting_confirmation" || !order.workflow_tag)) {
+    return { text: order.tag, own: true };
+  }
+  return order.workflow_tag ? { text: order.workflow_tag, own: false } : null;
+}
+
+// "edit_order" is Cancel Booking: the booking is cancelled and the order
+// goes back to Awaiting Confirmation (backend: oms.services.unbook_for_edit).
 export const ASSIGNING_COURIER_ACTIONS = [
   { key: "cancel", action: "cancel", label: "Cancel Order" },
   { key: "change_courier", action: "change_courier", label: "Change Courier" },
-  { key: "edit_order", action: "edit_order", label: "Edit Order" },
+  { key: "edit_order", action: "edit_order", label: "Cancel Booking" },
+];
+
+// Assigning Courier's two prints, the same for the Hub and a store - each
+// covers every courier (the Hub's courier by courier in one PDF, a store's
+// through PrintByCourierModal).
+export const ASSIGNING_PRINT_ACTIONS = [
+  { key: "print_loadsheet", action: "print_loadsheet", label: "Print Loadsheet" },
+  { key: "print_airway_bill", action: "print_airway_bill", label: "Print Airway Bill" },
 ];
 
 // Per-status, which bulk/row actions make sense - keeps OrderRowMenu and the

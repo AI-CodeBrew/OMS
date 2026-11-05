@@ -51,12 +51,12 @@ const CONFIRM_BY_ACTION = {
     result:
       "be checked and move to Approved, ready for a courier - an order whose city isn't on the couriers' city list moves to City Issue instead",
   },
-  // Assigning Courier's Edit Order (backend: oms.services.unbook_for_edit).
+  // Assigning Courier's Cancel Booking (backend: oms.services.unbook_for_edit).
   edit_order: {
-    title: "Edit order(s)",
-    button: "Cancel Booking & Edit",
+    title: "Cancel booking",
+    button: "Cancel Booking",
     result:
-      "have their courier booking cancelled and move back to Awaiting Confirmation, tagged Cancelled from Courier Portal, with a new Store Order ID (1001 becomes 1001-1), to be edited and approved again",
+      "have their courier booking cancelled and move back to Awaiting Confirmation, tagged Cancelled from Courier Booking, with a new Store Order ID (1001 becomes 1001-1)",
   },
   confirm: { title: "Confirm order(s)", button: "Confirm", result: "move to Assigning Courier" },
   revert_status: {

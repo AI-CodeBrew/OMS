@@ -1,7 +1,7 @@
 "use client";
 
 import Badge from "../shared/Badge";
-import { STATUS_LABELS, cardTab } from "./statusConfig";
+import { STATUS_LABELS, cardTab, latestTag } from "./statusConfig";
 
 const PAYMENT_STATUSES = [
   { value: "pending", label: "Pending", badge: "amber" },
@@ -24,10 +24,12 @@ export function OrderStatusBadge({ order }) {
       {order.courier_status ? (
         <span className="text-xs font-normal text-slate-500">Sub status: {order.courier_status}</span>
       ) : null}
-      {order.workflow_tag && order.workflow_tag !== card ? (
-        <Badge variant="amber">{order.workflow_tag}</Badge>
-      ) : null}
-      {order.tag ? <Badge variant="green">{order.tag}</Badge> : null}
+      {/* One tag - the latest (statusConfig.latestTag). */}
+      {(() => {
+        const tag = latestTag(order);
+        if (!tag || tag.text === card) return null;
+        return <Badge variant={tag.own ? "green" : "amber"}>{tag.text}</Badge>;
+      })()}
     </>
   );
 }

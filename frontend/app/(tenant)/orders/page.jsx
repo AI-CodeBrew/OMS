@@ -34,6 +34,7 @@ import { useDateFilterStore } from "../../../store/dateFilterStore";
 import {
   ACTIONS_BY_STATUS,
   ASSIGNING_COURIER_ACTIONS,
+  ASSIGNING_PRINT_ACTIONS,
   MOVE_TO_ASSIGNING,
   withMoveToAssigning,
   ASSIGNING_COURIER_TAB,
@@ -114,10 +115,6 @@ const IN_TRANSIT_STATUSES = new Set(["dispatched"]);
 // availableActions). Each one covers every courier - the Hub's courier by
 // courier in one PDF, a store's through PrintByCourierModal - so they replace
 // the couriers' own print actions, whatever the order's status.
-const ASSIGNING_PRINT_ACTIONS = [
-  { key: "print_loadsheet", action: "print_loadsheet", label: "Print Loadsheet" },
-  { key: "print_airway_bill", action: "print_airway_bill", label: "Print Airway Bill" },
-];
 const ASSIGNING_HIDDEN_ACTIONS = new Set([
   "print_loadsheet",
   "print_airway_bill",
@@ -999,11 +996,6 @@ export default function OrdersPage() {
       // After reloadAfterChange(), which clears the error banner on the way in.
       await reloadAfterChange();
       if (failed.length > 0) setError(describeFailures(failed));
-      // Edit Order on one order: its booking is cancelled, so open it to edit.
-      if (action === "edit_order" && orderIds.length === 1 && failed.length === 0) {
-        setDetailStartEditing(true);
-        setDetailOrderId(orderIds[0]);
-      }
     } catch (err) {
       setError(err.message || "Action failed");
     } finally {
@@ -1305,6 +1297,12 @@ export default function OrdersPage() {
         startEditing={detailStartEditing}
         readOnly={viewOnly}
         onRaiseTicket={setTicketOrder}
+        // Assigning Courier's five, run exactly as from the selection bar.
+        onAssigningAction={(action, order) => {
+          setDetailOrderId(null);
+          setDetailStartEditing(false);
+          startAction(action, [order.id], true);
+        }}
         onClose={() => {
           setDetailOrderId(null);
           setDetailStartEditing(false);

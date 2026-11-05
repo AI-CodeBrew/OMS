@@ -19,6 +19,8 @@ import {
   MOVE_TO_ASSIGNING,
   EDITABLE_STATUSES,
   EDIT_LOCKED_STATUSES,
+  ASSIGNING_COURIER_ACTIONS,
+  ASSIGNING_PRINT_ACTIONS,
   SMARTLANE_LOAD_SHEET_COURIERS,
   isBookingAccountCourier,
 } from "./statusConfig";
@@ -106,6 +108,9 @@ export default function OrderDetailPanel({
   startEditing = false,
   readOnly = false,
   onRaiseTicket,
+  // (action, order): Assigning Courier's five buttons, run by the Orders
+  // page the same way as from its selection bar.
+  onAssigningAction,
   onClose,
   onOrderChanged,
 }) {
@@ -411,7 +416,22 @@ export default function OrderDetailPanel({
                   Edit
                 </Button>
               )}
-              {editing ? null : (
+              {editing ? null : onAssigningAction && order.workflow_card === "assigning_courier" ? (
+                // Assigning Courier: the same five as the selection bar, as
+                // buttons - no Raise ticket here.
+                <>
+                  {[...ASSIGNING_PRINT_ACTIONS, ...ASSIGNING_COURIER_ACTIONS].map((a) => (
+                    <Button
+                      key={a.key}
+                      variant={a.action === "cancel" ? "danger" : "secondary"}
+                      onClick={() => onAssigningAction(a.action, order)}
+                      className="px-3 py-1.5"
+                    >
+                      {a.label}
+                    </Button>
+                  ))}
+                </>
+              ) : (
                 <OrderActionsMenu
                   order={order}
                   onAction={startAction}

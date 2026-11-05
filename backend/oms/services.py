@@ -1030,7 +1030,7 @@ def _log_order_change(order, what, *, actor_user_id=None):
 # this tag, and a new store order ID: 1001 -> 1001-1 -> 1001-2 ... (the
 # OMS Order ID stays). The note's wording is how the next number is worked
 # out (_next_cancel_number) - keep it.
-BOOKING_CANCELLED_TAG = "Cancelled from Courier Portal"
+BOOKING_CANCELLED_TAG = "Cancelled from Courier Booking"
 _RENUMBER_NOTE = "Store order ID changed"
 
 
@@ -1091,11 +1091,11 @@ def unbook_for_edit(order, *, actor_user_id=None):
     )
     with transaction.atomic():
         _release_courier_booking(
-            order, actor_user_id=actor_user_id, note="Edit Order - booking cancelled", strict=True
+            order, actor_user_id=actor_user_id, note="Cancel Booking - booking cancelled", strict=True
         )
         return _back_to_confirmation_after_cancel(
             order, actor_user_id=actor_user_id,
-            note=f"Edit Order - booking {old_booking or '(none)'} cancelled",
+            note=f"Cancel Booking - booking {old_booking or '(none)'} cancelled",
         )
 
 
