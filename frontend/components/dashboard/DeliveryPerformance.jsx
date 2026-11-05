@@ -20,15 +20,27 @@ const ALL = "__all__";
 // One province card in the popup: delivery rate big, share small.
 function ProvinceCard({ row }) {
   return (
-    <div
-      className="rounded-md border border-surface-border bg-white px-3 py-2"
-      title={`${row.orders} orders · ${row.delivered} delivered · ${row.returned} returned`}
-    >
+    <div className="group relative rounded-md border border-surface-border bg-white px-3 py-2">
       <div className="truncate text-xs font-medium text-slate-700">{row.name}</div>
       <div className={`text-sm font-semibold ${rateTone(row.delivery_pct)}`}>{formatPct(row.delivery_pct)}</div>
       <div className="text-[11px] text-slate-400">
-        {row.share_pct.toFixed(1)}% · {row.orders.toLocaleString()} orders
+        {row.share_pct.toFixed(1)}% · {row.orders.toLocaleString()} Orders
       </div>
+      {/* Hover tooltip */}
+      <div className="pointer-events-none absolute left-0 top-full z-10 mt-1 hidden whitespace-nowrap rounded-md bg-slate-900 px-2.5 py-1.5 text-xs text-white shadow-lg group-hover:block">
+        <div>{formatPct(row.delivery_pct)} Delivery Ratio</div>
+        <div>{row.share_pct.toFixed(1)}% of Total Orders</div>
+      </div>
+    </div>
+  );
+}
+
+// One stat in the popup header: number first, label after.
+function HeaderStat({ value, label, tone = "text-slate-900" }) {
+  return (
+    <div className="flex items-baseline gap-1.5 whitespace-nowrap">
+      <dd className={`font-semibold tabular-nums ${tone}`}>{value}</dd>
+      <dt className="text-slate-500">{label}</dt>
     </div>
   );
 }
@@ -57,52 +69,35 @@ function ProvincesPopup({ data, initialCourier, onClose }) {
         onClick={(e) => e.stopPropagation()}
         className="w-full max-w-2xl rounded-2xl bg-white shadow-2xl"
       >
-        <div className="flex items-start justify-between gap-3 border-b border-surface-border px-5 py-4">
-          <div>
-            <h3 className="text-lg font-semibold text-slate-900">{courier ? courier.name : "All couriers"}</h3>
-            <p className="mt-0.5 text-sm text-slate-500">
-              <span className={`font-semibold ${rateTone(subject.delivery_pct)}`}>
-                {formatPct(subject.delivery_pct)}
-              </span>{" "}
-              delivery · {courier ? `${courier.share_pct.toFixed(1)}% of booked orders · ` : ""}
-              {subject.orders.toLocaleString()} orders · {subject.provinces.length} province
-              {subject.provinces.length === 1 ? "" : "s"}
-            </p>
-          </div>
+        <div className="flex items-center gap-4 border-b border-surface-border px-5 py-4">
+          <h3 className="shrink-0 text-lg font-semibold text-slate-900">{courier ? courier.name : "All Couriers"}</h3>
+          {/* Stats spread over the rest of the row, next to the name. */}
+          <dl className="flex flex-1 flex-wrap items-center justify-around gap-x-6 gap-y-2 text-sm">
+            <HeaderStat
+              value={formatPct(subject.delivery_pct)}
+              label="Delivery"
+              tone={rateTone(subject.delivery_pct)}
+            />
+            {courier ? <HeaderStat value={`${courier.share_pct.toFixed(1)}%`} label="of Booked Orders" /> : null}
+            <HeaderStat value={subject.orders.toLocaleString()} label="Orders" />
+            <HeaderStat
+              value={subject.provinces.length}
+              label={subject.provinces.length === 1 ? "Province" : "Provinces"}
+            />
+          </dl>
           <button
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="rounded p-1 text-slate-400 hover:bg-surface hover:text-slate-700"
+            className="shrink-0 rounded p-1 text-slate-400 hover:bg-surface hover:text-slate-700"
           >
             ✕
           </button>
         </div>
 
         <div className="px-5 py-4">
-          <div className="mb-4 grid gap-2 sm:grid-cols-3">
-            <div className="rounded-md bg-surface px-3 py-2">
-              <div className="text-xs font-semibold text-emerald-600">Delivery %</div>
-              <p className="mt-0.5 text-[11px] leading-snug text-slate-500">
-                Delivered out of the finished orders (delivered + returned). Green 70%+, amber 50%+, red
-                below.
-              </p>
-            </div>
-            <div className="rounded-md bg-surface px-3 py-2">
-              <div className="text-xs font-semibold text-slate-700">% of orders</div>
-              <p className="mt-0.5 text-[11px] leading-snug text-slate-500">
-                This courier&apos;s part of all orders in the picked dates.
-              </p>
-            </div>
-            <div className="rounded-md bg-surface px-3 py-2">
-              <div className="text-xs font-semibold text-slate-700">Province share</div>
-              <p className="mt-0.5 text-[11px] leading-snug text-slate-500">
-                The small grey % on a province: its part of {courier ? "this courier's" : "all"} orders.
-              </p>
-            </div>
-          </div>
           <div className="mb-3 flex flex-wrap gap-1.5">
-            {[{ name: ALL, label: "All couriers" }, ...data.couriers.map((c) => ({ name: c.name, label: c.name }))].map(
+            {[{ name: ALL, label: "All Couriers" }, ...data.couriers.map((c) => ({ name: c.name, label: c.name }))].map(
               (option) => (
                 <button
                   key={option.name}
@@ -119,7 +114,7 @@ function ProvincesPopup({ data, initialCourier, onClose }) {
               )
             )}
           </div>
-          <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">By province</div>
+          <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">By Province</div>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {subject.provinces.map((p) => (
               <ProvinceCard key={p.name} row={p} />
@@ -147,6 +142,7 @@ export default function DeliveryPerformance({ data }) {
       <section
         role="button"
         tabIndex={0}
+        title="Click to see Details"
         onClick={() => setPopup({ courier: null })}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
@@ -158,24 +154,24 @@ export default function DeliveryPerformance({ data }) {
       >
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-sm font-semibold text-slate-900">Top couriers</h2>
-            <p className="text-xs text-slate-500">Share of orders · click for provinces</p>
+            <h2 className="text-sm font-semibold text-slate-900">Top Couriers</h2>
+            <p className="text-xs text-slate-500">Share of Orders · Click for Provinces</p>
           </div>
           <div className="text-right">
             <div className="text-sm text-slate-500">
-              <span className="font-semibold text-slate-900">{overall.orders.toLocaleString()}</span> orders
+              <span className="font-semibold text-slate-900">{overall.orders.toLocaleString()}</span> Orders
             </div>
             <div className="text-xs text-slate-500">
               <span className={`font-semibold ${rateTone(overall.delivery_pct)}`}>
                 {formatPct(overall.delivery_pct)}
               </span>{" "}
-              delivered
+              Delivered
             </div>
           </div>
         </div>
 
         {!overall.orders ? (
-          <p className="mt-4 text-sm text-slate-400">No orders in this range.</p>
+          <p className="mt-4 text-sm text-slate-400">No Orders in This Range.</p>
         ) : (
           // Rows spread over the card's full height - it's as tall as Top
           // Cities beside it - so there's no empty space underneath.
@@ -188,7 +184,7 @@ export default function DeliveryPerformance({ data }) {
                     e.stopPropagation();
                     setPopup({ courier: c.name });
                   }}
-                  title="Delivery performance by province"
+                  title="Click to see Details"
                   className="group relative grid w-full grid-cols-[7.5rem_minmax(0,1fr)_3.5rem] items-center gap-3 rounded py-1 text-left"
                 >
                   <span className="truncate text-sm text-slate-700">
@@ -196,7 +192,7 @@ export default function DeliveryPerformance({ data }) {
                   </span>
                   <span className="h-3 rounded-r bg-slate-100">
                     <span
-                      className="block h-3 rounded-r bg-brand-600"
+                      className="block h-3 rounded-r bg-brand-600 transition group-hover:bg-brand-700"
                       style={{ width: c.orders ? `${Math.max((c.share_pct / maxShare) * 100, 1.5)}%` : 0 }}
                     />
                   </span>

@@ -2,7 +2,8 @@
 
 import { useEffect } from "react";
 
-export default function Modal({ open, onClose, title, children, footer, width = "max-w-lg" }) {
+// headerRight: optional content shown at the top right, just before the ✕.
+export default function Modal({ open, onClose, title, headerRight, children, footer, width = "max-w-lg" }) {
   useEffect(() => {
     if (!open) return undefined;
     function onKeyDown(e) {
@@ -23,14 +24,17 @@ export default function Modal({ open, onClose, title, children, footer, width = 
       >
         <div className="flex items-center justify-between border-b border-surface-border px-5 py-3">
           <h2 className="text-sm font-semibold text-slate-900">{title}</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            className="text-slate-400 hover:text-slate-600"
-          >
-            ✕
-          </button>
+          <div className="flex items-center gap-4">
+            {headerRight}
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close"
+              className="text-slate-400 hover:text-slate-600"
+            >
+              ✕
+            </button>
+          </div>
         </div>
         <div className="max-h-[70vh] overflow-y-auto px-5 py-4">{children}</div>
         {footer ? (

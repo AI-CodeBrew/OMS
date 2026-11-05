@@ -1549,9 +1549,16 @@ def workflow_tag(order):
 # filter_dashboard_type lists one (the Orders list's dash_group/dash_type).
 DASHBOARD_GROUPS = {
     "total": None,
-    "pending": ["pending_cc", "pending_cod", "city_issue", "awaiting_assigning", "awaiting_approval"],
+    # Pending: everything not yet handed to the courier - from New up to
+    # Assigning Courier (booked, printed, packed, dispatch issue).
+    "pending": [
+        "new", "pending_cc", "pending_cod", "city_issue", "awaiting_assigning", "awaiting_approval",
+        "approved", "booking_pending", "ready_to_print", "ready_to_pick", "awaiting_dispatched",
+        "dispatch_issue",
+    ],
     "cancelled": ["cancelled"],
-    "dispatched": ["approved", "awaiting_dispatched", "dispatched", "dispatch_issue"],
+    # Dispatched: only orders the courier has actually picked up.
+    "dispatched": ["dispatched", "out_for_delivery", "attempt"],
     "delivered": ["delivered"],
     "returned": ["returned"],
 }
@@ -1575,6 +1582,7 @@ def _dashboard_fixed_types(group):
 
     if group == "pending":
         return [
+            ("new", "New", Q(status="new")),
             ("city_issue", "City Issue", Q(status="city_issue")),
             ("pending_approval", "Pending Approval",
              Q(status__in=["pending_cc", "pending_cod", "awaiting_approval"])),
@@ -1583,6 +1591,12 @@ def _dashboard_fixed_types(group):
             ("no_stock", "Stock Not Available", flagged(FLAG_NO_STOCK)),
             ("cancelled_from_assigning", "Cancelled from Assigning Courier", flagged(FLAG_CANCELLED_FROM_ASSIGNING)),
             ("courier_change_failed", "Courier Change Failed", flagged(FLAG_COURIER_CHANGE_FAILED)),
+            ("self_delivered", "Self Delivered", Q(status="approved")),
+            ("booking_pending", "Awaiting Tracking", Q(status="booking_pending")),
+            ("ready_to_print", "Ready to Print", Q(status="ready_to_print")),
+            ("ready_to_pick", "Ready to Pick", Q(status="ready_to_pick")),
+            ("awaiting_dispatched", "Awaiting Dispatched", Q(status="awaiting_dispatched")),
+            ("dispatch_issue", "Dispatch Issue", Q(status="dispatch_issue")),
         ]
     if group == "cancelled":
         return [(reason, reason, Q(cancel_reason=reason)) for reason in CANCEL_REASONS] + [
@@ -1590,10 +1604,9 @@ def _dashboard_fixed_types(group):
         ]
     if group == "dispatched":
         return [
-            ("approved", "Approved (Ship Without Booking)", Q(status="approved")),
-            ("awaiting_dispatched", "Awaiting Dispatched", Q(status="awaiting_dispatched")),
             ("dispatched", "In Transit", Q(status="dispatched")),
-            ("dispatch_issue", "Dispatch Issue", Q(status="dispatch_issue")),
+            ("out_for_delivery", "Out for Delivery", Q(status="out_for_delivery")),
+            ("attempt", "Delivery Attempt Failed", Q(status="attempt")),
         ]
     if group == "total":
         named = [g for g in DASHBOARD_GROUPS if DASHBOARD_GROUPS[g]]

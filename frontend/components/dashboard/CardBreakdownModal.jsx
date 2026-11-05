@@ -84,6 +84,13 @@ export function CardBreakdownModal({ group, range, onClose, onOpenType }) {
       open
       onClose={onClose}
       width="max-w-xl"
+      headerRight={
+        loading ? null : (
+          <span className="text-sm text-slate-500">
+            Total: <span className="font-semibold tabular-nums text-slate-900">{total.toLocaleString()}</span> Orders
+          </span>
+        )
+      }
       title={
         <span className="inline-flex items-center gap-2">
           <span className="h-3 w-3 rounded-full" style={{ backgroundColor: group.color }} />
@@ -100,7 +107,7 @@ export function CardBreakdownModal({ group, range, onClose, onOpenType }) {
         </div>
       ) : (
         <div className="space-y-4">
-          {types.length === 0 ? <p className="text-sm text-slate-500">No orders in this range.</p> : null}
+          {types.length === 0 ? <p className="text-sm text-slate-500">No Orders in This Range.</p> : null}
           {types.map((t, i) => {
             const pct = pcts[i];
             return (
@@ -113,7 +120,7 @@ export function CardBreakdownModal({ group, range, onClose, onOpenType }) {
                       type="button"
                       onClick={() => onOpenType(t)}
                       disabled={!t.count}
-                      title="View orders"
+                      title="View Orders"
                       className="rounded p-1 text-slate-500 hover:bg-surface hover:text-slate-800 disabled:opacity-40"
                     >
                       <EyeIcon className="h-5 w-5" />
@@ -127,7 +134,6 @@ export function CardBreakdownModal({ group, range, onClose, onOpenType }) {
               </div>
             );
           })}
-          <p className="border-t border-surface-border pt-3 text-sm text-slate-700">Total: {total} orders</p>
         </div>
       )}
     </Modal>

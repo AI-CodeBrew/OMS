@@ -39,19 +39,35 @@ const OrderDetailPanel = dynamic(() => import("../../../components/orders/OrderD
 });
 
 // Card order: Total, Pending, Cancelled, then the rest of the pipeline.
+// Total (static: true) is display only - no click, no hover, no popup.
 const KPI_GROUPS = [
-  { key: "total", label: "Total Orders", statuses: null, color: "#1e40af" },
+  { key: "total", label: "Total Orders", statuses: null, color: "#1e40af", static: true },
   {
     key: "pending",
     label: "Pending",
-    statuses: ["pending_cc", "pending_cod", "city_issue", "awaiting_assigning", "awaiting_approval"],
+    // Everything not yet handed to the courier: New up to Assigning Courier.
+    statuses: [
+      "new",
+      "pending_cc",
+      "pending_cod",
+      "city_issue",
+      "awaiting_assigning",
+      "awaiting_approval",
+      "approved",
+      "booking_pending",
+      "ready_to_print",
+      "ready_to_pick",
+      "awaiting_dispatched",
+      "dispatch_issue",
+    ],
     color: "#f59e0b",
   },
   { key: "cancelled", label: "Cancelled", statuses: ["cancelled"], color: "#ef4444" },
   {
     key: "dispatched",
     label: "Dispatched",
-    statuses: ["approved", "awaiting_dispatched", "dispatched", "dispatch_issue"],
+    // Only orders the courier has picked up.
+    statuses: ["dispatched", "out_for_delivery", "attempt"],
     color: "#2563eb",
   },
   { key: "delivered", label: "Delivered", statuses: ["delivered"], color: "#16a34a" },
@@ -64,7 +80,17 @@ const KPI_GROUPS = [
 const RANGE_BUTTONS = [...DASHBOARD_PRESETS, { key: "custom", label: "Custom" }];
 const DEFAULT_RANGE = "30";
 
-function KpiCard({ label, value, color, active, onClick }) {
+function KpiCard({ label, value, color, active, onClick, isStatic }) {
+  if (isStatic) {
+    return (
+      <div className="rounded-lg border border-surface-border bg-white p-4 text-left">
+        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</p>
+        <p className="mt-1.5 text-2xl font-semibold" style={{ color }}>
+          {value == null ? "—" : value.toLocaleString()}
+        </p>
+      </div>
+    );
+  }
   return (
     <button
       type="button"
@@ -376,6 +402,7 @@ function Dashboard() {
             label={k.label}
             value={k.value}
             color={k.color}
+            isStatic={k.static}
             active={openGroup?.key === k.key}
             onClick={() => {
               setOpenType(null);
