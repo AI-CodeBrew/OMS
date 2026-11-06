@@ -254,22 +254,6 @@ export default function ReturnsPage() {
             />
           </div>
 
-          {summary.awaiting_scan > 0 && bucket !== "awaiting" ? (
-            <div className="mt-4 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5">
-              <span className="text-sm text-amber-800">
-                <strong>{summary.awaiting_scan}</strong>{" "}
-                {summary.awaiting_scan === 1 ? "parcel was" : "parcels were"} returned by the courier
-                but never scanned in.
-              </span>
-              <button
-                type="button"
-                onClick={() => applyBucket("awaiting")}
-                className="ml-auto shrink-0 text-sm font-medium text-amber-800 underline"
-              >
-                View
-              </button>
-            </div>
-          ) : null}
         </div>
 
         <div className="min-w-0">

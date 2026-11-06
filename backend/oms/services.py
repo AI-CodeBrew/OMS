@@ -2583,6 +2583,10 @@ def _dashboard_courier(name):
     return DASHBOARD_COURIERS.get(re.sub(r"[^a-z]", "", (name or "").lower()), DASHBOARD_OTHER_COURIERS)
 
 
+# How the Top Couriers card writes a province.
+_SHORT_PROVINCE_NAMES = {"Khyber Pakhtunkhwa": "KPK"}
+
+
 def delivery_performance(qs):
     """The Dashboard's Delivery performance section, over `qs` (the picked
     date range): overall, each courier's share of the orders and delivery
@@ -2645,7 +2649,7 @@ def delivery_performance(qs):
 
     def summary(name, b, whole):
         return {
-            "name": name,
+            "name": _SHORT_PROVINCE_NAMES.get(name, name),
             "orders": b["orders"],
             "delivered": b["delivered"],
             "returned": b["returned"],

@@ -159,6 +159,8 @@ export function useEffectiveUser() {
       is_manual_store: Boolean(actingStore.is_manual_store),
       isOrgAdmin: true,
       isDispatchHub: Boolean(actingStore.hub),
+      // The super admin's All Orders tab - the hub's view over every store.
+      isAllOrders: Boolean(actingStore.hub && actingStore.allStores),
     };
   }, [user, actingStore]);
 }

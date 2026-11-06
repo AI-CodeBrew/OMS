@@ -140,7 +140,7 @@ const HUB_ALLOWED_PREFIXES = [
 export function getVisibleModules(user) {
   if (!user) return [];
   if (user.isDispatchHub) {
-    return [{ key: "oms", label: "Dispatch Hub", href: "/dashboard" }];
+    return [{ key: "oms", label: user.isAllOrders ? "All Orders" : "Dispatch Hub", href: "/dashboard" }];
   }
   if (isReturnsAssociate(user)) {
     return [{ key: "wms", label: "WMS", href: "/returns" }];

@@ -78,7 +78,7 @@ function ProvincesPopup({ data, initialCourier, onClose }) {
               tone={rateTone(subject.delivery_pct)}
             />
             {courier ? <HeaderStat value={`${courier.share_pct.toFixed(1)}%`} label="of Booked Orders" /> : null}
-            <HeaderStat value={subject.orders.toLocaleString()} label="Orders" />
+            <HeaderStat value={subject.orders.toLocaleString()} label="Dispatched" />
             <HeaderStat
               value={subject.provinces.length}
               label={subject.provinces.length === 1 ? "Province" : "Provinces"}

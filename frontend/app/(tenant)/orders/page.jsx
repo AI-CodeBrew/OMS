@@ -1086,7 +1086,7 @@ export default function OrdersPage() {
               </button>
             ) : null}
             <h1 className="text-2xl font-semibold text-slate-900">
-              {user?.isDispatchHub ? "Dispatch Hub Orders" : "Local Orders"}
+              {user?.isAllOrders ? "All Orders" : user?.isDispatchHub ? "Dispatch Hub Orders" : "Local Orders"}
               {dashboardGroup ? <span className="text-slate-400"> · {dashboardGroup}</span> : null}
             </h1>
             <span className="text-sm text-slate-500">
