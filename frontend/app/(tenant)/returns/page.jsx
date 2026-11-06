@@ -9,7 +9,8 @@ import Pagination from "../../../components/shared/Pagination";
 import DateRangeFilter from "../../../components/orders/DateRangeFilter";
 import { useSessionDateRange } from "../../../store/dateFilterStore";
 import ScanPanel from "../../../components/wms/ScanPanel";
-import { SCAN_DESKS } from "../../../lib/scanDesks";
+import { describeReturnOutcome, SCAN_DESKS } from "../../../lib/scanDesks";
+import { usePhoneScanStore } from "../../../lib/phoneScanSession";
 import ReturnBreakdownModal from "../../../components/wms/ReturnBreakdownModal";
 import Modal from "../../../components/shared/Modal";
 
@@ -27,22 +28,6 @@ function formatDate(value) {
   return value ? new Date(value).toLocaleString() : "—";
 }
 
-// "3 good · 1 damaged · 1 lost" - a received parcel's count.
-function breakdownText(breakdown) {
-  if (!breakdown?.length) return "";
-  const t = breakdown.reduce(
-    (acc, l) => ({ good: acc.good + l.good, damaged: acc.damaged + l.damaged, lost: acc.lost + l.lost }),
-    { good: 0, damaged: 0, lost: 0 }
-  );
-  return [
-    `${t.good} good`,
-    t.damaged ? `${t.damaged} damaged` : "",
-    t.lost ? `${t.lost} lost` : "",
-  ]
-    .filter(Boolean)
-    .join(" · ");
-}
-
 // The Received badge: just what the parcel came back as - Good, or Damaged
 // / Lost - no unit counts.
 function conditionText(breakdown, condition) {
@@ -51,17 +36,6 @@ function conditionText(breakdown, condition) {
   return [any("good") ? "Good" : "", any("damaged") ? "Damaged" : "", any("lost") ? "Lost" : ""]
     .filter(Boolean)
     .join(" / ");
-}
-
-function describeOutcome(entry) {
-  const restocked = entry.restocked || [];
-  const missed = entry.not_restocked || [];
-  const parts = restocked.map((r) => `${r.sku || r.product_name} +${r.quantity}`);
-  // Lines with no stock item to put back on (no SKU, no unique name match).
-  if (missed.length) parts.push(`not in inventory: ${missed.join(", ")}`);
-  const counted = breakdownText(entry.breakdown);
-  const stock = parts.length ? `restocked ${parts.join("; ")}` : "nothing restocked";
-  return `Received${counted ? ` (${counted})` : ""} — ${stock}`;
 }
 
 function bucketParams(bucket) {
@@ -172,6 +146,15 @@ export default function ReturnsPage() {
     load();
   }, [load]);
 
+  // A parcel counted on the paired phone, whether or not Scan is open here.
+  useEffect(
+    () =>
+      usePhoneScanStore.subscribe((next, previous) => {
+        if (next.returnRecordedAt && next.returnRecordedAt !== previous.returnRecordedAt) load();
+      }),
+    [load]
+  );
+
   function applyBucket(value) {
     setBucket(value);
     setPage(1);
@@ -202,7 +185,7 @@ export default function ReturnsPage() {
       const result = await wmsService.scanReturn({ orderNumber, breakdown });
       if (result.success) {
         setReceiving(null);
-        setNotice(`${orderNumber} — ${describeOutcome(result)}`);
+        setNotice(`${orderNumber} — ${describeReturnOutcome(result)}`);
         await load();
       } else {
         setError(`${orderNumber} — ${result.reason}`);
@@ -448,7 +431,7 @@ export default function ReturnsPage() {
         <ScanPanel
           {...SCAN_DESKS.returns}
           onScan={async (trackingNumber) => {
-            // A phone keeps scanning while the laptop's count popup is open -
+            // This device's camera keeps reading while the count popup is open -
             // the next parcel must not replace the one being counted.
             if (receiving) {
               return {

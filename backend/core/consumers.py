@@ -116,6 +116,20 @@ def _text(value, limit):
     return value.strip()[:limit] if isinstance(value, str) else ""
 
 
+def _count(value):
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+# A return's key can hold its whole product name (wms.services.return_line_summary).
+_MAX_RETURN_LINES = 200
+_MAX_LINE_TEXT = 1000
+
+
+def _rows(value):
+    """Only the rows of a list that are objects, and not without limit."""
+    return [r for r in value if isinstance(r, dict)][:_MAX_RETURN_LINES] if isinstance(value, list) else []
+
+
 class ScanSessionConsumer(AsyncJsonWebsocketConsumer):
     """wss://<host>/ws/scan-session/?token=<token from core.scan_sessions>
 
@@ -127,8 +141,12 @@ class ScanSessionConsumer(AsyncJsonWebsocketConsumer):
     Phone -> laptop: {"type": "scan", "id", "code"}, {"type": "here"},
     {"type": "end"} (forwarded as phone_ended - the operator pressed the cross,
     as opposed to phone_left, which may only be a dropped connection)
+    {"type": "count", "id", "order_number", "breakdown"} (a return counted on
+    the phone, recorded by the laptop like its own popup's count)
     Laptop -> phone: {"type": "result", "id", "status", "order_number",
-    "message"}, {"type": "hello", "title", "field"}
+    "message", "lines"} ("lines" when status is "count": the return to count),
+    {"type": "hello", "title", "field"}, {"type": "ended"} (a cross pressed on
+    any phone of this session has ended it)
     Sent on joining/leaving: phone_joined / phone_left to the laptop,
     host_joined / host_left to the phone.
 
@@ -208,6 +226,23 @@ class ScanSessionConsumer(AsyncJsonWebsocketConsumer):
             frame = {"type": "phone_joined", "peer": self.peer_id}
         elif self.is_phone and kind == "end":
             frame = {"type": "phone_ended", "peer": self.peer_id}
+        elif self.is_phone and kind == "count":
+            frame = {
+                "type": "count",
+                "id": _text(content.get("id"), 64),
+                "order_number": _text(content.get("order_number"), 255),
+                "breakdown": [
+                    {
+                        "key": _text(row.get("key"), _MAX_LINE_TEXT),
+                        "good": _count(row.get("good")),
+                        "damaged": _count(row.get("damaged")),
+                        "lost": _count(row.get("lost")),
+                    }
+                    for row in _rows(content.get("breakdown"))
+                ],
+            }
+        elif not self.is_phone and kind == "ended":
+            frame = {"type": "ended"}
         elif not self.is_phone and kind == "result":
             frame = {
                 "type": "result",
@@ -215,6 +250,15 @@ class ScanSessionConsumer(AsyncJsonWebsocketConsumer):
                 "status": _text(content.get("status"), 16),
                 "order_number": _text(content.get("order_number"), 255),
                 "message": _text(content.get("message"), 500),
+                "lines": [
+                    {
+                        "key": _text(row.get("key"), _MAX_LINE_TEXT),
+                        "sku": _text(row.get("sku"), 255),
+                        "product_name": _text(row.get("product_name"), _MAX_LINE_TEXT),
+                        "quantity": _count(row.get("quantity")),
+                    }
+                    for row in _rows(content.get("lines"))
+                ],
             }
         elif not self.is_phone and kind == "hello":
             frame = {

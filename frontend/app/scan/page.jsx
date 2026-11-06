@@ -9,6 +9,7 @@ import {
   useBarcodeCamera,
   useBeeper,
 } from "../../components/wms/barcodeCamera";
+import ReturnBreakdownModal from "../../components/wms/ReturnBreakdownModal";
 import { connectScanSession } from "../../lib/scanSessionSocket";
 
 const CAMERA_ELEMENT_ID = "phone-scan-camera";
@@ -35,16 +36,41 @@ export default function PhoneScanPage() {
   const [link, setLink] = useState("connecting");
   const [desk, setDesk] = useState({ title: "", field: "" });
   const [card, setCard] = useState(null);
+  // The returned parcel being counted here: { orderNumber, lines }. Scanning
+  // waits until it's confirmed or cancelled, same as the laptop's popup.
+  const [counting, setCounting] = useState(null);
+  const [countError, setCountError] = useState("");
 
   const beep = useBeeper(false);
   const sessionRef = useRef(null);
   const linkRef = useRef(link);
   linkRef.current = link;
-  const pendingRef = useRef(null); // { id, timer } for the scan awaiting its reply
+  const countingRef = useRef(counting);
+  countingRef.current = counting;
+  const pendingRef = useRef(null); // { id, timer, done } for the frame awaiting its reply
   const lastCodeRef = useRef({ code: "", at: 0 });
 
   useEffect(() => {
     setToken(window.location.hash.slice(1));
+
+    // A new QR code opened in a tab already on this page only changes what's
+    // after the #, which doesn't reload it - without this it would sit on the
+    // old "Scanner closed" screen. (replaceState below doesn't fire this.)
+    function onHashChange() {
+      const next = window.location.hash.slice(1);
+      if (!next) return;
+      if (pendingRef.current) clearTimeout(pendingRef.current.timer);
+      pendingRef.current = null;
+      setCard(null);
+      setCounting(null);
+      setCountError("");
+      setDesk({ title: "", field: "" });
+      setLink("connecting");
+      setClosed(false);
+      setToken(next);
+    }
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
 
   function vibrate(pattern) {
@@ -61,13 +87,31 @@ export default function PhoneScanPage() {
   }
 
   function handleResult(frame) {
-    if (frame.id !== pendingRef.current?.id) return;
+    const pending = pendingRef.current;
+    if (frame.id !== pending?.id) return;
     clearPending();
+    pending.done?.();
     if (frame.status === "ignored") {
       setCard(frame.message ? { tone: "info", message: frame.message } : null);
       return;
     }
+    if (frame.status === "count") {
+      setCard(null);
+      setCountError("");
+      setCounting({ orderNumber: frame.order_number, lines: frame.lines || [] });
+      beep("success");
+      vibrate(80);
+      return;
+    }
     const success = frame.status === "ok";
+    if (countingRef.current && !success) {
+      // Stays open, as the laptop's popup does, to fix the count or cancel.
+      setCountError(frame.message || "Could not record this count.");
+      beep("error");
+      vibrate([200, 80, 200]);
+      return;
+    }
+    setCounting(null);
     setCard({
       tone: success ? "success" : "error",
       title: frame.order_number,
@@ -77,8 +121,19 @@ export default function PhoneScanPage() {
     vibrate(success ? 80 : [200, 80, 200]);
   }
 
-  const handleResultRef = useRef(handleResult);
-  handleResultRef.current = handleResult;
+  // Ends this phone's part for good, and drops its token from the address bar
+  // so not even a reload can bring it back.
+  function finish() {
+    clearPending();
+    window.history.replaceState(null, "", window.location.pathname);
+    setCard(null);
+    setCounting(null);
+    setStarted(false);
+    setClosed(true);
+  }
+
+  const handlersRef = useRef(null);
+  handlersRef.current = { handleResult, finish };
 
   useEffect(() => {
     if (!token || closed) return undefined;
@@ -103,7 +158,10 @@ export default function PhoneScanPage() {
           // new one has already joined - if so, this gets a hello straight back.
           sessionRef.current?.send({ type: "here" });
         } else if (frame.type === "result") {
-          handleResultRef.current(frame);
+          handlersRef.current.handleResult(frame);
+        } else if (frame.type === "ended") {
+          // The cross was pressed on another scanner tab of this session.
+          handlersRef.current.finish();
         }
       },
       onDown: () => setLink("connecting"),
@@ -124,15 +182,38 @@ export default function PhoneScanPage() {
     []
   );
 
-  // Ends the session for good: tells the laptop, and drops this phone's token
-  // from the address bar so not even a reload can bring it back.
   function closeScanner() {
     sessionRef.current?.send({ type: "end" });
-    clearPending();
-    window.history.replaceState(null, "", window.location.pathname);
-    setCard(null);
-    setStarted(false);
-    setClosed(true);
+    finish();
+  }
+
+  // The count form's Confirm. Resolves once the laptop has answered, which
+  // handleResult above deals with - the form's button spins until then.
+  function confirmCount(breakdown) {
+    return new Promise((resolve) => {
+      setCountError("");
+      const fail = (message) => {
+        setCountError(message);
+        resolve();
+      };
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const sent =
+        linkRef.current === "ready" &&
+        sessionRef.current?.send({ type: "count", id, order_number: counting.orderNumber, breakdown });
+      if (!sent) {
+        fail("The laptop isn't connected. Try again once it is.");
+        return;
+      }
+      pendingRef.current = {
+        id,
+        done: resolve,
+        timer: setTimeout(() => {
+          pendingRef.current = null;
+          fail("No reply from the laptop. Check its Returns page before trying again.");
+          beep("error");
+        }, REPLY_TIMEOUT_MS),
+      };
+    });
   }
 
   function handleDecode(raw) {
@@ -146,7 +227,7 @@ export default function PhoneScanPage() {
       last.at = now;
       if (stillInView) return;
     }
-    if (pendingRef.current || linkRef.current !== "ready") return;
+    if (pendingRef.current || countingRef.current || linkRef.current !== "ready") return;
 
     const id = `${now}-${Math.random().toString(36).slice(2, 8)}`;
     if (!sessionRef.current?.send({ type: "scan", id, code })) return;
@@ -286,6 +367,13 @@ export default function PhoneScanPage() {
         </p>
         {card ? <ResultCard card={card} /> : null}
       </div>
+
+      <ReturnBreakdownModal
+        request={counting}
+        onConfirm={confirmCount}
+        onClose={() => setCounting(null)}
+        error={countError}
+      />
     </div>
   );
 }

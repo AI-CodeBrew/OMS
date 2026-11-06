@@ -11,8 +11,9 @@ import Button from "../shared/Button";
 // (backend: wms.services.restock_from_return).
 //
 // `request` is { orderNumber, lines: [{key, sku, product_name, quantity}] }
-// from the return lookup; null keeps the modal closed.
-export default function ReturnBreakdownModal({ request, onConfirm, onClose }) {
+// from the return lookup; null keeps the modal closed. Also the paired phone's
+// count (app/scan/page.jsx), which shows `error` here as it has no page behind.
+export default function ReturnBreakdownModal({ request, onConfirm, onClose, error }) {
   const [counts, setCounts] = useState({});
   const [saving, setSaving] = useState(false);
 
@@ -166,6 +167,7 @@ export default function ReturnBreakdownModal({ request, onConfirm, onClose }) {
         <span className="text-red-700">{totals.damaged} damaged</span> ·{" "}
         <span className="text-amber-700">{totals.lost} lost/missing</span>
       </p>
+      {error ? <p className="mt-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
       <div className="mt-4 flex justify-end gap-2">
         <Button variant="secondary" onClick={onClose}>
           Cancel
