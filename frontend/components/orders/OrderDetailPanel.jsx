@@ -186,15 +186,19 @@ export default function OrderDetailPanel({
       }));
       return;
     }
-    // Marking it Paid records the whole grand total as paid; from then on
-    // Amount Paid stays fixed and the receivable follows any later change.
-    if (field === "payment_status" && value === "paid") {
-      setDraft((d) => ({
-        ...d,
-        amount_receivable: undefined,
-        payment_status: value,
-        amount_paid: d.payment_status === "paid" ? d.amount_paid : draftPayable(d).toFixed(2),
-      }));
+    // Payment Status sets Amount Paid to match it - nothing typed for
+    // another status carries over:
+    // - back to the order's saved status: its saved Amount Paid;
+    // - Paid: the whole amount payable (then it stays fixed and the
+    //   receivable follows any later change);
+    // - Pending / Partially Paid: 0, to be typed in for Partially Paid.
+    if (field === "payment_status") {
+      setDraft((d) => {
+        let paid = "0.00";
+        if (value === order?.payment_status) paid = toAmount(order.amount_paid);
+        else if (value === "paid") paid = draftPayable(d).toFixed(2);
+        return { ...d, amount_receivable: undefined, payment_status: value, amount_paid: paid };
+      });
       return;
     }
     // Discount: Shopify's part stays as it is - what's typed beyond (or
