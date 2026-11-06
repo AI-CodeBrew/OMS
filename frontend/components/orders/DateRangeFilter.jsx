@@ -22,10 +22,9 @@ function monthRange(offset) {
 }
 
 // Same choices as the Dashboard's date filter (Today / Yesterday / Last 7 /
-// Last 30 days, then Custom), plus the two month presets and All time -
-// these lists start unfiltered, unlike the Dashboard.
+// Last 30 days, then Custom), plus the two month presets. No "All time" -
+// every list opens on the last 30 days (store/dateFilterStore).
 const PRESETS = [
-  { key: "all", label: "All time", range: () => ({ date_from: "", date_to: "" }) },
   ...DASHBOARD_PRESETS.map((p) => ({ ...p, range: () => dashboardRangeForPreset(p.key) })),
   { key: "this_month", label: "This month", range: () => monthRange(0) },
   { key: "last_month", label: "Last month", range: () => monthRange(-1) },
@@ -42,7 +41,6 @@ export default function DateRangeFilter({
   dateFrom,
   dateTo,
   onApplyDateRange,
-  onClearDateRange,
 }) {
   const [open, setOpen] = useState(false);
   const preset = presetFor(dateFrom, dateTo);
@@ -74,10 +72,6 @@ export default function DateRangeFilter({
   function pick(p) {
     setShowCustom(false);
     setOpen(false);
-    if (p.key === "all") {
-      onClearDateRange();
-      return;
-    }
     const r = p.range();
     onApplyDateRange(r.date_from, r.date_to);
   }
