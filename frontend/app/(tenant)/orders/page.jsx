@@ -1052,9 +1052,15 @@ export default function OrdersPage() {
     setAppliedSearch(search);
   }
 
+  // The orders the open action popup is for - ticked rows, or the one
+  // order whose details it was opened from.
+  const pendingOrders = (pendingAction?.orderIds || [])
+    .map((id) => seenOrders.current.get(id) || orders.find((o) => o.id === id))
+    .filter(Boolean);
+
   // The confirm popup's title: the card the orders are moving from.
   const pendingFromCard = (() => {
-    const cards = new Set(selectedOrders.map((o) => o.workflow_card));
+    const cards = new Set(pendingOrders.map((o) => o.workflow_card));
     if (cards.size === 1) return cardTab([...cards][0])?.label;
     return activeStatus?.startsWith("card:") ? STATUS_TABS.find((t) => t.value === activeStatus)?.label : undefined;
   })();
@@ -1254,7 +1260,7 @@ export default function OrdersPage() {
         action={pendingAction?.action}
         count={pendingAction?.orderIds?.length || 0}
         fromCard={pendingFromCard}
-        currentCourier={[...new Set(selectedOrders.map((o) => o.courier_name).filter(Boolean))].join(", ")}
+        currentCourier={[...new Set(pendingOrders.map((o) => o.courier_name).filter(Boolean))].join(", ")}
         couriers={
           pendingAction?.action === "assign_courier" && bookingAccounts.length
             ? // Only the synthetic booking-account entries actually book
