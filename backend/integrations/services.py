@@ -1249,6 +1249,28 @@ _ABSORBABLE_STATUSES = {
 }
 
 
+def _still_smartlanes(order, *, other_couriers=(), number=None, platform_reference=None):
+    """The order re-read from the database, if a Smartlane row may still
+    act on it - else None. A poll loads its orders first and asks Smartlane
+    after; meanwhile Change Courier / Cancel Booking can move the order to
+    PostEx, BarqRaftar or Leopards, to the store's other Smartlane account,
+    or renumber it (1001 -> 1001-1). Then the row is for a booking the
+    order no longer has, and must not touch it."""
+    fresh = (
+        _without_direct_courier_bookings(Order.all_objects.filter(id=order.id))
+        .exclude(courier__name__in=list(other_couriers))
+        .select_related("courier")
+        .first()
+    )
+    if fresh is None:
+        return None
+    if number is not None and fresh.order_number.lstrip("#") != str(number).lstrip("#"):
+        return None
+    if platform_reference is not None and fresh.platform_reference.lstrip("#") != str(platform_reference).lstrip("#"):
+        return None
+    return fresh
+
+
 def _without_direct_courier_bookings(queryset):
     """Drops orders booked with PostEx, BarqRaftar or Leopards (an active
     shipment row in any of those integrations). Those have their own pollers
@@ -1492,6 +1514,11 @@ def _poll_smartlane_statuses_body(
             if order is None:
                 logger.debug("smartlane poll: row for %r matches no order we asked about", row_number)
                 continue
+            order = _still_smartlanes(order, other_couriers=other_couriers, number=row_number)
+            if order is None:
+                logger.info("smartlane poll: row for %r - order moved on since the poll began, skipped",
+                            row_number)
+                continue
             oms_services.record_courier_status(order, smartlane_status_label(row))
             record_smartlane_shipment_safely(
                 order, row, account=connection.courier_name, warehouse_names=warehouse_names
@@ -1649,6 +1676,11 @@ def _poll_platform_smartlane(organization_id, oms_services, *, batch_size, limit
             reference, consignment, raw_status = extract_smartlane_event(row)
             order = by_reference.get(reference.lstrip("#"))
             if order is None:
+                continue
+            order = _still_smartlanes(order, platform_reference=reference)
+            if order is None:
+                logger.info("smartlane poll: row for %r - order moved on since the poll began, skipped",
+                            reference)
                 continue
             try:
                 with tenant_context(order.organization_id):

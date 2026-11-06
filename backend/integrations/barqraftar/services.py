@@ -979,7 +979,8 @@ def apply_barqraftar_status(order, shipment, status_code, *, tracking_number="",
         # Cancelled on BarqRaftar's side: the booking is gone, not the
         # order - it goes back to Awaiting Assigning to be booked again.
         return oms_services.unbook_cancelled_by_courier(
-            order, courier_label="BarqRaftar", actor_user_id=actor_user_id
+            order, courier_label="BarqRaftar", tracking_number=tracking_number,
+            actor_user_id=actor_user_id,
         )
 
     if status_code in _OUT_FOR_DELIVERY_CODES or status_code in _ATTEMPT_CODES:
@@ -1011,6 +1012,15 @@ def _apply_fetched_status(shipment, row):
     tn, _ref, status_code, status_label, logs = _extract_order_fields(row)
     order = Order.all_objects.filter(id=shipment.order_id).first()
     if not order:
+        return False
+    # An old booking (switched off by Change Courier / Cancel Booking while
+    # this poll was running, or replaced by another one) never touches the
+    # order - not its status, not its tracking number.
+    if not oms_services.booking_is_current(order, shipment, courier_label="BarqRaftar"):
+        type(shipment).all_objects.filter(pk=shipment.pk).update(last_checked_at=timezone.now())
+        oms_services.note_old_booking_update(
+            order, courier_label="BarqRaftar", tracking_number=shipment.tracking_number
+        )
         return False
 
     before_status = order.status

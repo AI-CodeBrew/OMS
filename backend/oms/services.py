@@ -1154,15 +1154,78 @@ _UNBOOKABLE_STATUSES = {
 }
 
 
-def unbook_cancelled_by_courier(order, *, courier_label, actor_user_id=None):
+def _courier_key(name):
+    """A courier name reduced to letters - "Post Ex", "POSTEX" -> "postex"."""
+    return re.sub(r"[^a-z]", "", (name or "").lower())
+
+
+def _booked_with(order, courier_label):
+    """Whether the order's current booking is with `courier_label` (or it
+    has no courier at all - nothing else to protect). Smartlane covers both
+    of its accounts ("Smartlane" / "OMS Courier")."""
+    if not order.courier_id:
+        return True
+    name = order.courier.name
+    if _courier_key(courier_label) == "smartlane":
+        return name in _smartlane_courier_names()
+    return _courier_key(name) == _courier_key(courier_label)
+
+
+def booking_is_current(order, shipment, *, courier_label):
+    """A courier update (poll or webhook) belongs to the order's CURRENT
+    booking only if its shipment row is still active - re-read from the
+    database, since a poll loads its list first and a Change Courier /
+    Cancel Booking can switch it off meanwhile - and the order hasn't moved
+    to another booking (a different tracking number with another courier).
+    Anything else is an old booking's update: it must not touch the order."""
+    if not type(shipment).all_objects.filter(pk=shipment.pk, is_active=True).exists():
+        return False
+    order_tn = (order.tracking_number or "").strip()
+    shipment_tn = (shipment.tracking_number or "").strip()
+    if order_tn and shipment_tn and order_tn != shipment_tn and not _booked_with(order, courier_label):
+        return False
+    return True
+
+
+def note_old_booking_update(order, *, courier_label, tracking_number=""):
+    """One line on the order's log (once per old booking) saying an update
+    for a booking it no longer has was ignored."""
+    from .models import OrderStatusEvent
+
+    note = f"Old {courier_label} booking update ignored"
+    if tracking_number:
+        note += f" (CN {tracking_number})"
+    note = note[:255]
+    logger.info("order %s: %s", order.order_number, note)
+    if OrderStatusEvent.all_objects.filter(order=order, note=note).exists():
+        return
+    OrderStatusEvent.all_objects.create(
+        organization_id=order.organization_id,
+        order=order,
+        from_status=order.status,
+        to_status=order.status,
+        note=note,
+    )
+
+
+def unbook_cancelled_by_courier(order, *, courier_label, tracking_number="", actor_user_id=None):
     """The courier cancelled the booking on its own portal: the order itself
     isn't cancelled - only its booking is. The stock goes back, the courier,
     consignment/tracking number and booking stamps are cleared, and the
     order returns to Awaiting Confirmation under a new store order ID
     (_back_to_confirmation_after_cancel). Returns True if
     the order changed; an order already past booking's reach (delivered,
-    returned, cancelled) or not booked is left alone."""
+    returned, cancelled) or not booked is left alone.
+
+    Only the booking that was cancelled is undone: an order now booked with
+    another courier, or under another tracking number (`tracking_number`,
+    the cancelled booking's), is left exactly as it is."""
     if order.status not in _UNBOOKABLE_STATUSES:
+        return False
+    order_tn = (order.tracking_number or "").strip()
+    cancelled_tn = (tracking_number or "").strip()
+    if not _booked_with(order, courier_label) or (order_tn and cancelled_tn and order_tn != cancelled_tn):
+        note_old_booking_update(order, courier_label=courier_label, tracking_number=cancelled_tn)
         return False
     _release_courier_booking(
         order,

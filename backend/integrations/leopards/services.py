@@ -835,13 +835,14 @@ def apply_leopards_status(order, stage, *, tracking_number="", actor_user_id=Non
         return True
 
     if stage == "cancelled":
-        if order.status == "cancelled":
-            return False
-        # Leopards already says it's cancelled - don't call their API again.
-        oms_services.cancel_order(
-            order, reason="Cancelled on Leopards", actor_user_id=actor_user_id, propagate_to_courier=False,
+        # Cancelled on Leopards' side: the booking is gone, not the order -
+        # back to Awaiting Confirmation to be booked again, the same as
+        # PostEx and BarqRaftar (Leopards isn't asked again - it already
+        # says cancelled).
+        return oms_services.unbook_cancelled_by_courier(
+            order, courier_label="Leopards", tracking_number=tracking_number,
+            actor_user_id=actor_user_id,
         )
-        return True
 
     if stage in ("out_for_delivery", "attempt"):
         return _advance_to_dispatch_substate(order, stage, tracking_number)
@@ -865,6 +866,15 @@ def _apply_status(shipment, *, label, stage, history_entry=None, payload=None):
 
     order = Order.all_objects.filter(id=shipment.order_id).first()
     if not order:
+        return False
+    # An old booking (switched off by Change Courier / Cancel Booking while
+    # this poll was running, or replaced by another one) never touches the
+    # order - not its status, not its tracking number.
+    if not oms_services.booking_is_current(order, shipment, courier_label="Leopards"):
+        type(shipment).all_objects.filter(pk=shipment.pk).update(last_checked_at=timezone.now())
+        oms_services.note_old_booking_update(
+            order, courier_label="Leopards", tracking_number=shipment.tracking_number
+        )
         return False
 
     before_status = order.status

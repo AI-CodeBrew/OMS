@@ -752,7 +752,7 @@ def apply_postex_status(order, stage, *, tracking_number="", actor_user_id=None)
         # Cancelled on PostEx's side: the booking is gone, not the order -
         # it goes back to Awaiting Assigning to be booked again.
         return oms_services.unbook_cancelled_by_courier(
-            order, courier_label="PostEx", actor_user_id=actor_user_id
+            order, courier_label="PostEx", tracking_number=tracking_number, actor_user_id=actor_user_id
         )
 
     if stage in ("out_for_delivery", "attempt"):
@@ -776,6 +776,15 @@ def _apply_fetched_status(shipment, row):
 
     order = Order.all_objects.filter(id=shipment.order_id).first()
     if not order or not isinstance(row, dict):
+        return False
+    # An old booking (switched off by Change Courier / Cancel Booking while
+    # this poll was running, or replaced by another one) never touches the
+    # order - not its status, not its tracking number.
+    if not oms_services.booking_is_current(order, shipment, courier_label="PostEx"):
+        PostExShipment.all_objects.filter(pk=shipment.pk).update(last_checked_at=timezone.now())
+        oms_services.note_old_booking_update(
+            order, courier_label="PostEx", tracking_number=shipment.tracking_number
+        )
         return False
 
     label = str(row.get("transactionStatus") or "")
