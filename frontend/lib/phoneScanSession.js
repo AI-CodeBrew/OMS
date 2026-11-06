@@ -19,7 +19,9 @@ const QR_REFRESH_MS = 60000;
 // status: "idle", "starting", "waiting" (show the QR code), "paired" (a phone
 // is connected), "away" (the paired phone dropped off and should come back),
 // "reconnecting", or "error". deskId: what the phone is scanning for.
-const INITIAL_STATE = { status: "idle", phoneUrl: "", error: "", deskId: null };
+// returnRecordedAt: when the phone last received a return, for the Returns page
+// to refresh on.
+const INITIAL_STATE = { status: "idle", phoneUrl: "", error: "", deskId: null, returnRecordedAt: 0 };
 export const usePhoneScanStore = create(() => INITIAL_STATE);
 const getState = usePhoneScanStore.getState;
 const update = usePhoneScanStore.setState;
@@ -91,26 +93,60 @@ function onVisibilityChange() {
   if (document.visibilityState === "visible" && qrOnScreen() && phones.size === 0) requestQr();
 }
 
+function noteOnPanel(deskId, entry) {
+  if (claim?.deskId === deskId) claim.note?.(entry);
+}
+
 async function runDetached(code) {
   const desk = SCAN_DESKS[getState().deskId];
   if (!desk) return { status: "fail", order_number: code, message: "Press Scan on the laptop first." };
-  if (desk.detachedMessage) return { status: "fail", order_number: code, message: desk.detachedMessage };
   const response = await desk.onScan(code);
+  const entry = { ...response, order_number: response.order_number || code };
+  // Found, but only counted once the phone has shown its Good/Damaged/Lost form.
+  if (entry.success && desk.phoneCount) {
+    return { status: "count", order_number: entry.order_number, lines: entry.lines || [] };
+  }
+  noteOnPanel(desk.deskId, entry);
   return {
-    status: response.success ? "ok" : "fail",
-    order_number: response.order_number || code,
-    message: describeScanOutcome(desk, response),
+    status: entry.success ? "ok" : "fail",
+    order_number: entry.order_number,
+    message: describeScanOutcome(desk, entry),
   };
 }
 
 async function handleScan(frame) {
   const sentFrom = session;
+  const desk = SCAN_DESKS[getState().deskId];
+  // A desk the phone counts on stays off its panel, whose own flow would open
+  // the count popup on the laptop as well.
+  const throughPanel = claim && claim.deskId === desk?.deskId && !desk.phoneCount;
   let outcome;
   try {
-    outcome =
-      claim?.deskId === getState().deskId ? await claim.handler(frame.code) : await runDetached(frame.code);
+    outcome = throughPanel ? await claim.handler(frame.code) : await runDetached(frame.code);
   } catch (err) {
     outcome = { status: "fail", order_number: frame.code, message: err.message || "Scan failed" };
+  }
+  if (session === sentFrom) session?.send({ type: "result", id: frame.id, ...outcome });
+}
+
+// The phone's Confirm on a count. Always the Returns desk, even if the laptop
+// has since pointed the phone at another one - this parcel is already counted.
+async function handleCount(frame) {
+  const sentFrom = session;
+  const desk = SCAN_DESKS.returns;
+  let outcome;
+  try {
+    const response = await desk.phoneCount.receive(frame.order_number, frame.breakdown);
+    const entry = { ...response, order_number: response.order_number || frame.order_number };
+    noteOnPanel(desk.deskId, entry);
+    if (entry.success) update({ returnRecordedAt: Date.now() });
+    outcome = {
+      status: entry.success ? "ok" : "fail",
+      order_number: entry.order_number,
+      message: describeScanOutcome(desk, entry),
+    };
+  } catch (err) {
+    outcome = { status: "fail", order_number: frame.order_number, message: err.message || "Receive failed" };
   }
   if (session === sentFrom) session?.send({ type: "result", id: frame.id, ...outcome });
 }
@@ -133,18 +169,19 @@ function handleFrame(frame) {
     update({ status: idleStatus() });
     if (qrOnScreen()) requestQr();
   } else if (frame.type === "phone_ended") {
-    // The cross - the one thing that actually ends this.
-    phones.delete(frame.peer);
-    if (phones.size > 0) return;
+    // The cross - the one thing that actually ends this, and it ends all of
+    // it. Counting only the phone that pressed it left the laptop stuck on
+    // "Phone connected" whenever another scanner tab or a dropped connection
+    // still counted as a phone, with no QR code to get out of it.
+    session?.send({ type: "ended" });
     writeSaved(null);
-    if (pairingDeskId) {
-      update({ status: "waiting" });
-      requestQr();
-    } else {
-      stop();
-    }
+    const deskId = pairingDeskId;
+    stop();
+    if (deskId) openPhoneScanner(deskId);
   } else if (frame.type === "scan") {
     handleScan(frame);
+  } else if (frame.type === "count") {
+    handleCount(frame);
   }
 }
 
@@ -235,9 +272,10 @@ export function retryPhoneScanner() {
 }
 
 // A panel taking its desk's scans while it's open, so they run its full flow.
+// note(entry) adds to its log a result that didn't go through that flow.
 // Returns the call to make when it closes.
-export function claimPhoneDesk(deskId, handler) {
-  const mine = { deskId, handler };
+export function claimPhoneDesk(deskId, handler, note) {
+  const mine = { deskId, handler, note };
   claim = mine;
   if (qrOnScreen() && phones.size === 0) requestQr();
   return () => {

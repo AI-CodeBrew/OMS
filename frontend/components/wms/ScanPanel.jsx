@@ -125,9 +125,17 @@ export default function ScanPanel({
   const showPairing = pairingOpen || (phoneHasPaired && phone.deskId === deskId);
   const phoneElsewhere = phoneHasPaired && phone.deskId && phone.deskId !== deskId;
 
-  const handlePhoneCodeRef = useRef(handlePhoneCode);
-  handlePhoneCodeRef.current = handlePhoneCode;
-  useEffect(() => claimPhoneDesk(deskId, (code) => handlePhoneCodeRef.current(code)), [deskId]);
+  const phoneCallbacksRef = useRef(null);
+  phoneCallbacksRef.current = { handlePhoneCode, notePhoneEntry };
+  useEffect(
+    () =>
+      claimPhoneDesk(
+        deskId,
+        (code) => phoneCallbacksRef.current.handlePhoneCode(code),
+        (entry) => phoneCallbacksRef.current.notePhoneEntry(entry)
+      ),
+    [deskId]
+  );
 
   useEffect(() => {
     try {
@@ -244,6 +252,14 @@ export default function ScanPanel({
       order_number: outcome.order_number,
       message: outcome.pending ? `${decision.prompt} (choose on the laptop)` : outcomeText(outcome),
     };
+  }
+
+  // A result the phone got without going through submit() - see claimPhoneDesk.
+  function notePhoneEntry(response) {
+    const entry = { ...response, scanned: true, at: new Date() };
+    setResult(entry);
+    setLog((prev) => [entry, ...prev].slice(0, 12));
+    beep(entry.success ? "success" : "error");
   }
 
   async function resolveDecision(choice) {
