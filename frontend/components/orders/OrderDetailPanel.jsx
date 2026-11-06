@@ -428,7 +428,8 @@ export default function OrderDetailPanel({
         // status - above the line, not beside the tabs.
         headerRight={
           order && !loading && !readOnly ? (
-            <div className="flex flex-wrap items-center justify-end gap-2">
+            // One row - never wraps under itself.
+            <div className="flex items-center justify-end gap-2">
               {/* Dispatched or later can't be edited. */}
               {editing ? (
                 <>
@@ -453,7 +454,7 @@ export default function OrderDetailPanel({
                       key={a.key}
                       variant={a.action === "cancel" ? "danger" : "secondary"}
                       onClick={() => onAssigningAction(a.action, order)}
-                      className="px-3 py-1.5"
+                      className="whitespace-nowrap px-2.5 py-1.5 text-[13px]"
                     >
                       {a.label}
                     </Button>
