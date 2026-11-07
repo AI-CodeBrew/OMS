@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { getSupabaseBrowserClient } from "../../../lib/supabaseClient";
 import Button from "../../../components/shared/Button";
+import Modal from "../../../components/shared/Modal";
 import PasswordInput from "../../../components/shared/PasswordInput";
 import GreenTick from "../../../components/shared/GreenTick";
 import { STAFF_MODULE_OPTIONS } from "../../../components/layout/moduleNav";
@@ -152,21 +153,6 @@ function moduleLabels(modules) {
     .join(", ");
 }
 
-function permissionSummary(permissions, catalog) {
-  const labels = [];
-  catalog.forEach((module) =>
-    module.pages.forEach((page) => {
-      const level = (permissions || {})[page.key];
-      if (!level) return;
-      // "Report", not "Other Report"; "Financify", not "Financify Financify".
-      const name =
-        module.key === "general" || module.label === page.label ? page.label : `${module.label} ${page.label}`;
-      labels.push(`${name}${level === "read" ? " (Read)" : ""}`);
-    })
-  );
-  return labels.length ? labels.join(" · ") : "No pages";
-}
-
 // What a login can do, picked right on the Team form: tap a module (OMS,
 // IMS, WMS, ...) and its pages open below it - each None / Read / Read +
 // Write.
@@ -250,6 +236,40 @@ function AccessPicker({ catalog, value, onChange }) {
       {!catalog.some(moduleOn) ? (
         <p className="text-xs text-slate-500">Tap a module to pick which of its pages this login can open.</p>
       ) : null}
+    </div>
+  );
+}
+
+// The Access column: one small badge per page - Read-only ones lighter.
+function AccessBadges({ access, catalog, oldModules }) {
+  if (!access) {
+    return <span className="text-xs text-slate-500">Old Access · {moduleLabels(oldModules)}</span>;
+  }
+  const badges = [];
+  catalog.forEach((module) =>
+    module.pages.forEach((page) => {
+      const level = access[page.key];
+      if (!level) return;
+      const name =
+        module.key === "general" || module.label === page.label ? page.label : `${module.label} ${page.label}`;
+      badges.push({ key: page.key, name, read: level === "read" });
+    })
+  );
+  if (!badges.length) return <span className="text-xs text-slate-400">No Access</span>;
+  return (
+    <div className="flex flex-wrap gap-1">
+      {badges.map((b) => (
+        <span
+          key={b.key}
+          title={b.read ? "Read only" : "Read + Write"}
+          className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ${
+            b.read ? "bg-slate-100 text-slate-600" : "bg-brand-50 text-brand-700"
+          }`}
+        >
+          {b.name}
+          {b.read ? " · Read" : ""}
+        </span>
+      ))}
     </div>
   );
 }
@@ -365,9 +385,10 @@ function TeamTab() {
   }
 
   const domainSuffix = emailDomain ? `@${emailDomain}` : "";
+  const editingMember = members.find((m) => m.user_id === editingId) || null;
 
   return (
-    <div className="max-w-3xl space-y-6">
+    <div className="max-w-5xl space-y-6">
       <p className="text-sm text-slate-500">
         Staff logins use your org domain
         {domainSuffix ? (
@@ -436,80 +457,102 @@ function TeamTab() {
         ) : members.length === 0 ? (
           <p className="px-5 py-6 text-sm text-slate-500">No staff members yet.</p>
         ) : (
-          <ul className="divide-y divide-surface-border">
-            {members.map((m) => (
-              <li key={m.user_id} className="px-5 py-4">
-                {editingId === m.user_id ? (
-                  <div className="space-y-3">
-                    <p className="text-sm font-medium text-slate-900">Edit {m.email || m.user_id}</p>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <label className="block text-sm">
-                        <span className="mb-1 block text-slate-600">Username</span>
-                        <div className="flex overflow-hidden rounded-md border border-surface-border focus-within:border-brand-500">
-                          <input
-                            value={editForm.username}
-                            onChange={(e) =>
-                              setEditForm((f) => ({ ...f, username: e.target.value.replace(/@.*$/, "").toLowerCase() }))
-                            }
-                            className="min-w-0 flex-1 px-3 py-2 text-sm outline-none"
-                          />
-                          {domainSuffix ? (
-                            <span className="flex items-center bg-slate-50 px-3 text-sm text-slate-500">{domainSuffix}</span>
-                          ) : null}
-                        </div>
-                      </label>
-                      <label className="block text-sm">
-                        <span className="mb-1 block text-slate-600">New Password (Optional)</span>
-                        <PasswordInput
-                          minLength={8}
-                          placeholder="Leave blank to keep current"
-                          value={editForm.password}
-                          onChange={(e) => setEditForm((f) => ({ ...f, password: e.target.value }))}
-                        />
-                      </label>
-                    </div>
-                    <div>
-                      <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500">Access</p>
-                      <AccessPicker
-                        catalog={catalog}
-                        value={editForm.permissions}
-                        onChange={(permissions) => setEditForm((f) => ({ ...f, permissions }))}
-                      />
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      <Button type="button" loading={saving} onClick={() => onSaveMember(m)}>
-                        Save
-                      </Button>
-                      <Button type="button" variant="secondary" onClick={() => setEditingId(null)}>
-                        Cancel
-                      </Button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="font-medium text-slate-900">{m.email || m.user_id}</p>
-                      <p className="mt-0.5 text-xs text-slate-500">
-                        {m.access
-                          ? permissionSummary(m.access, catalog)
-                          : `Old Access · ${moduleLabels(m.allowed_modules)}`}
-                      </p>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Button type="button" variant="secondary" onClick={() => openEdit(m)}>
-                        Edit Access / Login
-                      </Button>
-                      <Button type="button" variant="secondary" onClick={() => onRemove(m.user_id)}>
-                        Remove
-                      </Button>
-                    </div>
-                  </div>
-                )}
-              </li>
-            ))}
-          </ul>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="border-b border-surface-border bg-surface text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="whitespace-nowrap px-4 py-2.5 text-left">#</th>
+                  <th className="whitespace-nowrap px-4 py-2.5 text-left">Login</th>
+                  <th className="px-4 py-2.5 text-left">Access</th>
+                  <th className="whitespace-nowrap px-4 py-2.5 text-left">Added On</th>
+                  <th className="whitespace-nowrap px-4 py-2.5 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {members.map((m, i) => (
+                  <tr key={m.user_id} className="border-b border-surface-border align-top last:border-0 hover:bg-surface/60">
+                    <td className="px-4 py-3 text-slate-500">{i + 1}</td>
+                    <td className="whitespace-nowrap px-4 py-3 font-medium text-slate-900">{m.email || m.user_id}</td>
+                    <td className="px-4 py-3">
+                      <AccessBadges access={m.access} catalog={catalog} oldModules={m.allowed_modules} />
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-slate-500">
+                      {m.created_at ? new Date(m.created_at).toLocaleDateString() : "—"}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-right">
+                      <div className="inline-flex gap-2">
+                        <Button type="button" variant="secondary" className="px-3 py-1.5" onClick={() => openEdit(m)}>
+                          Edit
+                        </Button>
+                        <Button type="button" variant="secondary" className="px-3 py-1.5" onClick={() => onRemove(m.user_id)}>
+                          Remove
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
+
+      {editingMember ? (
+        <Modal
+          open
+          onClose={() => setEditingId(null)}
+          title={`Edit ${editingMember.email || "Login"}`}
+          width="max-w-2xl"
+          footer={
+            <>
+              <Button type="button" variant="secondary" onClick={() => setEditingId(null)}>
+                Cancel
+              </Button>
+              <Button type="button" loading={saving} onClick={() => onSaveMember(editingMember)}>
+                Save
+              </Button>
+            </>
+          }
+        >
+          <div className="space-y-4">
+            {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="block text-sm">
+                <span className="mb-1 block text-slate-600">Username</span>
+                <div className="flex overflow-hidden rounded-md border border-surface-border focus-within:border-brand-500">
+                  <input
+                    value={editForm.username}
+                    onChange={(e) =>
+                      setEditForm((f) => ({ ...f, username: e.target.value.replace(/@.*$/, "").toLowerCase() }))
+                    }
+                    className="min-w-0 flex-1 px-3 py-2 text-sm outline-none"
+                  />
+                  {domainSuffix ? (
+                    <span className="flex items-center bg-slate-50 px-3 text-sm text-slate-500">{domainSuffix}</span>
+                  ) : null}
+                </div>
+              </label>
+              <label className="block text-sm">
+                <span className="mb-1 block text-slate-600">New Password (Optional)</span>
+                <PasswordInput
+                  minLength={8}
+                  placeholder="Leave blank to keep current"
+                  value={editForm.password}
+                  onChange={(e) => setEditForm((f) => ({ ...f, password: e.target.value }))}
+                />
+              </label>
+            </div>
+            <div>
+              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500">Access</p>
+              <AccessPicker
+                catalog={catalog}
+                value={editForm.permissions}
+                onChange={(permissions) => setEditForm((f) => ({ ...f, permissions }))}
+              />
+            </div>
+          </div>
+        </Modal>
+      ) : null}
     </div>
   );
 }

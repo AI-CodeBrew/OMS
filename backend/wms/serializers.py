@@ -5,6 +5,14 @@ from .services import purchase_order_state
 
 
 class WarehouseSerializer(serializers.ModelSerializer):
+    def validate_code(self, value):
+        """Warehouse codes are numbers (1, 2, 3 ...) - left out, the next
+        free one is given (WarehouseViewSet.perform_create)."""
+        value = (value or "").strip()
+        if value and not value.isdigit():
+            raise serializers.ValidationError("Warehouse code must be a number (digits only).")
+        return value
+
     class Meta:
         model = Warehouse
         fields = [
@@ -12,7 +20,7 @@ class WarehouseSerializer(serializers.ModelSerializer):
             "city", "address", "poc_name", "poc_phone", "remark", "created_at",
         ]
         read_only_fields = ["id", "created_at"]
-        # Made from the name when left out (WarehouseViewSet.perform_create).
+        # The next number when left out (WarehouseViewSet.perform_create).
         extra_kwargs = {"code": {"required": False}}
 
 
@@ -48,6 +56,8 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
     received_quantity = serializers.SerializerMethodField()
     good_quantity = serializers.SerializerMethodField()
     damaged_quantity = serializers.SerializerMethodField()
+    # Products cost (lines) + logistics cost = total cost.
+    products_cost = serializers.SerializerMethodField()
     total_cost = serializers.SerializerMethodField()
     state = serializers.SerializerMethodField()
 
@@ -56,7 +66,8 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
         fields = [
             "id", "po_number", "supplier", "supplier_name", "warehouse", "warehouse_name",
             "ordered_at", "note", "lines", "product_count", "total_quantity", "received_quantity",
-            "good_quantity", "damaged_quantity", "total_cost", "state", "created_at",
+            "good_quantity", "damaged_quantity", "products_cost", "logistics_cost", "total_cost",
+            "state", "created_at",
         ]
 
     def _lines(self, po):
@@ -77,8 +88,14 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
     def get_received_quantity(self, po):
         return self.get_good_quantity(po) + self.get_damaged_quantity(po)
 
+    def _products_cost(self, po):
+        return sum(line.unit_price * line.quantity_ordered for line in self._lines(po))
+
+    def get_products_cost(self, po):
+        return str(self._products_cost(po))
+
     def get_total_cost(self, po):
-        return str(sum(line.unit_price * line.quantity_ordered for line in self._lines(po)))
+        return str(self._products_cost(po) + (po.logistics_cost or 0))
 
     def get_state(self, po):
         return purchase_order_state(self.get_total_quantity(po), self.get_received_quantity(po))

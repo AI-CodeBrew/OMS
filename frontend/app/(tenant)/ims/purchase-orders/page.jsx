@@ -7,6 +7,7 @@ import Button from "../../../../components/shared/Button";
 import Pagination from "../../../../components/shared/Pagination";
 import SimpleFormModal from "../../../../components/wms/purchase-orders/SimpleFormModal";
 import AddPurchaseOrderModal from "../../../../components/wms/purchase-orders/AddPurchaseOrderModal";
+import PurchaseOrderDetailModal from "../../../../components/wms/purchase-orders/PurchaseOrderDetailModal";
 import ReceivePurchaseOrderModal from "../../../../components/wms/purchase-orders/ReceivePurchaseOrderModal";
 
 const SUPPLIER_FIELDS = [
@@ -72,7 +73,9 @@ export default function PurchaseOrdersPage() {
   const [syncing, setSyncing] = useState(false);
   const [openForm, setOpenForm] = useState(null); // "po" | "supplier" | "warehouse"
   const [receiving, setReceiving] = useState(null);
-  const [expanded, setExpanded] = useState(null);
+  // The PO open in its popup.
+  const [viewing, setViewing] = useState(null);
+  const [exporting, setExporting] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -142,6 +145,25 @@ export default function PurchaseOrdersPage() {
         <div>
           <h1 className="text-2xl font-semibold text-slate-900" title={"Stock bought from suppliers. Good units received are added to the receiving warehouse's stock."}>Purchase Orders</h1>
         </div>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="secondary"
+            loading={exporting}
+            onClick={async () => {
+              setExporting(true);
+              setError("");
+              try {
+                await wmsService.exportPurchaseOrders({ state: state || undefined, search: appliedSearch || undefined });
+              } catch (err) {
+                setError(err.message || "Export failed");
+              } finally {
+                setExporting(false);
+              }
+            }}
+          >
+            Export
+          </Button>
+        </div>
         <div className={`flex flex-wrap gap-2 ${canWrite ? "" : "hidden"}`}>
           <Button variant="secondary" loading={syncing} onClick={syncShopify}>
             Sync from Shopify
@@ -152,7 +174,7 @@ export default function PurchaseOrdersPage() {
           <Button variant="secondary" onClick={() => setOpenForm("warehouse")}>
             Add Warehouse
           </Button>
-          <Button onClick={() => setOpenForm("po")}>Add PO</Button>
+          <Button onClick={() => setOpenForm("po")}>Create PO</Button>
         </div>
       </div>
 
@@ -234,13 +256,12 @@ export default function PurchaseOrdersPage() {
             ) : (
               orders.map((po) => {
                 const badge = STATE_BADGE[po.state] || STATE_BADGE.not_received;
-                const open = expanded === po.id;
                 return [
                   <tr key={po.id} className="border-b border-surface-border">
                     <td className="px-3 py-2">
                       <button
                         type="button"
-                        onClick={() => setExpanded(open ? null : po.id)}
+                        onClick={() => setViewing(po)}
                         className="font-medium text-brand-700 hover:underline"
                       >
                         {po.po_number}
@@ -276,44 +297,6 @@ export default function PurchaseOrdersPage() {
                       ) : null}
                     </td>
                   </tr>,
-                  open ? (
-                    <tr key={`${po.id}-lines`} className="border-b border-surface-border bg-surface/50">
-                      <td colSpan={9} className="px-3 py-2">
-                        <table className="w-full text-xs">
-                          <thead className="text-slate-500">
-                            <tr>
-                              <th className="py-1 text-left">Product</th>
-                              <th className="py-1 text-right">Ordered</th>
-                              <th className="py-1 text-right">Price</th>
-                              <th className="py-1 text-right">Good</th>
-                              <th className="py-1 text-right">Damaged</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {po.lines.map((line) => (
-                              <tr key={line.id}>
-                                <td className="py-1">
-                                  <div className="flex items-center gap-2">
-                                    {line.image_url ? (
-                                      // eslint-disable-next-line @next/next/no-img-element
-                                      <img src={line.image_url} alt="" className="h-8 w-8 rounded object-cover" />
-                                    ) : null}
-                                    <span className="font-medium text-slate-800">{line.sku}</span>
-                                    <span className="text-slate-500">{line.product_name}</span>
-                                  </div>
-                                </td>
-                                <td className="py-1 text-right tabular-nums">{line.quantity_ordered}</td>
-                                <td className="py-1 text-right tabular-nums">{line.unit_price}</td>
-                                <td className="py-1 text-right tabular-nums text-green-700">{line.good_received}</td>
-                                <td className="py-1 text-right tabular-nums text-red-700">{line.damaged_received}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                        <p className="mt-1 text-xs text-slate-500">Total cost: {po.total_cost}</p>
-                      </td>
-                    </tr>
-                  ) : null,
                 ];
               })
             )}
@@ -330,6 +313,19 @@ export default function PurchaseOrdersPage() {
           setPageSize(size);
           setPage(1);
         }}
+      />
+
+      <PurchaseOrderDetailModal
+        po={viewing}
+        onClose={() => setViewing(null)}
+        onReceive={
+          canWrite
+            ? (po) => {
+                setViewing(null);
+                setReceiving(po);
+              }
+            : undefined
+        }
       />
 
       <AddPurchaseOrderModal

@@ -31,6 +31,8 @@ function emptyLine() {
 // (synced by Sync from Shopify). Good / Damaged are what has already
 // arrived; good units go straight into the warehouse's stock.
 export default function AddPurchaseOrderModal({ open, suppliers, warehouses, onClose, onCreated }) {
+  // Freight for the whole PO - on top of the products' cost.
+  const [logisticsCost, setLogisticsCost] = useState("");
   const [supplier, setSupplier] = useState("");
   const [warehouse, setWarehouse] = useState("");
   const [orderedAt, setOrderedAt] = useState(nowLocal);
@@ -45,6 +47,7 @@ export default function AddPurchaseOrderModal({ open, suppliers, warehouses, onC
     setWarehouse((warehouses.find((w) => w.is_default) || warehouses[0])?.id || "");
     setOrderedAt(nowLocal());
     setLines([emptyLine()]);
+    setLogisticsCost("");
     setError("");
     setSaving(false);
   }, [open, warehouses]);
@@ -87,7 +90,8 @@ export default function AddPurchaseOrderModal({ open, suppliers, warehouses, onC
   };
   const problems = lines.map(lineProblem);
   const canSave = supplier && warehouse && lines.length > 0 && problems.every((p) => !p);
-  const totalCost = lines.reduce((sum, l) => sum + num(l.quantity_ordered) * num(l.unit_price), 0);
+  const productsCost = lines.reduce((sum, l) => sum + num(l.quantity_ordered) * num(l.unit_price), 0);
+  const totalCost = productsCost + num(logisticsCost);
 
   async function save() {
     setSaving(true);
@@ -97,6 +101,7 @@ export default function AddPurchaseOrderModal({ open, suppliers, warehouses, onC
         supplier,
         warehouse,
         ordered_at: orderedAt ? new Date(orderedAt).toISOString() : undefined,
+        logistics_cost: num(logisticsCost),
         lines: lines.map((l) => ({
           sku: l.sku.trim(),
           product_name: l.product_name.trim(),
@@ -119,7 +124,7 @@ export default function AddPurchaseOrderModal({ open, suppliers, warehouses, onC
   const numberInput = `${input} text-right tabular-nums`;
 
   return (
-    <Modal open title="Add Purchase Order" onClose={onClose} width="max-w-6xl">
+    <Modal open title="Create PO" onClose={onClose} width="max-w-6xl">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <label className="block">
           <span className="mb-1 block text-xs font-medium text-slate-700">
@@ -168,7 +173,7 @@ export default function AddPurchaseOrderModal({ open, suppliers, warehouses, onC
               <th className="w-40 px-2 py-2 text-left">SKU</th>
               <th className="px-2 py-2 text-left">Product name</th>
               <th className="w-24 px-2 py-2 text-right">Qty ordered</th>
-              <th className="w-24 px-2 py-2 text-right">Price</th>
+              <th className="w-28 px-2 py-2 text-right">Product Cost</th>
               <th className="w-20 px-2 py-2 text-right">Good</th>
               <th className="w-20 px-2 py-2 text-right">Damaged</th>
               <th className="w-8 py-2" />
@@ -254,9 +259,26 @@ export default function AddPurchaseOrderModal({ open, suppliers, warehouses, onC
         >
           + Add product
         </button>
-        <span className="text-sm text-slate-600">
-          Total cost: <span className="font-semibold tabular-nums text-slate-900">{totalCost.toFixed(2)}</span>
-        </span>
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-slate-600">
+          <span>
+            Products Cost: <span className="font-semibold tabular-nums text-slate-900">{productsCost.toFixed(2)}</span>
+          </span>
+          <label className="flex items-center gap-2">
+            Logistics Cost:
+            <input
+              type="number"
+              min="0"
+              step="any"
+              placeholder="0"
+              value={logisticsCost}
+              onChange={(e) => setLogisticsCost(e.target.value)}
+              className="w-28 rounded-md border border-surface-border px-2 py-1 text-right text-sm tabular-nums outline-none focus:border-brand-500"
+            />
+          </label>
+          <span>
+            Total Cost: <span className="font-semibold tabular-nums text-slate-900">{totalCost.toFixed(2)}</span>
+          </span>
+        </div>
       </div>
       <p className="mt-2 text-xs text-slate-500">
         Good and Damaged are what has arrived so far - leave them at 0 if nothing has. Good units are added to the
@@ -269,7 +291,7 @@ export default function AddPurchaseOrderModal({ open, suppliers, warehouses, onC
           Cancel
         </Button>
         <Button loading={saving} disabled={!canSave} onClick={save}>
-          Save PO
+          Create PO
         </Button>
       </div>
     </Modal>

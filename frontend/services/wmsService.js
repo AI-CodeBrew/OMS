@@ -86,6 +86,25 @@ class WmsService {
     });
   }
 
+  // Every PO on the page's filters (state, search) as CSV - one row per
+  // product, with all its details. {id, filename}: just that one PO.
+  async exportPurchaseOrders({ filename, ...params } = {}) {
+    const response = await fetch(
+      `${apiConfig.baseUrl}${API_ENDPOINTS.wms.purchaseOrders}export/${buildQuery(params)}`,
+      { headers: authService.getAuthHeaders() }
+    );
+    if (!response.ok) throw new Error("Export failed");
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename || `purchase_orders_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+  }
+
   // receipts: [{line, good, damaged}] - added to what's already received.
   async receivePurchaseOrder(id, receipts) {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.purchaseOrderReceive(id)}`, {

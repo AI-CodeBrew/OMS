@@ -12,7 +12,7 @@ import Button from "../shared/Button";
  */
 export default function WarehouseSetupCard({ onCreated }) {
   const [name, setName] = useState("Main Warehouse");
-  const [code, setCode] = useState("MAIN");
+  const [code, setCode] = useState("1");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -56,13 +56,15 @@ export default function WarehouseSetupCard({ onCreated }) {
           <span className="mb-1 block text-xs font-medium text-slate-700">Warehouse Code</span>
           <input
             required
+            inputMode="numeric"
+            pattern="[0-9]+"
+            title="Numbers only"
             value={code}
-            onChange={(e) => setCode(e.target.value)}
+            onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
             className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
           />
           <span className="mt-1 block text-xs text-slate-400">
-            Short identifier used on documents. If you use Smartlane, matching their warehouse code
-            keeps both systems aligned.
+            A number (1, 2, 3 ...) shown on documents.
           </span>
         </label>
         <Button type="submit" loading={saving} className="w-full justify-center">

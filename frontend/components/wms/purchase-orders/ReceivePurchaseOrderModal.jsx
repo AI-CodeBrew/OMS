@@ -4,26 +4,7 @@ import { useEffect, useState } from "react";
 import Modal from "../../shared/Modal";
 import Button from "../../shared/Button";
 import wmsService from "../../../services/wmsService";
-
-const STATE_LABELS = {
-  received: { label: "Received", className: "bg-green-100 text-green-700" },
-  partial: { label: "Partially Received", className: "bg-amber-100 text-amber-700" },
-  not_received: { label: "Not Received", className: "bg-slate-100 text-slate-600" },
-};
-
-function money(value) {
-  const n = Number(value) || 0;
-  return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-
-function Detail({ label, children }) {
-  return (
-    <div className="min-w-0">
-      <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">{label}</div>
-      <div className="truncate text-sm text-slate-900">{children}</div>
-    </div>
-  );
-}
+import { PurchaseOrderSummary, money } from "./PurchaseOrderDetailModal";
 
 // Another delivery against a PO: for each product, how many more arrived
 // good or damaged - added to what's already received, never past what was
@@ -73,34 +54,8 @@ export default function ReceivePurchaseOrderModal({ po, onClose, onReceived }) {
 
   return (
     <Modal open title={`Receive ${po.po_number}`} onClose={onClose} width="max-w-5xl">
-      <div className="mb-4 rounded-md border border-surface-border bg-surface p-3">
-        <div className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4">
-          <Detail label="Supplier">{po.supplier_name || "—"}</Detail>
-          <Detail label="Warehouse">{po.warehouse_name || "—"}</Detail>
-          <Detail label="Order Date">{po.ordered_at ? new Date(po.ordered_at).toLocaleString() : "—"}</Detail>
-          <Detail label="Status">
-            <span
-              className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
-                (STATE_LABELS[po.state] || STATE_LABELS.not_received).className
-              }`}
-            >
-              {(STATE_LABELS[po.state] || STATE_LABELS.not_received).label}
-            </span>
-          </Detail>
-          <Detail label="Products">{po.product_count ?? po.lines.length}</Detail>
-          <Detail label="Total Qty">{po.total_quantity ?? "—"}</Detail>
-          <Detail label="Received Qty">
-            {po.received_quantity ?? 0}
-            {po.damaged_quantity ? <span className="text-red-600"> ({po.damaged_quantity} dmg)</span> : null}
-          </Detail>
-          <Detail label="Total Cost">PKR {money(po.total_cost)}</Detail>
-        </div>
-        {po.note ? (
-          <div className="mt-3 border-t border-surface-border pt-2 text-sm text-slate-700">
-            <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Note </span>
-            {po.note}
-          </div>
-        ) : null}
+      <div className="mb-4">
+        <PurchaseOrderSummary po={po} />
       </div>
       <p className="mb-2 text-sm text-slate-500">Enter what arrived in this delivery.</p>
       <div className="overflow-x-auto">
@@ -108,7 +63,7 @@ export default function ReceivePurchaseOrderModal({ po, onClose, onReceived }) {
           <thead className="border-b border-surface-border text-[11px] font-medium uppercase tracking-wide text-slate-500">
             <tr>
               <th className="py-2 pr-3 text-left">Product</th>
-              <th className="px-2 py-2 text-right">Price</th>
+              <th className="px-2 py-2 text-right">Product Cost</th>
               <th className="px-2 py-2 text-right">Ordered</th>
               <th className="px-2 py-2 text-right">Line Total</th>
               <th className="px-2 py-2 text-right">Received</th>

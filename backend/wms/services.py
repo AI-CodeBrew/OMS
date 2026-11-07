@@ -608,11 +608,23 @@ def _apply_receipt(po, line, good, damaged, *, actor_user_id=None):
 
 
 @transaction.atomic
-def create_purchase_order(*, organization_id, supplier, warehouse, ordered_at, lines, note="", actor_user_id=None):
+def create_purchase_order(
+    *, organization_id, supplier, warehouse, ordered_at, lines, note="", logistics_cost=0, actor_user_id=None
+):
     """A new PO. `lines` is [{sku, product_name, image_url, quantity_ordered,
     unit_price, good, damaged}] - good/damaged are what already arrived
-    (often nothing yet); good units go straight into stock."""
+    (often nothing yet); good units go straight into stock. unit_price is
+    the product cost; logistics_cost is the freight for the whole PO."""
+    from decimal import Decimal, InvalidOperation
+
     from .models import PurchaseOrder, PurchaseOrderLine
+
+    try:
+        logistics = Decimal(str(logistics_cost or 0).replace(",", "").strip() or "0")
+    except InvalidOperation as exc:
+        raise PurchaseOrderError("Logistics cost must be a number.") from exc
+    if logistics < 0:
+        raise PurchaseOrderError("Logistics cost can't be below 0.")
 
     if not lines:
         raise PurchaseOrderError("Add at least one product.")
@@ -637,6 +649,7 @@ def create_purchase_order(*, organization_id, supplier, warehouse, ordered_at, l
         warehouse=warehouse,
         ordered_at=ordered_at or timezone.now(),
         note=(note or "")[:255],
+        logistics_cost=logistics.quantize(Decimal("0.01")),
         created_by_user_id=actor_user_id,
     )
     po.refresh_from_db(fields=["number"])
@@ -697,6 +710,8 @@ def _order_bucket(status, returning):
 
 def _empty_metrics():
     return {
+        # On purchase orders for this warehouse, not arrived yet.
+        "order_placed": 0,
         "total_inbound": 0,
         "delivered": 0,
         "dispatched": 0,
@@ -754,20 +769,35 @@ def _order_metrics(organization_id):
 
 
 def _purchase_metrics(organization_id):
-    """{(warehouse id, sku): (good received, damaged received)} from the
-    warehouse's purchase orders."""
-    from django.db.models import Sum
+    """{(warehouse id, sku): (good received, damaged received, still to
+    come)} from the warehouse's purchase orders. Still to come (Order Placed)
+    is each PO line's ordered less what arrived (good + damaged), never
+    below 0."""
+    from django.db.models import F, IntegerField, Sum, Value
+    from django.db.models.functions import Greatest
 
     from .models import PurchaseOrderLine
 
     rows = (
         PurchaseOrderLine.all_objects.filter(organization_id=organization_id)
         .values("purchase_order__warehouse_id", "sku")
-        .annotate(good=Sum("good_received"), damaged=Sum("damaged_received"))
+        .annotate(
+            good=Sum("good_received"),
+            damaged=Sum("damaged_received"),
+            pending=Sum(
+                Greatest(
+                    F("quantity_ordered") - F("good_received") - F("damaged_received"),
+                    Value(0),
+                    output_field=IntegerField(),
+                )
+            ),
+        )
         .order_by()
     )
     return {
-        (str(r["purchase_order__warehouse_id"]), (r["sku"] or "").strip().lower()): (r["good"] or 0, r["damaged"] or 0)
+        (str(r["purchase_order__warehouse_id"]), (r["sku"] or "").strip().lower()): (
+            r["good"] or 0, r["damaged"] or 0, r["pending"] or 0,
+        )
         for r in rows
     }
 
@@ -784,7 +814,8 @@ def inventory_activity(quantity, ordered):
 def _inventory_row(item, order_metrics, purchase_metrics):
     m = dict(order_metrics.get(_match_key(item.sku, item.product_name)) or _empty_metrics())
     if item.sku:
-        good, damaged = purchase_metrics.get((str(item.warehouse_id), item.sku.strip().lower()), (0, 0))
+        good, damaged, pending = purchase_metrics.get((str(item.warehouse_id), item.sku.strip().lower()), (0, 0, 0))
+        m["order_placed"] = pending
         m["total_inbound"] = good
         m["po_damaged"] = damaged
     m["damaged_lost"] = m["returns_damaged"] + m["returns_lost"] + m["po_damaged"]

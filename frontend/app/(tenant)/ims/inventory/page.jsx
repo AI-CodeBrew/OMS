@@ -265,6 +265,9 @@ export default function WmsPage() {
                   <th className={TH_LEFT}>SKU</th>
                   <th className={TH_LEFT}>Name</th>
                   <th className={TH_LEFT}>Warehouse</th>
+                  <th className={TH_NUM} title="Ordered on purchase orders for this warehouse, not received yet">
+                    Order Placed
+                  </th>
                   <th className={TH_NUM} title="Good units received on purchase orders">
                     Total Inbound
                   </th>
@@ -282,13 +285,13 @@ export default function WmsPage() {
               <tbody>
                 {loading && stock.length === 0 ? (
                   <tr>
-                    <td colSpan={11} className="px-3 py-6 text-center text-slate-500">
+                    <td colSpan={12} className="px-3 py-6 text-center text-slate-500">
                       Loading…
                     </td>
                   </tr>
                 ) : stock.length === 0 ? (
                   <tr>
-                    <td colSpan={11} className="px-3 py-6 text-center text-slate-500">
+                    <td colSpan={12} className="px-3 py-6 text-center text-slate-500">
                       {activity || appliedSearch
                         ? "No items here."
                         : "No stock items yet - Sync from Shopify, or receive a purchase order."}
@@ -335,6 +338,7 @@ export default function WmsPage() {
                         ) : null}
                       </td>
                       <td className="whitespace-nowrap px-3 py-1.5 text-slate-600">{item.warehouse_name}</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">{item.order_placed ?? 0}</td>
                       <td className="px-3 py-1.5 text-right tabular-nums">{item.total_inbound}</td>
                       <td
                         className={`px-3 py-1.5 text-right font-semibold tabular-nums ${

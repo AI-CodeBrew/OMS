@@ -43,7 +43,7 @@ def _all_store_rows(search="", activity=""):
 
 
 # Per stock row (one warehouse's shelf): added up over every row.
-_STOCK_FIELDS = ("available", "total_inbound", "po_damaged")
+_STOCK_FIELDS = ("available", "order_placed", "total_inbound", "po_damaged")
 # Per store (from its orders - every warehouse row of one store carries the
 # same figures): added up once per store, never once per warehouse.
 _ORDER_FIELDS = (

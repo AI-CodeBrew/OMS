@@ -196,6 +196,9 @@ class PurchaseOrder(TenantScopedModel):
     # When it was ordered - filled with the time it was added, editable.
     ordered_at = models.DateTimeField()
     note = models.CharField(max_length=255, blank=True, default="")
+    # Freight / delivery paid to get the goods in - on top of the products'
+    # cost (each line's unit_price x quantity).
+    logistics_cost = models.DecimalField(max_digits=12, decimal_places=2, default=0, db_default=0)
     created_by_user_id = models.UUIDField(null=True, blank=True)
 
     class Meta:

@@ -49,16 +49,16 @@ class WarehouseViewSet(viewsets.ModelViewSet):
         return Warehouse.objects.filter(organization_id=self.request.organization_id)
 
     def perform_create(self, serializer):
-        # Add Warehouse (Purchase Orders page) asks for no code - one is made
-        # from the name, unique within the store. The store's first
+        # Warehouse codes are numbers: left out (Add Warehouse asks for
+        # none), the store's next one - 1, 2, 3 ... The store's first
         # warehouse is its default.
         existing = Warehouse.objects.filter(organization_id=self.request.organization_id)
         code = (serializer.validated_data.get("code") or "").strip()
+        if code and existing.filter(code=code).exists():
+            raise ValidationError({"code": [f"Warehouse code {code} is already used."]})
         if not code:
-            base = slugify(serializer.validated_data.get("name") or "warehouse").upper()[:40] or "WAREHOUSE"
-            code, n = base, 2
-            while existing.filter(code=code).exists():
-                code, n = f"{base}-{n}", n + 1
+            numbers = [int(c) for c in existing.values_list("code", flat=True) if (c or "").isdigit()]
+            code = str(max(numbers, default=0) + 1)
         extra = {} if existing.exists() else {"is_default": True}
         serializer.save(organization_id=self.request.organization_id, code=code, **extra)
 
@@ -152,6 +152,7 @@ class PurchaseOrderViewSet(viewsets.ReadOnlyModelViewSet):
                 ordered_at=ordered_at,
                 lines=[row for row in (data.get("lines") or []) if isinstance(row, dict)],
                 note=data.get("note") or "",
+                logistics_cost=data.get("logistics_cost") or 0,
                 actor_user_id=request.user_id,
             )
         except services.PurchaseOrderError as exc:
@@ -173,6 +174,66 @@ class PurchaseOrderViewSet(viewsets.ReadOnlyModelViewSet):
         except services.PurchaseOrderError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(self.get_serializer(self.get_queryset().get(id=po.id)).data)
+
+    @action(detail=False, methods=["get"])
+    def export(self, request):
+        """Export (Purchase Orders page): every PO on the page's filters,
+        one row per product, with all its details. ?id= - just that one PO
+        (the PO popup's Download)."""
+        import csv
+
+        from django.http import HttpResponse
+
+        from zoneinfo import ZoneInfo
+
+        pkt = ZoneInfo("Asia/Karachi")
+        response = HttpResponse(content_type="text/csv")
+        queryset = self.get_queryset()
+        one = (request.query_params.get("id") or "").strip()
+        if one:
+            queryset = queryset.filter(id=one)
+            po = queryset.first()
+            if po is None:
+                return Response({"detail": "Purchase order not found."}, status=status.HTTP_404_NOT_FOUND)
+            filename = f"{po.po_number}.csv"
+        else:
+            filename = "purchase_orders.csv"
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        writer = csv.writer(response)
+        writer.writerow([
+            "PO Number", "Order Date", "Supplier", "Supplier Phone", "Supplier City",
+            "Warehouse Code", "Warehouse", "Status", "Note",
+            "SKU", "Product Name", "Qty Ordered", "Product Cost", "Line Total",
+            "Good Received", "Damaged Received", "Total Received", "Left to Receive",
+            "PO Products Cost", "PO Logistics Cost", "PO Total Cost",
+        ])
+        for po in queryset.order_by("-number"):
+            lines = list(po.lines.all())
+            products_cost = sum(line.unit_price * line.quantity_ordered for line in lines)
+            total_qty = sum(line.quantity_ordered for line in lines)
+            received_qty = sum(line.good_received + line.damaged_received for line in lines)
+            state = {"received": "Received", "partial": "Partially Received"}.get(
+                services.purchase_order_state(total_qty, received_qty), "Not Received"
+            )
+            head = [
+                po.po_number,
+                po.ordered_at.astimezone(pkt).strftime("%Y-%m-%d %H:%M") if po.ordered_at else "",
+                po.supplier.name, po.supplier.phone, po.supplier.city,
+                po.warehouse.code, po.warehouse.name, state, po.note,
+            ]
+            tail = [str(products_cost), str(po.logistics_cost), str(products_cost + po.logistics_cost)]
+            for line in lines or [None]:
+                if line is None:
+                    writer.writerow(head + [""] * 9 + tail)
+                    continue
+                received = line.good_received + line.damaged_received
+                writer.writerow(head + [
+                    line.sku, line.product_name, line.quantity_ordered, str(line.unit_price),
+                    str(line.unit_price * line.quantity_ordered),
+                    line.good_received, line.damaged_received, received,
+                    max(line.quantity_ordered - received, 0),
+                ] + tail)
+        return response
 
     @action(detail=False, methods=["get"])
     def product(self, request):
@@ -359,6 +420,7 @@ class StockItemViewSet(viewsets.ModelViewSet):
             yield ["Generated", timezone.localtime().strftime("%Y-%m-%d %H:%M")]
             yield []
             for label, key in (
+                ("Order placed (PO, not received)", "order_placed"),
                 ("Total inbound (PO good)", "total_inbound"),
                 ("Available stock", "available"),
                 ("Delivered", "delivered"),
