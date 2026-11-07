@@ -42,11 +42,101 @@ def _all_store_rows(search="", activity=""):
     return rows, summary
 
 
+# Per stock row (one warehouse's shelf): added up over every row.
+_STOCK_FIELDS = ("available", "total_inbound", "po_damaged")
+# Per store (from its orders - every warehouse row of one store carries the
+# same figures): added up once per store, never once per warehouse.
+_ORDER_FIELDS = (
+    "delivered", "dispatched", "failed_delivery", "return_in_transit",
+    "returns_damaged", "returns_lost", "ordered",
+    "delivered_orders", "dispatched_orders", "failed_delivery_orders", "return_in_transit_orders",
+)
+
+
+def _group_key(row):
+    """One SKU across stores - case and spaces ignored. A row with no SKU
+    groups by its product name, never with a SKU."""
+    sku = (row.get("sku") or "").strip().lower()
+    if sku:
+        return ("sku", sku)
+    return ("name", (row.get("product_name") or "").strip().lower())
+
+
+def _grouped_activity(rows):
+    activities = {r["activity"] for r in rows}
+    for activity in ("active", "inactive"):
+        if activity in activities:
+            return activity
+    return "out_of_stock"
+
+
+def _group_by_sku(rows):
+    """Every store row of one SKU folded into one: stock summed per row,
+    order figures once per store; `stores` keeps the store rows, most
+    available first."""
+    groups = {}
+    for row in rows:
+        groups.setdefault(_group_key(row), []).append(row)
+
+    grouped = []
+    for key, members in groups.items():
+        names = {}
+        for r in members:
+            if r.get("product_name"):
+                names[r["product_name"]] = names.get(r["product_name"], 0) + 1
+        sku = next((r["sku"] for r in members if r.get("sku")), "")
+        item = {
+            "key": f"{key[0]}:{key[1]}",
+            "sku": (sku or "").strip(),
+            "product_name": max(names, key=names.get) if names else "",
+            "image_url": next((r["image_url"] for r in members if r.get("image_url")), ""),
+            "store_count": len({r["store_id"] for r in members}),
+            **{f: sum(r.get(f) or 0 for r in members) for f in _STOCK_FIELDS},
+        }
+        per_store = {}
+        for r in members:
+            per_store.setdefault(r["store_id"], r)
+        for f in _ORDER_FIELDS:
+            item[f] = sum(r.get(f) or 0 for r in per_store.values())
+        item["damaged_lost"] = item["returns_damaged"] + item["returns_lost"] + item["po_damaged"]
+        item["activity"] = _grouped_activity(members)
+        item["stores"] = sorted(members, key=lambda r: (-(r.get("available") or 0), r["store_name"].lower()))
+        grouped.append(item)
+    grouped.sort(key=lambda g: ((g["sku"] or g["product_name"]).lower()))
+    return grouped
+
+
+def _grouped_rows(search="", activity=""):
+    """(groups, summary) - the SKU view: one row per SKU over every store.
+    Cards count SKUs; search and the activity filter pick SKUs."""
+    rows, _ = _all_store_rows()
+    groups = _group_by_sku(rows)
+    summary = {"total": len(groups), **{a: 0 for a in services.INVENTORY_ACTIVITY}}
+    for g in groups:
+        summary[g["activity"]] += 1
+    term = (search or "").strip().lower()
+    if term:
+        groups = [
+            g for g in groups
+            if term in g["sku"].lower()
+            or any(term in (r.get("product_name") or "").lower() or term in (r.get("sku") or "").lower()
+                   for r in g["stores"])
+        ]
+    if activity in services.INVENTORY_ACTIVITY:
+        groups = [g for g in groups if g["activity"] == activity]
+    return groups, summary
+
+
 @api_view(["GET"])
 @permission_classes([IsSuperAdmin])
 def inventory(request):
+    """?group=sku - one row per SKU (its store rows under "stores");
+    otherwise one row per store's stock item, as before."""
     params = request.query_params
-    rows, summary = _all_store_rows(params.get("search") or "", params.get("activity") or "")
+    if params.get("group") == "sku":
+        rows, summary = _grouped_rows(params.get("search") or "", params.get("activity") or "")
+    else:
+        rows, summary = _all_store_rows(params.get("search") or "", params.get("activity") or "")
     try:
         page_size = min(max(int(params.get("page_size") or 25), 1), 500)
         page = max(int(params.get("page") or 1), 1)

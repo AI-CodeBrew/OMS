@@ -154,7 +154,7 @@ def create_organization_with_admin(
     if Organization.objects.filter(slug=org_slug).exists():
         raise OrganizationAdminError(f"Organization slug '{org_slug}' already exists")
 
-    module_list = modules or ["oms", "wms"]
+    module_list = modules or ["oms", "ims", "wms"]
     module_list = [m.strip() for m in module_list if m and m.strip()]
 
     organization = Organization.objects.create(

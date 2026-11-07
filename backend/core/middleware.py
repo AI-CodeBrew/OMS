@@ -107,6 +107,9 @@ class TenantMiddleware:
         request.is_super_admin = False
         request.is_org_admin = False
         request.modules = []
+        # Staff only: {page_key: "read"|"write"} (core.pages). None = no
+        # page limits (store admin, super admin, Dispatch Hub).
+        request.page_permissions = None
         request.auth_claims = None
         request.auth_email = None
         request.acting_as_org = False
@@ -179,7 +182,8 @@ class TenantMiddleware:
                 Membership.objects.filter(
                     organization_id=request.organization_id, user_id=request.user_id
                 )
-                .only("role", "allowed_modules")
+                .select_related("role_ref")
+                .only("role", "allowed_modules", "role_ref__permissions")
                 .first()
             )
             if membership is None:
@@ -198,6 +202,22 @@ class TenantMiddleware:
                 allowed_modules=membership.allowed_modules,
                 organization_id=request.organization_id,
             )
+            if not request.is_org_admin:
+                # Staff: the pages they may open (read) or change (write) -
+                # their role's, or what their old-style modules gave. The
+                # modules (header tabs) follow from those pages.
+                from . import pages
+                from .rbac import enabled_modules_for_org
+
+                enabled = enabled_modules_for_org(request.organization_id)
+                granted = (
+                    membership.role_ref.permissions
+                    if membership.role_ref_id
+                    else pages.legacy_permissions(membership.allowed_modules)
+                )
+                request.page_permissions = pages.effective_permissions(granted, enabled)
+                if membership.role_ref_id:
+                    request.modules = pages.modules_for(request.page_permissions)
 
         act_as = request.META.get(ACT_AS_HEADER)
         hub = request.META.get(HUB_HEADER)
@@ -230,7 +250,7 @@ class TenantMiddleware:
             # Hub stores vary in which modules they themselves have enabled,
             # but FynkTech dispatches regardless of that - Orders/Batch/
             # Returns/Reports (oms+wms) are always available from here.
-            request.modules = ["oms", "wms"]
+            request.modules = ["oms", "ims", "wms"]
 
         # While acting as a store (or several, in the Hub), the ORM must
         # scope to those stores only - TenantManager returns every org's

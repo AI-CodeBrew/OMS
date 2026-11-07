@@ -98,14 +98,28 @@ def _serialize_member(membership, email=None):
     local = ""
     if email and "@" in email:
         local = email.split("@", 1)[0]
+    role = membership.role_ref if membership.role_ref_id else None
     return {
         "user_id": str(membership.user_id),
         "email": email,
         "username": local,
         "role": membership.role,
+        "role_id": role.id if role else None,
+        "role_name": role.name if role else "",
         "allowed_modules": list(membership.allowed_modules or []),
         "created_at": membership.created_at.isoformat(),
     }
+
+
+def _role_for(organization_id, role_id):
+    """The store role a login is given - (role, modules it opens)."""
+    from .role_service import RoleError, get_role, modules_for_role
+
+    try:
+        role = get_role(organization_id, role_id)
+    except RoleError as exc:
+        raise TeamAdminError(exc.message, exc.status_code) from exc
+    return role, modules_for_role(role)
 
 
 def list_team(organization_id, limit_to_modules=None):
@@ -113,6 +127,7 @@ def list_team(organization_id, limit_to_modules=None):
     organization = Organization.objects.filter(id=organization_id).first()
     memberships = (
         Membership.objects.filter(organization_id=organization_id, role="org_user")
+        .select_related("role_ref")
         .order_by("created_at")
     )
     if limit_to_modules is not None:
@@ -139,6 +154,7 @@ def invite_team_member(
     password,
     modules=None,
     module=None,
+    role_id=None,
     actor_user_id=None,
     actor_email="",
     limit_to_modules=None,
@@ -155,17 +171,24 @@ def invite_team_member(
     local = username if username is not None else email
     email = build_staff_email(organization, local)
 
-    requested = _coerce_modules(modules=modules, module=module)
-    _validate_requested_modules(requested, organization_id)
-    _check_manageable(requested, limit_to_modules)
+    role = None
+    if role_id not in (None, ""):
+        # A store role (the Team form): its pages decide; modules follow.
+        role, resolved = _role_for(organization_id, role_id)
+    else:
+        if modules is None and module is None:
+            raise TeamAdminError("Pick a role for this login")
+        requested = _coerce_modules(modules=modules, module=module)
+        _validate_requested_modules(requested, organization_id)
+        _check_manageable(requested, limit_to_modules)
 
-    resolved = resolve_modules_for_membership(
-        role="org_user",
-        allowed_modules=requested,
-        organization_id=organization_id,
-    )
-    if not resolved:
-        raise TeamAdminError("Could not assign modules")
+        resolved = resolve_modules_for_membership(
+            role="org_user",
+            allowed_modules=requested,
+            organization_id=organization_id,
+        )
+        if not resolved:
+            raise TeamAdminError("Could not assign modules")
 
     try:
         existing = supabase_admin.find_user_by_email(email)
@@ -209,6 +232,7 @@ def invite_team_member(
         user_id=user_id,
         role="org_user",
         allowed_modules=resolved,
+        role_ref=role,
     )
 
     try:
@@ -219,12 +243,18 @@ def invite_team_member(
     write_audit_log(
         organization_id=organization_id,
         action="team.invite",
-        summary=f"Invited {email} with modules {', '.join(resolved)}",
+        summary=(
+            f"Invited {email} as {role.name}" if role
+            else f"Invited {email} with modules {', '.join(resolved)}"
+        ),
         actor_user_id=actor_user_id,
         actor_email=actor_email,
         entity_type="membership",
         entity_id=str(membership.id),
-        metadata={"email": email, "modules": resolved, "role": "org_user"},
+        metadata={
+            "email": email, "modules": resolved, "role": "org_user",
+            "role_id": role.id if role else None, "role_name": role.name if role else "",
+        },
     )
     return _serialize_member(membership, email=email)
 
@@ -238,12 +268,13 @@ def update_team_member(
     username=None,
     email=None,
     password=None,
+    role_id=None,
     actor_user_id=None,
     actor_email="",
     limit_to_modules=None,
 ):
     membership = (
-        Membership.objects.select_related("organization")
+        Membership.objects.select_related("organization", "role_ref")
         .filter(organization_id=organization_id, user_id=user_id, role="org_user")
         .first()
     )
@@ -254,7 +285,14 @@ def update_team_member(
     organization = membership.organization
     resolved = list(membership.allowed_modules or [])
     modules_provided = modules is not None or module is not None
-    if modules_provided:
+    role_provided = role_id not in (None, "")
+    if role_provided:
+        role, resolved = _role_for(organization_id, role_id)
+        membership.role_ref = role
+        membership.allowed_modules = resolved
+        membership.save(update_fields=["role_ref", "allowed_modules"])
+        modules_provided = True
+    elif modules_provided:
         requested = _coerce_modules(modules=modules, module=module)
         _validate_requested_modules(requested, organization_id)
         _check_manageable(requested, limit_to_modules)
@@ -265,8 +303,10 @@ def update_team_member(
         )
         if not resolved:
             raise TeamAdminError("Could not assign modules")
+        # Old-style modules replace any role.
         membership.allowed_modules = resolved
-        membership.save(update_fields=["allowed_modules"])
+        membership.role_ref = None
+        membership.save(update_fields=["allowed_modules", "role_ref"])
 
     new_email = None
     if username is not None or email is not None:
@@ -277,7 +317,7 @@ def update_team_member(
         raise TeamAdminError("Password must be at least 8 characters")
 
     if new_email is None and not password and not modules_provided:
-        raise TeamAdminError("Provide modules, username, and/or password to update")
+        raise TeamAdminError("Provide a role, username, and/or password to update")
 
     try:
         update_kwargs = {}
@@ -296,7 +336,10 @@ def update_team_member(
     write_audit_log(
         organization_id=organization_id,
         action="team.update",
-        summary=f"Updated team member {user_id} modules={resolved}",
+        summary=(
+            f"Updated team member {user_id} role={membership.role_ref.name}"
+            if membership.role_ref_id else f"Updated team member {user_id} modules={resolved}"
+        ),
         actor_user_id=actor_user_id,
         actor_email=actor_email,
         entity_type="membership",
@@ -304,6 +347,7 @@ def update_team_member(
         metadata={
             "user_id": str(user_id),
             "modules": resolved,
+            "role_id": membership.role_ref_id,
             "email_changed": bool(new_email),
             "password_reset": bool(password),
         },

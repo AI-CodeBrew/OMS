@@ -115,7 +115,14 @@ class Membership(models.Model):
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default="org_user")
     # For org_user: exactly one of oms|wms|finance. Org admin may store all
     # enabled modules or leave empty (treated as full access at runtime).
+    # With a role (role_ref) this only mirrors the role's modules, for the
+    # login token; the role's page permissions are what's enforced.
     allowed_modules = models.JSONField(default=list, blank=True)
+    # The staff login's role (core.Role) - what it may open and change.
+    # Org admins have none: full access.
+    role_ref = models.ForeignKey(
+        "core.Role", null=True, blank=True, on_delete=models.PROTECT, related_name="memberships"
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -130,9 +137,29 @@ class Membership(models.Model):
         return f"{self.user_id} @ {self.organization_id} ({self.role})"
 
 
+class Role(TenantScopedModel):
+    """A store's own staff role, made by its admin: a name and, per page
+    (core.pages.PAGES), "read" or "write". Pages left out: no access."""
+
+    name = models.CharField(max_length=80)
+    permissions = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        db_table = '"core"."roles"'
+        ordering = ["name"]
+        constraints = [
+            models.UniqueConstraint(fields=["organization", "name"], name="core_role_name_per_org")
+        ]
+
+    def __str__(self):
+        return f"{self.name} @ {self.organization_id}"
+
+
 class OrganizationModule(models.Model):
     MODULE_CHOICES = [
         ("oms", "OMS"),
+        # Inventory Management: Inventory + Purchase Orders (moved out of WMS).
+        ("ims", "IMS"),
         ("wms", "WMS"),
         ("finance", "Finance"),
     ]

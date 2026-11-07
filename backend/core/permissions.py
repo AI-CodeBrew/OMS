@@ -1,7 +1,33 @@
-from rest_framework.permissions import BasePermission
+from rest_framework.permissions import SAFE_METHODS, BasePermission
 
+from . import pages
 from .models import OrganizationModule
 from .rbac import org_module_for
+
+
+def view_pages(view, need, modules):
+    """The pages a request to `view` counts against. A view can declare
+    `page_access = {"*": {"read": (...), "write": (...)}, "<action>": {...}}`
+    (action = the viewset action); a missing "write" means no page lets
+    you change anything there. Views without it count against every page
+    of their module(s)."""
+    access = getattr(view, "page_access", None)
+    if access:
+        rule = access.get(getattr(view, "action", None)) or access.get("*")
+        if rule is not None:
+            return tuple(rule.get(need) or ())
+    return tuple(pages.pages_of_modules(modules))
+
+
+def page_allowed(request, view, modules):
+    """Staff (request.page_permissions set by TenantMiddleware): reading
+    needs read or write on one of the view's pages, any other method needs
+    write. Admins / super admin / Dispatch Hub (None) aren't limited."""
+    granted = getattr(request, "page_permissions", None)
+    if granted is None:
+        return True
+    need = pages.READ if request.method in SAFE_METHODS else pages.WRITE
+    return pages.allows(granted, view_pages(view, need, modules), need)
 
 
 class IsAuthenticatedTenant(BasePermission):
@@ -26,23 +52,8 @@ class IsOrgAdmin(BasePermission):
         )
 
 
-class CanManageTeam(BasePermission):
-    """Org admins manage every staff login; WMS staff may manage Returns
-    Associate logins only (team_views narrows what they can touch)."""
-
-    message = "Organization admin or WMS access required."
-
-    def has_permission(self, request, view):
-        if IsOrgAdmin().has_permission(request, view):
-            return True
-        organization_id = getattr(request, "organization_id", None)
-        if not (getattr(request, "user_id", None) and organization_id):
-            return False
-        if "wms" not in (getattr(request, "modules", None) or []):
-            return False
-        return OrganizationModule.objects.filter(
-            organization_id=organization_id, module="wms", is_enabled=True
-        ).exists()
+class CanManageTeam(IsOrgAdmin):
+    """Staff logins and roles: the store admin only (and super admin)."""
 
 
 class IsSuperAdmin(BasePermission):
@@ -80,6 +91,8 @@ class RequireModule(BasePermission):
             return False
         if getattr(request, "is_org_admin", False):
             return True
+        if getattr(request, "page_permissions", None) is not None:
+            return page_allowed(request, view, [required_module])
         return required_module in (getattr(request, "modules", None) or [])
 
 
@@ -111,6 +124,7 @@ class RequireAnyModule(BasePermission):
             return False
         is_org_admin = getattr(request, "is_org_admin", False)
         user_modules = getattr(request, "modules", None) or []
+        by_pages = getattr(request, "page_permissions", None) is not None
         for module in required_modules:
             org_ok = OrganizationModule.objects.filter(
                 organization_id=organization_id,
@@ -119,6 +133,11 @@ class RequireAnyModule(BasePermission):
             ).exists()
             if not org_ok:
                 continue
-            if is_org_admin or module in user_modules:
+            if is_org_admin:
+                return True
+            if by_pages:
+                # Staff: their pages decide (any enabled module will do).
+                return page_allowed(request, view, required_modules)
+            if module in user_modules:
                 return True
         return False

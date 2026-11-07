@@ -52,7 +52,7 @@ export default function OrganizationsPage() {
         email: form.email,
         password: form.password,
         plan: form.plan,
-        modules: ["oms", "wms"],
+        modules: ["oms", "ims", "wms"],
       });
       const id = data.organization?.id;
       setForm(EMPTY_CREATE);

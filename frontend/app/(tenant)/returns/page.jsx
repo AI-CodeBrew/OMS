@@ -1,5 +1,6 @@
 "use client";
 
+import usePageAccess from "../../../lib/usePageAccess";
 import { useCallback, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import ordersService from "../../../services/ordersService";
@@ -76,6 +77,7 @@ function SummaryCard({ label, value, tone = "default", hint, active = false, onC
  * damaged without ever touching inventory.
  */
 export default function ReturnsPage() {
+  const { canWrite } = usePageAccess("wms.returns_desk");
   const [orders, setOrders] = useState([]);
   const [count, setCount] = useState(0);
   const [summary, setSummary] = useState({});
@@ -288,7 +290,7 @@ export default function ReturnsPage() {
               ) : null}
             </form>
             {/* Awaiting Scan: Scan on the right, opening the scan box in a popup. */}
-            {bucket === "awaiting" ? (
+            {bucket === "awaiting" && canWrite ? (
               <Button onClick={() => setScanOpen(true)} className="ml-auto">
                 Scan
               </Button>
@@ -379,6 +381,10 @@ export default function ReturnsPage() {
                             }`}
                           >
                             {conditionText(order.return_breakdown, order.return_condition)}
+                          </span>
+                        ) : !canWrite ? (
+                          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700">
+                            Awaiting Scan
                           </span>
                         ) : (
                           <button

@@ -3,7 +3,7 @@
 from .models import Organization, OrganizationAuditLog, OrganizationModule
 
 
-STAFF_MODULES = ("oms", "wms", "finance", "returns")
+STAFF_MODULES = ("oms", "ims", "wms", "finance", "returns")
 
 # Returns Associate: a staff role, not an org module of its own - it rides
 # on the org's WMS entitlement but only opens Returns Desk and Packing (see

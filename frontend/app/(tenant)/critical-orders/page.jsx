@@ -1,5 +1,6 @@
 "use client";
 
+import usePageAccess from "../../../lib/usePageAccess";
 import { useCallback, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -29,6 +30,7 @@ const REASON_TONE = {
 // orders are listed below. ?reason=<key> opens straight on one (the
 // critical-orders alert links to in_transit).
 export default function CriticalOrdersPage() {
+  const { canWrite } = usePageAccess("oms.critical_orders");
   const router = useRouter();
   const searchParams = useSearchParams();
   const user = useEffectiveUser();
@@ -184,6 +186,7 @@ export default function CriticalOrdersPage() {
       <OrderDetailPanel
         orderId={detailOrderId}
         couriers={couriers}
+        readOnly={!canWrite}
         onClose={() => setDetailOrderId(null)}
         onOrderChanged={() => {
           loadOrders();

@@ -64,6 +64,8 @@ export const API_ENDPOINTS = {
   team: "/api/core/team/",
   teamMember: (userId) => `/api/core/team/${userId}/`,
   auditLogs: "/api/core/audit-logs/",
+  roles: "/api/core/roles/",
+  role: (roleId) => `/api/core/roles/${roleId}/`,
   stores: "/api/core/stores/",
   // The store's bell (core/notification_views.py).
   notifications: "/api/core/notifications/",

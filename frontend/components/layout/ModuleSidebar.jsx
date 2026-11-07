@@ -6,6 +6,8 @@ import Link from "next/link";
 import {
   SIDEBAR_ITEMS,
   HUB_SIDEBAR_ITEMS,
+  canReadPage,
+  hasPageLimits,
   RETURNS_ASSOCIATE_SIDEBAR_ITEMS,
   isReturnsAssociate,
   SETTINGS_ITEM,
@@ -110,14 +112,19 @@ function useNavItems(activeModule) {
   const isOrgAdmin =
     user?.role === "org_admin" || user?.isOrgAdmin === true || user?.role === "super_admin";
   const returnsAssociate = isReturnsAssociate(user);
-  const items = user?.isDispatchHub
-    ? HUB_SIDEBAR_ITEMS
-    : returnsAssociate
-      ? RETURNS_ASSOCIATE_SIDEBAR_ITEMS
-      : SIDEBAR_ITEMS[activeModule] || [];
+  const pageLimited = hasPageLimits(user);
+  const items = (
+    user?.isDispatchHub
+      ? HUB_SIDEBAR_ITEMS
+      : returnsAssociate
+        ? RETURNS_ASSOCIATE_SIDEBAR_ITEMS
+        : SIDEBAR_ITEMS[activeModule] || []
+  ).filter((item) => !item.hidden && (!pageLimited || !item.page || canReadPage(user, item.page)));
   const bottom = [
     ...(isOrgAdmin && !user?.isDispatchHub ? [INTEGRATIONS_ITEM, BILLING_ITEM, LOGS_ITEM] : []),
-    ...(!returnsAssociate ? [REPORT_ITEM, BATCH_ITEM, TICKETS_ITEM] : []),
+    ...(!returnsAssociate
+      ? [REPORT_ITEM, BATCH_ITEM, TICKETS_ITEM].filter((item) => !pageLimited || canReadPage(user, item.page))
+      : []),
     ...(!user?.isDispatchHub ? [SETTINGS_ITEM] : []),
   ];
   return { items, bottom };

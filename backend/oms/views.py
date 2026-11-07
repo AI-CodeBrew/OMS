@@ -296,6 +296,16 @@ PRINT_COURIER_ORDER = ("BarqRaftar", "PostEx", "Leopards", "Smartlane", "OMS Cou
 PRINT_COURIER_LABELS = {name.lower(): name for name in PRINT_COURIER_ORDER if name != "Leopards"}
 
 
+# Role pages (core.pages) for the order APIs - see core.permissions.view_pages.
+# Every page that shows orders may read them; changing an order is for the
+# Orders and Critical Orders pages.
+ORDER_VIEW_PAGES = (
+    "oms.dashboard", "oms.orders", "oms.critical_orders",
+    "wms.packing", "wms.returns_desk", "reports", "batch", "tickets",
+)
+ORDER_EDIT_PAGES = ("oms.orders", "oms.critical_orders")
+
+
 class OrderPagination(PageNumberPagination):
     page_size = 10
     page_size_query_param = "page_size"
@@ -308,6 +318,14 @@ class OrderViewSet(viewsets.ModelViewSet):
     serializer_class = OrderSerializer
     permission_classes = [RequireModule]
     required_module = "oms"
+    page_access = {
+        "*": {"read": ORDER_VIEW_PAGES, "write": ORDER_EDIT_PAGES},
+        "dashboard": {"read": ("oms.dashboard",)},
+        "dashboard_breakdown": {"read": ("oms.dashboard",)},
+        "returns_summary": {"read": ("wms.returns_desk",)},
+        "scan_pack": {"write": ("wms.packing",)},
+        "scan_return": {"write": ("wms.returns_desk",)},
+    }
     # Returns Desk and Packing are WMS pages (see frontend's
     # ModuleSidebar.canAccessPath, which already lets wms-only staff onto
     # /returns) but they read order data through this same viewset - a
@@ -2602,6 +2620,7 @@ class CourierViewSet(viewsets.ModelViewSet):
     serializer_class = CourierSerializer
     permission_classes = [RequireModule]
     required_module = "oms"
+    page_access = {"*": {"read": ORDER_VIEW_PAGES, "write": ORDER_EDIT_PAGES}}
 
     def get_queryset(self):
         return Courier.objects.filter(**org_filter(self.request))
@@ -2638,6 +2657,8 @@ class PrintBatchViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = PrintBatchSerializer
     permission_classes = [RequireModule]
     required_module = "oms"
+    page_access = {"*": {"read": ("batch", "oms.orders", "oms.critical_orders", "wms.packing"),
+                         "write": ("batch", "oms.orders", "oms.critical_orders")}}
     pagination_class = OrderPagination
 
     def get_queryset(self):
@@ -2697,6 +2718,8 @@ class DispatchBatchViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = DispatchBatchSerializer
     permission_classes = [RequireModule]
     required_module = "oms"
+    page_access = {"*": {"read": ("batch", "oms.orders", "oms.critical_orders", "wms.packing"),
+                         "write": ("batch", "oms.orders", "oms.critical_orders")}}
     pagination_class = OrderPagination
 
     def get_queryset(self):
@@ -2775,6 +2798,8 @@ class DailyReadyToPrintView(APIView):
 
     permission_classes = [RequireModule]
     required_module = "oms"
+    page_access = {"*": {"read": ("batch", "oms.orders", "oms.critical_orders", "wms.packing"),
+                         "write": ("batch", "oms.orders", "oms.critical_orders")}}
 
     def get(self, request):
         events = (
@@ -2851,6 +2876,8 @@ class TicketViewSet(viewsets.ModelViewSet):
     serializer_class = TicketSerializer
     permission_classes = [RequireModule]
     required_module = "oms"
+    page_access = {"*": {"read": ORDER_VIEW_PAGES,
+                         "write": ("tickets", "oms.orders", "oms.critical_orders")}}
     pagination_class = OrderPagination
 
     def get_queryset(self):
@@ -2954,6 +2981,7 @@ class CityNamesView(APIView):
 
     permission_classes = [RequireModule]
     required_module = "oms"
+    page_access = {"*": {"read": ORDER_VIEW_PAGES, "write": ORDER_EDIT_PAGES}}
 
     def get(self, request):
         from .models import City
@@ -2967,6 +2995,7 @@ class ReportView(APIView):
 
     permission_classes = [RequireModule]
     required_module = "oms"
+    page_access = {"*": {"read": ("reports",), "write": ("reports",)}}
 
     def _scoped_queryset(self, request):
         qs = Order.objects.filter(**org_filter(request))

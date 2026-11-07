@@ -72,6 +72,9 @@ def health_protected(request):
             else {
                 "role": "org_admin" if request.is_org_admin else "org_user",
                 "modules": list(request.modules or []),
+                # Staff: {page: "read"|"write"} from their role (core.pages);
+                # None for a store admin - every page their store has.
+                "pages": getattr(request, "page_permissions", None),
             },
             "timestamp": timezone.now().isoformat(),
         }

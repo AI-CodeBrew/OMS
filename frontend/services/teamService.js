@@ -25,22 +25,49 @@ class TeamService {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.team}`);
   }
 
-  inviteMember({ username, password, modules }) {
+  inviteMember({ username, password, modules, roleId }) {
+    const body = { username, password };
+    if (roleId !== undefined && roleId !== null && roleId !== "") body.role_id = roleId;
+    else if (modules !== undefined) body.modules = modules;
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.team}`, {
       method: "POST",
-      body: JSON.stringify({ username, password, modules }),
+      body: JSON.stringify(body),
     });
   }
 
-  updateMember(userId, { modules, username, password }) {
+  updateMember(userId, { modules, username, password, roleId }) {
     const body = {};
-    if (modules !== undefined) body.modules = modules;
+    if (roleId !== undefined && roleId !== null && roleId !== "") body.role_id = roleId;
+    else if (modules !== undefined) body.modules = modules;
     if (username !== undefined) body.username = username;
     if (password !== undefined) body.password = password;
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.teamMember(userId)}`, {
       method: "PATCH",
       body: JSON.stringify(body),
     });
+  }
+
+  // Roles (store admin only): {roles, pages: [{key, label, pages: [{key, label}]}], levels}.
+  listRoles() {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.roles}`);
+  }
+
+  createRole({ name, permissions }) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.roles}`, {
+      method: "POST",
+      body: JSON.stringify({ name, permissions }),
+    });
+  }
+
+  updateRole(roleId, { name, permissions }) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.role(roleId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name, permissions }),
+    });
+  }
+
+  deleteRole(roleId) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.role(roleId)}`, { method: "DELETE" });
   }
 
   removeMember(userId) {

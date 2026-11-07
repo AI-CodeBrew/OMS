@@ -1,5 +1,6 @@
 "use client";
 
+import usePageAccess from "../../../../lib/usePageAccess";
 import { useCallback, useEffect, useState } from "react";
 import ordersService from "../../../../services/ordersService";
 import wmsService from "../../../../services/wmsService";
@@ -25,6 +26,7 @@ function formatDate(value) {
 }
 
 export default function PackingPage() {
+  const { canWrite } = usePageAccess("wms.packing");
   const [statusTab, setStatusTab] = useState("ready_to_pick");
   const [orders, setOrders] = useState([]);
   const [count, setCount] = useState(0);
@@ -78,7 +80,7 @@ export default function PackingPage() {
 
   const selectedRows = orders.filter((o) => selectedIds.has(o.id));
   const allSelected = orders.length > 0 && orders.every((o) => selectedIds.has(o.id));
-  const packable = statusTab === "ready_to_pick";
+  const packable = statusTab === "ready_to_pick" && canWrite;
 
   function toggleRow(id) {
     setSelectedIds((prev) => {
@@ -163,8 +165,8 @@ export default function PackingPage() {
         <p className="mt-4 rounded-md bg-green-50 px-3 py-2 text-sm text-green-700">{notice}</p>
       ) : null}
 
-      <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-[340px_1fr]">
-        <ScanPanel {...SCAN_DESKS.packed} onAfterSuccess={load} />
+      <div className={`mt-3 grid grid-cols-1 gap-3 ${canWrite ? "lg:grid-cols-[340px_1fr]" : ""}`}>
+        {canWrite ? <ScanPanel {...SCAN_DESKS.packed} onAfterSuccess={load} /> : null}
 
         <div className="min-w-0">
           <div className="mb-3 flex flex-wrap items-center gap-2">

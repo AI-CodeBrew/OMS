@@ -1,5 +1,6 @@
 "use client";
 
+import usePageAccess from "../../../lib/usePageAccess";
 import { useCallback, useEffect, useState } from "react";
 import ticketsService from "../../../services/ticketsService";
 import Button from "../../../components/shared/Button";
@@ -20,6 +21,7 @@ const VIEWS = [
 ];
 
 export default function TicketsPage() {
+  const { canWrite } = usePageAccess("tickets");
   const [tickets, setTickets] = useState([]);
   const [count, setCount] = useState(0);
   const [search, setSearch] = useState("");
@@ -71,7 +73,7 @@ export default function TicketsPage() {
         <div>
           <h1 className="text-2xl font-semibold text-slate-900" title={VIEWS.find((v) => v.value === view).hint}>Tickets</h1>
         </div>
-        <Button onClick={() => setCreating(true)}>New ticket</Button>
+        {canWrite ? <Button onClick={() => setCreating(true)}>New ticket</Button> : null}
       </div>
 
       <div className="mt-2 flex flex-wrap items-center gap-2 py-2">

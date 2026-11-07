@@ -1,5 +1,6 @@
 "use client";
 
+import usePageAccess from "../../../lib/usePageAccess";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
@@ -645,7 +646,9 @@ export default function OrdersPage() {
 
   // All Orders is for looking only - no actions on the list or in an order
   // opened from it; changes are made from the order's own status card.
-  const viewOnly = activeStatus === "all";
+  // A role with Read only on this page can't change anything anywhere here.
+  const { canWrite: canEditOrders } = usePageAccess("oms.orders");
+  const viewOnly = activeStatus === "all" || !canEditOrders;
 
   const availableActions = useMemo(() => {
     if (selectedOrders.length === 0 || viewOnly) return [];
@@ -1109,11 +1112,13 @@ export default function OrdersPage() {
               setAppliedFilters((f) => ({ ...f, date_from: "", date_to: "" }));
             }}
           />
-          <Button variant="secondary" onClick={() => setNewOrderOpen(true)}>
-            Manual Order
-          </Button>
+          {canEditOrders ? (
+            <Button variant="secondary" onClick={() => setNewOrderOpen(true)}>
+              Manual Order
+            </Button>
+          ) : null}
           <CsvExportButton filterParams={queryParams} />
-          {user?.isDispatchHub ? (
+          {!canEditOrders ? null : user?.isDispatchHub ? (
             <Button variant="secondary" onClick={() => setImportOpen(true)}>
               Import
             </Button>
@@ -1217,10 +1222,14 @@ export default function OrdersPage() {
           showTransitColumn={activeStatus === CRITICAL_TAB}
           showSubStatusColumn={SUB_STATUS_TABS.has(activeStatus)}
           showShipperAdviceColumn={activeStatus === "card:undelivered" || activeStatus === "card:return_in_transit"}
-          onRecreate={(order) => {
-            setRecreateFrom(order);
-            setNewOrderOpen(true);
-          }}
+          onRecreate={
+            canEditOrders
+              ? (order) => {
+                  setRecreateFrom(order);
+                  setNewOrderOpen(true);
+                }
+              : undefined
+          }
         />
 
         <Pagination

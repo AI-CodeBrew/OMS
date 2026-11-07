@@ -25,12 +25,14 @@ import {
 // Top header tabs only — Integrations / Logs / Settings live in the sidebar.
 export const MODULES = [
   { key: "oms", label: "OMS", href: "/dashboard" },
-  { key: "wms", label: "WMS", href: "/wms" },
+  { key: "ims", label: "IMS", href: "/ims/inventory" },
+  { key: "wms", label: "WMS", href: "/wms/packing" },
   { key: "finance", label: "Financify", href: "/finance" },
 ];
 
 export const STAFF_MODULE_OPTIONS = [
   { key: "oms", label: "OMS" },
+  { key: "ims", label: "IMS" },
   { key: "wms", label: "WMS" },
   { key: "finance", label: "Financify" },
   // A WMS role rather than a module of its own: Returns Desk + Packing
@@ -40,9 +42,54 @@ export const STAFF_MODULE_OPTIONS = [
 
 export const RETURNS_ASSOCIATE = "returns";
 
+// Role pages (backend: core/pages.py - the same keys): which page each
+// address belongs to. A staff login with a role (user.pages, from
+// /api/core/me/access/) sees and opens only the pages it has.
+const PATH_PAGES = [
+  ["/dashboard", "oms.dashboard"],
+  ["/orders", "oms.orders"],
+  ["/critical-orders", "oms.critical_orders"],
+  ["/ims/inventory", "ims.inventory"],
+  ["/ims/purchase-orders", "ims.purchase_orders"],
+  ["/wms/packing", "wms.packing"],
+  ["/returns", "wms.returns_desk"],
+  ["/finance", "finance.home"],
+  ["/reports", "reports"],
+  ["/batch", "batch"],
+  ["/tickets", "tickets"],
+];
+
+export function pageForPath(pathname) {
+  const hit = PATH_PAGES.find(([p]) => pathname === p || pathname.startsWith(`${p}/`));
+  return hit ? hit[1] : null;
+}
+
+function isAdminUser(user) {
+  return user?.role === "org_admin" || user?.isOrgAdmin === true || user?.role === "super_admin";
+}
+
+/** Staff whose access is per page (a role, or old modules turned into
+ * pages by the backend). Admins and the Dispatch Hub aren't limited. */
+export function hasPageLimits(user) {
+  return Boolean(user && !user.isDispatchHub && !isAdminUser(user) && user.pages && typeof user.pages === "object");
+}
+
+export function canReadPage(user, pageKey) {
+  if (!hasPageLimits(user)) return true;
+  const level = user.pages[pageKey];
+  return level === "read" || level === "write";
+}
+
+export function canWritePage(user, pageKey) {
+  if (!hasPageLimits(user)) return true;
+  return user.pages[pageKey] === "write";
+}
+
 // Staff whose only role is Returns Associate. Admins never are.
 export function isReturnsAssociate(user) {
   if (!user || user.isDispatchHub) return false;
+  // With per-page access the generic rules below already narrow it down.
+  if (hasPageLimits(user)) return false;
   const isAdmin = user.role === "org_admin" || user.isOrgAdmin || user.role === "super_admin";
   const modules = Array.isArray(user.modules) ? user.modules : [];
   return !isAdmin && modules.includes(RETURNS_ASSOCIATE);
@@ -87,6 +134,7 @@ export const REPORT_ITEM = {
   label: "Report",
   href: "/reports",
   icon: BarChartIcon,
+  page: "reports",
 };
 
 export const BATCH_ITEM = {
@@ -94,6 +142,7 @@ export const BATCH_ITEM = {
   label: "Batch",
   href: "/batch",
   icon: LayersIcon,
+  page: "batch",
 };
 
 // Every tenant user (not just org admins) can see their own tickets - the
@@ -105,10 +154,12 @@ export const TICKETS_ITEM = {
   label: "Tickets",
   href: "/tickets",
   icon: TicketIcon,
+  page: "tickets",
 };
 
 const MODULE_PATH_PREFIXES = {
   oms: ["/orders", "/dashboard", "/critical-orders"],
+  ims: ["/ims"],
   // Returns Desk lives under WMS — keep the WMS sidebar when on /returns.
   wms: ["/wms", "/returns"],
   finance: ["/finance"],
@@ -145,6 +196,16 @@ export function getVisibleModules(user) {
   if (isReturnsAssociate(user)) {
     return [{ key: "wms", label: "WMS", href: "/returns" }];
   }
+  if (hasPageLimits(user)) {
+    // A tab for every module with at least one page the role opens -
+    // landing on the first of them.
+    return MODULES.map((m) => {
+      const first = (SIDEBAR_ITEMS[m.key] || []).find(
+        (item) => item.page && !item.disabled && canReadPage(user, item.page)
+      );
+      return first ? { ...m, href: first.href } : null;
+    }).filter(Boolean);
+  }
   const isAdmin = user.role === "org_admin" || user.isOrgAdmin || user.role === "super_admin";
   const modules = Array.isArray(user.modules) ? user.modules : [];
   const hasProduct = (key) => {
@@ -154,16 +215,17 @@ export function getVisibleModules(user) {
     return modules.includes(key);
   };
 
-  return MODULES.filter((m) => {
-    if (m.key === "oms" || m.key === "wms" || m.key === "finance") return hasProduct(m.key);
-    return false;
-  });
+  return MODULES.filter((m) => hasProduct(m.key));
 }
 
 /** First allowed module home for redirects when staff hit a forbidden route. */
 export function getDefaultModuleHref(user) {
   const visible = getVisibleModules(user);
   if (visible.length) return visible[0].href;
+  if (hasPageLimits(user)) {
+    const general = [REPORT_ITEM, BATCH_ITEM, TICKETS_ITEM].find((item) => canReadPage(user, item.page));
+    if (general) return general.href;
+  }
   return "/settings";
 }
 
@@ -176,6 +238,14 @@ export function canAccessPath(user, pathname) {
     return RETURNS_ASSOCIATE_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
   }
   if (pathname === "/settings" || pathname.startsWith("/settings/")) return true;
+  if (hasPageLimits(user)) {
+    // Old Inventory / PO addresses just redirect into IMS.
+    if (pathname === "/wms" || pathname === "/wms/purchase-orders" || pathname === "/ims") return true;
+    const page = pageForPath(pathname);
+    if (page) return canReadPage(user, page);
+    // Integrations, Invoices, Logs: store admin only.
+    return !["/integrations", "/billing", "/logs"].some((p) => pathname === p || pathname.startsWith(`${p}/`));
+  }
   if (pathname === "/tickets" || pathname.startsWith("/tickets/")) return true;
 
   const isAdmin = user.role === "org_admin" || user.isOrgAdmin || user.role === "super_admin";
@@ -208,15 +278,18 @@ export function canAccessPath(user, pathname) {
 // rather than linking to a dead end.
 export const SIDEBAR_ITEMS = {
   oms: [
-    { label: "Dashboard", href: "/dashboard", icon: DashboardIcon },
-    { label: "All Orders", href: "/orders", icon: GridIcon },
-    { label: "Critical Orders", href: "/critical-orders", icon: AlertIcon },
+    { label: "Dashboard", href: "/dashboard", icon: DashboardIcon, page: "oms.dashboard" },
+    { label: "All Orders", href: "/orders", icon: GridIcon, page: "oms.orders" },
+    { label: "Critical Orders", href: "/critical-orders", icon: AlertIcon, page: "oms.critical_orders" },
+  ],
+  // IMS - Inventory Management (moved out of WMS).
+  ims: [
+    { label: "Inventory", href: "/ims/inventory", icon: PackageIcon, page: "ims.inventory" },
+    { label: "Purchase Orders", href: "/ims/purchase-orders", icon: DocumentIcon, page: "ims.purchase_orders" },
   ],
   wms: [
-    { label: "Purchase Orders", href: "/wms/purchase-orders", icon: DocumentIcon },
-    { label: "Inventory", href: "/wms", icon: PackageIcon },
-    { label: "Packing", href: "/wms/packing", icon: PackageIcon },
-    { label: "Returns Desk", href: "/returns", icon: UndoIcon },
+    { label: "Packing", href: "/wms/packing", icon: PackageIcon, page: "wms.packing" },
+    { label: "Returns Desk", href: "/returns", icon: UndoIcon, page: "wms.returns_desk" },
     { divider: true },
     { label: "Stock Transfers", disabled: true, icon: SwapIcon },
     { label: "Picking", disabled: true, icon: HandIcon },
@@ -224,6 +297,7 @@ export const SIDEBAR_ITEMS = {
     { label: "Reports", disabled: true, icon: BarChartIcon },
   ],
   finance: [
+    { label: "Financify", href: "/finance", icon: GridIcon, page: "finance.home", hidden: true },
     { label: "Dashboard", disabled: true, icon: GridIcon },
     { label: "Transactions", disabled: true, icon: SwapIcon },
     { label: "Payments", disabled: true, icon: CardIcon },

@@ -39,8 +39,11 @@ class WmsPagination(PageNumberPagination):
 
 class WarehouseViewSet(viewsets.ModelViewSet):
     serializer_class = WarehouseSerializer
-    permission_classes = [RequireModule]
-    required_module = "wms"
+    permission_classes = [RequireAnyModule]
+    # IMS (Inventory / Purchase Orders); "wms" too, for staff from before IMS.
+    required_any_module = ("ims", "wms")
+    page_access = {"*": {"read": ("ims.inventory", "ims.purchase_orders", "wms.packing", "wms.returns_desk", "reports"),
+                         "write": ("ims.inventory", "ims.purchase_orders")}}
 
     def get_queryset(self):
         return Warehouse.objects.filter(organization_id=self.request.organization_id)
@@ -62,8 +65,10 @@ class WarehouseViewSet(viewsets.ModelViewSet):
 
 class SupplierViewSet(viewsets.ModelViewSet):
     serializer_class = SupplierSerializer
-    permission_classes = [RequireModule]
-    required_module = "wms"
+    permission_classes = [RequireAnyModule]
+    # IMS (Inventory / Purchase Orders); "wms" too, for staff from before IMS.
+    required_any_module = ("ims", "wms")
+    page_access = {"*": {"read": ("ims.purchase_orders", "ims.inventory"), "write": ("ims.purchase_orders",)}}
 
     def get_queryset(self):
         return Supplier.objects.filter(organization_id=self.request.organization_id)
@@ -79,8 +84,11 @@ class PurchaseOrderViewSet(viewsets.ReadOnlyModelViewSet):
     below (wms.services), which add the good units to stock."""
 
     serializer_class = PurchaseOrderSerializer
-    permission_classes = [RequireModule]
-    required_module = "wms"
+    permission_classes = [RequireAnyModule]
+    # IMS (Inventory / Purchase Orders); "wms" too, for staff from before IMS.
+    required_any_module = ("ims", "wms")
+    page_access = {"*": {"read": ("ims.purchase_orders", "ims.inventory", "reports"),
+                         "write": ("ims.purchase_orders",)}}
     pagination_class = WmsPagination
 
     def _base_qs(self):
@@ -205,8 +213,11 @@ class PurchaseOrderViewSet(viewsets.ReadOnlyModelViewSet):
 
 class StockItemViewSet(viewsets.ModelViewSet):
     serializer_class = StockItemSerializer
-    permission_classes = [RequireModule]
-    required_module = "wms"
+    permission_classes = [RequireAnyModule]
+    # IMS (Inventory / Purchase Orders); "wms" too, for staff from before IMS.
+    required_any_module = ("ims", "wms")
+    page_access = {"*": {"read": ("ims.inventory", "ims.purchase_orders", "wms.packing", "wms.returns_desk", "reports"),
+                         "write": ("ims.inventory",)}}
     pagination_class = WmsPagination
 
     def get_queryset(self):
@@ -570,8 +581,10 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
     restock, adjustment), never edited directly."""
 
     serializer_class = StockMovementSerializer
-    permission_classes = [RequireModule]
-    required_module = "wms"
+    permission_classes = [RequireAnyModule]
+    # IMS (Inventory / Purchase Orders); "wms" too, for staff from before IMS.
+    required_any_module = ("ims", "wms")
+    page_access = {"*": {"read": ("ims.inventory", "reports")}}
     pagination_class = WmsPagination
 
     def get_queryset(self):
@@ -714,6 +727,7 @@ class ReturnRestockView(viewsets.ViewSet):
     # Also the Returns Associate's page (staff role "returns").
     permission_classes = [RequireAnyModule]
     required_any_module = ("wms", "returns")
+    page_access = {"*": {"read": ("wms.returns_desk",), "write": ("wms.returns_desk",)}}
 
     @action(detail=False, methods=["post"], url_path="lookup")
     def lookup(self, request):
@@ -838,6 +852,7 @@ class PackingView(viewsets.ViewSet):
     # Also the Returns Associate's page (staff role "returns").
     permission_classes = [RequireAnyModule]
     required_any_module = ("wms", "returns")
+    page_access = {"*": {"read": ("wms.packing",), "write": ("wms.packing",)}}
 
     @action(detail=False, methods=["post"], url_path="scan")
     def scan(self, request):

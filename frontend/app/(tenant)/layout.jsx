@@ -37,6 +37,26 @@ function accessChanged(storedUser, access) {
   return accessSignature({ role: storedRole, modules: storedUser.modules }) !== accessSignature(access);
 }
 
+// The live modules and role pages onto the stored user, when they differ
+// (a role edited by the store admin applies on the next navigation).
+function mergeLiveAccess(access) {
+  if (!access) return;
+  const state = useAuthStore.getState();
+  const user = state.user;
+  if (!user) return;
+  const pages = access.pages ?? null;
+  const modules = Array.isArray(access.modules) ? access.modules : user.modules;
+  const same =
+    JSON.stringify(user.pages ?? null) === JSON.stringify(pages) &&
+    [...(user.modules || [])].sort().join(",") === [...(modules || [])].sort().join(",");
+  if (same) return;
+  state.setSession({
+    accessToken: state.accessToken,
+    refreshToken: state.refreshToken,
+    user: { ...user, pages, modules },
+  });
+}
+
 function TenantShell({ children }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -107,7 +127,11 @@ function TenantShell({ children }) {
         // Role/modules changed by an admin: pick up the new token now, so
         // the sidebar, header tabs and route guard follow without a re-login.
         const access = data?.access;
-        if (cancelled || !accessChanged(useAuthStore.getState().user, access)) return;
+        if (cancelled) return;
+        // Per-page access (a staff role) and the live module list are used
+        // as they come - no new token needed for those.
+        mergeLiveAccess(access);
+        if (!accessChanged(useAuthStore.getState().user, access)) return;
         const signature = accessSignature(access);
         if (refreshedFor.current === signature) return;
         refreshedFor.current = signature;
