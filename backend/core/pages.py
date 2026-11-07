@@ -121,6 +121,21 @@ def allows(permissions, pages, need):
     return False
 
 
+def page_catalog(enabled_modules):
+    """The Team form's access picker: every page, grouped by module, only for
+    the modules the store has on."""
+    out = []
+    for module in MODULES:
+        items = [
+            {"key": p["key"], "label": p["label"]}
+            for p in PAGES
+            if p["module"] == module["key"] and page_enabled(p["key"], enabled_modules)
+        ]
+        if items:
+            out.append({"key": module["key"], "label": module["label"], "pages": items})
+    return out
+
+
 def pages_of_modules(modules):
     """Every page in the given store modules (a view gated only by module)."""
     wanted = set(modules or [])

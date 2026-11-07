@@ -152,79 +152,6 @@ function moduleLabels(modules) {
     .join(", ");
 }
 
-// One role's pages, as the Roles editor's grid: every module this store
-// has, each page None / Read / Read + Write.
-function PermissionGrid({ catalog, value, onChange }) {
-  function set(pageKey, level) {
-    const next = { ...(value || {}) };
-    if (level) next[pageKey] = level;
-    else delete next[pageKey];
-    onChange(next);
-  }
-  function setModule(module, level) {
-    const next = { ...(value || {}) };
-    module.pages.forEach((p) => {
-      if (level) next[p.key] = level;
-      else delete next[p.key];
-    });
-    onChange(next);
-  }
-
-  return (
-    <div className="space-y-3">
-      {catalog.map((module) => (
-        <div key={module.key} className="overflow-hidden rounded-md border border-surface-border">
-          <div className="flex flex-wrap items-center justify-between gap-2 bg-surface px-3 py-2">
-            <span className="text-sm font-semibold text-slate-800">{module.label}</span>
-            <span className="flex gap-1 text-[11px]">
-              {LEVEL_OPTIONS.map((o) => (
-                <button
-                  key={o.value || "none"}
-                  type="button"
-                  onClick={() => setModule(module, o.value)}
-                  className="rounded border border-surface-border bg-white px-2 py-0.5 text-slate-600 hover:border-slate-300"
-                  title={`Set every ${module.label} page to ${o.label}`}
-                >
-                  All {o.label}
-                </button>
-              ))}
-            </span>
-          </div>
-          <ul className="divide-y divide-surface-border">
-            {module.pages.map((page) => {
-              const level = (value || {})[page.key] || "";
-              return (
-                <li key={page.key} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
-                  <span className="text-sm text-slate-700">{page.label}</span>
-                  <span className="inline-flex overflow-hidden rounded-md border border-surface-border">
-                    {LEVEL_OPTIONS.map((o) => (
-                      <button
-                        key={o.value || "none"}
-                        type="button"
-                        onClick={() => set(page.key, o.value)}
-                        aria-pressed={level === o.value}
-                        className={`px-3 py-1 text-xs font-medium transition ${
-                          level === o.value
-                            ? o.value
-                              ? "bg-brand-600 text-white"
-                              : "bg-slate-200 text-slate-700"
-                            : "bg-white text-slate-500 hover:bg-surface"
-                        }`}
-                      >
-                        {o.label}
-                      </button>
-                    ))}
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function permissionSummary(permissions, catalog) {
   const labels = [];
   catalog.forEach((module) =>
@@ -240,164 +167,10 @@ function permissionSummary(permissions, catalog) {
   return labels.length ? labels.join(" · ") : "No pages";
 }
 
-// Settings → Roles (store admin): make roles - a name and, per page, None /
-// Read / Read + Write - then give each staff login one of them (Team tab).
-function RolesTab() {
-  const [roles, setRoles] = useState([]);
-  const [catalog, setCatalog] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [success, setSuccess] = useState("");
-  // { id?, name, permissions } while the editor is open.
-  const [editing, setEditing] = useState(null);
-  const [saving, setSaving] = useState(false);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError("");
-    try {
-      const data = await teamService.listRoles();
-      setRoles(data.roles || []);
-      setCatalog(data.pages || []);
-    } catch (err) {
-      setError(err.message || "Failed to load roles");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  async function onSave(e) {
-    e.preventDefault();
-    if (!Object.keys(editing.permissions || {}).length) {
-      setError("Give the role at least one page (Read or Read + Write)");
-      return;
-    }
-    setSaving(true);
-    setError("");
-    setSuccess("");
-    try {
-      const body = { name: editing.name, permissions: editing.permissions };
-      if (editing.id) await teamService.updateRole(editing.id, body);
-      else await teamService.createRole(body);
-      setSuccess(editing.id ? "Role Updated." : "Role Created.");
-      setEditing(null);
-      await load();
-    } catch (err) {
-      setError(err.message || "Failed to save the role");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function onDelete(role) {
-    if (!window.confirm("Click to confirm")) return;
-    setError("");
-    setSuccess("");
-    try {
-      await teamService.deleteRole(role.id);
-      setSuccess("Role Deleted.");
-      await load();
-    } catch (err) {
-      setError(err.message || "Failed to delete the role");
-    }
-  }
-
-  return (
-    <div className="max-w-3xl space-y-6">
-      {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
-      {success ? <p className="rounded-md bg-green-50 px-3 py-2 text-sm text-green-700">{success}</p> : null}
-
-      {editing ? (
-        <form onSubmit={onSave} className="space-y-4 rounded-lg border border-surface-border bg-white p-6">
-          <h2 className="text-sm font-semibold text-slate-900">{editing.id ? "Edit Role" : "New Role"}</h2>
-          <label className="block text-sm">
-            <span className="mb-1 block text-slate-600">Role Name</span>
-            <input
-              required
-              maxLength={80}
-              placeholder="e.g. Order Desk"
-              value={editing.name}
-              onChange={(e) => setEditing((r) => ({ ...r, name: e.target.value }))}
-              className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500 sm:w-80"
-            />
-          </label>
-          <div>
-            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500">Page Access</p>
-            <PermissionGrid
-              catalog={catalog}
-              value={editing.permissions}
-              onChange={(permissions) => setEditing((r) => ({ ...r, permissions }))}
-            />
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Button type="submit" loading={saving}>
-              Save
-            </Button>
-            <Button type="button" variant="secondary" onClick={() => setEditing(null)}>
-              Cancel
-            </Button>
-          </div>
-        </form>
-      ) : (
-        <Button onClick={() => setEditing({ name: "", permissions: {} })}>New Role</Button>
-      )}
-
-      <div className="overflow-hidden rounded-lg border border-surface-border bg-white">
-        <div className="border-b border-surface-border px-5 py-3">
-          <h2 className="text-sm font-semibold text-slate-800">Roles</h2>
-        </div>
-        {loading ? (
-          <p className="px-5 py-6 text-sm text-slate-500">Loading…</p>
-        ) : roles.length === 0 ? (
-          <p className="px-5 py-6 text-sm text-slate-500">No roles yet - make one, then give it to a login on the Team tab.</p>
-        ) : (
-          <ul className="divide-y divide-surface-border">
-            {roles.map((role) => (
-              <li key={role.id} className="flex flex-wrap items-start justify-between gap-3 px-5 py-4">
-                <div className="min-w-0">
-                  <p className="font-medium text-slate-900">
-                    {role.name}
-                    <span className="ml-2 text-xs font-normal text-slate-500">
-                      {role.member_count} {role.member_count === 1 ? "Login" : "Logins"}
-                    </span>
-                  </p>
-                  <p className="mt-0.5 text-xs text-slate-500">{permissionSummary(role.permissions, catalog)}</p>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    onClick={() => setEditing({ id: role.id, name: role.name, permissions: { ...role.permissions } })}
-                  >
-                    Edit
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    disabled={role.member_count > 0}
-                    title={role.member_count > 0 ? "Give its logins another role first" : undefined}
-                    onClick={() => onDelete(role)}
-                  >
-                    Delete
-                  </Button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    </div>
-  );
-}
-
 // What a login can do, picked right on the Team form: tap a module (OMS,
 // IMS, WMS, ...) and its pages open below it - each None / Read / Read +
-// Write. A saved role can fill it in as a start.
-function AccessPicker({ catalog, roles, value, onChange }) {
+// Write.
+function AccessPicker({ catalog, value, onChange }) {
   const granted = value || {};
   const moduleOn = (module) => module.pages.some((p) => granted[p.key]);
 
@@ -436,24 +209,6 @@ function AccessPicker({ catalog, roles, value, onChange }) {
             </button>
           );
         })}
-        {roles.length ? (
-          <select
-            value=""
-            onChange={(e) => {
-              const role = roles.find((r) => String(r.id) === e.target.value);
-              if (role) onChange({ ...(role.permissions || {}) });
-            }}
-            className="ml-auto rounded-md border border-surface-border bg-white px-2 py-1.5 text-xs text-slate-600 outline-none focus:border-brand-500"
-            title="Fill the pages in from a saved role"
-          >
-            <option value="">Start From a Role…</option>
-            {roles.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.name}
-              </option>
-            ))}
-          </select>
-        ) : null}
       </div>
 
       {catalog.filter(moduleOn).map((module) => (
@@ -503,7 +258,6 @@ function AccessPicker({ catalog, roles, value, onChange }) {
 // domain), password, and the pages they can open (AccessPicker).
 function TeamTab() {
   const [members, setMembers] = useState([]);
-  const [roles, setRoles] = useState([]);
   const [catalog, setCatalog] = useState([]);
   const [emailDomain, setEmailDomain] = useState("");
   const [loading, setLoading] = useState(true);
@@ -519,11 +273,10 @@ function TeamTab() {
     setLoading(true);
     setError("");
     try {
-      const [team, roleData] = await Promise.all([teamService.listMembers(), teamService.listRoles()]);
+      const team = await teamService.listMembers();
       setMembers(team.members || []);
       setEmailDomain(team.email_domain || "");
-      setRoles(roleData.roles || []);
-      setCatalog(roleData.pages || []);
+      setCatalog(team.pages || []);
     } catch (err) {
       setError(err.message || "Failed to load team");
     } finally {
@@ -665,7 +418,6 @@ function TeamTab() {
           <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500">Access</p>
           <AccessPicker
             catalog={catalog}
-            roles={roles}
             value={invite.permissions}
             onChange={(permissions) => setInvite((f) => ({ ...f, permissions }))}
           />
@@ -720,7 +472,6 @@ function TeamTab() {
                       <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500">Access</p>
                       <AccessPicker
                         catalog={catalog}
-                        roles={roles}
                         value={editForm.permissions}
                         onChange={(permissions) => setEditForm((f) => ({ ...f, permissions }))}
                       />
@@ -740,7 +491,7 @@ function TeamTab() {
                       <p className="font-medium text-slate-900">{m.email || m.user_id}</p>
                       <p className="mt-0.5 text-xs text-slate-500">
                         {m.access
-                          ? `${m.page_permissions ? "" : `Role · ${m.role_name} · `}${permissionSummary(m.access, catalog)}`
+                          ? permissionSummary(m.access, catalog)
                           : `Old Access · ${moduleLabels(m.allowed_modules)}`}
                       </p>
                     </div>
@@ -946,7 +697,6 @@ const SETTINGS_TABS = [
   { key: "account", label: "Account" },
   { key: "stores", label: "Stores", adminOnly: true },
   { key: "team", label: "Team", adminOnly: true },
-  { key: "roles", label: "Roles", adminOnly: true },
 ];
 
 export default function SettingsPage() {
@@ -956,7 +706,7 @@ export default function SettingsPage() {
   const searchParams = useSearchParams();
   const [tab, setTab] = useState(() => {
     const asked = searchParams.get("tab") || "account";
-    return asked === "rbac" ? "team" : asked;
+    return asked === "rbac" || asked === "roles" ? "team" : asked;
   });
   const tabs = SETTINGS_TABS.filter((t) => !t.adminOnly || isOrgAdmin);
 
@@ -983,7 +733,6 @@ export default function SettingsPage() {
         {tab === "account" ? <AccountTab user={user} /> : null}
         {tab === "stores" && isOrgAdmin ? <StoresTab /> : null}
         {tab === "team" && isOrgAdmin ? <TeamTab /> : null}
-        {tab === "roles" && isOrgAdmin ? <RolesTab /> : null}
       </div>
     </div>
   );

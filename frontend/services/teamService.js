@@ -25,10 +25,10 @@ class TeamService {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.team}`);
   }
 
-  inviteMember({ username, password, modules, roleId, permissions }) {
+  // permissions: {page: "read"|"write"} - the Team form's access picker.
+  inviteMember({ username, password, modules, permissions }) {
     const body = { username, password };
     if (permissions) body.permissions = permissions;
-    else if (roleId !== undefined && roleId !== null && roleId !== "") body.role_id = roleId;
     else if (modules !== undefined) body.modules = modules;
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.team}`, {
       method: "POST",
@@ -36,10 +36,9 @@ class TeamService {
     });
   }
 
-  updateMember(userId, { modules, username, password, roleId, permissions }) {
+  updateMember(userId, { modules, username, password, permissions }) {
     const body = {};
     if (permissions) body.permissions = permissions;
-    else if (roleId !== undefined && roleId !== null && roleId !== "") body.role_id = roleId;
     else if (modules !== undefined) body.modules = modules;
     if (username !== undefined) body.username = username;
     if (password !== undefined) body.password = password;
@@ -47,29 +46,6 @@ class TeamService {
       method: "PATCH",
       body: JSON.stringify(body),
     });
-  }
-
-  // Roles (store admin only): {roles, pages: [{key, label, pages: [{key, label}]}], levels}.
-  listRoles() {
-    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.roles}`);
-  }
-
-  createRole({ name, permissions }) {
-    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.roles}`, {
-      method: "POST",
-      body: JSON.stringify({ name, permissions }),
-    });
-  }
-
-  updateRole(roleId, { name, permissions }) {
-    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.role(roleId)}`, {
-      method: "PATCH",
-      body: JSON.stringify({ name, permissions }),
-    });
-  }
-
-  deleteRole(roleId) {
-    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.role(roleId)}`, { method: "DELETE" });
   }
 
   removeMember(userId) {

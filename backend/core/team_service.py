@@ -98,18 +98,15 @@ def _serialize_member(membership, email=None):
     local = ""
     if email and "@" in email:
         local = email.split("@", 1)[0]
-    role = membership.role_ref if membership.role_ref_id else None
     own = membership.page_permissions
     return {
         "user_id": str(membership.user_id),
         "email": email,
         "username": local,
         "role": membership.role,
-        "role_id": role.id if role else None,
-        "role_name": role.name if role else "",
-        # The login's own pages (Team form), else its role's - what it can do.
+        # The pages this login can open (Team form's access picker).
         "page_permissions": own,
-        "access": own if own is not None else (role.permissions if role else None),
+        "access": own,
         "allowed_modules": list(membership.allowed_modules or []),
         "created_at": membership.created_at.isoformat(),
     }
@@ -127,15 +124,7 @@ def _own_pages(organization_id, raw):
     return granted, pages.modules_for(granted)
 
 
-def _role_for(organization_id, role_id):
-    """The store role a login is given - (role, modules it opens)."""
-    from .role_service import RoleError, get_role, modules_for_role
 
-    try:
-        role = get_role(organization_id, role_id)
-    except RoleError as exc:
-        raise TeamAdminError(exc.message, exc.status_code) from exc
-    return role, modules_for_role(role)
 
 
 def list_team(organization_id, limit_to_modules=None):
@@ -143,7 +132,6 @@ def list_team(organization_id, limit_to_modules=None):
     organization = Organization.objects.filter(id=organization_id).first()
     memberships = (
         Membership.objects.filter(organization_id=organization_id, role="org_user")
-        .select_related("role_ref")
         .order_by("created_at")
     )
     if limit_to_modules is not None:
@@ -154,8 +142,12 @@ def list_team(organization_id, limit_to_modules=None):
     from .organization_admin_service import _emails_for_user_ids
 
     email_map = _emails_for_user_ids([m.user_id for m in memberships])
+    from . import pages
+
     return {
         "email_domain": staff_email_domain(organization) if organization else "",
+        # The access picker's grid - this store's modules and their pages.
+        "pages": pages.page_catalog(enabled_modules_for_org(organization_id)),
         "members": [
             _serialize_member(m, email_map.get(str(m.user_id))) for m in memberships
         ],
@@ -170,7 +162,6 @@ def invite_team_member(
     password,
     modules=None,
     module=None,
-    role_id=None,
     permissions=None,
     actor_user_id=None,
     actor_email="",
@@ -188,14 +179,10 @@ def invite_team_member(
     local = username if username is not None else email
     email = build_staff_email(organization, local)
 
-    role = None
     own = None
     if permissions is not None:
         # Pages picked right on the Team form - this login's own access.
         own, resolved = _own_pages(organization_id, permissions)
-    elif role_id not in (None, ""):
-        # A store role (the Team form): its pages decide; modules follow.
-        role, resolved = _role_for(organization_id, role_id)
     else:
         if modules is None and module is None:
             raise TeamAdminError("Pick what this login can open")
@@ -253,7 +240,6 @@ def invite_team_member(
         user_id=user_id,
         role="org_user",
         allowed_modules=resolved,
-        role_ref=role,
         page_permissions=own,
     )
 
@@ -267,7 +253,6 @@ def invite_team_member(
         action="team.invite",
         summary=(
             f"Invited {email} with {len(own)} page(s)" if own is not None
-            else f"Invited {email} as {role.name}" if role
             else f"Invited {email} with modules {', '.join(resolved)}"
         ),
         actor_user_id=actor_user_id,
@@ -276,7 +261,6 @@ def invite_team_member(
         entity_id=str(membership.id),
         metadata={
             "email": email, "modules": resolved, "role": "org_user",
-            "role_id": role.id if role else None, "role_name": role.name if role else "",
             "page_permissions": own,
         },
     )
@@ -292,14 +276,13 @@ def update_team_member(
     username=None,
     email=None,
     password=None,
-    role_id=None,
     permissions=None,
     actor_user_id=None,
     actor_email="",
     limit_to_modules=None,
 ):
     membership = (
-        Membership.objects.select_related("organization", "role_ref")
+        Membership.objects.select_related("organization")
         .filter(organization_id=organization_id, user_id=user_id, role="org_user")
         .first()
     )
@@ -310,20 +293,12 @@ def update_team_member(
     organization = membership.organization
     resolved = list(membership.allowed_modules or [])
     modules_provided = modules is not None or module is not None
-    role_provided = role_id not in (None, "")
     if permissions is not None:
         own, resolved = _own_pages(organization_id, permissions)
         membership.page_permissions = own
         membership.role_ref = None
         membership.allowed_modules = resolved
         membership.save(update_fields=["page_permissions", "role_ref", "allowed_modules"])
-        modules_provided = True
-    elif role_provided:
-        role, resolved = _role_for(organization_id, role_id)
-        membership.role_ref = role
-        membership.page_permissions = None
-        membership.allowed_modules = resolved
-        membership.save(update_fields=["role_ref", "page_permissions", "allowed_modules"])
         modules_provided = True
     elif modules_provided:
         requested = _coerce_modules(modules=modules, module=module)
@@ -373,8 +348,7 @@ def update_team_member(
         summary=(
             f"Updated team member {user_id} pages={membership.page_permissions}"
             if membership.page_permissions is not None
-            else f"Updated team member {user_id} role={membership.role_ref.name}"
-            if membership.role_ref_id else f"Updated team member {user_id} modules={resolved}"
+            else f"Updated team member {user_id} modules={resolved}"
         ),
         actor_user_id=actor_user_id,
         actor_email=actor_email,
@@ -383,7 +357,6 @@ def update_team_member(
         metadata={
             "user_id": str(user_id),
             "modules": resolved,
-            "role_id": membership.role_ref_id,
             "email_changed": bool(new_email),
             "password_reset": bool(password),
         },

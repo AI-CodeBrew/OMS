@@ -1,9 +1,8 @@
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 
-from . import activity_log_service, role_service, team_service
+from . import activity_log_service, team_service
 from .permissions import CanManageTeam, IsOrgAdmin
-from .role_service import RoleError
 from .team_service import TeamAdminError
 
 
@@ -11,50 +10,6 @@ def _limit_to_modules(request):
     """Only the store admin (or super admin) manages staff logins - no
     limits (CanManageTeam lets no one else in)."""
     return None
-
-
-def _actor(request):
-    return {"actor_user_id": request.user_id, "actor_email": getattr(request, "auth_email", "") or ""}
-
-
-def _role_error(exc):
-    return Response({"success": False, "error": exc.message, "code": "role_error"}, status=exc.status_code)
-
-
-@api_view(["GET", "POST"])
-@permission_classes([CanManageTeam])
-def roles(request):
-    org_id = request.organization_id
-    if request.method == "GET":
-        return Response({"success": True, **role_service.list_roles(org_id)})
-    body = request.data or {}
-    try:
-        role = role_service.create_role(
-            organization_id=org_id, name=body.get("name"), permissions=body.get("permissions"), **_actor(request)
-        )
-    except RoleError as exc:
-        return _role_error(exc)
-    return Response({"success": True, "role": role}, status=201)
-
-
-@api_view(["PATCH", "DELETE"])
-@permission_classes([CanManageTeam])
-def role_detail(request, role_id):
-    org_id = request.organization_id
-    try:
-        if request.method == "DELETE":
-            return Response(role_service.delete_role(organization_id=org_id, role_id=role_id, **_actor(request)))
-        body = request.data or {}
-        role = role_service.update_role(
-            organization_id=org_id,
-            role_id=role_id,
-            name=body.get("name") if "name" in body else None,
-            permissions=body.get("permissions") if "permissions" in body else None,
-            **_actor(request),
-        )
-    except RoleError as exc:
-        return _role_error(exc)
-    return Response({"success": True, "role": role})
 
 
 @api_view(["GET", "POST"])
@@ -74,7 +29,6 @@ def team_members(request):
             password=body.get("password"),
             modules=body.get("modules"),
             module=body.get("module"),
-            role_id=body.get("role_id"),
             permissions=body.get("permissions"),
             actor_user_id=request.user_id,
             actor_email=getattr(request, "auth_email", "") or "",
@@ -118,7 +72,6 @@ def team_member_detail(request, user_id):
             username=body.get("username") if "username" in body else None,
             email=body.get("email") if "email" in body else None,
             password=body.get("password") if "password" in body else None,
-            role_id=body.get("role_id") if "role_id" in body else None,
             permissions=body.get("permissions") if "permissions" in body else None,
             actor_user_id=request.user_id,
             actor_email=getattr(request, "auth_email", "") or "",
