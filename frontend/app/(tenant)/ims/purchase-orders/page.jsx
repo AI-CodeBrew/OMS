@@ -145,7 +145,22 @@ export default function PurchaseOrdersPage() {
         <div>
           <h1 className="text-2xl font-semibold text-slate-900" title={"Stock bought from suppliers. Good units received are added to the receiving warehouse's stock."}>Purchase Orders</h1>
         </div>
+        {/* Read-only roles see only Export. */}
         <div className="flex flex-wrap gap-2">
+          {canWrite ? (
+            <>
+              <Button variant="secondary" loading={syncing} onClick={syncShopify}>
+                Sync from Shopify
+              </Button>
+              <Button variant="secondary" onClick={() => setOpenForm("supplier")}>
+                Add Supplier
+              </Button>
+              <Button variant="secondary" onClick={() => setOpenForm("warehouse")}>
+                Add Warehouse
+              </Button>
+              <Button onClick={() => setOpenForm("po")}>Create PO</Button>
+            </>
+          ) : null}
           <Button
             variant="secondary"
             loading={exporting}
@@ -163,18 +178,6 @@ export default function PurchaseOrdersPage() {
           >
             Export
           </Button>
-        </div>
-        <div className={`flex flex-wrap gap-2 ${canWrite ? "" : "hidden"}`}>
-          <Button variant="secondary" loading={syncing} onClick={syncShopify}>
-            Sync from Shopify
-          </Button>
-          <Button variant="secondary" onClick={() => setOpenForm("supplier")}>
-            Add Supplier
-          </Button>
-          <Button variant="secondary" onClick={() => setOpenForm("warehouse")}>
-            Add Warehouse
-          </Button>
-          <Button onClick={() => setOpenForm("po")}>Create PO</Button>
         </div>
       </div>
 

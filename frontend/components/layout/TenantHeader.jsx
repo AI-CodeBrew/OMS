@@ -30,7 +30,9 @@ function BackArrowIcon({ className }) {
 export default function TenantHeader({ activeModule }) {
   const router = useRouter();
   const user = useEffectiveUser();
-  const modules = getVisibleModules(user);
+  // The Dispatch Hub / All Orders has just one "module" - its name already
+  // shows on the right (StoreSwitcher), so no tab in the middle for it.
+  const modules = user?.isDispatchHub ? [] : getVisibleModules(user);
   const criticalCount = useCriticalOrdersStore((s) => s.count);
   const activeModuleLabel = modules.find((m) => m.key === activeModule)?.label || "Menu";
   // A super admin inside a store or the Dispatch Hub: the back arrow is the
@@ -108,7 +110,7 @@ export default function TenantHeader({ activeModule }) {
           })}
         </nav>
 
-        <div className="md:hidden">
+        <div className={modules.length ? "md:hidden" : "hidden"}>
           <Dropdown
             trigger={
               <span className="flex items-center gap-1 rounded-md border-b-2 border-white bg-white/15 px-2.5 py-1.5 text-sm font-medium text-white">
