@@ -55,7 +55,7 @@ class Order(TenantScopedModel):
         # what separates "untouched inbox" from "in progress". Pending
         # CC/COD below are legacy - nothing new enters them any more.
         ("new", "New"),
-        ("pending_cc", "Pending CC"),
+        ("pending_cc", "Prepaid"),
         ("pending_cod", "Pending COD"),
         ("city_issue", "City Issue"),
         ("awaiting_assigning", "Approved (Awaiting Courier)"),

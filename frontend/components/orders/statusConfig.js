@@ -27,7 +27,7 @@ export function cardTab(card) {
 // labels as the backend's Order.STATUS_CHOICES.
 export const STATUS_LABELS = {
   new: "New",
-  pending_cc: "Pending CC",
+  pending_cc: "Prepaid",
   pending_cod: "Pending COD",
   city_issue: "City Issue",
   awaiting_assigning: "Approved (Awaiting Courier)",

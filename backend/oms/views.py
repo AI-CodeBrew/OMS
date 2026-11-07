@@ -2498,7 +2498,9 @@ class OrderViewSet(viewsets.ModelViewSet):
                 # order number is the store's, and two stores can both
                 # have #1176.
                 "OMS Order ID",
-                "Shopify Order ID",
+                # The store's own number (Shopify's, or a manual / replacement
+                # order's) - the original one, as the screens show it.
+                "Store Order ID",
                 "Client Name",
                 "Store ID",
                 "Store Name",
@@ -2517,10 +2519,18 @@ class OrderViewSet(viewsets.ModelViewSet):
                 "Delivery Amount",
                 "Discount",
                 "Subtotal",
+                "Grand Total",
+                "Amount Paid",
                 "Total Receivable",
+                "Payment Status",
                 "Customer Note",
+                # The card, as the screens show it - Stage is the step
+                # inside it (Ready to Print, Out for Delivery, ...).
                 "Order Status",
-                "Order Tags (Courier)",
+                "Stage",
+                "Sub Status",
+                "Tag",
+                "Shipper Advice",
                 "Last Update",
                 "Courier Name",
                 "Tracking Number",
@@ -2574,10 +2584,16 @@ class OrderViewSet(viewsets.ModelViewSet):
                         str(order.shipping_amount),
                         str(discount),
                         str(order.total_amount),
+                        str(order.grand_total),
+                        str(order.amount_paid),
                         str(order.amount_receivable),
+                        order.get_payment_status_display(),
                         order.customer_note,
+                        services.card_label(order),
                         order.get_status_display(),
-                        order.tag,
+                        order.courier_status,
+                        services.latest_tag(order),
+                        " - ".join(filter(None, [order.shipper_advice, order.shipper_advice_remarks])),
                         csv_report.last_update(order, status_labels, when),
                         order.courier.name if order.courier_id else "",
                         order.tracking_number,
@@ -3047,7 +3063,7 @@ class ReportView(APIView):
             rows_by_date.setdefault(row["_date"], {})[row["status"]] = row["n"]
 
         header = [
-            "Date", "Total Orders", "New", "Pending CC", "Pending COD",
+            "Date", "Total Orders", "New", "Prepaid", "Pending COD",
             "Awaiting Assigning", "Ready to Print", "Ready to Pick",
             "Dispatched", "Delivered", "Returned", "Cancelled",
         ]

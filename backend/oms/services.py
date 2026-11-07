@@ -1635,6 +1635,41 @@ def workflow_card(order):
     return ""
 
 
+# Each card's name as the Orders page shows it (frontend statusConfig's
+# STATUS_TABS) - the report's Order Status.
+WORKFLOW_CARD_LABELS = {
+    "awaiting_confirmation": "Awaiting Confirmation",
+    "approved": "Approved",
+    "assigning_courier": "Assigning Courier",
+    "dispatched": "Dispatched",
+    "undelivered": "Undelivered",
+    "return_in_transit": "Return in Transit",
+    "delivered": "Delivered",
+    "returned": "Returned",
+    "cancelled": "Cancelled",
+}
+
+
+def card_label(order):
+    """The order's status as the screens show it - its card's name."""
+    return WORKFLOW_CARD_LABELS.get(workflow_card(order)) or order.get_status_display()
+
+
+def latest_tag(order):
+    """The ONE tag the screens show (frontend statusConfig.latestTag /
+    OrdersTable.tagText): in Awaiting Confirmation, or when the card has no
+    tag of its own, the order's own tag; otherwise the card's tag, with the
+    attempt number on a re-attempted parcel."""
+    card = workflow_card(order)
+    card_tag = workflow_tag(order)
+    if order.tag and (card == "awaiting_confirmation" or not card_tag):
+        return order.tag
+    attempts = order.delivery_attempts or 0
+    if card_tag and attempts > 1 and card in ("dispatched", "undelivered"):
+        return f"{card_tag} · Attempt {attempts}"
+    return card_tag
+
+
 def card_queryset(qs, card):
     """`qs` narrowed to one card's orders - the database twin of
     workflow_card."""
