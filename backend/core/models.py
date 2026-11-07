@@ -123,6 +123,9 @@ class Membership(models.Model):
     role_ref = models.ForeignKey(
         "core.Role", null=True, blank=True, on_delete=models.PROTECT, related_name="memberships"
     )
+    # This login's own pages, picked on the Team form: {page: "read"|"write"}
+    # (core.pages). When set it is what the login may do - ahead of any role.
+    page_permissions = models.JSONField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

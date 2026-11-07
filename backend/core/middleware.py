@@ -183,7 +183,7 @@ class TenantMiddleware:
                     organization_id=request.organization_id, user_id=request.user_id
                 )
                 .select_related("role_ref")
-                .only("role", "allowed_modules", "role_ref__permissions")
+                .only("role", "allowed_modules", "page_permissions", "role_ref__permissions")
                 .first()
             )
             if membership is None:
@@ -210,13 +210,17 @@ class TenantMiddleware:
                 from .rbac import enabled_modules_for_org
 
                 enabled = enabled_modules_for_org(request.organization_id)
-                granted = (
-                    membership.role_ref.permissions
-                    if membership.role_ref_id
-                    else pages.legacy_permissions(membership.allowed_modules)
-                )
+                # The login's own pages first, then its role's, then what
+                # old-style modules gave.
+                own = membership.page_permissions is not None
+                if own:
+                    granted = membership.page_permissions
+                elif membership.role_ref_id:
+                    granted = membership.role_ref.permissions
+                else:
+                    granted = pages.legacy_permissions(membership.allowed_modules)
                 request.page_permissions = pages.effective_permissions(granted, enabled)
-                if membership.role_ref_id:
+                if own or membership.role_ref_id:
                     request.modules = pages.modules_for(request.page_permissions)
 
         act_as = request.META.get(ACT_AS_HEADER)

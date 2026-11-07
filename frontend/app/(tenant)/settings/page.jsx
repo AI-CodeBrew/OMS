@@ -230,7 +230,11 @@ function permissionSummary(permissions, catalog) {
   catalog.forEach((module) =>
     module.pages.forEach((page) => {
       const level = (permissions || {})[page.key];
-      if (level) labels.push(`${module.label} ${page.label}${level === "read" ? " (Read)" : ""}`);
+      if (!level) return;
+      // "Report", not "Other Report"; "Financify", not "Financify Financify".
+      const name =
+        module.key === "general" || module.label === page.label ? page.label : `${module.label} ${page.label}`;
+      labels.push(`${name}${level === "read" ? " (Read)" : ""}`);
     })
   );
   return labels.length ? labels.join(" · ") : "No pages";
@@ -390,37 +394,125 @@ function RolesTab() {
   );
 }
 
-function RoleSelect({ roles, value, onChange, required = false }) {
+// What a login can do, picked right on the Team form: tap a module (OMS,
+// IMS, WMS, ...) and its pages open below it - each None / Read / Read +
+// Write. A saved role can fill it in as a start.
+function AccessPicker({ catalog, roles, value, onChange }) {
+  const granted = value || {};
+  const moduleOn = (module) => module.pages.some((p) => granted[p.key]);
+
+  function toggleModule(module) {
+    const next = { ...granted };
+    if (moduleOn(module)) module.pages.forEach((p) => delete next[p.key]);
+    else module.pages.forEach((p) => (next[p.key] = "write"));
+    onChange(next);
+  }
+
+  function setPage(pageKey, level) {
+    const next = { ...granted };
+    if (level) next[pageKey] = level;
+    else delete next[pageKey];
+    onChange(next);
+  }
+
   return (
-    <select
-      required={required}
-      value={value ?? ""}
-      onChange={(e) => onChange(e.target.value ? Number(e.target.value) : "")}
-      className="w-full rounded-md border border-surface-border bg-white px-3 py-2 text-sm outline-none focus:border-brand-500"
-    >
-      <option value="">Select a role…</option>
-      {roles.map((r) => (
-        <option key={r.id} value={r.id}>
-          {r.name}
-        </option>
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        {catalog.map((module) => {
+          const on = moduleOn(module);
+          return (
+            <button
+              key={module.key}
+              type="button"
+              onClick={() => toggleModule(module)}
+              aria-pressed={on}
+              className={`rounded-md border px-3 py-1.5 text-sm font-medium transition ${
+                on
+                  ? "border-brand-600 bg-brand-600 text-white"
+                  : "border-surface-border bg-white text-slate-600 hover:border-slate-300"
+              }`}
+            >
+              {module.label}
+            </button>
+          );
+        })}
+        {roles.length ? (
+          <select
+            value=""
+            onChange={(e) => {
+              const role = roles.find((r) => String(r.id) === e.target.value);
+              if (role) onChange({ ...(role.permissions || {}) });
+            }}
+            className="ml-auto rounded-md border border-surface-border bg-white px-2 py-1.5 text-xs text-slate-600 outline-none focus:border-brand-500"
+            title="Fill the pages in from a saved role"
+          >
+            <option value="">Start From a Role…</option>
+            {roles.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.name}
+              </option>
+            ))}
+          </select>
+        ) : null}
+      </div>
+
+      {catalog.filter(moduleOn).map((module) => (
+        <div key={module.key} className="overflow-hidden rounded-md border border-surface-border">
+          <div className="bg-surface px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-600">
+            {module.label}
+          </div>
+          <ul className="divide-y divide-surface-border">
+            {module.pages.map((page) => {
+              const level = granted[page.key] || "";
+              return (
+                <li key={page.key} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
+                  <span className="text-sm text-slate-700">{page.label}</span>
+                  <span className="inline-flex overflow-hidden rounded-md border border-surface-border">
+                    {LEVEL_OPTIONS.map((o) => (
+                      <button
+                        key={o.value || "none"}
+                        type="button"
+                        onClick={() => setPage(page.key, o.value)}
+                        aria-pressed={level === o.value}
+                        className={`px-3 py-1 text-xs font-medium transition ${
+                          level === o.value
+                            ? o.value
+                              ? "bg-brand-600 text-white"
+                              : "bg-slate-200 text-slate-700"
+                            : "bg-white text-slate-500 hover:bg-surface"
+                        }`}
+                      >
+                        {o.label}
+                      </button>
+                    ))}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
       ))}
-    </select>
+      {!catalog.some(moduleOn) ? (
+        <p className="text-xs text-slate-500">Tap a module to pick which of its pages this login can open.</p>
+      ) : null}
+    </div>
   );
 }
 
-// Settings → Team (store admin): staff logins - username, password and one
-// role (made on the Roles tab).
-function TeamTab({ onOpenRoles }) {
+// Settings → Team (store admin): staff logins - username (on the store's
+// domain), password, and the pages they can open (AccessPicker).
+function TeamTab() {
   const [members, setMembers] = useState([]);
   const [roles, setRoles] = useState([]);
+  const [catalog, setCatalog] = useState([]);
   const [emailDomain, setEmailDomain] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
-  const [invite, setInvite] = useState({ username: "", password: "", roleId: "" });
+  const [invite, setInvite] = useState({ username: "", password: "", permissions: {} });
   const [inviting, setInviting] = useState(false);
   const [editingId, setEditingId] = useState(null);
-  const [editForm, setEditForm] = useState({ roleId: "", username: "", password: "" });
+  const [editForm, setEditForm] = useState({ username: "", password: "", permissions: {} });
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
@@ -431,6 +523,7 @@ function TeamTab({ onOpenRoles }) {
       setMembers(team.members || []);
       setEmailDomain(team.email_domain || "");
       setRoles(roleData.roles || []);
+      setCatalog(roleData.pages || []);
     } catch (err) {
       setError(err.message || "Failed to load team");
     } finally {
@@ -444,8 +537,8 @@ function TeamTab({ onOpenRoles }) {
 
   async function onInvite(e) {
     e.preventDefault();
-    if (!invite.roleId) {
-      setError("Pick a role for this login");
+    if (!Object.keys(invite.permissions).length) {
+      setError("Pick at least one page this login can open");
       return;
     }
     setInviting(true);
@@ -453,7 +546,7 @@ function TeamTab({ onOpenRoles }) {
     setSuccess("");
     try {
       const created = await teamService.inviteMember(invite);
-      setInvite({ username: "", password: "", roleId: "" });
+      setInvite({ username: "", password: "", permissions: {} });
       const login = created?.member?.email || `${invite.username}@${emailDomain}`;
       setSuccess(`Team Member Added. Login: ${login}`);
       await load();
@@ -467,14 +560,20 @@ function TeamTab({ onOpenRoles }) {
   function openEdit(member) {
     const username = member.username || (member.email || "").split("@")[0] || "";
     setEditingId(member.user_id);
-    setEditForm({ roleId: member.role_id || "", username, originalUsername: username, password: "" });
+    setEditForm({ username, originalUsername: username, password: "", permissions: { ...(member.access || {}) } });
     setError("");
     setSuccess("");
   }
 
   async function onSaveMember(member) {
+    if (!Object.keys(editForm.permissions).length) {
+      setError("Pick at least one page this login can open");
+      return;
+    }
     const payload = {};
-    if (editForm.roleId && editForm.roleId !== member.role_id) payload.roleId = editForm.roleId;
+    if (JSON.stringify(editForm.permissions) !== JSON.stringify(member.access || {})) {
+      payload.permissions = editForm.permissions;
+    }
     // Only when edited - re-sending it rebuilds the login as
     // username@org-domain, which would undo an email the member changed
     // themselves from their Account tab.
@@ -490,7 +589,7 @@ function TeamTab({ onOpenRoles }) {
     try {
       await teamService.updateMember(member.user_id, payload);
       setEditingId(null);
-      setSuccess("Staff Updated. A new role applies on their next page change.");
+      setSuccess("Staff Updated. New access applies on their next page change.");
       await load();
     } catch (err) {
       setError(err.message || "Failed to update");
@@ -532,14 +631,14 @@ function TeamTab({ onOpenRoles }) {
 
       <form onSubmit={onInvite} className="space-y-4 rounded-lg border border-surface-border bg-white p-6">
         <h2 className="text-sm font-semibold text-slate-900">Add Team Member</h2>
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-2">
           <label className="block text-sm">
             <span className="mb-1 block text-slate-600">Username</span>
             <div className="flex overflow-hidden rounded-md border border-surface-border focus-within:border-brand-500">
               <input
                 required
                 autoComplete="off"
-                placeholder="john"
+                placeholder="sufyan"
                 value={invite.username}
                 onChange={(e) =>
                   setInvite((f) => ({ ...f, username: e.target.value.replace(/@.*$/, "").toLowerCase() }))
@@ -561,21 +660,17 @@ function TeamTab({ onOpenRoles }) {
               onChange={(e) => setInvite((f) => ({ ...f, password: e.target.value }))}
             />
           </label>
-          <label className="block text-sm">
-            <span className="mb-1 block text-slate-600">Role</span>
-            <RoleSelect required roles={roles} value={invite.roleId} onChange={(roleId) => setInvite((f) => ({ ...f, roleId }))} />
-          </label>
         </div>
-        {roles.length === 0 && !loading ? (
-          <p className="text-xs text-slate-500">
-            No roles yet -{" "}
-            <button type="button" onClick={onOpenRoles} className="font-medium text-brand-700 underline">
-              make one on the Roles tab
-            </button>{" "}
-            first.
-          </p>
-        ) : null}
-        <Button type="submit" loading={inviting} disabled={!roles.length}>
+        <div>
+          <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500">Access</p>
+          <AccessPicker
+            catalog={catalog}
+            roles={roles}
+            value={invite.permissions}
+            onChange={(permissions) => setInvite((f) => ({ ...f, permissions }))}
+          />
+        </div>
+        <Button type="submit" loading={inviting}>
           Add
         </Button>
       </form>
@@ -595,7 +690,7 @@ function TeamTab({ onOpenRoles }) {
                 {editingId === m.user_id ? (
                   <div className="space-y-3">
                     <p className="text-sm font-medium text-slate-900">Edit {m.email || m.user_id}</p>
-                    <div className="grid gap-3 sm:grid-cols-3">
+                    <div className="grid gap-3 sm:grid-cols-2">
                       <label className="block text-sm">
                         <span className="mb-1 block text-slate-600">Username</span>
                         <div className="flex overflow-hidden rounded-md border border-surface-border focus-within:border-brand-500">
@@ -620,10 +715,15 @@ function TeamTab({ onOpenRoles }) {
                           onChange={(e) => setEditForm((f) => ({ ...f, password: e.target.value }))}
                         />
                       </label>
-                      <label className="block text-sm">
-                        <span className="mb-1 block text-slate-600">Role</span>
-                        <RoleSelect roles={roles} value={editForm.roleId} onChange={(roleId) => setEditForm((f) => ({ ...f, roleId }))} />
-                      </label>
+                    </div>
+                    <div>
+                      <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500">Access</p>
+                      <AccessPicker
+                        catalog={catalog}
+                        roles={roles}
+                        value={editForm.permissions}
+                        onChange={(permissions) => setEditForm((f) => ({ ...f, permissions }))}
+                      />
                     </div>
                     <div className="flex flex-wrap gap-2">
                       <Button type="button" loading={saving} onClick={() => onSaveMember(m)}>
@@ -635,16 +735,18 @@ function TeamTab({ onOpenRoles }) {
                     </div>
                   </div>
                 ) : (
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div>
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0">
                       <p className="font-medium text-slate-900">{m.email || m.user_id}</p>
                       <p className="mt-0.5 text-xs text-slate-500">
-                        {m.role_name ? `Role · ${m.role_name}` : `Old Access · ${moduleLabels(m.allowed_modules)}`}
+                        {m.access
+                          ? `${m.page_permissions ? "" : `Role · ${m.role_name} · `}${permissionSummary(m.access, catalog)}`
+                          : `Old Access · ${moduleLabels(m.allowed_modules)}`}
                       </p>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
                       <Button type="button" variant="secondary" onClick={() => openEdit(m)}>
-                        Edit Role / Login
+                        Edit Access / Login
                       </Button>
                       <Button type="button" variant="secondary" onClick={() => onRemove(m.user_id)}>
                         Remove
@@ -880,7 +982,7 @@ export default function SettingsPage() {
       <div className="mt-6">
         {tab === "account" ? <AccountTab user={user} /> : null}
         {tab === "stores" && isOrgAdmin ? <StoresTab /> : null}
-        {tab === "team" && isOrgAdmin ? <TeamTab onOpenRoles={() => setTab("roles")} /> : null}
+        {tab === "team" && isOrgAdmin ? <TeamTab /> : null}
         {tab === "roles" && isOrgAdmin ? <RolesTab /> : null}
       </div>
     </div>

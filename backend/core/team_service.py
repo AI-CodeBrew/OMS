@@ -99,6 +99,7 @@ def _serialize_member(membership, email=None):
     if email and "@" in email:
         local = email.split("@", 1)[0]
     role = membership.role_ref if membership.role_ref_id else None
+    own = membership.page_permissions
     return {
         "user_id": str(membership.user_id),
         "email": email,
@@ -106,9 +107,24 @@ def _serialize_member(membership, email=None):
         "role": membership.role,
         "role_id": role.id if role else None,
         "role_name": role.name if role else "",
+        # The login's own pages (Team form), else its role's - what it can do.
+        "page_permissions": own,
+        "access": own if own is not None else (role.permissions if role else None),
         "allowed_modules": list(membership.allowed_modules or []),
         "created_at": membership.created_at.isoformat(),
     }
+
+
+def _own_pages(organization_id, raw):
+    """The pages picked for one login on the Team form - (pages, modules)."""
+    from . import pages
+
+    granted = pages.effective_permissions(
+        pages.clean_permissions(raw), enabled_modules_for_org(organization_id)
+    )
+    if not granted:
+        raise TeamAdminError("Give this login at least one page (Read or Read + Write)")
+    return granted, pages.modules_for(granted)
 
 
 def _role_for(organization_id, role_id):
@@ -155,6 +171,7 @@ def invite_team_member(
     modules=None,
     module=None,
     role_id=None,
+    permissions=None,
     actor_user_id=None,
     actor_email="",
     limit_to_modules=None,
@@ -172,12 +189,16 @@ def invite_team_member(
     email = build_staff_email(organization, local)
 
     role = None
-    if role_id not in (None, ""):
+    own = None
+    if permissions is not None:
+        # Pages picked right on the Team form - this login's own access.
+        own, resolved = _own_pages(organization_id, permissions)
+    elif role_id not in (None, ""):
         # A store role (the Team form): its pages decide; modules follow.
         role, resolved = _role_for(organization_id, role_id)
     else:
         if modules is None and module is None:
-            raise TeamAdminError("Pick a role for this login")
+            raise TeamAdminError("Pick what this login can open")
         requested = _coerce_modules(modules=modules, module=module)
         _validate_requested_modules(requested, organization_id)
         _check_manageable(requested, limit_to_modules)
@@ -233,6 +254,7 @@ def invite_team_member(
         role="org_user",
         allowed_modules=resolved,
         role_ref=role,
+        page_permissions=own,
     )
 
     try:
@@ -244,7 +266,8 @@ def invite_team_member(
         organization_id=organization_id,
         action="team.invite",
         summary=(
-            f"Invited {email} as {role.name}" if role
+            f"Invited {email} with {len(own)} page(s)" if own is not None
+            else f"Invited {email} as {role.name}" if role
             else f"Invited {email} with modules {', '.join(resolved)}"
         ),
         actor_user_id=actor_user_id,
@@ -254,6 +277,7 @@ def invite_team_member(
         metadata={
             "email": email, "modules": resolved, "role": "org_user",
             "role_id": role.id if role else None, "role_name": role.name if role else "",
+            "page_permissions": own,
         },
     )
     return _serialize_member(membership, email=email)
@@ -269,6 +293,7 @@ def update_team_member(
     email=None,
     password=None,
     role_id=None,
+    permissions=None,
     actor_user_id=None,
     actor_email="",
     limit_to_modules=None,
@@ -286,11 +311,19 @@ def update_team_member(
     resolved = list(membership.allowed_modules or [])
     modules_provided = modules is not None or module is not None
     role_provided = role_id not in (None, "")
-    if role_provided:
+    if permissions is not None:
+        own, resolved = _own_pages(organization_id, permissions)
+        membership.page_permissions = own
+        membership.role_ref = None
+        membership.allowed_modules = resolved
+        membership.save(update_fields=["page_permissions", "role_ref", "allowed_modules"])
+        modules_provided = True
+    elif role_provided:
         role, resolved = _role_for(organization_id, role_id)
         membership.role_ref = role
+        membership.page_permissions = None
         membership.allowed_modules = resolved
-        membership.save(update_fields=["role_ref", "allowed_modules"])
+        membership.save(update_fields=["role_ref", "page_permissions", "allowed_modules"])
         modules_provided = True
     elif modules_provided:
         requested = _coerce_modules(modules=modules, module=module)
@@ -306,7 +339,8 @@ def update_team_member(
         # Old-style modules replace any role.
         membership.allowed_modules = resolved
         membership.role_ref = None
-        membership.save(update_fields=["allowed_modules", "role_ref"])
+        membership.page_permissions = None
+        membership.save(update_fields=["allowed_modules", "role_ref", "page_permissions"])
 
     new_email = None
     if username is not None or email is not None:
@@ -317,7 +351,7 @@ def update_team_member(
         raise TeamAdminError("Password must be at least 8 characters")
 
     if new_email is None and not password and not modules_provided:
-        raise TeamAdminError("Provide a role, username, and/or password to update")
+        raise TeamAdminError("Provide access, username, and/or password to update")
 
     try:
         update_kwargs = {}
@@ -337,7 +371,9 @@ def update_team_member(
         organization_id=organization_id,
         action="team.update",
         summary=(
-            f"Updated team member {user_id} role={membership.role_ref.name}"
+            f"Updated team member {user_id} pages={membership.page_permissions}"
+            if membership.page_permissions is not None
+            else f"Updated team member {user_id} role={membership.role_ref.name}"
             if membership.role_ref_id else f"Updated team member {user_id} modules={resolved}"
         ),
         actor_user_id=actor_user_id,

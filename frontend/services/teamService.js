@@ -25,9 +25,10 @@ class TeamService {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.team}`);
   }
 
-  inviteMember({ username, password, modules, roleId }) {
+  inviteMember({ username, password, modules, roleId, permissions }) {
     const body = { username, password };
-    if (roleId !== undefined && roleId !== null && roleId !== "") body.role_id = roleId;
+    if (permissions) body.permissions = permissions;
+    else if (roleId !== undefined && roleId !== null && roleId !== "") body.role_id = roleId;
     else if (modules !== undefined) body.modules = modules;
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.team}`, {
       method: "POST",
@@ -35,9 +36,10 @@ class TeamService {
     });
   }
 
-  updateMember(userId, { modules, username, password, roleId }) {
+  updateMember(userId, { modules, username, password, roleId, permissions }) {
     const body = {};
-    if (roleId !== undefined && roleId !== null && roleId !== "") body.role_id = roleId;
+    if (permissions) body.permissions = permissions;
+    else if (roleId !== undefined && roleId !== null && roleId !== "") body.role_id = roleId;
     else if (modules !== undefined) body.modules = modules;
     if (username !== undefined) body.username = username;
     if (password !== undefined) body.password = password;
