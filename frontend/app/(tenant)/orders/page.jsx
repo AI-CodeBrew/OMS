@@ -103,7 +103,7 @@ const ScanPackModal = dynamic(() => import("../../../components/orders/ScanPackM
 
 // store: comma-separated store ids; product: a JSON array of product names
 // (a name can contain a comma) - both Dispatch Hub only, set by
-// HubOrderFilters. f_*: the Filters panel's fields (OrderFieldFilters),
+// the Filters popup (OrderFieldFilters). f_*: its other fields,
 // each a JSON array.
 const EMPTY_FILTERS = {
   city: "", courier_id: "", gateway: "", date_from: "", date_to: "", store: "", product: "", dispatch_requested: "",
