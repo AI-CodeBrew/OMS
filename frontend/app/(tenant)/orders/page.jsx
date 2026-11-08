@@ -28,7 +28,7 @@ import Pagination from "../../../components/shared/Pagination";
 import OrderStatusTabs from "../../../components/orders/OrderStatusTabs";
 import OrdersToolbar from "../../../components/orders/OrdersToolbar";
 import OrdersTable from "../../../components/orders/OrdersTable";
-import HubOrderFilters from "../../../components/orders/HubOrderFilters";
+import OrderFieldFilters, { activeFilterCount } from "../../../components/orders/OrderFieldFilters";
 import CsvExportButton from "../../../components/orders/CsvExportButton";
 import DateRangeFilter from "../../../components/orders/DateRangeFilter";
 import { useDateFilterStore } from "../../../store/dateFilterStore";
@@ -103,9 +103,12 @@ const ScanPackModal = dynamic(() => import("../../../components/orders/ScanPackM
 
 // store: comma-separated store ids; product: a JSON array of product names
 // (a name can contain a comma) - both Dispatch Hub only, set by
-// HubOrderFilters.
+// HubOrderFilters. f_*: the Filters panel's fields (OrderFieldFilters),
+// each a JSON array.
 const EMPTY_FILTERS = {
   city: "", courier_id: "", gateway: "", date_from: "", date_to: "", store: "", product: "", dispatch_requested: "",
+  f_oms_id: "", f_store_order_id: "", f_customer: "", f_phone: "", f_tracking: "",
+  f_shop: "", f_city: "", f_province: "", f_courier: "",
 };
 // "critical" is time-dependent rather than a status an order is moved into,
 // so the backend never caches it or includes it in the warmup - leave it
@@ -216,6 +219,7 @@ export default function OrdersPage() {
   const [activeStatus, setActiveStatusState] = useState(() => searchParams.get("status") || "all");
   const [search, setSearch] = useState("");
   const [appliedSearch, setAppliedSearch] = useState("");
+  const [filtersOpen, setFiltersOpen] = useState(false);
   // A dashboard card links here with its date range (and its statuses as
   // the tab) - read once on arrival; after that the date filter is the
   // user's to change.
@@ -1161,25 +1165,44 @@ export default function OrdersPage() {
             window.location.reload();
           }}
           refreshing={loading}
-          extraFilters={
-            user?.isDispatchHub ? (
-              <HubOrderFilters
-                stores={hubStoreOptions || []}
-                storeIds={appliedFilters.store ? appliedFilters.store.split(",") : []}
-                productNames={appliedFilters.product ? JSON.parse(appliedFilters.product) : []}
-                status={activeStatus === "all" ? undefined : activeStatus}
-                onChange={({ storeIds, productNames }) => {
-                  const next = {
-                    store: storeIds.join(","),
-                    product: productNames.length ? JSON.stringify(productNames) : "",
-                  };
-                  setFilters((f) => ({ ...f, ...next }));
-                  setAppliedFilters((f) => ({ ...f, ...next }));
-                }}
-              />
-            ) : null
-          }
+          filtersButton={(() => {
+            const active = activeFilterCount(appliedFilters, { hub: Boolean(user?.isDispatchHub) });
+            return (
+              <button
+                type="button"
+                onClick={() => setFiltersOpen((o) => !o)}
+                className={`inline-flex items-center gap-1.5 rounded-md border px-4 py-2 text-sm font-medium ${
+                  active || filtersOpen
+                    ? "border-brand-300 bg-brand-50 text-brand-800"
+                    : "border-surface-border bg-white text-slate-800 hover:bg-slate-50"
+                }`}
+              >
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 4h18l-7 8v6l-4 2v-8L3 4z" />
+                </svg>
+                Filters{active ? ` (${active})` : ""}
+              </button>
+            );
+          })()}
         />
+
+        {filtersOpen ? (
+          <OrderFieldFilters
+            applied={appliedFilters}
+            baseParams={queryParams}
+            hub={
+              user?.isDispatchHub
+                ? { stores: hubStoreOptions || [], status: activeStatus === "all" ? undefined : activeStatus }
+                : null
+            }
+            onApply={(next) => {
+              setFilters((f) => ({ ...f, ...next }));
+              setAppliedFilters((f) => ({ ...f, ...next }));
+              setPage(1);
+            }}
+            onClose={() => setFiltersOpen(false)}
+          />
+        ) : null}
 
         {activeStatus === ASSIGNING_COURIER_TAB ? (
           <div className="mb-3 flex items-center justify-between gap-3 rounded-md border border-surface-border bg-white px-4 py-2">

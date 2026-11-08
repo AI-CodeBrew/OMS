@@ -7,7 +7,7 @@ import ordersService from "../../services/ordersService";
 // A trigger button plus a checkbox list that stays open while ticking -
 // shared Dropdown closes on every click, which suits actions, not picking
 // several values.
-function MultiSelect({ label, selectedCount, children }) {
+export function MultiSelect({ label, selectedCount, children, fullWidth = false }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
 
@@ -28,11 +28,11 @@ function MultiSelect({ label, selectedCount, children }) {
   }, [open]);
 
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className={`relative ${fullWidth ? "w-full" : ""}`}>
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className={`inline-flex items-center gap-1 rounded-md border px-3 py-2 text-sm ${
+        className={`inline-flex items-center gap-1 rounded-md border px-3 py-2 text-sm ${fullWidth ? "w-full justify-between" : ""} ${
           selectedCount
             ? "border-brand-300 bg-brand-50 text-brand-800"
             : "border-surface-border bg-white text-slate-600 hover:bg-slate-50"
@@ -51,11 +51,11 @@ function MultiSelect({ label, selectedCount, children }) {
   );
 }
 
-function toggle(list, value) {
+export function toggle(list, value) {
   return list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
 }
 
-function OptionRow({ checked, onChange, children }) {
+export function OptionRow({ checked, onChange, children }) {
   return (
     <label className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm text-slate-700 hover:bg-surface">
       <Checkbox checked={checked} onChange={onChange} />
@@ -69,7 +69,7 @@ function OptionRow({ checked, onChange, children }) {
 // current tab) once, and ticking products narrows the table to every order
 // containing any of them. storeIds / productNames are arrays; each change
 // applies straight away.
-export default function HubOrderFilters({ stores, storeIds, productNames, status, onChange }) {
+export default function HubOrderFilters({ stores, storeIds, productNames, status, onChange, fullWidth = false }) {
   const [storeQuery, setStoreQuery] = useState("");
   const [productQuery, setProductQuery] = useState("");
   const [products, setProducts] = useState([]);
@@ -124,16 +124,16 @@ export default function HubOrderFilters({ stores, storeIds, productNames, status
 
   return (
     <>
-      <MultiSelect label="Stores" selectedCount={storeIds.length}>
+      <MultiSelect label="Organizations" selectedCount={storeIds.length} fullWidth={fullWidth}>
         <input
           value={storeQuery}
           onChange={(e) => setStoreQuery(e.target.value)}
-          placeholder="Search stores…"
+          placeholder="Search organizations…"
           className={inputClass}
         />
         <div className="max-h-64 overflow-auto">
           {visibleStores.length === 0 ? (
-            <p className="px-2 py-1.5 text-sm text-slate-400">No stores</p>
+            <p className="px-2 py-1.5 text-sm text-slate-400">No organizations</p>
           ) : (
             visibleStores.map((s) => (
               <OptionRow key={s.id} checked={storeIds.includes(s.id)} onChange={() => setStores(toggle(storeIds, s.id))}>
@@ -148,14 +148,14 @@ export default function HubOrderFilters({ stores, storeIds, productNames, status
             onClick={() => setStores([])}
             className="mt-1 px-2 text-xs font-medium text-brand-700 hover:underline"
           >
-            Unselect all stores
+            Unselect all organizations
           </button>
         ) : null}
       </MultiSelect>
 
-      <MultiSelect label="Products" selectedCount={productNames.length}>
+      <MultiSelect label="Products" selectedCount={productNames.length} fullWidth={fullWidth}>
         {!storeIds.length ? (
-          <p className="px-2 py-1.5 text-sm text-slate-400">Select one or more stores first.</p>
+          <p className="px-2 py-1.5 text-sm text-slate-400">Select one or more organizations first.</p>
         ) : (
           <>
             <input

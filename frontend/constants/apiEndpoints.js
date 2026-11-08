@@ -85,6 +85,7 @@ export const API_ENDPOINTS = {
     orderProductNames: "/api/oms/orders/product-names/",
     orderTags: "/api/oms/orders/tags/",
     orderStoreProducts: "/api/oms/orders/store-products/",
+    orderFilterOptions: "/api/oms/orders/filter-options/",
     orderCriticalSummary: "/api/oms/orders/critical-summary/",
     orderImport: "/api/oms/orders/import-csv/",
     orderImportOrders: "/api/oms/orders/import-orders/",

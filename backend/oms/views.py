@@ -42,6 +42,7 @@ from integrations.services import InventorySyncError, create_order_on_shopify
 from wms.services import InsufficientStock
 
 from . import csv_report, importers, order_importer, services
+from .order_filters import apply_field_filters as _apply_field_filters
 from .models import (
     Courier,
     DispatchBatch,
@@ -669,6 +670,11 @@ class OrderViewSet(viewsets.ModelViewSet):
                 id__in=OrderItem.objects.filter(product_name__in=products).values("order_id")
             )
 
+        # The Orders page's field filters (OrderFieldFilters) - each a JSON
+        # array; several values in one filter match any of them, and
+        # several filters together must all match.
+        qs = _apply_field_filters(qs, params)
+
         # Dispatch Hub: only the orders stores have asked FynkTech to ship
         # and that haven't been booked yet.
         if params.get("dispatch_requested") == "yes":
@@ -765,6 +771,24 @@ class OrderViewSet(viewsets.ModelViewSet):
             {"store": request.query_params.get("store") or ""},
         )
         return Response({"reasons": services.critical_summary(qs)})
+
+    @action(detail=False, methods=["get"], url_path="filter-options")
+    def filter_options(self, request):
+        """The choices of one list filter on the Orders page (`field`:
+        f_shop / f_city / f_province / f_courier) - over the orders the page
+        shows with every OTHER filter applied (tab, dates, search, ...), each
+        with its order count. `q` narrows by name."""
+        from .order_filters import OPTION_FIELDS, filter_options
+
+        field = request.query_params.get("field") or ""
+        if field not in OPTION_FIELDS:
+            return Response({"detail": "Unknown filter."}, status=status.HTTP_400_BAD_REQUEST)
+        params = request.query_params.copy()
+        for key in ("field", "q", "page", "page_size", field):
+            params.pop(key, None)
+        qs = self._apply_filters(Order.objects.filter(**org_filter(request)), params)
+        rows, truncated = filter_options(qs, field, request.query_params.get("q") or "")
+        return Response({"results": rows, "truncated": truncated})
 
     @action(detail=False, methods=["get"], url_path="store-products")
     def store_products(self, request):

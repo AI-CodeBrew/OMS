@@ -51,6 +51,19 @@ class OrdersService {
     return data;
   }
 
+  // One list filter's choices (field: f_shop / f_city / f_province /
+  // f_courier) for the orders the page shows: {results: [{value, label,
+  // count}], truncated}.
+  async filterOptions(params) {
+    const response = await fetch(
+      `${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderFilterOptions}${buildQuery(params)}`,
+      { headers: authService.getAuthHeaders() }
+    );
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Failed to load filter options");
+    return data;
+  }
+
   // The Critical Orders page's cards: {reasons: [{key, label, description,
   // count}]}. A reason's orders come from list({critical_reason: key}).
   async criticalSummary(params = {}) {

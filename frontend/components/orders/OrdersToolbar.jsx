@@ -19,6 +19,8 @@ export default function OrdersToolbar({
   // Page-specific filter controls, shown after the search (the Dispatch
   // Hub's store/product pickers).
   extraFilters = null,
+  // The Filters button - on its own at the far right.
+  filtersButton = null,
 }) {
   // Product-name autocomplete for the last comma-separated term (matches
   // the multi-term search convention the input already supports).
@@ -139,6 +141,8 @@ export default function OrdersToolbar({
       <Button variant="secondary" onClick={onRefresh} loading={refreshing}>
         Refresh
       </Button>
+
+      {filtersButton ? <div className="ml-auto">{filtersButton}</div> : null}
     </div>
   );
 }
