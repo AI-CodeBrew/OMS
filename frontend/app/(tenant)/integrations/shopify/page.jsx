@@ -175,7 +175,7 @@ export default function IntegrationsPage() {
               ? ` (${job.skipped_count} skipped due to bad data — last: ${job.error_message})`
               : "";
             setNotice(
-              `${modeLabel}: ${job.created_count} new, ${job.updated_count} updated — ${job.total_fetched} orders fetched, ${refreshed?.synced_orders_count ?? "?"} total as of ${job.finished_at ? new Date(job.finished_at).toLocaleString() : ""}.${skippedNote}`
+              `${modeLabel}: ${job.created_count} new, ${job.updated_count} already in OMS (left unchanged) — ${job.total_fetched} orders fetched, ${refreshed?.synced_orders_count ?? "?"} total as of ${job.finished_at ? new Date(job.finished_at).toLocaleString() : ""}.${skippedNote}`
             );
           } else if (job.status === "failed") {
             setError(job.error_message || "Sync failed");

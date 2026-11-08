@@ -30,6 +30,12 @@ current_request_meta = contextvars.ContextVar("current_request_meta", default=No
 # whoever pressed Sync, or nobody) made the change.
 current_audit_source = contextvars.ContextVar("current_audit_source", default="")
 
+# True while a Dispatch Hub / All Orders booking request runs: Order.save
+# then stamps hub_dispatched_at (the "by FynkTech" tag) on each order the
+# moment it gets its tracking number - not only once the whole batch is
+# done, which a long batch cut off midway never reaches.
+current_hub_booking = contextvars.ContextVar("current_hub_booking", default=False)
+
 
 def audit_source(name):
     """Decorator: audit rows written inside the call are attributed to `name`."""

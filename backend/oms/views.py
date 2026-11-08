@@ -17,7 +17,7 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from core.context import tenant_context
+from core.context import current_hub_booking, tenant_context
 from core.permissions import RequireAnyModule, RequireModule
 from core.redis_client import (
     acquire_rebuild_lock,
@@ -1436,7 +1436,18 @@ class OrderViewSet(viewsets.ModelViewSet):
         action_name = request.data.get("action")
         order_ids = request.data.get("order_ids") or []
         params = request.data.get("params") or {}
+        # A Hub booking tags each order "by FynkTech" as soon as it's booked
+        # (Order.save) - _record_hub_booking at the end stays as a backstop.
+        token = current_hub_booking.set(
+            is_hub_request(request)
+            and (action_name in _BOOKING_ACTIONS or action_name == "change_courier")
+        )
+        try:
+            return self._bulk_action(request, action_name, order_ids, params)
+        finally:
+            current_hub_booking.reset(token)
 
+    def _bulk_action(self, request, action_name, order_ids, params):
         # Booked in one batch (not per order through BULK_ACTIONS below) so
         # that "create a pickup request" on a multi-order booking makes ONE
         # pickup request, not one per order - see
@@ -2468,8 +2479,18 @@ class OrderViewSet(viewsets.ModelViewSet):
             from integrations.barqraftar.models import BarqRaftarShipment
             from integrations.postex.models import PostExShipment
 
-            last_event = OrderStatusEvent.all_objects.filter(order=OuterRef("pk")).order_by("-created_at")
+            from .approval_checks import city_key
+            from .models import City
+
+            last_event =OrderStatusEvent.all_objects.filter(order=OuterRef("pk")).order_by("-created_at")
             last_note = OrderNote.all_objects.filter(order=OuterRef("pk")).order_by("-created_at")
+            # Approved: out of the Awaiting Confirmation card into the
+            # Approved one - its latest time, if approved more than once.
+            last_approved = OrderStatusEvent.all_objects.filter(
+                order=OuterRef("pk"),
+                from_status__in=services.WORKFLOW_CARD_STATUSES["awaiting_confirmation"],
+                to_status__in=services.WORKFLOW_CARD_STATUSES["approved"],
+            ).order_by("-created_at")
             queryset = (
                 queryset.select_related("courier", "organization")
                 .prefetch_related(
@@ -2489,6 +2510,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                     _last_event_at=Subquery(last_event.values("created_at")[:1]),
                     _last_note_body=Subquery(last_note.values("body")[:1]),
                     _last_note_at=Subquery(last_note.values("created_at")[:1]),
+                    _last_approved_at=Subquery(last_approved.values("created_at")[:1]),
                 )
             )
             status_labels = dict(Order.STATUS_CHOICES)
@@ -2506,11 +2528,16 @@ class OrderViewSet(viewsets.ModelViewSet):
                 "Store Name",
                 # When the order landed in OMS (created_at) - one time only.
                 "Order Date (PKT)",
+                # When it was last approved (out of Awaiting Confirmation).
+                "Last Approved At (PKT)",
                 "Customer Name",
                 "Phone",
                 "Email",
                 "Address",
                 "City",
+                # From the super admin's City list - "Unknown" when the
+                # city isn't on it (never a guess).
+                "Province",
                 "Product Name",
                 "SKU Code",
                 "Quantity",
@@ -2524,10 +2551,10 @@ class OrderViewSet(viewsets.ModelViewSet):
                 "Total Receivable",
                 "Payment Status",
                 "Customer Note",
-                # The card, as the screens show it - Stage is the step
-                # inside it (Ready to Print, Out for Delivery, ...).
+                # The card, as the screens show it.
                 "Order Status",
-                "Stage",
+                # On the Critical Orders page right now (any of its cards).
+                "Critical Order",
                 "Sub Status",
                 "Tag",
                 "Shipper Advice",
@@ -2555,6 +2582,15 @@ class OrderViewSet(viewsets.ModelViewSet):
             store_ids = services.store_ids_for(
                 queryset.order_by().values_list("organization_id", "shop").distinct()
             )
+            provinces = {
+                key: province
+                for key, province in City.objects.exclude(province="").values_list("name_key", "province")
+            }
+            # One query per Critical Orders card, never one per order.
+            critical_ids = set()
+            for _key, _label, _hint, narrow in services.CRITICAL_REASONS:
+                critical_ids.update(narrow(queryset.order_by()).values_list("id", flat=True))
+            text = csv_report.as_text
 
             def rows():
                 yield header
@@ -2564,21 +2600,23 @@ class OrderViewSet(viewsets.ModelViewSet):
                         + order.loyalty_amount + order.wallet_amount
                     )
                     before_items = [
-                        order.supabase_order_no or "",
-                        order.original_order_number or order.order_number,
+                        text(order.supabase_order_no or ""),
+                        text(order.original_order_number or order.order_number),
                         # The client is the organization (Playback, One
                         # Stations, ...) - the business FynkTech serves; it
                         # can run several stores, each with its own number.
                         order.organization.name,
-                        store_ids.get((str(order.organization_id), order.shop), ""),
+                        text(store_ids.get((str(order.organization_id), order.shop), "")),
                         order.shop,
                         # When the order landed in OMS.
                         when(order.created_at),
+                        when(order._last_approved_at),
                         order.customer_name,
-                        order.customer_phone,
+                        text(order.customer_phone),
                         order.customer_email,
                         ", ".join(filter(None, [order.address_line1, order.address_line2])),
                         order.city,
+                        provinces.get(city_key(order.city)) or "Unknown",
                     ]
                     after_items = [
                         str(order.shipping_amount),
@@ -2590,13 +2628,13 @@ class OrderViewSet(viewsets.ModelViewSet):
                         order.get_payment_status_display(),
                         order.customer_note,
                         services.card_label(order),
-                        order.get_status_display(),
+                        "Yes" if order.id in critical_ids else "No",
                         order.courier_status,
                         services.latest_tag(order),
                         " - ".join(filter(None, [order.shipper_advice, order.shipper_advice_remarks])),
                         csv_report.last_update(order, status_labels, when),
                         order.courier.name if order.courier_id else "",
-                        order.tracking_number,
+                        text(order.tracking_number),
                         when(order.booked_at),
                         csv_report.courier_weight(order),
                         # Dispatched is the courier picking the parcel up
@@ -2616,7 +2654,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                     for item in items:
                         yield before_items + [
                             item.product_name,
-                            item.barcode,
+                            text(item.barcode),
                             item.quantity,
                             payment,
                             str(item.unit_price),

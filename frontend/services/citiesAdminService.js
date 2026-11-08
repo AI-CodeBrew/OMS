@@ -20,9 +20,21 @@ async function request(url, options = {}) {
 // order can be Approved. Every call answers with {count, cities} for the
 // list as it now stands.
 class CitiesAdminService {
-  list(q = "") {
-    const qs = q ? `?q=${encodeURIComponent(q)}` : "";
+  // province: one province, or "missing" for cities with none set yet.
+  list(q = "", province = "") {
+    const params = new URLSearchParams();
+    if (q) params.set("q", q);
+    if (province) params.set("province", province);
+    const qs = params.toString() ? `?${params}` : "";
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.cities}${qs}`);
+  }
+
+  // Answers {city}.
+  setProvince(id, province) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.city(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ province }),
+    });
   }
 
   // names: one city per line, or an array. Answers {added, count, cities}.

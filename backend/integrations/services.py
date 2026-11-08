@@ -354,8 +354,20 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
     JWT-authenticated request context (webhooks carry no Supabase JWT), so
     it always uses the unscoped `all_objects` manager and passes
     organization_id explicitly rather than relying on ambient tenant
-    context."""
+    context.
+
+    An order is only ever taken from Shopify once - when it first lands.
+    After that OMS is the only place it changes: a later webhook or sync
+    for it is ignored entirely (items, amounts, customer, payment, tracking,
+    status, cancellation), so nothing done in OMS is ever overwritten.
+    Pushes from OMS to Shopify (tags, fulfillments) are unaffected.
+    Returns (order, created) - the existing order and False when ignored."""
     shopify_order_id = shopify_order["id"]
+    existing = Order.all_objects.filter(
+        organization_id=organization_id, shopify_order_id=shopify_order_id
+    ).first()
+    if existing is not None:
+        return existing, False
     customer = shopify_order.get("customer") or {}
     shipping_address = shopify_order.get("shipping_address") or {}
     # Orders created from OMS (create_order_on_shopify) carry no customer

@@ -20,13 +20,20 @@ def cities(request):
             names = names.splitlines()
         added = service.add_cities(names)
         return Response({"success": True, "added": added, **service.list_cities()}, status=201)
-    return Response({"success": True, **service.list_cities(request.query_params.get("q", ""))})
+    params = request.query_params
+    return Response(
+        {"success": True, **service.list_cities(params.get("q", ""), params.get("province", ""))}
+    )
 
 
-@api_view(["DELETE"])
+@api_view(["PATCH", "DELETE"])
 @permission_classes([IsSuperAdmin])
 def city_detail(request, city_id):
+    """PATCH {province} - set the city's province; DELETE - remove it."""
     try:
+        if request.method == "PATCH":
+            city = service.set_province(city_id, (request.data or {}).get("province"))
+            return Response({"success": True, "city": city})
         service.delete_city(city_id)
     except CityAdminError as exc:
         return Response({"success": False, "error": exc.message}, status=exc.status_code)

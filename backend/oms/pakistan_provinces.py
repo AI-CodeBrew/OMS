@@ -13,6 +13,7 @@ PROVINCES = [
     "Balochistan",
     "Gilgit-Baltistan",
     "Azad Kashmir",
+    "Islamabad Capital Territory",
 ]
 UNKNOWN = "Unknown"
 
@@ -38,7 +39,10 @@ _CITIES = {
         Pindigheb, Jand, Chhachh, Kahuta, Kotli Sattian, Taxila Cantt, Hasan Abdal, Kot Sultan,
         Karor Lal Esan, Chaubara, Fatehpur, Rojhan, Kot Mithan, Uch Sharif, Khairpur Tamewali,
         Minchinabad, Dahranwala, Marot, Jahanian, Tibba Sultanpur, Luddan, Gaggo Mandi,
-        Pirmahal, Rajana, Kamir, Harappa, Iqbal Nagar, Noorshah, Bahawalpur Cantt,
+        Pirmahal, Rajana, Kamir, Harappa, Iqbal Nagar, Noorshah, Bahawalpur Cantt
+    """,
+    # Not part of Punjab - a federal territory of its own.
+    "Islamabad Capital Territory": """
         Islamabad, Islamabad Capital Territory, ICT
     """,
     "Sindh": """
@@ -90,7 +94,7 @@ _CITIES = {
 _ALIASES = {
     "lhr": "Punjab", "rwp": "Punjab", "pindi": "Punjab", "fsd": "Punjab", "mul": "Punjab",
     "skt": "Punjab", "grw": "Punjab", "dgk": "Punjab", "rykhan": "Punjab", "ryk": "Punjab",
-    "khi": "Sindh", "hyd": "Sindh", "isb": "Punjab", "pew": "Khyber Pakhtunkhwa",
+    "khi": "Sindh", "hyd": "Sindh", "isb": "Islamabad Capital Territory", "pew": "Khyber Pakhtunkhwa",
     "dik": "Khyber Pakhtunkhwa", "uet": "Balochistan",
 }
 

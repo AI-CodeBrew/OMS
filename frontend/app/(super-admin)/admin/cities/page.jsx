@@ -13,6 +13,10 @@ export default function CitiesAdminPage() {
   const [cities, setCities] = useState([]);
   const [count, setCount] = useState(0);
   const [search, setSearch] = useState("");
+  // "" = every city, "missing" = no province yet, else one province.
+  const [provinceFilter, setProvinceFilter] = useState("");
+  const [provinces, setProvinces] = useState([]);
+  const [missing, setMissing] = useState(0);
   const [paste, setPaste] = useState("");
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
@@ -23,13 +27,15 @@ export default function CitiesAdminPage() {
   function apply(data) {
     setCities(data.cities || []);
     setCount(data.count || 0);
+    if (data.provinces) setProvinces(data.provinces);
+    if (data.missing_province !== undefined) setMissing(data.missing_province);
   }
 
-  const load = useCallback(async (q) => {
+  const load = useCallback(async (q, province) => {
     setLoading(true);
     setError("");
     try {
-      apply(await citiesAdminService.list(q));
+      apply(await citiesAdminService.list(q, province));
     } catch (err) {
       setError(err.message || "Failed to load cities");
     } finally {
@@ -38,9 +44,23 @@ export default function CitiesAdminPage() {
   }, []);
 
   useEffect(() => {
-    const t = setTimeout(() => load(search.trim()), 250);
+    const t = setTimeout(() => load(search.trim(), provinceFilter), 250);
     return () => clearTimeout(t);
-  }, [search, load]);
+  }, [search, provinceFilter, load]);
+
+  // The orders report's Province column reads this - "Unknown" while blank.
+  async function onProvince(city, province) {
+    setError("");
+    const before = city.province;
+    setCities((list) => list.map((c) => (c.id === city.id ? { ...c, province } : c)));
+    try {
+      await citiesAdminService.setProvince(city.id, province);
+      setMissing((n) => n + (before ? 0 : -1) + (province ? 0 : 1));
+    } catch (err) {
+      setCities((list) => list.map((c) => (c.id === city.id ? { ...c, province: before } : c)));
+      setError(err.message || "Failed to save province");
+    }
+  }
 
   async function onAdd() {
     if (!paste.trim()) return;
@@ -99,6 +119,20 @@ export default function CitiesAdminPage() {
             An order can only be Approved if its city is on this list - e.g. "LHR" is held back until it reads
             "Lahore". {count} cit{count === 1 ? "y" : "ies"} on the list.
           </p>
+          <p className="mt-1 text-sm text-slate-500">
+            Each city's Province is what the orders report shows.{" "}
+            {missing ? (
+              <button
+                type="button"
+                onClick={() => setProvinceFilter("missing")}
+                className="font-medium text-amber-700 hover:underline"
+              >
+                {missing} cit{missing === 1 ? "y has" : "ies have"} no province yet
+              </button>
+            ) : (
+              <span className="text-emerald-700">Every city has a province.</span>
+            )}
+          </p>
         </div>
         <Button variant="secondary" loading={importing} onClick={onImport}>
           Import from PostEx / BarqRaftar
@@ -125,26 +159,55 @@ export default function CitiesAdminPage() {
         </div>
 
         <div className="rounded-lg border border-surface-border bg-white">
-          <div className="border-b border-surface-border p-3">
+          <div className="flex gap-2 border-b border-surface-border p-3">
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search cities…"
-              className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
+              className="min-w-0 flex-1 rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
             />
+            <select
+              value={provinceFilter}
+              onChange={(e) => setProvinceFilter(e.target.value)}
+              className="rounded-md border border-surface-border px-2 py-2 text-sm outline-none focus:border-brand-500"
+            >
+              <option value="">All Provinces</option>
+              <option value="missing">No Province</option>
+              {provinces.map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
+            </select>
           </div>
           {loading && !cities.length ? (
             <p className="px-4 py-8 text-center text-sm text-slate-500">Loading…</p>
           ) : !cities.length ? (
             <p className="px-4 py-8 text-center text-sm text-slate-500">
-              {search ? "No city matches." : "The list is empty - no order can be Approved until cities are added."}
+              {search || provinceFilter
+                ? "No city matches."
+                : "The list is empty - no order can be Approved until cities are added."}
             </p>
           ) : (
             <ul className="max-h-[60vh] divide-y divide-surface-border overflow-y-auto">
               {cities.map((city) => (
                 <li key={city.id} className="flex items-center justify-between gap-3 px-4 py-2 text-sm">
-                  <span className="text-slate-800">{city.name}</span>
-                  <span className="flex items-center gap-3">
+                  <span className="min-w-0 truncate text-slate-800">{city.name}</span>
+                  <span className="flex shrink-0 items-center gap-3">
+                    <select
+                      value={city.province || ""}
+                      onChange={(e) => onProvince(city, e.target.value)}
+                      className={`rounded-md border px-2 py-1 text-xs outline-none focus:border-brand-500 ${
+                        city.province ? "border-surface-border text-slate-700" : "border-amber-300 bg-amber-50 text-amber-800"
+                      }`}
+                    >
+                      <option value="">No Province</option>
+                      {provinces.map((p) => (
+                        <option key={p} value={p}>
+                          {p}
+                        </option>
+                      ))}
+                    </select>
                     <span className="text-xs text-slate-400">{SOURCE_LABEL[city.source] || city.source}</span>
                     <button
                       type="button"

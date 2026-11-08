@@ -2619,7 +2619,7 @@ def _dashboard_courier(name):
 
 
 # How the Top Couriers card writes a province.
-_SHORT_PROVINCE_NAMES = {"Khyber Pakhtunkhwa": "KPK"}
+_SHORT_PROVINCE_NAMES = {"Khyber Pakhtunkhwa": "KPK", "Islamabad Capital Territory": "Islamabad"}
 
 
 def delivery_performance(qs):

@@ -4,6 +4,16 @@ and the order's latest log line."""
 import re
 
 
+def as_text(value):
+    """A number/ID cell Excel must show exactly as it is - written as
+    ="03001234567" so Excel keeps the leading 0 and long numbers don't turn
+    into 2.07E+13. Blank stays blank."""
+    value = "" if value is None else str(value)
+    if not value:
+        return ""
+    return '="' + value.replace('"', '""') + '"'
+
+
 def _latest_shipment(order):
     """The order's newest PostEx/BarqRaftar shipment - both keep the
     courier's last tracking response on it. Expects both relations

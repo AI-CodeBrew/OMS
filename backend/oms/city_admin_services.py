@@ -9,6 +9,7 @@ from django.db.models import Q
 
 from .approval_checks import city_key
 from .models import City
+from .pakistan_provinces import PROVINCES, UNKNOWN, province_for_city
 
 logger = logging.getLogger(__name__)
 
@@ -23,15 +24,44 @@ class CityAdminError(Exception):
 
 
 def _row(city):
-    return {"id": city.id, "name": city.name, "source": city.source, "created_at": city.created_at}
+    return {
+        "id": city.id, "name": city.name, "source": city.source, "province": city.province,
+        "created_at": city.created_at,
+    }
 
 
-def list_cities(q=""):
+def _guess_province(name):
+    """The built-in list's province for a new city - only a starting
+    point the super admin checks; blank when it can't place it."""
+    province = province_for_city(name)
+    return "" if province == UNKNOWN else province
+
+
+def list_cities(q="", province=""):
+    """province: one of PROVINCES, or "missing" for cities with none yet."""
     qs = City.objects.order_by("name")
     q = (q or "").strip()
     if q:
         qs = qs.filter(Q(name__icontains=q) | Q(name_key__icontains=city_key(q)))
-    return {"count": City.objects.count(), "cities": [_row(c) for c in qs[:MAX_LIST]]}
+    if province == "missing":
+        qs = qs.filter(province="")
+    elif province in PROVINCES:
+        qs = qs.filter(province=province)
+    return {
+        "count": City.objects.count(),
+        "missing_province": City.objects.filter(province="").count(),
+        "provinces": PROVINCES,
+        "cities": [_row(c) for c in qs[:MAX_LIST]],
+    }
+
+
+def set_province(city_id, province):
+    province = (province or "").strip()
+    if province and province not in PROVINCES:
+        raise CityAdminError("Pick a province from the list.")
+    if not City.objects.filter(id=city_id).update(province=province):
+        raise CityAdminError("City not found.", 404)
+    return _row(City.objects.get(id=city_id))
 
 
 def add_cities(names, *, source="manual"):
@@ -45,7 +75,7 @@ def add_cities(names, *, source="manual"):
         if not key or key in seen:
             continue
         seen.add(key)
-        new.append(City(name=name[:100], name_key=key[:100], source=source))
+        new.append(City(name=name[:100], name_key=key[:100], source=source, province=_guess_province(name)))
     City.objects.bulk_create(new)
     return len(new)
 

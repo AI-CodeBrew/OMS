@@ -396,10 +396,18 @@ class Order(TenantScopedModel):
         # number arrives through a dozen paths, and every one saves the
         # order. A save limited to update_fields gets booked_at added to it.
         if self.tracking_number and not self.booked_at:
+            from core.context import current_hub_booking
+
             self.booked_at = timezone.now()
+            stamped = {"booked_at"}
+            # Booked from the Dispatch Hub: the "by FynkTech" tag, set per
+            # order as it's booked (see core.context.current_hub_booking).
+            if current_hub_booking.get():
+                self.hub_dispatched_at = self.booked_at
+                stamped.add("hub_dispatched_at")
             update_fields = kwargs.get("update_fields")
             if update_fields is not None:
-                kwargs["update_fields"] = {*update_fields, "booked_at"}
+                kwargs["update_fields"] = {*update_fields, *stamped}
         super().save(*args, **kwargs)
 
     @property
@@ -767,6 +775,10 @@ class City(models.Model):
     # city_key(name) - what matching compares (case/spacing-insensitive).
     name_key = models.CharField(max_length=100, unique=True)
     source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default="manual")
+    # One of pakistan_provinces.PROVINCES, set (and checked) by the super
+    # admin on the Cities page - pre-filled from the built-in city list.
+    # The orders report's Province column reads it; blank = "Unknown".
+    province = models.CharField(max_length=40, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
