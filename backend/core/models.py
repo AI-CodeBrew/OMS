@@ -73,6 +73,15 @@ class Organization(models.Model):
     # with the same name can still be told apart. Taken from a database
     # sequence on first save - see save().
     store_code = models.PositiveIntegerField(unique=True, null=True, blank=True, editable=False)
+    # What FynkTech does for this store (super admin's Stores tab) - blank
+    # until set there. Display only; nothing in the app depends on it.
+    SERVICE_MODEL_CHOICES = [
+        ("all_in_one", "All in One"),        # dispatching, fulfilment and delivery with OMS couriers
+        ("fulfilment", "Only Fulfilment"),   # FynkTech dispatches; the store's own courier delivers
+        ("courier", "Only Courier"),         # OMS couriers connected; the store dispatches itself
+        ("oms_only", "Just OMS"),            # OMS for visibility only
+    ]
+    service_model = models.CharField(max_length=20, choices=SERVICE_MODEL_CHOICES, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

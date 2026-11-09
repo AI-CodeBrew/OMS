@@ -8,6 +8,14 @@ import useAuthStore from "../../../../store/authStore";
 import { invalidateViewCache } from "../../../../lib/viewCache";
 import GreenTick from "../../../../components/shared/GreenTick";
 
+// What FynkTech does for the store - core.Organization.SERVICE_MODEL_CHOICES.
+const SERVICE_MODELS = [
+  { value: "all_in_one", label: "All in One", hint: "Dispatching, fulfilment and delivery with OMS couriers" },
+  { value: "fulfilment", label: "Only Fulfilment", hint: "We dispatch; the store's own courier delivers" },
+  { value: "courier", label: "Only Courier", hint: "OMS couriers connected; the store dispatches itself" },
+  { value: "oms_only", label: "Just OMS", hint: "OMS for visibility only" },
+];
+
 function enabledModules(org) {
   return (org.modules || []).filter((m) => m.is_enabled).map((m) => m.module);
 }
@@ -20,6 +28,7 @@ export default function StoresPage() {
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [hubBusyId, setHubBusyId] = useState("");
+  const [modelBusyId, setModelBusyId] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -70,6 +79,19 @@ export default function StoresPage() {
     }
   }
 
+  async function changeServiceModel(org, value) {
+    setModelBusyId(org.id);
+    setError("");
+    try {
+      await tenantsService.setServiceModel(org.id, value);
+      setStores((list) => list.map((s) => (s.id === org.id ? { ...s, service_model: value } : s)));
+    } catch (err) {
+      setError(err.message || "Could not save the service model");
+    } finally {
+      setModelBusyId("");
+    }
+  }
+
   function openStore(org) {
     const modules = enabledModules(org);
     enterStore({ id: org.id, name: org.name, modules, is_manual_store: org.is_manual_store });
@@ -108,73 +130,118 @@ export default function StoresPage() {
             {stores.length === 0 ? "No stores connected yet." : "No stores match your search."}
           </p>
         ) : (
-          <ul className="divide-y divide-surface-border">
-            {visible.map((org) => {
-              const modules = enabledModules(org);
-              const shopify = org.shopify;
-              return (
-                <li
-                  key={org.id}
-                  className="flex flex-wrap items-center justify-between gap-3 px-5 py-4"
-                >
-                  <div className="flex min-w-0 items-center gap-2">
-                    {org.in_dispatch_hub ? <GreenTick /> : <span className="h-4 w-4 shrink-0" />}
-                    <div className="min-w-0">
-                      <p className="truncate font-medium text-slate-900">{org.name}</p>
-                      <p className="mt-0.5 text-xs text-slate-500">
-                        {org.plan}
-                        {modules.length ? ` · ${modules.join(", ")}` : ""}
-                        {shopify?.shop_domain ? ` · ${shopify.shop_domain}` : ""}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      disabled={hubBusyId === org.id}
-                      onClick={() => toggleHub(org)}
-                      className={`rounded-full px-2.5 py-0.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${
-                        org.in_dispatch_hub
-                          ? "bg-brand-50 text-brand-700 hover:bg-brand-100"
-                          : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-                      }`}
-                    >
-                      {org.in_dispatch_hub ? "Remove from Hub" : "Add to Hub"}
-                    </button>
-                    {shopify ? (
-                      <span
-                        className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                          shopify.is_connected
-                            ? "bg-sky-50 text-sky-700"
-                            : "bg-amber-50 text-amber-700"
-                        }`}
-                      >
-                        {shopify.is_connected ? "Shopify connected" : "Shopify disconnected"}
-                      </span>
-                    ) : null}
-                    <span
-                      className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                        org.is_active
-                          ? "bg-emerald-50 text-emerald-700"
-                          : "bg-red-50 text-red-700"
-                      }`}
-                    >
-                      {org.is_active ? "Active" : "Suspended"}
-                    </span>
-                    <button
-                      type="button"
-                      disabled={!org.is_active}
-                      onClick={() => openStore(org)}
-                      title={org.is_active ? undefined : "Suspended stores can't be opened"}
-                      className="rounded-lg bg-brand-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300"
-                    >
-                      Open store →
-                    </button>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="border-b border-surface-border bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="px-5 py-3">Store Name</th>
+                  <th className="px-4 py-3">Store ID</th>
+                  <th className="px-4 py-3">Store Integration</th>
+                  <th className="px-4 py-3">Service Model</th>
+                  <th className="px-4 py-3">Status</th>
+                  <th className="px-5 py-3 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-surface-border">
+                {visible.map((org) => {
+                  const shopify = org.shopify;
+                  const integrated = Boolean(shopify) && !org.is_manual_store;
+                  const stores = org.stores || [];
+                  return (
+                    <tr key={org.id} className="transition hover:bg-slate-50">
+                      <td className="px-5 py-3">
+                        <div className="flex items-center gap-2">
+                          {org.in_dispatch_hub ? <GreenTick /> : <span className="h-4 w-4 shrink-0" />}
+                          <div className="min-w-0">
+                            <p className="truncate font-medium text-slate-900">{org.name}</p>
+                            {shopify?.shop_domain ? (
+                              <p className="truncate text-xs text-slate-500">{shopify.shop_domain}</p>
+                            ) : null}
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-slate-700">
+                        {stores.length ? (
+                          <span title={stores.map((st) => `${st.store_id} - ${st.name}`).join(", ")}>
+                            {stores.map((st) => st.store_id).join(", ")}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span
+                          className={`whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                            integrated ? "bg-sky-50 text-sky-700" : "bg-slate-100 text-slate-600"
+                          }`}
+                        >
+                          {integrated ? "Shopify Integrated" : "Manual"}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <select
+                          value={org.service_model || ""}
+                          disabled={modelBusyId === org.id}
+                          onChange={(e) => changeServiceModel(org, e.target.value)}
+                          title={SERVICE_MODELS.find((m) => m.value === org.service_model)?.hint || ""}
+                          className={`rounded-md border px-2 py-1.5 text-sm outline-none focus:border-brand-500 disabled:opacity-50 ${
+                            org.service_model
+                              ? "border-surface-border text-slate-800"
+                              : "border-amber-300 bg-amber-50 text-amber-800"
+                          }`}
+                        >
+                          <option value="">Not Set</option>
+                          {SERVICE_MODELS.map((m) => (
+                            <option key={m.value} value={m.value} title={m.hint}>
+                              {m.label}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="px-4 py-3">
+                        {shopify ? (
+                          <span
+                            className={`whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                              shopify.is_connected ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"
+                            }`}
+                          >
+                            {shopify.is_connected ? "Shopify Connected" : "Shopify Disconnected"}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-slate-400">No Shopify</span>
+                        )}
+                      </td>
+                      <td className="px-5 py-3">
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            type="button"
+                            disabled={hubBusyId === org.id}
+                            onClick={() => toggleHub(org)}
+                            className={`whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                              org.in_dispatch_hub
+                                ? "bg-brand-50 text-brand-700 hover:bg-brand-100"
+                                : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                            }`}
+                          >
+                            {org.in_dispatch_hub ? "Remove from Hub" : "Add to Hub"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={!org.is_active}
+                            onClick={() => openStore(org)}
+                            title={org.is_active ? undefined : "Suspended stores can't be opened"}
+                            className="whitespace-nowrap rounded-lg bg-brand-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                          >
+                            Open store →
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
     </div>

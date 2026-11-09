@@ -47,7 +47,8 @@ def organizations(request):
 @api_view(["GET", "PATCH", "DELETE"])
 @permission_classes([IsSuperAdmin])
 def organization_detail(request, organization_id):
-    """GET the org; PATCH {"is_active": bool} suspends or reactivates it;
+    """GET the org; PATCH {"is_active": bool} suspends or reactivates it,
+    PATCH {"service_model": "..."} sets its service model (Stores tab);
     DELETE {"confirm_name": "<exact org name>"} removes it permanently."""
     body = request.data or {}
     actor_email = getattr(request, "auth_email", "") or ""
@@ -58,8 +59,16 @@ def organization_detail(request, organization_id):
             )
             return Response({"success": True, **result})
         if request.method == "PATCH":
+            if "service_model" in body:
+                org = service.set_service_model(
+                    organization_id,
+                    service_model=body.get("service_model"),
+                    actor_user_id=request.user_id,
+                    actor_email=actor_email,
+                )
+                return Response({"success": True, "organization": org})
             if "is_active" not in body:
-                raise OrganizationAdminError("Nothing to update - send is_active.")
+                raise OrganizationAdminError("Nothing to update - send is_active or service_model.")
             org = service.set_organization_active(
                 organization_id,
                 is_active=body.get("is_active"),

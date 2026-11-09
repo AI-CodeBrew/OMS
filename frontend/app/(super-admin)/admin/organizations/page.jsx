@@ -94,36 +94,6 @@ export default function OrganizationsPage() {
     }
   }
 
-  async function onRemove(org) {
-    const typed = window.prompt(
-      `This permanently deletes ${org.name} with all its orders, products, integrations ` +
-        `and user logins. It can't be undone.\n\nType the organization name to confirm:`,
-    );
-    if (typed === null) return;
-    if (typed.trim() !== org.name) {
-      setError("The name didn't match - nothing was removed.");
-      return;
-    }
-    setBusyId(org.id);
-    setError("");
-    setSuccess("");
-    try {
-      const result = await tenantsService.deleteOrganization(org.id, typed.trim());
-      const failed = result.user_errors?.length || 0;
-      setSuccess(
-        `${result.name} was removed.` +
-          (failed
-            ? ` ${failed} user login(s) couldn't be deleted from Supabase - remove them there by hand.`
-            : ""),
-      );
-      await load();
-    } catch (err) {
-      setError(err.message || "Failed to remove organization");
-    } finally {
-      setBusyId(null);
-    }
-  }
-
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -222,59 +192,65 @@ export default function OrganizationsPage() {
             </p>
           </div>
         ) : (
-          <ul className="divide-y divide-surface-border">
-            {organizations.map((org) => {
-              const memberCount = (org.members || []).length;
-              const modules = (org.modules || [])
-                .filter((m) => m.is_enabled)
-                .map((m) => m.module);
-              const busy = busyId === org.id;
-              return (
-                <li
-                  key={org.id}
-                  className="flex flex-wrap items-center justify-between gap-3 px-5 py-4 transition hover:bg-slate-50"
-                >
-                  <Link href={`/admin/organizations/${org.id}`} className="min-w-0">
-                    <p className="truncate font-medium text-slate-900">{org.name}</p>
-                    <p className="mt-0.5 text-xs text-slate-500">
-                      {org.slug} · {org.plan}
-                      {modules.length ? ` · ${modules.join(", ")}` : ""}
-                    </p>
-                  </Link>
-                  <div className="flex flex-wrap items-center gap-3">
-                    <span
-                      className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                        org.is_active
-                          ? "bg-emerald-50 text-emerald-700"
-                          : "bg-red-50 text-red-700"
-                      }`}
-                    >
-                      {org.is_active ? "Active" : "Suspended"}
-                    </span>
-                    <span className="text-xs text-slate-500">
-                      {memberCount} {memberCount === 1 ? "user" : "users"}
-                    </span>
-                    <Button
-                      variant="secondary"
-                      onClick={() => onToggleSuspend(org)}
-                      loading={busy}
-                    >
-                      {org.is_active ? "Suspend" : "Reactivate"}
-                    </Button>
-                    <Button variant="danger" onClick={() => onRemove(org)} disabled={busy}>
-                      Remove
-                    </Button>
-                    <Link
-                      href={`/admin/organizations/${org.id}`}
-                      className="text-sm text-brand-600 hover:underline"
-                    >
-                      View →
-                    </Link>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="border-b border-surface-border bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="px-5 py-3">Org Name</th>
+                  <th className="px-4 py-3">Store ID</th>
+                  <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3 text-right">No. of Stores</th>
+                  <th className="px-5 py-3 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-surface-border">
+                {organizations.map((org) => {
+                  const stores = org.stores || [];
+                  const busy = busyId === org.id;
+                  return (
+                    <tr key={org.id} className="transition hover:bg-slate-50">
+                      <td className="px-5 py-3">
+                        <Link
+                          href={`/admin/organizations/${org.id}`}
+                          className="font-medium text-slate-900 hover:text-brand-700 hover:underline"
+                        >
+                          {org.name}
+                        </Link>
+                      </td>
+                      <td className="px-4 py-3 text-slate-700">
+                        {stores.length ? (
+                          <span title={stores.map((st) => `${st.store_id} - ${st.name}`).join(", ")}>
+                            {stores.map((st) => st.store_id).join(", ")}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span
+                          className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                            org.is_active ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"
+                          }`}
+                        >
+                          {org.is_active ? "Active" : "Suspended"}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-right tabular-nums text-slate-700">{stores.length}</td>
+                      <td className="px-5 py-3 text-right">
+                        <Button
+                          variant={org.is_active ? "danger" : "secondary"}
+                          onClick={() => onToggleSuspend(org)}
+                          loading={busy}
+                        >
+                          {org.is_active ? "Suspend" : "Reactivate"}
+                        </Button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
     </div>

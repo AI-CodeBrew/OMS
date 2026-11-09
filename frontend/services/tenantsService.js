@@ -39,6 +39,15 @@ class TenantsService {
 
   // false suspends the org (its users are turned away at login and on
   // every request), true reactivates it.
+  // The Stores tab's Service model (all_in_one / fulfilment / courier /
+  // oms_only, or "" to clear).
+  setServiceModel(id, serviceModel) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.organization(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ service_model: serviceModel }),
+    });
+  }
+
   setOrganizationActive(id, isActive) {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.organization(id)}`, {
       method: "PATCH",

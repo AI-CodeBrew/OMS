@@ -102,6 +102,7 @@ def list_organizations(*, include_emails=False):
     # One query for the whole Hub roster rather than one per org below -
     # see _serialize_org's hub_ids param.
     hub_ids = _hub_organization_ids()
+    stores_by_org = _stores_by_org()
 
     results = []
     for org in orgs:
@@ -109,8 +110,25 @@ def list_organizations(*, include_emails=False):
         members = _members_payload(
             memberships, email_map if include_emails else None
         )
-        results.append(_serialize_org(org, members, hub_ids=hub_ids))
+        results.append(
+            _serialize_org(org, members, hub_ids=hub_ids, stores=stores_by_org.get(str(org.id), []))
+        )
     return results
+
+
+def _stores_by_org(organization_id=None):
+    """{org id: [{store_id, name}, ...]} - each organization's stores
+    (oms.Store: one per shop name its orders carry), by Store ID. One query
+    for the whole list."""
+    from oms.models import Store
+
+    qs = Store.all_objects.order_by("store_id")
+    if organization_id:
+        qs = qs.filter(organization_id=organization_id)
+    result = {}
+    for org_id, store_id, name in qs.values_list("organization_id", "store_id", "name"):
+        result.setdefault(str(org_id), []).append({"store_id": store_id, "name": name})
+    return result
 
 
 def get_organization(organization_id):
@@ -197,6 +215,33 @@ def create_organization_with_admin(
     )
 
     return get_organization(organization.id)
+
+
+def set_service_model(organization_id, *, service_model, actor_user_id=None, actor_email=""):
+    """The Stores tab's Service model - one of Organization.SERVICE_MODEL_CHOICES,
+    or blank to clear it."""
+    try:
+        org = Organization.objects.get(id=organization_id, is_platform=False)
+    except Organization.DoesNotExist as exc:
+        raise OrganizationAdminError("Organization not found", 404) from exc
+    value = (service_model or "").strip()
+    labels = dict(Organization.SERVICE_MODEL_CHOICES)
+    if value and value not in labels:
+        raise OrganizationAdminError("Pick a service model from the list.")
+    if org.service_model != value:
+        old = labels.get(org.service_model, "Not set")
+        org.service_model = value
+        org.save(update_fields=["service_model", "updated_at"])
+        write_audit_log(
+            organization_id=org.id,
+            action="organization.service_model",
+            summary=f"Service model: {old} -> {labels.get(value, 'Not set')}",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            entity_type="organization",
+            entity_id=str(org.id),
+        )
+    return get_organization(org.id)
 
 
 def set_organization_active(organization_id, *, is_active, actor_user_id=None, actor_email=""):
@@ -311,7 +356,7 @@ def update_member_credentials(user_id, *, email=None, password=None):
     }
 
 
-def _serialize_org(org, members, hub_ids=None):
+def _serialize_org(org, members, hub_ids=None, stores=None):
     shopify = None
     try:
         from integrations.models import ShopifyConnection
@@ -340,6 +385,11 @@ def _serialize_org(org, members, hub_ids=None):
         "plan": org.plan,
         "is_active": org.is_active,
         "is_manual_store": org.is_manual_store,
+        "store_code": org.store_code,
+        "service_model": org.service_model,
+        # Its stores (shop names) with their Store IDs - the orders report's
+        # Store ID column.
+        "stores": stores if stores is not None else _stores_by_org(org.id).get(str(org.id), []),
         "in_dispatch_hub": (
             str(org.id) in hub_ids if hub_ids is not None else hasattr(org, "dispatch_hub_entry")
         ),
