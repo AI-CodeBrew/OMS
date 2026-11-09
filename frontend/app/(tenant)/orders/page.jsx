@@ -28,7 +28,7 @@ import Pagination from "../../../components/shared/Pagination";
 import OrderStatusTabs from "../../../components/orders/OrderStatusTabs";
 import OrdersToolbar from "../../../components/orders/OrdersToolbar";
 import OrdersTable from "../../../components/orders/OrdersTable";
-import OrderFieldFilters, { activeFilterCount } from "../../../components/orders/OrderFieldFilters";
+import OrderFieldFilters, { activeFilterCount, FIELD_FILTER_KEYS } from "../../../components/orders/OrderFieldFilters";
 import CsvExportButton from "../../../components/orders/CsvExportButton";
 import DateRangeFilter from "../../../components/orders/DateRangeFilter";
 import { useDateFilterStore } from "../../../store/dateFilterStore";
@@ -151,7 +151,9 @@ function isPlainTabQuery(queryParams) {
     !queryParams.date_to &&
     !queryParams.store &&
     !queryParams.product &&
-    !queryParams.dispatch_requested
+    !queryParams.dispatch_requested &&
+    // The Filters popup's fields.
+    FIELD_FILTER_KEYS.every((k) => !queryParams[k])
   );
 }
 

@@ -13,6 +13,9 @@ export function ordersListKey({ status, page, pageSize, filters = {} }) {
   // filtered view reuse the unfiltered page cached under the same key.
   const extras = [
     "search", "city", "courier_id", "gateway", "date_from", "date_to", "store", "product", "dispatch_requested",
+    // The Filters popup's fields (OrderFieldFilters).
+    "f_oms_id", "f_store_order_id", "f_customer", "f_phone", "f_tracking",
+    "f_shop", "f_city", "f_province", "f_courier",
   ]
     .map((k) => filters[k] || "")
     .join("|");
