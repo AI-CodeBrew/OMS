@@ -276,40 +276,15 @@ def _apply_transition(order, to_status, *, actor_user_id=None, note="", extra_fi
         )
     except Exception:
         pass
-    # Never blocks the transition - it already happened here - but a push
-    # Shopify refused is logged and lands in the audit log as failed, so it
-    # shows on the Logs tabs instead of vanishing.
+    # Shopify is updated in the background once this commits (it used to
+    # hold every booking up by ~8s) - integrations.shopify_push_queue. A
+    # push Shopify refuses is still logged and lands in the audit log.
     try:
-        from integrations.services import sync_order_to_shopify
+        from integrations.shopify_push_queue import queue_order_push
 
-        shopify_errors = sync_order_to_shopify(order)
-    except Exception as exc:
-        logger.exception("Shopify status push crashed for order %s", order.order_number)
-        shopify_errors = [str(exc)]
-    if shopify_errors:
-        logger.warning(
-            "Shopify status push failed for order %s (%s): %s",
-            order.order_number, to_status, "; ".join(shopify_errors),
-        )
-        try:
-            from core.rbac import write_audit_log
-
-            write_audit_log(
-                organization_id=order.organization_id,
-                action="order.shopify_sync_failed",
-                summary=f"Order {order.order_number}: couldn't update Shopify to {to_status}",
-                actor_user_id=actor_user_id,
-                entity_type="order",
-                entity_id=str(order.id),
-                metadata={
-                    "order_number": order.order_number,
-                    "to_status": to_status,
-                    "errors": [e[:500] for e in shopify_errors[:5]],
-                },
-                status_code=502,
-            )
-        except Exception:
-            logger.exception("Failed to write Shopify sync audit log for %s", order.order_number)
+        queue_order_push(order)
+    except Exception:
+        logger.exception("Couldn't queue the Shopify push for order %s", order.order_number)
     logger.info(
         "order %s status %s -> %s%s%s",
         order.order_number, from_status, to_status,

@@ -22,25 +22,28 @@ function formatDate(value) {
   return value ? new Date(value).toLocaleString() : "";
 }
 
+// One bordered card per section, each field its own bordered box - label
+// on top, value below; `wide` fields take the full row.
 function DetailsSection({ title, rows }) {
   return (
-    <div>
-      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">{title}</h3>
-      <table className="w-full overflow-hidden rounded-lg border border-surface-border text-sm">
-        <tbody className="divide-y divide-surface-border">
-          {rows.map(([label, value]) => (
-            <tr key={label}>
-              <th className="w-44 bg-slate-50 px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-                {label}
-              </th>
-              <td className="select-all px-4 py-2.5 font-medium text-slate-900">
-                {value || <span className="font-normal text-slate-400">—</span>}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+      <h3 className="border-b border-slate-200 bg-slate-50 px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-slate-600">
+        {title}
+      </h3>
+      <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2">
+        {rows.map(([label, value, wide]) => (
+          <div
+            key={label}
+            className={`rounded-lg border border-slate-200 px-3 py-2.5 ${wide ? "sm:col-span-2" : ""}`}
+          >
+            <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{label}</div>
+            <div className="mt-1 select-all break-words text-sm font-semibold text-slate-900">
+              {value || <span className="font-normal text-slate-400">—</span>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -95,8 +98,8 @@ function StoreDetailsPopup({ org, onClose }) {
             ["Organization", org.name],
             ["Organization ID", org.store_code != null ? String(org.store_code) : ""],
             ["Store IDs", stores.map((st) => `${st.store_id} - ${st.name}`).join(", ")],
-            ["Email", emails === null ? "Loading…" : emails.join(", ")],
-            ["Services", service ? `${service.label} (${service.hint})` : "Not Set"],
+            ["Email", emails === null ? "Loading…" : emails.join(", "), true],
+            ["Services", service ? `${service.label} - ${service.hint}` : "Not Set", true],
             [
               "Date Connected",
               connected ? `${formatDate(connected)} (Shopify)` : `${formatDate(org.created_at)} (store created)`,
@@ -109,7 +112,7 @@ function StoreDetailsPopup({ org, onClose }) {
             ["Bank Name", bank.bank_name],
             ["Account Title", bank.account_title],
             ["Account Number", bank.account_number],
-            ["IBAN", bank.iban],
+            ["IBAN", bank.iban, true],
             ["Branch Code", bank.branch_code],
             ["Last Updated", formatDate(bank.updated_at)],
           ]}
@@ -248,7 +251,12 @@ export default function StoresPage() {
                   const integrated = Boolean(shopify) && !org.is_manual_store;
                   const stores = org.stores || [];
                   return (
-                    <tr key={org.id} className="transition hover:bg-slate-50">
+                    <tr
+                      key={org.id}
+                      onClick={() => setBankOrg(org)}
+                      title="Click To See Details"
+                      className="cursor-pointer transition hover:bg-brand-50/40"
+                    >
                       <td className="px-5 py-3">
                         <div className="flex items-center gap-2">
                           {org.in_dispatch_hub ? <GreenTick /> : <span className="h-4 w-4 shrink-0" />}
@@ -283,6 +291,7 @@ export default function StoresPage() {
                           value={org.service_model || ""}
                           disabled={modelBusyId === org.id}
                           onChange={(e) => changeServiceModel(org, e.target.value)}
+                          onClick={(e) => e.stopPropagation()}
                           title={SERVICE_MODELS.find((m) => m.value === org.service_model)?.hint || ""}
                           className={`rounded-md border px-2 py-1.5 text-sm outline-none focus:border-brand-500 disabled:opacity-50 ${
                             org.service_model
@@ -313,13 +322,9 @@ export default function StoresPage() {
                       </td>
                       <td className="px-4 py-3">
                         {org.bank_details ? (
-                          <button
-                            type="button"
-                            onClick={() => setBankOrg(org)}
-                            className="whitespace-nowrap font-medium text-brand-700 hover:underline"
-                          >
+                          <span className="whitespace-nowrap font-medium text-brand-700">
                             {org.bank_details.bank_name}
-                          </button>
+                          </span>
                         ) : (
                           <span className="whitespace-nowrap text-xs text-slate-400">Not Added</span>
                         )}
@@ -328,7 +333,11 @@ export default function StoresPage() {
                         <button
                           type="button"
                           disabled={hubBusyId === org.id}
-                          onClick={() => toggleHub(org)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleHub(org);
+                          }}
+                          title={org.in_dispatch_hub ? "Remove from the Dispatch Hub" : "Add to the Dispatch Hub"}
                           className={`w-36 whitespace-nowrap rounded-lg border px-3 py-1.5 text-sm font-medium transition disabled:opacity-50 ${
                             org.in_dispatch_hub
                               ? "border-red-200 bg-white text-red-600 hover:bg-red-50"
@@ -342,8 +351,11 @@ export default function StoresPage() {
                         <button
                           type="button"
                           disabled={!org.is_active}
-                          onClick={() => openStore(org)}
-                          title={org.is_active ? undefined : "Suspended stores can't be opened"}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openStore(org);
+                          }}
+                          title={org.is_active ? "Open this store" : "Suspended stores can't be opened"}
                           className="whitespace-nowrap rounded-lg bg-brand-600 px-4 py-1.5 text-sm font-medium text-white transition hover:bg-brand-700 disabled:bg-slate-300"
                         >
                           Open Store
