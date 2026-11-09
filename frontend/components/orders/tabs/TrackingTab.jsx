@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import ordersService from "../../../services/ordersService";
 
+import { formatDateTime } from "../../../lib/formatDate";
 const CARRIER_LABELS = { leopards: "Leopards", barq_raftar: "Barq Raftar" };
 
 // Smartlane's stages in pipeline order (SmartlaneShipment's time fields).
@@ -26,7 +27,7 @@ function readable(value) {
 }
 
 function when(value) {
-  return value ? new Date(value).toLocaleString() : "—";
+  return value ? formatDateTime(value) : "—";
 }
 
 function Field({ label, children }) {

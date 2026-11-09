@@ -531,13 +531,25 @@ def approve_order(order, *, actor_user_id=None):
     return _transition(order, "approved", actor_user_id=actor_user_id)
 
 
+# The courier a self-delivered order carries - the Courier column (and the
+# screens' Tracking ID) show it. No tracking number is stored: the packing
+# scan and the couriers' syncs match orders by it.
+SELF_DELIVER_COURIER = "Self Deliver"
+
+
 def self_deliver(order, *, actor_user_id=None):
     """The Approved card's Self Deliver: the store ships it itself - no
     courier booking. Approved (Awaiting Courier) -> Self Delivered (plain
-    Approved)."""
+    Approved), with the "Self Deliver" courier."""
     if order.status != "awaiting_assigning":
         raise InvalidTransition("Only orders awaiting a courier can be self delivered.")
-    return _transition(order, "approved", actor_user_id=actor_user_id, note="Self Deliver")
+    courier, _ = Courier.all_objects.get_or_create(
+        organization_id=order.organization_id, name=SELF_DELIVER_COURIER, defaults={"is_active": True}
+    )
+    return _transition(
+        order, "approved", actor_user_id=actor_user_id, note="Self Deliver",
+        extra_fields={"courier_id": courier.id},
+    )
 
 
 def queue_for_dispatch(order, *, actor_user_id=None):

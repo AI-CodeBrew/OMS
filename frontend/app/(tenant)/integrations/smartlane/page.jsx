@@ -8,6 +8,7 @@ import PasswordInput from "../../../../components/shared/PasswordInput";
 import { useIntegrationsHome } from "../../../../components/integrations/IntegrationsHome";
 import CourierSheetActions from "../../../../components/integrations/CourierSheetActions";
 
+import { formatDateTime } from "../../../../lib/formatDate";
 const EMPTY_FORM = { api_key: "", store_warehouse_code: "" };
 // Same convention as the Shopify integration page's sync job polling.
 const ACTIVE_JOB_STATUSES = new Set(["pending", "running"]);
@@ -309,7 +310,7 @@ export default function SmartlaneIntegrationPage() {
                 <div className="flex justify-between">
                   <span className="text-slate-500">Last Event:</span>
                   <span className="font-medium text-slate-900">
-                    {status.last_event_at ? new Date(status.last_event_at).toLocaleString() : "Never"}
+                    {status.last_event_at ? formatDateTime(status.last_event_at) : "Never"}
                   </span>
                 </div>
               </div>

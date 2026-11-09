@@ -5,6 +5,7 @@ import Modal from "../../shared/Modal";
 import Button from "../../shared/Button";
 import wmsService from "../../../services/wmsService";
 
+import { formatDateTime } from "../../../lib/formatDate";
 export const PO_STATE_LABELS = {
   received: { label: "Received", className: "bg-green-100 text-green-700" },
   partial: { label: "Partially Received", className: "bg-amber-100 text-amber-700" },
@@ -35,7 +36,7 @@ export function PurchaseOrderSummary({ po }) {
       <div className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4">
         <Detail label="Supplier">{po.supplier_name || "—"}</Detail>
         <Detail label="Warehouse">{po.warehouse_name || "—"}</Detail>
-        <Detail label="Order Date">{po.ordered_at ? new Date(po.ordered_at).toLocaleString() : "—"}</Detail>
+        <Detail label="Order Date">{po.ordered_at ? formatDateTime(po.ordered_at) : "—"}</Detail>
         <Detail label="Status">
           <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${state.className}`}>{state.label}</span>
         </Detail>

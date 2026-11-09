@@ -2721,7 +2721,10 @@ class OrderViewSet(viewsets.ModelViewSet):
                         " - ".join(filter(None, [order.shipper_advice, order.shipper_advice_remarks])),
                         csv_report.last_update(order, status_labels, when),
                         order.courier.name if order.courier_id else "",
-                        text(order.tracking_number),
+                        # Self delivered: no tracking number - says so.
+                        text(order.tracking_number)
+                        or (services.SELF_DELIVER_COURIER
+                            if order.courier_id and order.courier.name == services.SELF_DELIVER_COURIER else ""),
                         when(order.booked_at),
                         csv_report.courier_weight(order),
                         # Dispatched is the courier picking the parcel up

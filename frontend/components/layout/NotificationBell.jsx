@@ -5,6 +5,7 @@ import Link from "next/link";
 import notificationsService from "../../services/notificationsService";
 import timeAgo from "../../lib/timeAgo";
 
+import { formatDateTime } from "../../lib/formatDate";
 const POLL_MS = 60000;
 
 function BellIcon({ className }) {
@@ -124,7 +125,7 @@ export default function NotificationBell({ criticalCount = 0, canMarkRead = true
                       <p className="text-sm font-medium text-slate-900">{n.title}</p>
                       <span
                         className="shrink-0 text-[11px] text-slate-400"
-                        title={new Date(n.created_at).toLocaleString()}
+                        title={formatDateTime(n.created_at)}
                       >
                         {timeAgo(n.created_at)}
                       </span>

@@ -6,6 +6,7 @@ import Button, { Spinner } from "../../../../../components/shared/Button";
 import PasswordInput from "../../../../../components/shared/PasswordInput";
 import smartlaneAdminService from "../../../../../services/smartlaneAdminService";
 
+import { formatDateTime } from "../../../../../lib/formatDate";
 const EMPTY_FORM = {
   business_code: "",
   client_id: "",
@@ -566,7 +567,7 @@ export default function SmartlaneBusinessPage() {
                 <dt className="text-xs uppercase tracking-wide text-slate-400">Last verified</dt>
                 <dd className="mt-1 text-sm text-slate-800">
                   {config?.last_verified_at
-                    ? new Date(config.last_verified_at).toLocaleString()
+                    ? formatDateTime(config.last_verified_at)
                     : "Never"}
                 </dd>
               </div>

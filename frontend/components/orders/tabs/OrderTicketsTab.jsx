@@ -8,6 +8,7 @@ import TicketDetailDialog from "../../tickets/TicketDetailDialog";
 import { timeAgo } from "../../../lib/timeAgo";
 import { TICKET_STATUS_LABEL, TICKET_STATUS_TONE, TicketTypeBadge } from "../../tickets/ticketStatus";
 
+import { formatDateTime } from "../../../lib/formatDate";
 function EyeIcon() {
   return (
     <svg viewBox="0 0 20 20" fill="none" className="h-4 w-4" aria-hidden="true">
@@ -73,7 +74,7 @@ export default function OrderTicketsTab({ order }) {
                   {t.sub_category ? ` — ${t.sub_category}` : ""}
                 </p>
                 <TicketTypeBadge type={t.ticket_type} />
-                <p className="text-xs text-slate-400" title={new Date(t.created_at).toLocaleString()}>
+                <p className="text-xs text-slate-400" title={formatDateTime(t.created_at)}>
                   {timeAgo(t.created_at)}
                 </p>
               </div>

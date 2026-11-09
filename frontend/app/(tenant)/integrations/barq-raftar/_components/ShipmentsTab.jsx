@@ -6,6 +6,7 @@ import Modal from "../../../../../components/shared/Modal";
 import barqraftarService from "../_lib/barqraftarService";
 import DateInput from "../../../../../components/shared/DateInput";
 
+import { formatDateTime } from "../../../../../lib/formatDate";
 // BarqRaftar's own numeric status ids, from their Postman collection's
 // description - kept in sync with backend/integrations/barqraftar/
 // services.py's status map.
@@ -81,7 +82,7 @@ function rowFields(row) {
     customerName: row.customer_name || "",
     city: row.to_city?.name || "",
     codAmount: row.cod_amount ?? "",
-    date: row.created_at ? new Date(row.created_at).toLocaleString() : "",
+    date: row.created_at ? formatDateTime(row.created_at) : "",
     logs: Array.isArray(row.status_logs) ? row.status_logs : [],
   };
 }
@@ -128,7 +129,7 @@ function TrackModal({ trackingNumber, onClose }) {
                       {STATUS_LABELS[statusCodeOf(log.status)] || log.status_value || `Status ${log.status}`}
                     </span>
                     {log.created_at ? (
-                      <span className="text-slate-400"> — {new Date(log.created_at).toLocaleString()}</span>
+                      <span className="text-slate-400"> — {formatDateTime(log.created_at)}</span>
                     ) : null}
                     {rider ? (
                       <div className="text-slate-500">

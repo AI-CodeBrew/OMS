@@ -12,6 +12,7 @@ import PostExAddressForm from "../../../../(tenant)/integrations/oms-courier/_co
 import BarqRaftarAddressForm from "../../../../(tenant)/integrations/oms-courier/_components/BarqRaftarAddressForm";
 import LeopardsAddressForm from "../../../../(tenant)/integrations/oms-courier/_components/LeopardsAddressForm";
 
+import { formatDateTime } from "../../../../../lib/formatDate";
 const EDIT_FORM_ID = "oms-courier-request-edit-form";
 // Couriers whose request is their own address form; the rest (Smartlane)
 // carry the generic three fields.
@@ -230,7 +231,7 @@ function RequestCard({ request, onAnswered }) {
           </p>
           <p className="mt-0.5 text-xs text-slate-500">
             {request.requested_at ? (
-              <span title={new Date(request.requested_at).toLocaleString()}>
+              <span title={formatDateTime(request.requested_at)}>
                 Requested {timeAgo(request.requested_at)}
               </span>
             ) : null}

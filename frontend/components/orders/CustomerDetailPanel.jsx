@@ -3,6 +3,7 @@
 import Button from "../shared/Button";
 import EditableField from "../shared/EditableField";
 
+import { formatDateTime } from "../../lib/formatDate";
 const FIELD_ROWS = [
   ["customer_name", "Name"],
   ["customer_email", "Email"],
@@ -33,7 +34,7 @@ export default function CustomerDetailPanel({ order, draft, editing, onChange })
       <div>
         <div className="text-xs text-slate-500">Current Status Updated At</div>
         <div className="text-sm text-slate-900">
-          {order.updated_at ? new Date(order.updated_at).toLocaleString() : "N/A"}
+          {order.updated_at ? formatDateTime(order.updated_at) : "N/A"}
         </div>
       </div>
 

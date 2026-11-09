@@ -10,6 +10,7 @@ import AddPurchaseOrderModal from "../../../../components/wms/purchase-orders/Ad
 import PurchaseOrderDetailModal from "../../../../components/wms/purchase-orders/PurchaseOrderDetailModal";
 import ReceivePurchaseOrderModal from "../../../../components/wms/purchase-orders/ReceivePurchaseOrderModal";
 
+import { formatDateTime } from "../../../../lib/formatDate";
 const SUPPLIER_FIELDS = [
   { key: "name", label: "Name", required: true },
   { key: "phone", label: "Phone" },
@@ -281,7 +282,7 @@ export default function PurchaseOrdersPage() {
                     </td>
                     <td className="px-3 py-2 text-slate-600">{po.warehouse_name}</td>
                     <td className="whitespace-nowrap px-3 py-2 text-slate-500">
-                      {new Date(po.ordered_at).toLocaleString()}
+                      {formatDateTime(po.ordered_at)}
                     </td>
                     <td className="px-3 py-2">
                       <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${badge.className}`}>

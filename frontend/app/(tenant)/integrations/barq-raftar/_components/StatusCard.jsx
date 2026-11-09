@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Button from "../../../../../components/shared/Button";
 import barqraftarService from "../_lib/barqraftarService";
 
+import { formatDateTime } from "../../../../../lib/formatDate";
 const ACTIVE_JOB_STATUSES = new Set(["pending", "running"]);
 
 export default function StatusCard({ status, onChanged, onDisconnect, onError, onNotice }) {
@@ -129,7 +130,7 @@ export default function StatusCard({ status, onChanged, onDisconnect, onError, o
         <div className="flex justify-between">
           <dt className="text-slate-500">Last event</dt>
           <dd className="text-slate-800">
-            {status.last_event_at ? new Date(status.last_event_at).toLocaleString() : "Never"}
+            {status.last_event_at ? formatDateTime(status.last_event_at) : "Never"}
           </dd>
         </div>
       </dl>

@@ -7,6 +7,7 @@ import Button from "../../../../../components/shared/Button";
 import PasswordInput from "../../../../../components/shared/PasswordInput";
 import tenantsService from "../../../../../services/tenantsService";
 
+import { formatDateTime } from "../../../../../lib/formatDate";
 function moduleLabel(modules) {
   const list = modules || [];
   if (!list.length) return "no modules";
@@ -320,7 +321,7 @@ export default function OrganizationDetailPage() {
               <dt className="text-xs font-medium uppercase text-slate-500">Last synced</dt>
               <dd className="mt-1 text-sm text-slate-900">
                 {org.shopify.last_synced_at
-                  ? new Date(org.shopify.last_synced_at).toLocaleString()
+                  ? formatDateTime(org.shopify.last_synced_at)
                   : "Never"}
               </dd>
             </div>

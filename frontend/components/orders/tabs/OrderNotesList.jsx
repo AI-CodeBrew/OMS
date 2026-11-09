@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Button from "../../shared/Button";
 import ordersService from "../../../services/ordersService";
 
+import { formatDateTime } from "../../../lib/formatDate";
 export default function OrderNotesList({ orderId, kind, placeholder }) {
   const [notes, setNotes] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -61,7 +62,7 @@ export default function OrderNotesList({ orderId, kind, placeholder }) {
           {notes.map((n) => (
             <li key={n.id} className="rounded-md border border-surface-border bg-white px-3 py-2 text-sm">
               <p className="text-slate-800">{n.body}</p>
-              <p className="mt-1 text-xs text-slate-400">{new Date(n.created_at).toLocaleString()}</p>
+              <p className="mt-1 text-xs text-slate-400">{formatDateTime(n.created_at)}</p>
             </li>
           ))}
         </ul>

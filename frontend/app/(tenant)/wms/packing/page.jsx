@@ -12,6 +12,7 @@ import ScanPanel from "../../../../components/wms/ScanPanel";
 import { SCAN_DESKS } from "../../../../lib/scanDesks";
 import { SEARCH_FIELDS } from "../../../../components/orders/statusConfig";
 
+import { formatDateTime } from "../../../../lib/formatDate";
 // The queue is just the OMS pipeline read from the warehouse's side: an
 // order lands here the moment it reaches Ready to Pick, and leaves as soon
 // as it is packed into Awaiting Dispatched. There is no separate packing
@@ -22,7 +23,7 @@ const TABS = [
 ];
 
 function formatDate(value) {
-  return value ? new Date(value).toLocaleString() : "—";
+  return value ? formatDateTime(value) : "—";
 }
 
 export default function PackingPage() {

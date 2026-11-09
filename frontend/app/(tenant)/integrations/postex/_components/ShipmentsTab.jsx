@@ -6,6 +6,7 @@ import Modal from "../../../../../components/shared/Modal";
 import postexService from "../_lib/postexService";
 import DateInput from "../../../../../components/shared/DateInput";
 
+import { formatDateTime } from "../../../../../lib/formatDate";
 // PostEx's orderStatusId filter values (from their guide, each one checked
 // against the account's real orders). The labels in brackets are how the
 // same status reads in PostEx's order list.
@@ -46,7 +47,7 @@ const NEEDS_ADVICE = new Set(["attempted", "delivery under review", "under verif
 function formatDate(value) {
   if (!value) return "";
   const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleString();
+  return Number.isNaN(d.getTime()) ? String(value) : formatDateTime(d);
 }
 
 function money(value) {

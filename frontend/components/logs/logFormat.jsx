@@ -1,3 +1,4 @@
+import { formatDate, formatTime } from "../../lib/formatDate";
 "use client";
 
 // Shared by the Logs table and its history panel.
@@ -5,8 +6,8 @@
 export function formatWhen(iso) {
   const d = new Date(iso);
   return {
-    date: d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }),
-    time: d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }),
+    date: formatDate(d),
+    time: formatTime(d),
   };
 }
 

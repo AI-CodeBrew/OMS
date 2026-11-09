@@ -259,8 +259,8 @@ export const ACTIONS_BY_STATUS = {
   // Self Deliver: the store ships it itself - on to Self Delivered.
   awaiting_assigning: [
     { action: "assign_courier", label: "Assign courier" },
-    { action: "self_deliver", label: "Self Deliver" },
     REVERT_TO_CONFIRMATION,
+    { action: "self_deliver", label: "Self Deliver" },
   ],
   approved: [REVERT_TO_CONFIRMATION],
   // Handed to the courier (its load sheet made, or the courier reports it

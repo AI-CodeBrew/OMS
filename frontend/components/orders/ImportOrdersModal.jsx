@@ -9,6 +9,7 @@ import ImportDataEditorModal, { parseCsv, toCsv } from "./ImportDataEditorModal"
 import { COURIER_SHEETS, courierSheet } from "./courierSheets";
 import { STATUS_LABELS } from "./statusConfig";
 
+import { formatDate } from "../../lib/formatDate";
 const UNMATCHED_CSV_COLUMNS = [
   ["order_number", "Order Number"],
   ["order_date", "Order Date"],
@@ -113,7 +114,7 @@ function changeValue(field, value) {
   if (field === "payment_status") return value === "paid" ? "Paid" : value;
   if (field.endsWith("_at")) {
     const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString();
+    return Number.isNaN(date.getTime()) ? value : formatDate(date);
   }
   return value;
 }

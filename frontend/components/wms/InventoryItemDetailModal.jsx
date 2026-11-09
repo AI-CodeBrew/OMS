@@ -5,6 +5,7 @@ import Modal from "../shared/Modal";
 import Button from "../shared/Button";
 import wmsService from "../../services/wmsService";
 
+import { formatDate, formatDateTime } from "../../lib/formatDate";
 const PAGE_SIZE = 10;
 
 const STATUS_PILL = {
@@ -17,12 +18,12 @@ const STATUS_PILL = {
 };
 
 function fmtDate(value) {
-  return value ? new Date(value).toLocaleDateString() : "—";
+  return value ? formatDate(value) : "—";
 }
 
 function fmtDateTime(value) {
   return value
-    ? new Date(value).toLocaleString([], { dateStyle: "short", timeStyle: "short" })
+    ? formatDateTime(value)
     : "—";
 }
 

@@ -15,6 +15,7 @@ import { usePhoneScanStore } from "../../../lib/phoneScanSession";
 import ReturnBreakdownModal from "../../../components/wms/ReturnBreakdownModal";
 import Modal from "../../../components/shared/Modal";
 
+import { formatDateTime } from "../../../lib/formatDate";
 // The order's details, read only - opened by clicking its number.
 const OrderDetailPanel = dynamic(() => import("../../../components/orders/OrderDetailPanel"), {
   ssr: false,
@@ -26,7 +27,7 @@ const OrderDetailPanel = dynamic(() => import("../../../components/orders/OrderD
 // filter, so a card click and its badge always agree.
 
 function formatDate(value) {
-  return value ? new Date(value).toLocaleString() : "—";
+  return value ? formatDateTime(value) : "—";
 }
 
 // The Received badge: just what the parcel came back as - Good, or Damaged

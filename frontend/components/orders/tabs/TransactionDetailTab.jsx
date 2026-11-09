@@ -5,6 +5,7 @@ import Button from "../../shared/Button";
 import Badge from "../../shared/Badge";
 import ordersService from "../../../services/ordersService";
 
+import { formatDateTime } from "../../../lib/formatDate";
 const EMPTY = { amount: "", method: "", status: "success", reference: "" };
 
 export default function TransactionDetailTab({ orderId }) {
@@ -105,7 +106,7 @@ export default function TransactionDetailTab({ orderId }) {
                   <Badge variant={statusVariant[t.status] || "neutral"}>{t.status}</Badge>
                 </td>
                 <td className="py-1.5 text-slate-500">{t.reference || "—"}</td>
-                <td className="py-1.5 text-slate-500">{new Date(t.created_at).toLocaleString()}</td>
+                <td className="py-1.5 text-slate-500">{formatDateTime(t.created_at)}</td>
               </tr>
             ))}
           </tbody>

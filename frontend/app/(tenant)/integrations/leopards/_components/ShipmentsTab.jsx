@@ -5,6 +5,7 @@ import Button from "../../../../../components/shared/Button";
 import Modal from "../../../../../components/shared/Modal";
 import leopardsService from "../_lib/leopardsService";
 
+import { formatDateTime } from "../../../../../lib/formatDate";
 const PAGE_SIZE = 25;
 const MAX_DAYS = 92;
 
@@ -32,7 +33,7 @@ const CANCELLABLE = new Set([
 function formatDate(value) {
   if (!value) return "";
   const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleString();
+  return Number.isNaN(d.getTime()) ? String(value) : formatDateTime(d);
 }
 
 function money(value) {

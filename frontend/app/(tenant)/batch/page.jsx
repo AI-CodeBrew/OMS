@@ -16,6 +16,7 @@ import { orderBookingAccount } from "../../../components/orders/orderBookingAcco
 import barqraftarService from "../integrations/barq-raftar/_lib/barqraftarService";
 import postexService from "../integrations/postex/_lib/postexService";
 
+import { formatDate as fmtDate, formatDateTime as fmtDateTime, formatTime as fmtTime } from "../../../lib/formatDate";
 const AirwayBillFilterModal = dynamic(
   () => import("../../../components/orders/AirwayBillFilterModal"),
   { ssr: false }
@@ -68,17 +69,11 @@ function courierLabel(value) {
 }
 
 function formatTime(iso) {
-  return new Date(iso).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  return fmtTime(iso);
 }
 
 function formatDateTime(iso) {
-  return new Date(iso).toLocaleString(undefined, {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  return fmtDateTime(iso);
 }
 
 // Local calendar day ("YYYY-MM-DD") of an ISO timestamp - History groups
@@ -97,7 +92,7 @@ function formatDayLabel(day) {
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
   const diffDays = Math.round((startOfToday - date) / 86400000);
-  const full = date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  const full = fmtDate(date);
   if (diffDays === 0) return { primary: "Today", secondary: full };
   if (diffDays === 1) return { primary: "Yesterday", secondary: full };
   return { primary: date.toLocaleDateString(undefined, { weekday: "long" }), secondary: full };

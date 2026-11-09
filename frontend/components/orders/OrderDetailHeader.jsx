@@ -3,6 +3,7 @@
 import Badge from "../shared/Badge";
 import { STATUS_LABELS, cardTab, latestTag } from "./statusConfig";
 
+import { formatDateTime } from "../../lib/formatDate";
 const PAYMENT_STATUSES = [
   { value: "pending", label: "Pending", badge: "amber" },
   { value: "partially_paid", label: "Partially Paid", badge: "brand" },
@@ -70,7 +71,7 @@ export default function OrderDetailHeader({ order, draft, editing, onChange }) {
         <div className="text-xs text-slate-500">Date</div>
         <div className="text-sm text-slate-900">
           {order.placed_at || order.created_at
-            ? new Date(order.placed_at || order.created_at).toLocaleString()
+            ? formatDateTime(order.placed_at || order.created_at)
             : "N/A"}
         </div>
       </div>

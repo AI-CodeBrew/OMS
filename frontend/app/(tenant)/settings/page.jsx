@@ -15,6 +15,7 @@ import { useEffectiveUser } from "../../../store/authStore";
 import { useBankDetailsGate } from "../../../lib/useBankDetailsGate";
 import BankDetailsModal from "../../../components/billing/BankDetailsModal";
 
+import { formatDate } from "../../../lib/formatDate";
 function AccountTab({ user }) {
   const [email, setEmail] = useState("");
   const [emailStatus, setEmailStatus] = useState("");
@@ -477,7 +478,7 @@ function TeamTab() {
                       <AccessBadges access={m.access} catalog={catalog} oldModules={m.allowed_modules} />
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-slate-500">
-                      {m.created_at ? new Date(m.created_at).toLocaleDateString() : "—"}
+                      {m.created_at ? formatDate(m.created_at) : "—"}
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-right">
                       <div className="inline-flex gap-2">

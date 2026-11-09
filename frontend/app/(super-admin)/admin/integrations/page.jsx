@@ -17,6 +17,7 @@ import {
   SmartlaneLogo,
 } from "../../../../components/integrations/IntegrationLogos";
 
+import { formatDateTime } from "../../../../lib/formatDate";
 // Same order and routes as the tenant Integrations page - managing one
 // opens the store onto exactly the screen its own admin uses, so there is
 // one code path that connects, edits or disconnects anything.
@@ -151,7 +152,7 @@ function IntegrationCell({ integration, entry, disabled, highlighted, onManage }
           </span>
         ) : null}
         {activity ? (
-          <span className="text-[11px] text-slate-400" title={new Date(activity).toLocaleString()}>
+          <span className="text-[11px] text-slate-400" title={formatDateTime(activity)}>
             Active {timeAgo(activity)}
           </span>
         ) : null}

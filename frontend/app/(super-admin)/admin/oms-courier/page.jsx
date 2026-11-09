@@ -13,6 +13,7 @@ import {
   SmartlaneLogo,
 } from "../../../../components/integrations/IntegrationLogos";
 
+import { formatDateTime } from "../../../../lib/formatDate";
 // FynkTech's own courier accounts. Each opens the same page a store admin
 // uses for that integration, acting as the platform org - see
 // (accounts)/layout.jsx.
@@ -80,7 +81,7 @@ function AccountCard({ account, entry }) {
         <div className="mt-3 space-y-0.5 text-xs">
           {entry?.label ? <p className="truncate text-slate-600">{entry.label}</p> : null}
           {activity ? (
-            <p className="text-slate-400" title={new Date(activity).toLocaleString()}>
+            <p className="text-slate-400" title={formatDateTime(activity)}>
               Active {timeAgo(activity)}
             </p>
           ) : null}

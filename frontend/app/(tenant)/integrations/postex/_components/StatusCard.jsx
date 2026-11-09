@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Button from "../../../../../components/shared/Button";
 import postexService from "../_lib/postexService";
 
+import { formatDateTime } from "../../../../../lib/formatDate";
 const ACTIVE_JOB_STATUSES = new Set(["pending", "running"]);
 
 function CopyField({ label, value, secret = false }) {
@@ -94,7 +95,7 @@ function WebhookSection({ status, onChanged, onError, onNotice }) {
         <div className="flex justify-between">
           <dt className="text-slate-500">Last call</dt>
           <dd className="text-slate-800">
-            {status.last_event_at ? new Date(status.last_event_at).toLocaleString() : "Never"}
+            {status.last_event_at ? formatDateTime(status.last_event_at) : "Never"}
           </dd>
         </div>
       </dl>
@@ -102,7 +103,7 @@ function WebhookSection({ status, onChanged, onError, onNotice }) {
       {status.last_webhook_error ? (
         <p className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-700">
           {status.last_webhook_error}
-          {status.last_webhook_error_at ? ` (${new Date(status.last_webhook_error_at).toLocaleString()})` : ""}
+          {status.last_webhook_error_at ? ` (${formatDateTime(status.last_webhook_error_at)})` : ""}
         </p>
       ) : null}
 
@@ -229,7 +230,7 @@ export default function StatusCard({ status, onChanged, onDisconnect, onError, o
         <div className="flex justify-between">
           <dt className="text-slate-500">Last status sync</dt>
           <dd className="text-slate-800">
-            {status.last_synced_at ? new Date(status.last_synced_at).toLocaleString() : "Never"}
+            {status.last_synced_at ? formatDateTime(status.last_synced_at) : "Never"}
           </dd>
         </div>
       </dl>

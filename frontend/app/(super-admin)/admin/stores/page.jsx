@@ -10,6 +10,7 @@ import GreenTick from "../../../../components/shared/GreenTick";
 import Modal from "../../../../components/shared/Modal";
 import Button from "../../../../components/shared/Button";
 
+import { formatDateTime } from "../../../../lib/formatDate";
 // What FynkTech does for the store - core.Organization.SERVICE_MODEL_CHOICES.
 const SERVICE_MODELS = [
   { value: "all_in_one", label: "All in One", hint: "Dispatching, fulfilment and delivery with OMS couriers" },
@@ -19,7 +20,7 @@ const SERVICE_MODELS = [
 ];
 
 function formatDate(value) {
-  return value ? new Date(value).toLocaleString() : "";
+  return value ? formatDateTime(value) : "";
 }
 
 // One bordered card per section, each field its own bordered box - label
@@ -240,8 +241,8 @@ export default function StoresPage() {
                   <th className="px-4 py-3">Store Integration</th>
                   <th className="px-4 py-3">Service Model</th>
                   <th className="px-4 py-3">Status</th>
-                  <th className="px-4 py-3">Bank</th>
                   <th className="px-4 py-3 text-center">Actions</th>
+                  <th className="px-4 py-3">Bank</th>
                   <th className="px-5 py-3 text-right">Store</th>
                 </tr>
               </thead>
@@ -317,15 +318,6 @@ export default function StoresPage() {
                           <span className="text-xs text-slate-400">No Shopify</span>
                         )}
                       </td>
-                      <td className="px-4 py-3">
-                        {org.bank_details ? (
-                          <span className="whitespace-nowrap font-medium text-brand-700">
-                            {org.bank_details.bank_name}
-                          </span>
-                        ) : (
-                          <span className="whitespace-nowrap text-xs text-slate-400">Not Added</span>
-                        )}
-                      </td>
                       <td className="px-4 py-3 text-center">
                         <button
                           type="button"
@@ -343,6 +335,15 @@ export default function StoresPage() {
                         >
                           {org.in_dispatch_hub ? "Remove from Hub" : "Add to Hub"}
                         </button>
+                      </td>
+                      <td className="px-4 py-3">
+                        {org.bank_details ? (
+                          <span className="whitespace-nowrap font-medium text-brand-700">
+                            {org.bank_details.bank_name}
+                          </span>
+                        ) : (
+                          <span className="whitespace-nowrap text-xs text-slate-400">Not Added</span>
+                        )}
                       </td>
                       <td className="px-5 py-3 text-right">
                         <button

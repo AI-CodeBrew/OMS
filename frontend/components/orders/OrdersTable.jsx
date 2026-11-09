@@ -6,6 +6,10 @@ import FynkTechDispatchTag from "./FynkTechDispatchTag";
 import { formatPakPhone } from "../../lib/formatPhone";
 import { STATUS_LABELS, cardTab, latestTag } from "./statusConfig";
 
+import { formatDateTime } from "../../lib/formatDate";
+
+// A self-delivered order's courier - shown as its Tracking ID too (no CN).
+const SELF_DELIVER = "Self Deliver";
 // Badge colours for the Status column, by the same tone the status tabs use.
 const TONE_BADGE = {
   blue: "bg-blue-50 text-blue-700",
@@ -146,7 +150,7 @@ export default function OrdersTable({
   const allSelected = orders.length > 0 && orders.every((o) => selectedIds.has(o.id));
   const someSelected = orders.some((o) => selectedIds.has(o.id));
   const columnCount =
-    (showStoreColumn ? 16 : 15) +
+    (showStoreColumn ? 17 : 16) +
     (showProductColumn ? 1 : 0) +
     (showTransitColumn ? 1 : 0) +
     (showSubStatusColumn ? 1 : 0) +
@@ -169,6 +173,7 @@ export default function OrdersTable({
             <th className="w-28 px-3 py-2">Store Name</th>
             <th className="w-16 px-3 py-2">OMS Order ID</th>
             <th className="w-28 px-3 py-2">Store Order ID</th>
+            <th className="w-36 px-3 py-2">Date &amp; Time</th>
             <th className="w-40 px-3 py-2">Customer Name</th>
             {showProductColumn ? <th className="w-48 px-3 py-2">Product</th> : null}
             <th className="w-28 px-3 py-2">City</th>
@@ -249,6 +254,10 @@ export default function OrdersTable({
                       </span>
                     ) : null}
                   </div>
+                </td>
+                {/* When the order was placed (Shopify's own time; created in OMS otherwise). */}
+                <td className="whitespace-nowrap px-3 py-1.5 text-slate-600">
+                  {formatDateTime(order.placed_at || order.created_at) || "—"}
                 </td>
                 <td className="px-3 py-1.5 text-slate-700">
                   <div className="truncate" title={order.customer_name}>
@@ -371,7 +380,9 @@ export default function OrdersTable({
                       : "—"}
                   </td>
                 ) : null}
-                <td className="px-3 py-1.5 text-slate-500">{order.tracking_number || "—"}</td>
+                <td className="px-3 py-1.5 text-slate-500">
+                  {order.tracking_number || (order.courier_name === SELF_DELIVER ? SELF_DELIVER : "—")}
+                </td>
                 <td className="px-3 py-1.5 text-right font-medium tabular-nums text-slate-900">
                   {/* What the customer pays - total_amount is the items before discounts. */}
                   {order.grand_total ?? order.total_amount}

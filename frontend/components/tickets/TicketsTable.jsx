@@ -3,6 +3,7 @@
 import { timeAgo } from "../../lib/timeAgo";
 import { TICKET_STATUS_LABEL, TICKET_STATUS_TONE, TICKET_TYPE_LABEL } from "./ticketStatus";
 
+import { formatDateTime } from "../../lib/formatDate";
 const TYPE_TONE = {
   customer: "bg-sky-50 text-sky-700",
   admin: "bg-brand-50 text-brand-700",
@@ -103,13 +104,7 @@ export default function TicketsTable({ tickets, loading, emptyText, onOpen, show
                 </td>
                 <td className="whitespace-nowrap px-3 py-2 text-slate-500">
                   <div>
-                    {new Date(t.created_at).toLocaleString([], {
-                      year: "numeric",
-                      month: "numeric",
-                      day: "numeric",
-                      hour: "numeric",
-                      minute: "2-digit",
-                    })}
+                    {formatDateTime(t.created_at)}
                   </div>
                   <div className="text-xs text-slate-400">{timeAgo(t.created_at)}</div>
                 </td>

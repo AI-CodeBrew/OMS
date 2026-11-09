@@ -10,6 +10,7 @@ import DateInput from "../../../../components/shared/DateInput";
 import BankDetailsModal from "../../../../components/billing/BankDetailsModal";
 import useBankDetailsGate from "../../../../lib/useBankDetailsGate";
 
+import { formatDateTime } from "../../../../lib/formatDate";
 const SHOPIFY_ERROR_MESSAGES = {
   invalid_request: "The Shopify install request could not be verified. Please try again.",
   token_exchange_failed: "Shopify did not confirm the install. Please try again.",
@@ -177,7 +178,7 @@ export default function IntegrationsPage() {
               ? ` (${job.skipped_count} skipped due to bad data — last: ${job.error_message})`
               : "";
             setNotice(
-              `${modeLabel}: ${job.created_count} new, ${job.updated_count} already in OMS (left unchanged) — ${job.total_fetched} orders fetched, ${refreshed?.synced_orders_count ?? "?"} total as of ${job.finished_at ? new Date(job.finished_at).toLocaleString() : ""}.${skippedNote}`
+              `${modeLabel}: ${job.created_count} new, ${job.updated_count} already in OMS (left unchanged) — ${job.total_fetched} orders fetched, ${refreshed?.synced_orders_count ?? "?"} total as of ${job.finished_at ? formatDateTime(job.finished_at) : ""}.${skippedNote}`
             );
           } else if (job.status === "failed") {
             setError(job.error_message || "Sync failed");
@@ -562,7 +563,7 @@ export default function IntegrationsPage() {
                   <div className="flex justify-between">
                     <span className="text-slate-500">Last Sync:</span>
                     <span className="font-medium text-slate-900">
-                      {status.last_synced_at ? new Date(status.last_synced_at).toLocaleString() : "Never"}
+                      {status.last_synced_at ? formatDateTime(status.last_synced_at) : "Never"}
                     </span>
                   </div>
                 </div>

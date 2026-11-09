@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Button from "../shared/Button";
 import { timeAgo } from "../../lib/timeAgo";
 
+import { formatDateTime } from "../../lib/formatDate";
 const DEFAULT_LABELS = { tenant: "You", super_admin: "Support" };
 
 // A ticket's history as a chat - the viewer's own messages on the right,
@@ -102,12 +103,7 @@ export default function TicketConversation({
                     }`}
                     title={timeAgo(m.created_at)}
                   >
-                    {new Date(m.created_at).toLocaleString([], {
-                      day: "numeric",
-                      month: "short",
-                      hour: "numeric",
-                      minute: "2-digit",
-                    })}
+                    {formatDateTime(m.created_at)}
                   </p>
                 </div>
               </li>

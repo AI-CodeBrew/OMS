@@ -10,6 +10,7 @@ import SmartlaneBusinessForm, {
   STATUS_TONE,
 } from "../_components/SmartlaneBusinessForm";
 
+import { formatDateTime } from "../../../../../lib/formatDate";
 // Same convention as the Shopify integration page's sync job polling.
 const ACTIVE_JOB_STATUSES = new Set(["pending", "running"]);
 
@@ -210,7 +211,7 @@ export default function OmsCourierSmartlaneBusinessPage() {
                 </StatRow>
                 <StatRow label="Updates received">{courier.events_received_count ?? 0}</StatRow>
                 <StatRow label="Last update">
-                  {courier.last_event_at ? new Date(courier.last_event_at).toLocaleString() : "Never"}
+                  {courier.last_event_at ? formatDateTime(courier.last_event_at) : "Never"}
                 </StatRow>
               </div>
 

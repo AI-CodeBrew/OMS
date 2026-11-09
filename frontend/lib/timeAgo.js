@@ -1,3 +1,4 @@
+import { formatDate } from "./formatDate";
 // Compact relative timestamps for dense ticket lists ("2h ago" instead of
 // a full locale string) - callers that need the exact time put it in a
 // title attribute alongside this, they don't replace one with the other.
@@ -19,7 +20,7 @@ export function timeAgo(dateInput) {
   }
   // Beyond ~a month, a relative count stops being useful - fall back to a
   // short absolute date.
-  return date.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  return formatDate(date);
 }
 
 export default timeAgo;
