@@ -1,5 +1,6 @@
-import { formatDate, formatTime } from "../../lib/formatDate";
 "use client";
+
+import { formatDate, formatTime } from "../../lib/formatDate";
 
 // Shared by the Logs table and its history panel.
 
