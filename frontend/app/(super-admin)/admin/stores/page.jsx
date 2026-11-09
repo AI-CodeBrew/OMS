@@ -101,14 +101,8 @@ export default function StoresPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold text-slate-900">Stores</h1>
-          <p className="mt-1 text-sm text-slate-500">
-            Open a store to operate it exactly like its own admin — orders, airway bills, load
-            sheets, warehouse and more.
-          </p>
-        </div>
+      <div className="flex flex-wrap items-center gap-4">
+        <h1 className="text-2xl font-semibold text-slate-900">Stores</h1>
         <input
           type="search"
           value={search}
@@ -139,7 +133,8 @@ export default function StoresPage() {
                   <th className="px-4 py-3">Store Integration</th>
                   <th className="px-4 py-3">Service Model</th>
                   <th className="px-4 py-3">Status</th>
-                  <th className="px-5 py-3 text-right">Actions</th>
+                  <th className="px-4 py-3 text-center">Actions</th>
+                  <th className="px-5 py-3 text-right">Store</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-surface-border">
@@ -160,7 +155,7 @@ export default function StoresPage() {
                           </div>
                         </div>
                       </td>
-                      <td className="px-4 py-3 text-slate-700">
+                      <td className="whitespace-nowrap px-4 py-3 text-slate-700">
                         {stores.length ? (
                           <span title={stores.map((st) => `${st.store_id} - ${st.name}`).join(", ")}>
                             {stores.map((st) => st.store_id).join(", ")}
@@ -211,30 +206,30 @@ export default function StoresPage() {
                           <span className="text-xs text-slate-400">No Shopify</span>
                         )}
                       </td>
-                      <td className="px-5 py-3">
-                        <div className="flex items-center justify-end gap-2">
-                          <button
-                            type="button"
-                            disabled={hubBusyId === org.id}
-                            onClick={() => toggleHub(org)}
-                            className={`whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${
-                              org.in_dispatch_hub
-                                ? "bg-brand-50 text-brand-700 hover:bg-brand-100"
-                                : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-                            }`}
-                          >
-                            {org.in_dispatch_hub ? "Remove from Hub" : "Add to Hub"}
-                          </button>
-                          <button
-                            type="button"
-                            disabled={!org.is_active}
-                            onClick={() => openStore(org)}
-                            title={org.is_active ? undefined : "Suspended stores can't be opened"}
-                            className="whitespace-nowrap rounded-lg bg-brand-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300"
-                          >
-                            Open store →
-                          </button>
-                        </div>
+                      <td className="px-4 py-3 text-center">
+                        <button
+                          type="button"
+                          disabled={hubBusyId === org.id}
+                          onClick={() => toggleHub(org)}
+                          className={`w-36 whitespace-nowrap rounded-lg border px-3 py-1.5 text-sm font-medium transition disabled:opacity-50 ${
+                            org.in_dispatch_hub
+                              ? "border-red-200 bg-white text-red-600 hover:bg-red-50"
+                              : "border-brand-200 bg-white text-brand-700 hover:bg-brand-50"
+                          }`}
+                        >
+                          {org.in_dispatch_hub ? "Remove from Hub" : "Add to Hub"}
+                        </button>
+                      </td>
+                      <td className="px-5 py-3 text-right">
+                        <button
+                          type="button"
+                          disabled={!org.is_active}
+                          onClick={() => openStore(org)}
+                          title={org.is_active ? undefined : "Suspended stores can't be opened"}
+                          className="whitespace-nowrap rounded-lg bg-brand-600 px-4 py-1.5 text-sm font-medium text-white transition hover:bg-brand-700 disabled:bg-slate-300"
+                        >
+                          Open Store
+                        </button>
                       </td>
                     </tr>
                   );
