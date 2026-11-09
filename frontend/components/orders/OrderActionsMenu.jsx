@@ -93,6 +93,15 @@ export default function OrderActionsMenu({ order, onAction, onScan, onRaiseTicke
     );
   }
 
+  // Nothing to do but raise a ticket: a button, not a one-item menu.
+  if (items.length === 0) {
+    return onRaiseTicket ? (
+      <Button variant="secondary" disabled={working} onClick={onRaiseTicket} className="px-3 py-1.5">
+        Raise ticket
+      </Button>
+    ) : null;
+  }
+
   if (onRaiseTicket) {
     if (items.length) items.push({ key: "ticket_divider", divider: true });
     items.push({ key: "raise_ticket", label: "Raise ticket", onClick: onRaiseTicket });

@@ -24,6 +24,7 @@ import {
   SMARTLANE_LOAD_SHEET_COURIERS,
   isBookingAccountCourier,
   cardTab,
+  latestTag,
 } from "./statusConfig";
 import barqraftarService from "../../app/(tenant)/integrations/barq-raftar/_lib/barqraftarService";
 import postexService from "../../app/(tenant)/integrations/postex/_lib/postexService";
@@ -516,6 +517,7 @@ export default function OrderDetailPanel({
         count={1}
         fromCard={cardTab(order?.workflow_card)?.label}
         currentCourier={order?.courier_name}
+        currentTag={order ? latestTag(order) : ""}
         couriers={
           pendingAction === "assign_courier" && bookingAccounts.length
             ? // Booking accounts stay first/default; real courier rows are

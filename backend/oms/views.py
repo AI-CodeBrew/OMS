@@ -175,6 +175,19 @@ def _json_list(raw):
     return [str(v) for v in value if str(v).strip()] if isinstance(value, list) else []
 
 
+def _valid_uuids(values):
+    """The values that are real UUIDs (order ids) - anything else dropped."""
+    import uuid
+
+    valid = []
+    for value in values:
+        try:
+            valid.append(str(uuid.UUID(str(value))))
+        except ValueError:
+            continue
+    return valid
+
+
 SEARCHABLE_FIELDS = {
     "order_number": "order_number__icontains",
     "customer_name": "customer_name__icontains",
@@ -2465,9 +2478,17 @@ class OrderViewSet(viewsets.ModelViewSet):
         # the context is still valid, removes that dependency entirely -
         # both querysets are correct regardless of when the generator
         # actually iterates them.
-        queryset = self._apply_filters(
-            Order.all_objects.filter(**org_kwargs), request.query_params
-        )
+        # Export menu's "Selected orders": `ids` (a JSON array) - exactly
+        # those orders, whatever the page's filters. Otherwise every order
+        # the page's filters (tab, dates, search, Filters - Courier Wise is
+        # f_courier) select.
+        selected_ids = _valid_uuids(_json_list(request.query_params.get("ids")))
+        if request.query_params.get("ids"):
+            queryset = Order.all_objects.filter(**org_kwargs, id__in=selected_ids)
+        else:
+            queryset = self._apply_filters(
+                Order.all_objects.filter(**org_kwargs), request.query_params
+            )
         template = request.query_params.get("template", "all")
         items_prefetch = Prefetch("items", queryset=OrderItem.all_objects.filter(**org_kwargs))
 

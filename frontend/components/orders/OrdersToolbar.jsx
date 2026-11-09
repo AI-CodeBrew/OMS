@@ -21,6 +21,10 @@ export default function OrdersToolbar({
   extraFilters = null,
   // The Filters button - on its own at the far right.
   filtersButton = null,
+  // Whether the orders on screen have any status action - with nothing
+  // selected, a tab without any (Dispatched, Delivered...) shows Raise
+  // ticket instead of an Actions menu.
+  tabHasActions = true,
 }) {
   // Product-name autocomplete for the last comma-separated term (matches
   // the multi-term search convention the input already supports).
@@ -95,6 +99,21 @@ export default function OrdersToolbar({
 
       {extraFilters}
 
+      {/* Actions menu only where there's an action to take; where Raise
+          ticket is the only one, it's a button of its own; on a view-only
+          page (All Orders, Read-only login) neither. */}
+      {!onRaiseTicket && availableActions.length === 0 ? null : (selectedCount > 0
+        ? availableActions.length === 0
+        : !tabHasActions) ? (
+        <Button
+          variant="secondary"
+          disabled={selectedCount !== 1}
+          title={selectedCount === 1 ? "Raise a ticket for this order" : "Select one order to raise a ticket"}
+          onClick={onRaiseTicket}
+        >
+          Raise ticket
+        </Button>
+      ) : (
       <Dropdown
         disabled={selectedCount === 0}
         trigger={
@@ -137,6 +156,7 @@ export default function OrdersToolbar({
             : []),
         ]}
       />
+      )}
 
       <Button variant="secondary" onClick={onRefresh} loading={refreshing}>
         Refresh

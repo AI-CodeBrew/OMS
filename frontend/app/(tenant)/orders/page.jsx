@@ -34,6 +34,7 @@ import DateRangeFilter from "../../../components/orders/DateRangeFilter";
 import { useDateFilterStore } from "../../../store/dateFilterStore";
 import {
   ACTIONS_BY_STATUS,
+  latestTag,
   ASSIGNING_COURIER_ACTIONS,
   ASSIGNING_PRINT_ACTIONS,
   MOVE_TO_ASSIGNING,
@@ -727,6 +728,20 @@ export default function OrdersPage() {
     leopardsOmsConnected,
   ]);
 
+  // Whether any order on screen has a status action at all - with nothing
+  // selected, a tab without any (Dispatched, Delivered, ...) shows Raise
+  // ticket in place of an Actions menu (OrdersToolbar).
+  const tabHasActions = useMemo(
+    () =>
+      !viewOnly &&
+      orders.some(
+        (o) =>
+          (ACTIONS_BY_STATUS[o.status] || []).length > 0 ||
+          o.workflow_card === "assigning_courier"
+      ),
+    [orders, viewOnly]
+  );
+
   // Change Courier's picker: every courier this store can book with right
   // now. Values are the backend's CHANGE_COURIER_TARGETS keys.
   const changeCourierOptions = useMemo(
@@ -1123,7 +1138,7 @@ export default function OrdersPage() {
               Manual Order
             </Button>
           ) : null}
-          <CsvExportButton filterParams={queryParams} />
+          <CsvExportButton filterParams={queryParams} selectedIds={Array.from(selectedIds)} />
           {!canEditOrders ? null : user?.isDispatchHub ? (
             <Button variant="secondary" onClick={() => setImportOpen(true)}>
               Import
@@ -1158,6 +1173,7 @@ export default function OrdersPage() {
           selectedCount={selectedIds.size}
           availableActions={availableActions}
           noActionsReason={noActionsReason}
+          tabHasActions={tabHasActions}
           onRaiseTicket={viewOnly ? undefined : () => setTicketOrder(selectedOrders[0])}
           onAction={(action) => startAction(action, Array.from(selectedIds), true)}
           onRefresh={() => {
@@ -1295,6 +1311,7 @@ export default function OrdersPage() {
         count={pendingAction?.orderIds?.length || 0}
         fromCard={pendingFromCard}
         currentCourier={[...new Set(pendingOrders.map((o) => o.courier_name).filter(Boolean))].join(", ")}
+        currentTag={[...new Set(pendingOrders.map((o) => latestTag(o)).filter(Boolean))].join(", ")}
         couriers={
           pendingAction?.action === "assign_courier" && bookingAccounts.length
             ? // Only the synthetic booking-account entries actually book
