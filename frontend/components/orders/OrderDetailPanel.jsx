@@ -49,6 +49,7 @@ const EDITABLE_FIELDS = [
   "risk_status",
   "expected_delivery_date",
   "payment_status",
+  "payment_gateway",
   "order_source",
   "shipping_type",
   "coupon_discount",

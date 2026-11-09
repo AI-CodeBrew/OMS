@@ -245,12 +245,13 @@ export default function NewOrderModal({ open, recreateFrom = null, stores = null
     else setForm((f) => ({ ...f, order_number: "" }));
   }
 
-  // Hub: no Booking Methods screen (the Hub has its own Import) - straight
-  // to the form. A recreated order stays in its own store.
+  // Hub: the same Booking Methods screen as a store (Create Order /
+  // Download Sample File / Upload File - its file carries a Store ID per
+  // row). A recreated order goes straight to the form, in its own store.
   useEffect(() => {
-    if (!open || !stores) return;
+    if (!open || !stores || !recreateFrom) return;
     setView("manual");
-    const from = recreateFrom && stores.find((s) => s.id === recreateFrom.organization_id);
+    const from = stores.find((s) => s.id === recreateFrom.organization_id);
     if (from) pickStore(from.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, stores, recreateFrom]);
@@ -440,6 +441,7 @@ export default function NewOrderModal({ open, recreateFrom = null, stores = null
     return (
       <ImportNewOrdersModal
         open
+        hub={Boolean(stores)}
         initialFile={importFile}
         onClose={close}
         onImported={() => onCreated?.()}

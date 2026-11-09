@@ -1245,7 +1245,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         write, so the UI can show what would change first.
         """
         courier = str(request.data.get("courier") or "").strip().lower()
-        if courier and courier not in importers.COURIER_SHEETS:
+        if courier and courier not in importers.COURIER_SHEETS and courier != importers.STATUS_UPDATE_SHEET:
             return Response(
                 {"detail": f"Unknown courier sheet {courier!r}."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -1290,8 +1290,11 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get"], url_path="import-template")
     def import_template(self, request):
-        """The blank CSV a manual store fills in and re-uploads to import-orders."""
-        response = HttpResponse(order_importer.template_csv(), content_type="text/csv")
+        """The blank CSV a manual store fills in and re-uploads to import-orders.
+        In the Dispatch Hub / All Orders it starts with a Store ID column."""
+        response = HttpResponse(
+            order_importer.template_csv(with_store_id=is_hub_request(request)), content_type="text/csv"
+        )
         response["Content-Disposition"] = 'attachment; filename="order_import_template.csv"'
         return response
 
@@ -1308,11 +1311,6 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         Defaults to a dry run - the caller must pass apply=true to write.
         """
-        if is_hub_request(request):
-            return Response(
-                {"detail": "Open the specific store to import orders for it."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
         upload = request.FILES.get("file")
         if not upload:
             return Response(
@@ -1320,14 +1318,24 @@ class OrderViewSet(viewsets.ModelViewSet):
             )
 
         apply = str(request.data.get("apply", "")).lower() in ("1", "true", "yes")
+        # Dispatch Hub / All Orders: one file, several stores - each row's
+        # Store ID says which (order_importer.apply_import_multi).
+        if is_hub_request(request):
+            try:
+                if apply:
+                    result = order_importer.apply_import_multi(request.organization_ids, upload)
+                else:
+                    result = order_importer.preview_import_multi(request.organization_ids, upload)
+            except UnicodeDecodeError:
+                return Response(
+                    {"detail": "Could not read the file - please upload a UTF-8 CSV."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            return Response(result)
         try:
             if apply:
-                shop_label = (
-                    (getattr(request, "auth_claims", None) or {})
-                    .get("app_metadata", {})
-                    .get("organization_name")
-                    or "Manual"
-                )
+                # The store's own name - not a separate "Manual" store.
+                shop_label = services.default_store_name(request.organization_id)
                 result = order_importer.apply_import(
                     request.organization_id, upload, shop_label=shop_label
                 )
@@ -2628,7 +2636,9 @@ class OrderViewSet(viewsets.ModelViewSet):
                 "Product Name",
                 "SKU Code",
                 "Quantity",
-                "Payment Type",
+                # COD or Prepaid (payment_gateway) - the only payment column
+                # for now; Paid/Pending isn't reported.
+                "Order Type",
                 "Unit Price",
                 "Delivery Amount",
                 "Discount",
@@ -2636,7 +2646,6 @@ class OrderViewSet(viewsets.ModelViewSet):
                 "Grand Total",
                 "Amount Paid",
                 "Total Receivable",
-                "Payment Status",
                 "Customer Note",
                 # The card, as the screens show it.
                 "Order Status",
@@ -2712,7 +2721,6 @@ class OrderViewSet(viewsets.ModelViewSet):
                         str(order.grand_total),
                         str(order.amount_paid),
                         str(order.amount_receivable),
-                        order.get_payment_status_display(),
                         order.customer_note,
                         services.card_label(order),
                         "Yes" if order.id in critical_ids else "No",
@@ -2736,7 +2744,10 @@ class OrderViewSet(viewsets.ModelViewSet):
                         csv_report.courier_proofs(order),
                     ]
                     # As the order screen says it: paid online is Prepaid.
-                    payment = "COD" if order.payment_gateway == "cod" else "Prepaid"
+                    payment = (
+                        "Partially Paid" if order.payment_status == "partially_paid"
+                        else "COD" if order.payment_gateway == "cod" else "Prepaid"
+                    )
                     items = list(order.items.all())
                     if not items:
                         yield before_items + ["", "", "", payment, ""] + after_items

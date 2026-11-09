@@ -29,7 +29,11 @@ def create_order(*, organization_id, order_number, customer_name, customer_phone
 
     # shop / order_source can be overridden through extra_fields - a
     # recreated order keeps the store name of the order it came from.
-    fields = {"shop": "Manual", "order_source": "Manual", **(extra_fields or {})}
+    # The store's own name (default_store_name), never a "Manual" store of
+    # its own - how it came in is order_source.
+    fields = {"order_source": "Manual", **(extra_fields or {})}
+    if not fields.get("shop") or str(fields["shop"]).strip().lower() in _NOT_A_STORE:
+        fields["shop"] = default_store_name(organization_id)
     order = Order.objects.create(
         organization_id=organization_id,
         order_number=order_number,
@@ -132,6 +136,29 @@ def store_options(organization_ids):
             })
     options.sort(key=lambda o: (o["store_name"].lower(), o["organization_name"].lower()))
     return options
+
+
+def default_store_name(organization_id):
+    """The store a manual / imported order of this organization goes under
+    when none is picked: its own store (the lowest Store ID that isn't
+    "Manual"), else its Shopify store name, else its own name - never a
+    separate "Manual" store. One store = one Store ID; how the order came
+    in is its order_source (Manual, CSV, Storefront...), not its store."""
+    from core.models import Organization
+    from integrations.models import ShopifyConnection
+
+    from .models import Store
+
+    for store in Store.all_objects.filter(organization_id=organization_id).order_by("store_id"):
+        if store.name.strip().lower() not in _NOT_A_STORE:
+            return store.name
+    shop_name = (
+        ShopifyConnection.all_objects.filter(organization_id=organization_id, is_connected=True)
+        .exclude(shop_name="").values_list("shop_name", flat=True).first()
+    )
+    if shop_name:
+        return shop_name
+    return Organization.objects.filter(id=organization_id).values_list("name", flat=True).first() or "Store"
 
 
 def product_lookup(organization_id, q, *, limit=20):

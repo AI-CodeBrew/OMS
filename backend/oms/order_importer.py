@@ -24,6 +24,9 @@ _BLANK = {"", "--", "-", "n/a", "na", "null", "none"}
 # so a store can drop that export straight in without relabeling it first.
 COLUMN_ALIASES = {
     # our template
+    # The Dispatch Hub's import only: which store (oms.Store.store_id) the
+    # order goes to - see preview_import_multi / apply_import_multi.
+    "store id": "store_id",
     "order no": "order_number",
     "order number": "order_number",
     "order date": "order_date",
@@ -145,12 +148,18 @@ def _parse_int(value, default=1):
         return default
 
 
-def template_csv():
-    """The downloadable blank template (header + one example row)."""
+def template_csv(with_store_id=False):
+    """The downloadable blank template (header + example rows). The
+    Dispatch Hub's version starts with a Store ID column - one file can
+    hold several stores' orders."""
     buffer = io.StringIO()
     writer = csv.writer(buffer)
-    writer.writerow(TEMPLATE_HEADERS)
-    writer.writerows(TEMPLATE_SAMPLE_ROWS)
+    if with_store_id:
+        writer.writerow(["Store ID", *TEMPLATE_HEADERS])
+        writer.writerows(["1", *row] for row in TEMPLATE_SAMPLE_ROWS)
+    else:
+        writer.writerow(TEMPLATE_HEADERS)
+        writer.writerows(TEMPLATE_SAMPLE_ROWS)
     return buffer.getvalue()
 
 
@@ -206,6 +215,7 @@ def parse_rows(file_obj):
                 "weight_grams": _parse_int(row.get("weight_grams"), default=None),
                 "shipping": _parse_decimal(row.get("shipping"), default=Decimal("0")),
                 "notes": _clean(row.get("notes")),
+                "store_id": _clean(row.get("store_id")),
             }
         )
     return rows, errors
@@ -318,7 +328,7 @@ def apply_import(organization_id, file_obj, *, shop_label=""):
             city=group["city"][:100],
             payment_gateway=group["payment_gateway"],
             status="new",
-            shop=(shop_label or "Manual")[:150],
+            shop=(shop_label or "Store")[:150],
             order_source="CSV",
             shipping_amount=group["shipping"] or Decimal("0"),
             placed_at=_parse_order_date(group["order_date"]),
@@ -356,5 +366,190 @@ def apply_import(organization_id, file_obj, *, shop_label=""):
         "skipped_existing": skipped[:50],
         "skipped_existing_count": len(skipped),
         "errors": errors,
+        "applied": True,
+    }
+
+
+# --- Dispatch Hub / All Orders: one file, several stores --------------------
+#
+# Same columns as the store import plus "Store ID" (oms.Store.store_id - the
+# Stores tab / report's Store ID). Each row's order goes to that store's
+# organization, under that store's name. Rows sharing a Store ID and an
+# Order No are one order. An Order No that already exists in that
+# organization is skipped, so uploading the same file again creates nothing
+# new. Big files: orders and items are inserted in batches.
+
+_BATCH = 500
+
+
+def _plan_multi(organization_ids, file_obj):
+    """(rows, errors, groups, stores, existing): groups keyed by
+    (store_id, order_number); stores {store_id: {"organization_id",
+    "store_name", "organization_name"}}; existing {(org id, order no)}."""
+    from core.models import Organization
+
+    from .models import Store
+
+    rows, errors = parse_rows(file_obj)
+    wanted_ids = set()
+    for row in rows:
+        if row["store_id"].isdigit():
+            wanted_ids.add(int(row["store_id"]))
+    stores = {}
+    org_names = {}
+    for store in Store.all_objects.filter(
+        store_id__in=wanted_ids, organization_id__in=list(organization_ids)
+    ):
+        stores[store.store_id] = {"organization_id": str(store.organization_id), "store_name": store.name}
+    if stores:
+        org_names = dict(
+            Organization.objects.filter(id__in={s["organization_id"] for s in stores.values()})
+            .values_list("id", "name")
+        )
+    for info in stores.values():
+        info["organization_name"] = next(
+            (name for oid, name in org_names.items() if str(oid) == info["organization_id"]), ""
+        )
+
+    groups = {}
+    for row in rows:
+        raw = row["store_id"]
+        if not raw:
+            errors.append(f"Line {row['line']}: missing Store ID")
+            continue
+        if not raw.isdigit() or int(raw) not in stores:
+            errors.append(f"Line {row['line']}: Store ID {raw} not found")
+            continue
+        store_id = int(raw)
+        group = groups.setdefault(
+            (store_id, row["order_number"]),
+            {
+                "order_number": row["order_number"],
+                "order_date": row["order_date"],
+                "customer_name": row["customer_name"],
+                "phone": row["phone"],
+                "secondary_phone": row["secondary_phone"],
+                "email": row["email"],
+                "address": row["address"],
+                "city": row["city"],
+                "payment_gateway": row["payment_gateway"],
+                "shipping": row["shipping"],
+                "notes": [],
+                "items": [],
+            },
+        )
+        if row["notes"] and row["notes"] not in group["notes"]:
+            group["notes"].append(row["notes"])
+        group["items"].append(row)
+
+    existing = set()
+    by_org = {}
+    for store_id, number in groups:
+        by_org.setdefault(stores[store_id]["organization_id"], set()).add(number[:50])
+    for org_id, numbers in by_org.items():
+        numbers = list(numbers)
+        for start in range(0, len(numbers), 2000):
+            for number in Order.all_objects.filter(
+                organization_id=org_id, order_number__in=numbers[start:start + 2000]
+            ).values_list("order_number", flat=True):
+                existing.add((org_id, number))
+    return rows, errors, groups, stores, existing
+
+
+def _store_summary(groups, stores, existing):
+    summary = {}
+    for (store_id, number), _group in groups.items():
+        info = stores[store_id]
+        entry = summary.setdefault(store_id, {
+            "store_id": store_id,
+            "store_name": info["store_name"],
+            "organization_name": info["organization_name"],
+            "to_create": 0,
+            "existing": 0,
+        })
+        if (info["organization_id"], number[:50]) in existing:
+            entry["existing"] += 1
+        else:
+            entry["to_create"] += 1
+    return sorted(summary.values(), key=lambda s: s["store_id"])
+
+
+def preview_import_multi(organization_ids, file_obj):
+    """Dry run of apply_import_multi - per store, what would be created."""
+    rows, errors, groups, stores, existing = _plan_multi(organization_ids, file_obj)
+    per_store = _store_summary(groups, stores, existing)
+    return {
+        "total_rows": len(rows),
+        "orders_found": len(groups),
+        "to_create": sum(s["to_create"] for s in per_store),
+        "skipped_existing_count": sum(s["existing"] for s in per_store),
+        "stores": per_store,
+        "errors": errors[:200],
+        "error_count": len(errors),
+        "applied": False,
+    }
+
+
+@transaction.atomic
+def apply_import_multi(organization_ids, file_obj):
+    """Creates every order of the file in its Store ID's store - all or
+    nothing. Orders whose Order No already exists in that organization are
+    skipped."""
+    from decimal import Decimal as D
+
+    rows, errors, groups, stores, existing = _plan_multi(organization_ids, file_obj)
+    per_store = _store_summary(groups, stores, existing)
+    new_orders, new_items, new_notes = [], [], []
+    for (store_id, number), group in groups.items():
+        info = stores[store_id]
+        org_id = info["organization_id"]
+        if (org_id, number[:50]) in existing:
+            continue
+        existing.add((org_id, number[:50]))  # one file can't create it twice
+        total = sum((item["quantity"] * item["unit_price"] for item in group["items"]), D("0"))
+        order = Order(
+            organization_id=org_id,
+            order_number=number[:50],
+            customer_name=group["customer_name"][:255],
+            customer_phone=group["phone"][:50],
+            secondary_phone=group["secondary_phone"][:50],
+            customer_email=group["email"][:255],
+            address_line1=group["address"][:255],
+            city=group["city"][:100],
+            payment_gateway=group["payment_gateway"],
+            status="new",
+            shop=info["store_name"][:150],
+            order_source="CSV",
+            shipping_amount=group["shipping"] or D("0"),
+            placed_at=_parse_order_date(group["order_date"]),
+            total_amount=total,
+        )
+        new_orders.append(order)
+        for item in group["items"]:
+            new_items.append(OrderItem(
+                organization_id=org_id,
+                order=order,
+                product_name=item["product_name"][:255],
+                barcode=item["sku"][:100],
+                quantity=item["quantity"],
+                unit_price=item["unit_price"],
+                weight_grams=item["weight_grams"],
+            ))
+        if group["notes"]:
+            new_notes.append(OrderNote(
+                organization_id=org_id, order=order, kind="note",
+                body="Imported: " + " | ".join(group["notes"]),
+            ))
+    Order.all_objects.bulk_create(new_orders, batch_size=_BATCH)
+    OrderItem.all_objects.bulk_create(new_items, batch_size=_BATCH)
+    OrderNote.all_objects.bulk_create(new_notes, batch_size=_BATCH)
+    return {
+        "total_rows": len(rows),
+        "orders_found": len(groups),
+        "created": len(new_orders),
+        "skipped_existing_count": sum(s["existing"] for s in per_store),
+        "stores": per_store,
+        "errors": errors[:200],
+        "error_count": len(errors),
         "applied": True,
     }

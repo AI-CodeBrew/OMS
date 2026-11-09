@@ -177,6 +177,7 @@ COLUMN_ALIASES = {
     "invoice number": "invoice_number",
     "invoice": "invoice_number",
     "payment status": "payment_status",
+    "order type": "order_type",
     "delivery charges": "delivery_charges",
     "delivery charge": "delivery_charges",
     "shipping charges": "delivery_charges",
@@ -341,6 +342,7 @@ def parse_rows(file_obj):
                 "status_label": _clean(row.get("status"))[:100],
                 "invoice_number": _clean(row.get("invoice_number")),
                 "payment_status": _clean(row.get("payment_status")).lower(),
+                "order_type": _clean(row.get("order_type")).lower(),
                 "delivery_charges": _parse_decimal(row.get("delivery_charges")),
                 "phone": _clean(row.get("phone")),
                 "phone_digits": _normalize_phone(row.get("phone")),
@@ -1630,6 +1632,10 @@ def run_import(
     live orders, and the caller should be able to see exactly what would
     change before committing to it.
     """
+    if courier == STATUS_UPDATE_SHEET:
+        return run_status_update_import(
+            organization_id, file_obj, dry_run=dry_run, actor_user_id=actor_user_id
+        )
     if courier:
         return _run_courier_import(
             organization_id, file_obj, courier,
@@ -1767,5 +1773,212 @@ def _run_courier_import(organization_id, file_obj, courier, *, dry_run, overwrit
         "unmatched_reasons": dict(Counter(row.get("unmatched_kind", "not_in_oms") for row in left)),
         "protected_samples": protected[:20],
         "matched_rows": matched_rows,
+        "applied": applied,
+    }
+
+
+# --- "Status Update" sheet ----------------------------------------------------
+#
+# Orders that already exist, keyed by Web Order ID + CN: the file's Status,
+# Tags and COD amount are final - they overwrite what OMS has, Delivered /
+# Returned / Cancelled included. COD sets the order's receivable to exactly
+# the file's amount, the way the 8-9 Nov sheets were applied by hand: the
+# subtotal stays, the delivery becomes the whole-rupee 0 / 250 that makes it
+# add up (paisa rounding into the subtotal); when that doesn't fit, subtotal
+# = COD and delivery 0.
+
+STATUS_UPDATE_SHEET = "status_update"
+
+# Stamped when the file moves an order into one of these and it has none.
+_STATUS_STAMPS = {
+    "delivered": "delivered_at",
+    "returned": "returned_at",
+    "dispatched": "dispatched_at",
+    "out_for_delivery": "dispatched_at",
+    "attempt": "dispatched_at",
+}
+
+
+def _receivable_after(order, *, total, shipping, payment_status):
+    """Order.amount_receivable for these values (same formula)."""
+    if payment_status == "paid" and not order.amount_paid:
+        return Decimal("0")
+    grand = (
+        total - order.coupon_discount - order.gift_card_discount - order.loyalty_amount
+        - order.wallet_amount + order.total_tax + order.donation_amount + shipping
+        + order.express_stitching_amount
+    )
+    return max(grand - order.extra_discount - order.amount_paid, Decimal("0"))
+
+
+def cod_changes(order, cod, payment_status):
+    """{total_amount, shipping_amount} changes that make the order's
+    receivable exactly `cod` (with `payment_status`), or {} when it already
+    is / can't be (a Paid order with nothing recorded as paid owes nothing)."""
+    from decimal import ROUND_HALF_UP
+
+    if cod is None or cod < 0:
+        return {}
+    current = _receivable_after(
+        order, total=order.total_amount, shipping=order.shipping_amount, payment_status=payment_status
+    )
+    if current == cod or (payment_status == "paid" and not order.amount_paid):
+        return {}
+    # Receivable with no delivery charge at all.
+    without_delivery = _receivable_after(
+        order, total=order.total_amount, shipping=Decimal("0"), payment_status=payment_status
+    )
+    raw = cod - without_delivery
+    delivery = raw.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    if delivery in (Decimal("0"), Decimal("250")):
+        total = order.total_amount + (raw - delivery)
+    else:
+        delivery = Decimal("0")
+        total = order.total_amount + raw
+    if total < 0:
+        return {}
+    changes = {}
+    if total != order.total_amount:
+        changes["total_amount"] = total
+    if delivery != order.shipping_amount:
+        changes["shipping_amount"] = delivery
+    return changes
+
+
+def _status_update_order_type(raw):
+    """Order Type -> payment_gateway: "cod" or "cc" (Prepaid); "" if blank
+    or not understood."""
+    text = " ".join((raw or "").strip().lower().split())
+    if text in ("cod", "cash on delivery", "cash"):
+        return "cod"
+    if text in ("prepaid", "pre paid", "pre-paid", "paid online", "online", "cc", "card"):
+        return "cc"
+    return ""
+
+
+def run_status_update_import(organization_id, file_obj, *, dry_run=True, actor_user_id=None):
+    rows, errors = parse_rows(file_obj)
+    if not rows:
+        return _empty_result(errors, courier=STATUS_UPDATE_SHEET)
+
+    numbers = {n for row in rows for n in row["order_number_variants"]}
+    cns = {row["cn"] for row in rows if row["cn"]}
+    orders = Order.all_objects.filter(organization_id=organization_id)
+    by_number, by_cn = {}, {}
+    for order in orders.filter(order_number__in=numbers):
+        by_number[order.order_number] = order
+    for order in orders.filter(tracking_number__in=cns):
+        by_cn.setdefault(order.tracking_number.strip(), []).append(order)
+
+    planned, matched_rows, unresolved, reasons = [], [], [], {}
+    unchanged = 0
+    seen = set()
+    cod_moves = 0
+    receivable_before = receivable_after = Decimal("0")
+
+    def not_matched(row, reason):
+        unresolved.append({**_unmatched_row_export(row), "reason": reason})
+        reasons[reason] = reasons.get(reason, 0) + 1
+
+    for row in rows:
+        by_num = next((by_number[n] for n in row["order_number_variants"] if n in by_number), None)
+        cn_hits = by_cn.get(row["cn"], []) if row["cn"] else []
+        if len(cn_hits) > 1:
+            not_matched(row, "CN on more than one order")
+            continue
+        cn_order = cn_hits[0] if cn_hits else None
+        if cn_order is not None:
+            order = cn_order
+            via = "order_number" if by_num is not None and by_num.id == cn_order.id else "tracking"
+        elif by_num is not None and (not row["cn"] or not (by_num.tracking_number or "").strip()):
+            order, via = by_num, "order_number"
+        elif by_num is not None:
+            not_matched(row, "CN differs from the order's")
+            continue
+        else:
+            not_matched(row, "Not in OMS")
+            continue
+        if order.id in seen:
+            not_matched(row, "Same order twice in the file")
+            continue
+        seen.add(order.id)
+
+        changes = {}
+        if row["status"] and row["status"] != order.status:
+            changes["status"] = row["status"]
+            stamp = _STATUS_STAMPS.get(row["status"])
+            if stamp and not getattr(order, stamp):
+                changes[stamp] = row["booking_date"] or timezone.now()
+        if row["tags"] and row["tags"][:100] != (order.tag or ""):
+            changes["tag"] = row["tags"][:100]
+        if row["cn"] and not (order.tracking_number or "").strip():
+            changes["tracking_number"] = row["cn"][:100]
+        # Booking Date: the file's, as the order's Booked At (final, like
+        # the rest of the file).
+        if row["booking_date"] and (
+            not order.booked_at
+            or timezone.localtime(order.booked_at, SHEET_TIMEZONE).date()
+            != timezone.localtime(row["booking_date"], SHEET_TIMEZONE).date()
+        ):
+            changes["booked_at"] = row["booking_date"]
+        # Order Type (COD / Prepaid) - Payment Status (Paid/Pending) isn't
+        # read: it's not tied to anything for now.
+        order_type = _status_update_order_type(row["order_type"])
+        if order_type and order_type != order.payment_gateway:
+            changes["payment_gateway"] = order_type
+        # COD sets the order's amount (what the customer pays) whatever its
+        # Paid/Pending - worked out as if pending.
+        money = cod_changes(order, row["cod_amount"], "pending")
+        changes.update(money)
+
+        old_receivable = _receivable_after(
+            order, total=order.total_amount, shipping=order.shipping_amount, payment_status="pending"
+        )
+        new_receivable = _receivable_after(
+            order,
+            total=changes.get("total_amount", order.total_amount),
+            shipping=changes.get("shipping_amount", order.shipping_amount),
+            payment_status="pending",
+        )
+        receivable_before += old_receivable
+        receivable_after += new_receivable
+        if new_receivable != old_receivable:
+            cod_moves += 1
+
+        shown = _matched_row(
+            order, via, row, changes, file_status=row["status_label"], protected=False, courier_names={}
+        )
+        if new_receivable != old_receivable:
+            shown["changes"]["cod"] = f"{old_receivable} -> {new_receivable}"
+        matched_rows.append(shown)
+        if changes:
+            planned.append((order, changes, via))
+        else:
+            unchanged += 1
+
+    by_status, from_new = _change_summary(planned)
+    applied = False
+    if not dry_run and planned:
+        _apply_planned(organization_id, planned, source="Status Update", actor_user_id=actor_user_id)
+        applied = True
+
+    matched = len(matched_rows)
+    return {
+        **_empty_result(errors[:20], courier=STATUS_UPDATE_SHEET),
+        "total_rows": len(rows),
+        "matched": matched,
+        "matched_by_tracking": sum(1 for r in matched_rows if r["matched_via"] == "tracking"),
+        "unmatched": len(unresolved),
+        "to_update": len(planned),
+        "unchanged": unchanged,
+        "by_status": by_status,
+        "from_new": from_new,
+        "unmatched_samples": [r["order_number"] for r in unresolved[:20]],
+        "unmatched_rows": unresolved,
+        "unmatched_reasons": reasons,
+        "matched_rows": matched_rows,
+        "cod_changes": cod_moves,
+        "receivable_before": str(receivable_before),
+        "receivable_after": str(receivable_after),
         "applied": applied,
     }

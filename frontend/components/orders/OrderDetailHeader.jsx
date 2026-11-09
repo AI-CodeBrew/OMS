@@ -4,12 +4,6 @@ import Badge from "../shared/Badge";
 import { STATUS_LABELS, cardTab, latestTag } from "./statusConfig";
 
 import { formatDateTime } from "../../lib/formatDate";
-const PAYMENT_STATUSES = [
-  { value: "pending", label: "Pending", badge: "amber" },
-  { value: "partially_paid", label: "Partially Paid", badge: "brand" },
-  { value: "paid", label: "Paid", badge: "green" },
-];
-
 const SELECT_CLASS =
   "mt-0.5 w-full rounded-md border border-surface-border px-2 py-1 text-sm outline-none focus:border-brand-500";
 
@@ -39,26 +33,41 @@ export function OrderStatusBadge({ order }) {
 // in the detail panel. Edited through the panel's single Edit. The status
 // is at the top, beside the order number (OrderStatusBadge).
 export default function OrderDetailHeader({ order, draft, editing, onChange }) {
-  const payment = PAYMENT_STATUSES.find((p) => p.value === order.payment_status);
+  // Order Type: COD / Prepaid (payment_gateway "cod" / anything else), or
+  // Partially Paid (payment_status) - which opens Amount Paid / Receivable
+  // for typing in the money boxes (OrderMoneySummary), so they update.
+  const isCod = order.payment_gateway === "cod";
+  const prepaidValue = isCod ? "cc" : order.payment_gateway || "cc";
+  const typeOf = (o) =>
+    o.payment_status === "partially_paid" ? "partial" : o.payment_gateway === "cod" ? "cod" : "prepaid";
+  const savedType = typeOf(order);
+  const TYPE_LABELS = { cod: "COD", prepaid: "Prepaid", partial: "Partially Paid" };
+  const TYPE_BADGES = { cod: "amber", prepaid: "green", partial: "brand" };
+
+  function pickType(next) {
+    if (next === "partial") {
+      onChange("payment_status", "partially_paid");
+      return;
+    }
+    onChange("payment_gateway", next === "cod" ? "cod" : prepaidValue);
+    // Leaving Partially Paid: back to the order's own non-partial status.
+    if (draft.payment_status === "partially_paid") {
+      onChange("payment_status", order.payment_status !== "partially_paid" ? order.payment_status : "pending");
+    }
+  }
 
   return (
     <div className="mt-4 grid grid-cols-2 gap-x-6 gap-y-3 border-t border-surface-border pt-4 sm:grid-cols-3">
       <div>
-        <div className="text-xs text-slate-500">Payment Status</div>
+        <div className="text-xs text-slate-500">Order Type</div>
         {editing ? (
-          <select
-            value={draft.payment_status}
-            onChange={(e) => onChange("payment_status", e.target.value)}
-            className={SELECT_CLASS}
-          >
-            {PAYMENT_STATUSES.map((p) => (
-              <option key={p.value} value={p.value}>
-                {p.label}
-              </option>
-            ))}
+          <select value={typeOf(draft)} onChange={(e) => pickType(e.target.value)} className={SELECT_CLASS}>
+            <option value="cod">COD</option>
+            <option value="prepaid">Prepaid</option>
+            <option value="partial">Partially Paid</option>
           </select>
         ) : (
-          <Badge variant={payment?.badge || "amber"}>{payment?.label || order.payment_status}</Badge>
+          <Badge variant={TYPE_BADGES[savedType]}>{TYPE_LABELS[savedType]}</Badge>
         )}
       </div>
       {order.status === "cancelled" && order.cancel_reason ? (

@@ -187,7 +187,7 @@ export default function OrdersTable({
             {showTransitColumn ? <th className="w-24 px-3 py-2">In Transit</th> : null}
             <th className="w-32 px-3 py-2">Tracking ID (CN)</th>
             <th className="w-24 px-3 py-2 text-right">Amount</th>
-            <th className="w-28 px-3 py-2">Payment Status</th>
+            <th className="w-28 px-3 py-2">Order Type</th>
             <th className="w-10 px-2 py-2" aria-label="Actions" />
           </tr>
         </thead>
@@ -387,7 +387,13 @@ export default function OrdersTable({
                   {/* What the customer pays - total_amount is the items before discounts. */}
                   {order.grand_total ?? order.total_amount}
                 </td>
-                <td className="px-3 py-1.5 capitalize text-slate-700">{order.payment_status?.replace("_", " ")}</td>
+                <td className="px-3 py-1.5 text-slate-700">
+                  {order.payment_status === "partially_paid"
+                    ? "Partially Paid"
+                    : order.payment_gateway === "cod"
+                      ? "COD"
+                      : "Prepaid"}
+                </td>
                 <td className="px-2 py-1.5 text-right">
                   {onRecreate ? (
                     <Dropdown

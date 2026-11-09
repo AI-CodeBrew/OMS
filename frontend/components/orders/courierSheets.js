@@ -479,6 +479,30 @@ export const COURIER_SHEETS = [
   },
 ];
 
+// "Status Update": orders that already exist, matched by Web Order ID + CN;
+// the file's Status, Tags, COD and Payment Status are final and overwrite
+// OMS (backend: importers.run_status_update_import).
+const STATUS_UPDATE_COLUMNS = [
+  "Web Order ID", "CN", "Booking Date", "Status", "Tags", "COD Amount", "Order Type",
+];
+
+COURIER_SHEETS.push({
+  key: "status_update",
+  label: "Status Update",
+  pickerNote: "Update existing orders: Status, Tags, CN, Booking Date, COD, Order Type (by Web Order ID + CN)",
+  courier: false,
+  // Sent to the backend as the sheet kind.
+  param: "status_update",
+  columns: STATUS_UPDATE_COLUMNS,
+  uses: STATUS_UPDATE_COLUMNS,
+  optional: [],
+  sampleRows: [
+    ["#9750", "20215866315989", "15/10/2026", "Delivered", "", "3749", "COD"],
+    ["#9742", "12190000002404", "16/10/2026", "Returned", "Returned", "2499", "COD"],
+    ["5171-R", "20220263656655", "17/10/2026", "Delivered", "", "2499", "Prepaid"],
+  ],
+});
+
 export function courierSheet(key) {
   return COURIER_SHEETS.find((sheet) => sheet.key === key) || null;
 }

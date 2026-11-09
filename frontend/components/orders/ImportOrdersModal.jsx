@@ -85,6 +85,7 @@ const CHANGE_LABELS = {
   tracking_number: "Tracking",
   courier: "Courier",
   courier_status: "Sub Status",
+  booked_at: "Booked on",
   delivered_at: "Delivered on",
   returned_at: "Returned on",
   dispatched_at: "Dispatched on",
@@ -92,9 +93,12 @@ const CHANGE_LABELS = {
   return_reason: "Return reason",
   invoice_number: "Invoice",
   payment_status: "Payment",
+  payment_gateway: "Order Type",
   tag: "Tag",
   courier_charges: "Delivery charges",
-  shipping_amount: "Shipping",
+  shipping_amount: "Delivery",
+  total_amount: "Subtotal",
+  cod: "COD / Receivable",
   placed_at: "Order date",
 };
 
@@ -112,6 +116,7 @@ function changeValue(field, value) {
   if (!value) return "—";
   if (field === "status") return STATUS_LABELS[value] || value;
   if (field === "payment_status") return value === "paid" ? "Paid" : value;
+  if (field === "payment_gateway") return value === "cod" ? "COD" : "Prepaid";
   if (field.endsWith("_at")) {
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? value : formatDate(date);
@@ -319,7 +324,9 @@ export default function ImportOrdersModal({ open, onClose, onImported, stores = 
 
   const format = courierSheet(formatKey);
   // Sent to the backend - empty for the aggregator's sheet.
-  const courierParam = format?.courier ? format.key : "";
+  const courierParam = format?.param || (format?.courier ? format.key : "");
+  // Status Update: the file is final - nothing is "kept", no overwrite box.
+  const isStatusUpdate = format?.key === "status_update";
 
   function clearUpload() {
     setFile(null);
@@ -517,6 +524,16 @@ export default function ImportOrdersModal({ open, onClose, onImported, stores = 
             sheet&apos;s, and {format.label}&apos;s own status becomes its Sub Status. Nothing is
             created, and delivered / returned / cancelled orders only change status if you say so.
           </p>
+        ) : isStatusUpdate ? (
+          <p className="text-sm text-slate-600">
+            Updates orders that already exist. Each row is matched by its Web Order ID and CN together
+            (an order whose number differs but whose CN matches - like a replacement - is matched by
+            CN). A row whose CN differs from the order&apos;s is not touched. The file is final: Status
+            (Delivered / Returned / Cancelled included), Tags, Booking Date (dd/mm/yyyy) and Order
+            Type (COD / Prepaid) are set as written,
+            and each order&apos;s receivable becomes exactly the file&apos;s COD Amount (delivery charge
+            adjusted, never added on top). Nothing is created.
+          </p>
         ) : (
           <p className="text-sm text-slate-600">
             Matches rows to existing orders by order number and fills in what the courier knows:
@@ -548,13 +565,25 @@ export default function ImportOrdersModal({ open, onClose, onImported, stores = 
             </div>
           ) : (
             <>
+              {format.optional?.length ? (
+                <div className="mt-1 text-[11px] text-slate-400">
+                  Optional fallback columns: {format.optional.join(" · ")}
+                </div>
+              ) : null}
               <div className="mt-1 text-[11px] text-slate-400">
-                Optional fallback columns: {format.optional.join(" · ")}
-              </div>
-              <div className="mt-1 text-[11px] text-slate-400">
-                Courier: BarqRaftar · PostEx · Smartlane · TCS · Leopards · Trax · MNP (spacing and
-                case don&apos;t matter). Status: Delivered · Returned · Cancelled · In Transit · Out for
-                Delivery · Attempted. Dates: 15/08/2026 or 15 Aug 2026.
+                {isStatusUpdate ? (
+                  <>
+                    Status: Delivered · Returned · Cancelled · In Transit · Out for Delivery · Attempted.
+                    Order Type: COD · Prepaid. COD Amount: what&apos;s left to collect (0 for a paid
+                    order). Dates: 15/08/2026 or 15 Aug 2026. Blank cells change nothing.
+                  </>
+                ) : (
+                  <>
+                    Courier: BarqRaftar · PostEx · Smartlane · TCS · Leopards · Trax · MNP (spacing and
+                    case don&apos;t matter). Status: Delivered · Returned · Cancelled · In Transit · Out for
+                    Delivery · Attempted. Dates: 15/08/2026 or 15 Aug 2026.
+                  </>
+                )}
               </div>
             </>
           )}
@@ -680,6 +709,14 @@ export default function ImportOrdersModal({ open, onClose, onImported, stores = 
               </div>
             ) : null}
 
+            {isStatusUpdate && preview.receivable_before != null ? (
+              <div className="rounded-md border border-surface-border bg-surface/60 px-3 py-2 text-xs text-slate-700">
+                COD / receivable on matched orders:{" "}
+                <span className="font-semibold tabular-nums">{Number(preview.receivable_before).toLocaleString()}</span> →{" "}
+                <span className="font-semibold tabular-nums text-emerald-700">{Number(preview.receivable_after).toLocaleString()}</span>
+                <span className="text-slate-500"> ({preview.cod_changes} order{preview.cod_changes === 1 ? "" : "s"} change)</span>
+              </div>
+            ) : null}
             {preview.protected > 0 ? (
               <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
                 <div>
