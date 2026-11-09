@@ -7,6 +7,8 @@ import dispatchHubAdminService from "../../../../services/dispatchHubAdminServic
 import useAuthStore from "../../../../store/authStore";
 import { invalidateViewCache } from "../../../../lib/viewCache";
 import GreenTick from "../../../../components/shared/GreenTick";
+import Modal from "../../../../components/shared/Modal";
+import Button from "../../../../components/shared/Button";
 
 // What FynkTech does for the store - core.Organization.SERVICE_MODEL_CHOICES.
 const SERVICE_MODELS = [
@@ -15,6 +17,107 @@ const SERVICE_MODELS = [
   { value: "courier", label: "Only Courier", hint: "OMS couriers connected; the store dispatches itself" },
   { value: "oms_only", label: "Just OMS", hint: "OMS for visibility only" },
 ];
+
+function formatDate(value) {
+  return value ? new Date(value).toLocaleString() : "";
+}
+
+function DetailsSection({ title, rows }) {
+  return (
+    <div>
+      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">{title}</h3>
+      <table className="w-full overflow-hidden rounded-lg border border-surface-border text-sm">
+        <tbody className="divide-y divide-surface-border">
+          {rows.map(([label, value]) => (
+            <tr key={label}>
+              <th className="w-44 bg-slate-50 px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                {label}
+              </th>
+              <td className="select-all px-4 py-2.5 font-medium text-slate-900">
+                {value || <span className="font-normal text-slate-400">—</span>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// Opened from the Bank column: the store's profile - organization, its
+// IDs, login email, service model, when it connected - and its bank
+// details (finance.BankDetails, where FynkTech remits its COD). The list
+// carries no emails, so the store's own record is loaded for them.
+function StoreDetailsPopup({ org, onClose }) {
+  const [emails, setEmails] = useState(null);
+
+  useEffect(() => {
+    if (!org) return undefined;
+    let cancelled = false;
+    setEmails(null);
+    tenantsService
+      .getOrganization(org.id)
+      .then((data) => {
+        if (cancelled) return;
+        const members = data.organization?.members || [];
+        // The admin login first.
+        const sorted = [...members].sort((a, b) => Number(b.role === "org_admin") - Number(a.role === "org_admin"));
+        setEmails(sorted.map((m) => m.email).filter(Boolean));
+      })
+      .catch(() => !cancelled && setEmails([]));
+    return () => {
+      cancelled = true;
+    };
+  }, [org]);
+
+  if (!org) return null;
+  const bank = org.bank_details || {};
+  const stores = org.stores || [];
+  const service = SERVICE_MODELS.find((m) => m.value === org.service_model);
+  const connected = org.shopify?.connected_at;
+
+  return (
+    <Modal
+      open
+      title={org.name}
+      onClose={onClose}
+      width="max-w-2xl"
+      footer={
+        <Button variant="secondary" onClick={onClose}>
+          Close
+        </Button>
+      }
+    >
+      <div className="space-y-5">
+        <DetailsSection
+          title="Store"
+          rows={[
+            ["Organization", org.name],
+            ["Organization ID", org.store_code != null ? String(org.store_code) : ""],
+            ["Store IDs", stores.map((st) => `${st.store_id} - ${st.name}`).join(", ")],
+            ["Email", emails === null ? "Loading…" : emails.join(", ")],
+            ["Services", service ? `${service.label} (${service.hint})` : "Not Set"],
+            [
+              "Date Connected",
+              connected ? `${formatDate(connected)} (Shopify)` : `${formatDate(org.created_at)} (store created)`,
+            ],
+          ]}
+        />
+        <DetailsSection
+          title="Bank"
+          rows={[
+            ["Bank Name", bank.bank_name],
+            ["Account Title", bank.account_title],
+            ["Account Number", bank.account_number],
+            ["IBAN", bank.iban],
+            ["Branch Code", bank.branch_code],
+            ["Last Updated", formatDate(bank.updated_at)],
+          ]}
+        />
+      </div>
+    </Modal>
+  );
+}
 
 function enabledModules(org) {
   return (org.modules || []).filter((m) => m.is_enabled).map((m) => m.module);
@@ -29,6 +132,7 @@ export default function StoresPage() {
   const [search, setSearch] = useState("");
   const [hubBusyId, setHubBusyId] = useState("");
   const [modelBusyId, setModelBusyId] = useState("");
+  const [bankOrg, setBankOrg] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -133,6 +237,7 @@ export default function StoresPage() {
                   <th className="px-4 py-3">Store Integration</th>
                   <th className="px-4 py-3">Service Model</th>
                   <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3">Bank</th>
                   <th className="px-4 py-3 text-center">Actions</th>
                   <th className="px-5 py-3 text-right">Store</th>
                 </tr>
@@ -206,6 +311,19 @@ export default function StoresPage() {
                           <span className="text-xs text-slate-400">No Shopify</span>
                         )}
                       </td>
+                      <td className="px-4 py-3">
+                        {org.bank_details ? (
+                          <button
+                            type="button"
+                            onClick={() => setBankOrg(org)}
+                            className="whitespace-nowrap font-medium text-brand-700 hover:underline"
+                          >
+                            {org.bank_details.bank_name}
+                          </button>
+                        ) : (
+                          <span className="whitespace-nowrap text-xs text-slate-400">Not Added</span>
+                        )}
+                      </td>
                       <td className="px-4 py-3 text-center">
                         <button
                           type="button"
@@ -239,6 +357,7 @@ export default function StoresPage() {
           </div>
         )}
       </div>
+      <StoreDetailsPopup org={bankOrg} onClose={() => setBankOrg(null)} />
     </div>
   );
 }

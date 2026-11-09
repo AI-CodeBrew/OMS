@@ -7,6 +7,8 @@ import integrationsService from "../../../../services/integrationsService";
 import Button from "../../../../components/shared/Button";
 import PasswordInput from "../../../../components/shared/PasswordInput";
 import DateInput from "../../../../components/shared/DateInput";
+import BankDetailsModal from "../../../../components/billing/BankDetailsModal";
+import useBankDetailsGate from "../../../../lib/useBankDetailsGate";
 
 const SHOPIFY_ERROR_MESSAGES = {
   invalid_request: "The Shopify install request could not be verified. Please try again.",
@@ -242,8 +244,16 @@ export default function IntegrationsPage() {
 
   const connected = Boolean(status?.connected);
 
-  async function onStartShopifyConnect(e) {
+  // Connecting Shopify waits for the store's bank details the first time
+  // (where FynkTech remits its COD) - same gate as Settings > Stores.
+  const { requireBankDetails, modalProps: bankModalProps } = useBankDetailsGate();
+
+  function onStartShopifyConnect(e) {
     e.preventDefault();
+    requireBankDetails(startShopifyConnect);
+  }
+
+  async function startShopifyConnect() {
     setError("");
     setNotice("");
     setStartingConnect(true);
@@ -256,8 +266,12 @@ export default function IntegrationsPage() {
     }
   }
 
-  async function onConnect(e) {
+  function onConnect(e) {
     e.preventDefault();
+    requireBankDetails(connectWithCredentials);
+  }
+
+  async function connectWithCredentials() {
     setConnecting(true);
     setError("");
     setNotice("");
@@ -463,6 +477,7 @@ export default function IntegrationsPage() {
 
   return (
     <div>
+      <BankDetailsModal {...bankModalProps} />
       <nav className="mb-4 flex items-center gap-1.5 text-sm text-slate-500">
         <Link href="/integrations" className="hover:text-brand-600">
           Integrations

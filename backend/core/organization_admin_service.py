@@ -103,6 +103,7 @@ def list_organizations(*, include_emails=False):
     # see _serialize_org's hub_ids param.
     hub_ids = _hub_organization_ids()
     stores_by_org = _stores_by_org()
+    bank_by_org = _bank_details_by_org()
 
     results = []
     for org in orgs:
@@ -111,9 +112,34 @@ def list_organizations(*, include_emails=False):
             memberships, email_map if include_emails else None
         )
         results.append(
-            _serialize_org(org, members, hub_ids=hub_ids, stores=stores_by_org.get(str(org.id), []))
+            _serialize_org(
+                org, members, hub_ids=hub_ids, stores=stores_by_org.get(str(org.id), []),
+                bank=bank_by_org.get(str(org.id)),
+            )
         )
     return results
+
+
+def _bank_details_by_org(organization_id=None):
+    """{org id: {...}} - each store's bank details (finance.BankDetails,
+    where FynkTech remits its COD), for the super admin's Stores tab. One
+    query for the whole list."""
+    from finance.models import BankDetails
+
+    qs = BankDetails.all_objects.all()
+    if organization_id:
+        qs = qs.filter(organization_id=organization_id)
+    return {
+        str(d.organization_id): {
+            "account_title": d.account_title,
+            "bank_name": d.bank_name,
+            "account_number": d.account_number,
+            "iban": d.iban,
+            "branch_code": d.branch_code,
+            "updated_at": d.updated_at.isoformat() if d.updated_at else None,
+        }
+        for d in qs
+    }
 
 
 def _stores_by_org(organization_id=None):
@@ -356,7 +382,7 @@ def update_member_credentials(user_id, *, email=None, password=None):
     }
 
 
-def _serialize_org(org, members, hub_ids=None, stores=None):
+def _serialize_org(org, members, hub_ids=None, stores=None, bank=False):
     shopify = None
     try:
         from integrations.models import ShopifyConnection
@@ -371,6 +397,8 @@ def _serialize_org(org, members, hub_ids=None, stores=None):
                 "shop_domain": conn.shop_domain,
                 "shop_name": conn.shop_name,
                 "is_connected": conn.is_connected,
+                # When the store first connected Shopify to OMS.
+                "connected_at": conn.created_at.isoformat() if conn.created_at else None,
                 "last_synced_at": (
                     conn.last_synced_at.isoformat() if conn.last_synced_at else None
                 ),
@@ -390,6 +418,9 @@ def _serialize_org(org, members, hub_ids=None, stores=None):
         # Its stores (shop names) with their Store IDs - the orders report's
         # Store ID column.
         "stores": stores if stores is not None else _stores_by_org(org.id).get(str(org.id), []),
+        # Where FynkTech remits its COD - null until the store saves them
+        # (asked before its first integration / store create).
+        "bank_details": bank if bank is not False else _bank_details_by_org(org.id).get(str(org.id)),
         "in_dispatch_hub": (
             str(org.id) in hub_ids if hub_ids is not None else hasattr(org, "dispatch_hub_entry")
         ),
