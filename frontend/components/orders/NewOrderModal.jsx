@@ -141,10 +141,18 @@ const RECREATE_CHOICES = [
 // replacement gets an "R" by its number) and never created on Shopify -
 // the Shopify option isn't offered.
 //
-// stores: only passed in the Dispatch Hub ([{id, name, store_code}]). The
-// Hub has no store of its own, so the form opens straight on Book Manual
-// with a Store picker; the Organization ID is asked only when two stores share
-// the picked name, otherwise it's filled in.
+// stores: only passed in the Dispatch Hub (its organizations). The Hub has
+// no store of its own, so the form opens straight on Book Manual. Both
+// there and in a store, the Store picker lists the stores (shop names, with
+// their Store ID - ordersService.storeOptions) and the Organization fills
+// itself in. The order is saved under the picked store's name.
+//
+// Order number: on Shopify, Shopify's next number; otherwise the order's
+// OMS Order ID + M (15420M), given on save; a Replacement, the original's
+// number + R.
+//
+// Products: typing a name fills its SKU, typing an SKU fills its name, from
+// the store's inventory and past orders (ordersService.productLookup).
 export default function NewOrderModal({ open, recreateFrom = null, stores = null, onClose, onCreated }) {
   const [recreateType, setRecreateType] = useState(null);
   // The store has Shopify connected - Recreate's New order goes there.
@@ -157,8 +165,13 @@ export default function NewOrderModal({ open, recreateFrom = null, stores = null
     setOnShopify(recreateType === "new" && storeHasShopify);
   }, [recreateFrom, recreateType, storeHasShopify]);
   const [view, setView] = useState("methods"); // "methods" | "manual"
-  const [storeName, setStoreName] = useState("");
+  // The picked store: an entry of storeOptions ({store_id, store_name,
+  // organization_id, organization_name}); storeId is its organization.
+  const [storeOptions, setStoreOptions] = useState([]);
+  const [storeKey, setStoreKey] = useState("");
   const [storeId, setStoreId] = useState("");
+  const [productHints, setProductHints] = useState([]);
+  const lookupTimer = useRef(null);
   const [form, setForm] = useState(emptyForm);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
@@ -176,6 +189,32 @@ export default function NewOrderModal({ open, recreateFrom = null, stores = null
     loadOrderInfo("");
   }
 
+  const optionKey = (o) => `${o.organization_id}|${o.store_name}`;
+  const pickedStore = storeOptions.find((o) => optionKey(o) === storeKey) || null;
+
+  useEffect(() => {
+    if (!open || view !== "manual") return undefined;
+    let cancelled = false;
+    ordersService
+      .storeOptions()
+      .then((options) => {
+        if (cancelled) return;
+        setStoreOptions(options);
+        // A recreated order stays in its own store; a single store is picked for you.
+        const own = recreateFrom
+          ? options.find((o) => o.organization_id === recreateFrom.organization_id && o.store_name === recreateFrom.shop) ||
+            options.find((o) => o.organization_id === recreateFrom.organization_id)
+          : null;
+        const pick = own || (options.length === 1 ? options[0] : null);
+        if (pick) pickStoreOption(optionKey(pick), options);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, view]);
+
   async function loadOrderInfo(organizationId, { renumber = false } = {}) {
     try {
       const info = await ordersService.getNewOrderInfo(organizationId);
@@ -190,12 +229,12 @@ export default function NewOrderModal({ open, recreateFrom = null, stores = null
     }
   }
 
-  // Hub: the stores carrying `name`, oldest Organization ID first.
-  const sameName = (name) =>
-    (stores || [])
-      .filter((s) => s.name === name)
-      .sort((a, b) => (a.store_code || 0) - (b.store_code || 0));
-  const storeNames = [...new Set((stores || []).map((s) => s.name))].sort((a, b) => a.localeCompare(b));
+  function pickStoreOption(key, options = storeOptions) {
+    setStoreKey(key);
+    const option = options.find((o) => optionKey(o) === key);
+    // In a store the organization is always its own; the Hub's changes with the store.
+    if (stores && (option?.organization_id || "") !== storeId) pickStore(option?.organization_id || "");
+  }
 
   function pickStore(id) {
     setStoreId(id);
@@ -206,22 +245,13 @@ export default function NewOrderModal({ open, recreateFrom = null, stores = null
     else setForm((f) => ({ ...f, order_number: "" }));
   }
 
-  function pickStoreName(name) {
-    setStoreName(name);
-    const matches = sameName(name);
-    pickStore(matches.length === 1 ? matches[0].id : "");
-  }
-
   // Hub: no Booking Methods screen (the Hub has its own Import) - straight
   // to the form. A recreated order stays in its own store.
   useEffect(() => {
     if (!open || !stores) return;
     setView("manual");
     const from = recreateFrom && stores.find((s) => s.id === recreateFrom.organization_id);
-    if (from) {
-      setStoreName(from.name);
-      pickStore(from.id);
-    }
+    if (from) pickStore(from.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, stores, recreateFrom]);
 
@@ -246,7 +276,9 @@ export default function NewOrderModal({ open, recreateFrom = null, stores = null
 
   function resetAll() {
     setView("methods");
-    setStoreName("");
+    setStoreKey("");
+    setStoreOptions([]);
+    setProductHints([]);
     setStoreId("");
     setRecreateType(null);
     setOnShopify(false);
@@ -267,11 +299,54 @@ export default function NewOrderModal({ open, recreateFrom = null, stores = null
   }
 
   function updateItem(index, field) {
-    return (e) =>
+    return (e) => {
+      const value = e.target.value;
       setForm((f) => ({
         ...f,
-        items: f.items.map((item, i) => (i === index ? { ...item, [field]: e.target.value } : item)),
+        items: f.items.map((item, i) =>
+          i === index
+            ? {
+                ...item,
+                [field]: value,
+                // Typed by hand now - no longer the auto-filled one.
+                ...(field === "product_name" ? { autoName: false } : {}),
+                ...(field === "barcode" ? { autoSku: false } : {}),
+              }
+            : item
+        ),
       }));
+      if (field === "product_name" || field === "barcode") lookupProduct(index, field, value);
+    };
+  }
+
+  // A product name fills its SKU, an SKU fills its name - only into a blank
+  // field or one filled in this way before, never over what was typed.
+  function lookupProduct(index, field, value) {
+    clearTimeout(lookupTimer.current);
+    const q = value.trim();
+    if (q.length < 2) return;
+    lookupTimer.current = setTimeout(async () => {
+      const results = await ordersService.productLookup({ q, organization_id: stores ? storeId : undefined });
+      setProductHints(results);
+      const low = q.toLowerCase();
+      const exact = results.find((r) =>
+        field === "product_name" ? r.product_name.toLowerCase() === low : r.sku && r.sku.toLowerCase() === low
+      );
+      if (!exact) return;
+      setForm((f) => ({
+        ...f,
+        items: f.items.map((item, i) => {
+          if (i !== index) return item;
+          if (field === "product_name" && exact.sku && (!item.barcode || item.autoSku)) {
+            return { ...item, barcode: exact.sku, autoSku: true };
+          }
+          if (field === "barcode" && (!item.product_name || item.autoName)) {
+            return { ...item, product_name: exact.product_name, autoName: true };
+          }
+          return item;
+        }),
+      }));
+    }, 300);
   }
 
   function addItem() {
@@ -291,8 +366,8 @@ export default function NewOrderModal({ open, recreateFrom = null, stores = null
 
   async function onSubmit(e) {
     e.preventDefault();
-    if (stores && !storeId) {
-      setError(storeName ? "Pick the Organization ID - more than one organization has this name." : "Pick a store.");
+    if (!pickedStore && !recreateFrom) {
+      setError("Pick a store.");
       return;
     }
     setCreating(true);
@@ -300,9 +375,12 @@ export default function NewOrderModal({ open, recreateFrom = null, stores = null
     try {
       await ordersService.create({
         ...(stores ? { organization_id: storeId } : {}),
+        // A recreated order keeps the store of the order it came from.
+        ...(pickedStore && !recreateFrom ? { shop: pickedStore.store_name } : {}),
         ...(recreateFrom ? { recreate_type: recreateType, recreated_from: recreateFrom.id } : {}),
         create_on_shopify: onShopify && !recreateFrom,
-        order_number: onShopify ? "" : form.order_number.trim(),
+        // Shopify numbers it, or the server: OMS Order ID + M.
+        order_number: "",
         order_date: form.order_date,
         payment_gateway: form.payment_gateway,
         customer_name: form.customer_name.trim(),
@@ -447,49 +525,39 @@ export default function NewOrderModal({ open, recreateFrom = null, stores = null
     >
       {errorBox}
       <form onSubmit={onSubmit} className="space-y-5">
-        {stores ? (
-          <section>
-            <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Store</h4>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <Field label="Store" required className="sm:col-span-2">
-                <select
-                  required
-                  value={storeName}
-                  onChange={(e) => pickStoreName(e.target.value)}
-                  disabled={Boolean(recreateFrom)}
-                  className={INPUT}
-                >
-                  <option value="">Select a store</option>
-                  {storeNames.map((name) => (
-                    <option key={name} value={name}>
-                      {name}
-                      {sameName(name).length > 1 ? ` (${sameName(name).length} stores)` : ""}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Organization ID" required>
-                {sameName(storeName).length > 1 && !recreateFrom ? (
-                  <select required value={storeId} onChange={(e) => pickStore(e.target.value)} className={INPUT}>
-                    <option value="">Select ID</option>
-                    {sameName(storeName).map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.store_code ?? "—"}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    disabled
-                    value={(stores.find((s) => s.id === storeId) || {}).store_code ?? ""}
-                    placeholder="Filled in from the store"
-                    className={`${INPUT} bg-surface text-slate-500`}
-                  />
-                )}
-              </Field>
-            </div>
-          </section>
-        ) : null}
+        <section>
+          <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Store</h4>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field label="Store" required>
+              <select
+                required={!recreateFrom}
+                value={storeKey}
+                onChange={(e) => pickStoreOption(e.target.value)}
+                disabled={Boolean(recreateFrom)}
+                className={INPUT}
+              >
+                <option value="">{storeOptions.length ? "Select a store" : "Loading stores…"}</option>
+                {storeOptions.map((o) => (
+                  <option key={optionKey(o)} value={optionKey(o)}>
+                    {o.store_name}
+                    {o.store_id ? ` (Store ID ${o.store_id})` : ""}
+                    {stores && storeOptions.some((x) => x.store_name === o.store_name && x !== o)
+                      ? ` - ${o.organization_name}`
+                      : ""}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Organization" required>
+              <input
+                disabled
+                value={pickedStore?.organization_name || ""}
+                placeholder="Filled in from the store"
+                className={`${INPUT} bg-surface text-slate-500`}
+              />
+            </Field>
+          </div>
+        </section>
 
         {shopifyConnected && !recreateFrom ? (
           <label className="flex items-start gap-2 rounded-md border border-surface-border bg-surface px-3 py-2.5">
@@ -512,7 +580,7 @@ export default function NewOrderModal({ open, recreateFrom = null, stores = null
         <section>
           <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Order</h4>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <Field label="Order number" required={!onShopify}>
+            <Field label="Order number" required={false}>
               {recreateFrom && recreateType === "replacement" ? (
                 <input
                   disabled
@@ -522,7 +590,12 @@ export default function NewOrderModal({ open, recreateFrom = null, stores = null
               ) : onShopify ? (
                 <input disabled value="Assigned by Shopify" className={`${INPUT} bg-surface text-slate-500`} />
               ) : (
-                <input required value={form.order_number} onChange={updateField("order_number")} className={INPUT} />
+                <input
+                  disabled
+                  value="OMS Order ID + M (given on save)"
+                  title="Not on Shopify: the order is numbered by its OMS Order ID with an M, e.g. 15420M"
+                  className={`${INPUT} bg-surface text-slate-500`}
+                />
               )}
             </Field>
             <Field label="Order date" required>
@@ -589,6 +662,22 @@ export default function NewOrderModal({ open, recreateFrom = null, stores = null
           <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Products</h4>
           {/* One header row + one aligned line per product, table-style.
               Scrolls sideways on narrow screens rather than wrapping. */}
+          <datalist id="new-order-product-names">
+            {productHints.map((h) => (
+              <option key={`n-${h.product_name}|${h.sku}`} value={h.product_name}>
+                {h.sku}
+              </option>
+            ))}
+          </datalist>
+          <datalist id="new-order-product-skus">
+            {productHints
+              .filter((h) => h.sku)
+              .map((h) => (
+                <option key={`s-${h.sku}|${h.product_name}`} value={h.sku}>
+                  {h.product_name}
+                </option>
+              ))}
+          </datalist>
           <div className="overflow-x-auto rounded-md border border-surface-border">
             <div className="min-w-[640px]">
               <div
@@ -620,6 +709,8 @@ export default function NewOrderModal({ open, recreateFrom = null, stores = null
                     required
                     aria-label="Product name"
                     placeholder="e.g. Black T-Shirt"
+                    list="new-order-product-names"
+                    autoComplete="off"
                     value={item.product_name}
                     onChange={updateItem(index, "product_name")}
                     className={CELL_INPUT}
@@ -627,6 +718,8 @@ export default function NewOrderModal({ open, recreateFrom = null, stores = null
                   <input
                     aria-label="SKU"
                     placeholder="Optional"
+                    list="new-order-product-skus"
+                    autoComplete="off"
                     value={item.barcode}
                     onChange={updateItem(index, "barcode")}
                     className={CELL_INPUT}

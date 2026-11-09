@@ -6,6 +6,7 @@ from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 
+from django.db import transaction
 from django.db.models import Count, F, OuterRef, Prefetch, Q, Subquery, Sum
 from django.db.models.functions import Coalesce, TruncDate
 from django.http import HttpResponse, StreamingHttpResponse
@@ -871,8 +872,17 @@ class OrderViewSet(viewsets.ModelViewSet):
         if recreate_type == "replacement":
             # The original's store order ID plus R (R2, R3 ... after that).
             data["order_number"] = services.next_replacement_number(recreated_from)
-        elif not on_shopify and not str(data.get("order_number") or "").strip():
-            data["order_number"] = services.next_order_number(organization_id)
+        else:
+            # Not on Shopify: numbered OMS Order ID + "M" (15420M) once it's
+            # saved - a placeholder until then. Never a Shopify-style number,
+            # which the store's next real Shopify order would collide with.
+            data["order_number"] = services.manual_order_placeholder()
+        m_number = not on_shopify and recreate_type != "replacement"
+
+        # The store (shop name) picked on the form - one of this org's stores.
+        shop = str(request.data.get("shop") or "").strip()
+        if shop and shop not in {o["store_name"] for o in services.store_options([organization_id])}:
+            return Response({"detail": "Pick one of this organization's stores."}, status=status.HTTP_400_BAD_REQUEST)
 
         # Everything a courier booking needs - the same columns the import
         # template requires (see order_importer.REQUIRED_COLUMNS).
@@ -898,7 +908,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                 {"detail": "Please fill in: " + ", ".join(missing)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if not on_shopify and Order.all_objects.filter(
+        if not on_shopify and not m_number and Order.all_objects.filter(
             organization_id=organization_id, order_number=data["order_number"]
         ).exists():
             return Response(
@@ -914,6 +924,8 @@ class OrderViewSet(viewsets.ModelViewSet):
             )
             if field in data
         }
+        if shop:
+            extra_fields["shop"] = shop
         if recreated_from:
             extra_fields["recreate_type"] = recreate_type
             extra_fields["recreated_from"] = recreated_from
@@ -949,15 +961,19 @@ class OrderViewSet(viewsets.ModelViewSet):
                     note=str(request.data.get("notes") or "").strip(),
                     actor_user_id=request.user_id,
                 )
-            return services.create_order(
-                organization_id=organization_id,
-                order_number=data["order_number"],
-                customer_name=data["customer_name"],
-                customer_phone=data.get("customer_phone", ""),
-                items=items,
-                extra_fields=extra_fields,
-                note=str(request.data.get("notes") or "").strip(),
-            )
+            with transaction.atomic():
+                created = services.create_order(
+                    organization_id=organization_id,
+                    order_number=data["order_number"],
+                    customer_name=data["customer_name"],
+                    customer_phone=data.get("customer_phone", ""),
+                    items=items,
+                    extra_fields=extra_fields,
+                    note=str(request.data.get("notes") or "").strip(),
+                )
+                if m_number:
+                    services.assign_manual_order_number(created)
+            return created
 
         # In Hub mode the ambient context is scoped to every Hub store, not
         # this one specific org - narrow it for the write itself so
@@ -994,7 +1010,33 @@ class OrderViewSet(viewsets.ModelViewSet):
             "shopify_connected": ShopifyConnection.all_objects.filter(
                 organization_id=organization_id, is_connected=True
             ).exists(),
-            "next_order_number": services.next_order_number(organization_id),
+            # Not on Shopify, an order is numbered OMS Order ID + M on save.
+            "next_order_number": "",
+            "stores": services.store_options([organization_id]),
+        })
+
+    @action(detail=False, methods=["get"], url_path="store-options")
+    def store_options(self, request):
+        """The Manual Order form's Store picker: every store this user can
+        book for - {store_id, store_name, organization_id,
+        organization_name} - the store's own in a store, every Hub store's
+        in the Dispatch Hub / All Orders."""
+        org_ids = request.organization_ids if is_hub_request(request) else [request.organization_id]
+        return Response({"results": services.store_options(org_ids)})
+
+    @action(detail=False, methods=["get"], url_path="product-lookup")
+    def product_lookup(self, request):
+        """The Manual Order form's product name <-> SKU fill: up to 20
+        {product_name, sku} of one store (`organization_id`, needed in the
+        Hub) matching `q` by name or SKU - its inventory first, then the
+        products on its past orders."""
+        organization_id = request.organization_id
+        if is_hub_request(request):
+            organization_id = request.query_params.get("organization_id")
+            if str(organization_id) not in request.organization_ids:
+                return Response({"results": []})
+        return Response({
+            "results": services.product_lookup(organization_id, request.query_params.get("q") or "")
         })
 
     def retrieve(self, request, *args, **kwargs):

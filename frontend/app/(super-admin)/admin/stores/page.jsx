@@ -262,9 +262,6 @@ export default function StoresPage() {
                           {org.in_dispatch_hub ? <GreenTick /> : <span className="h-4 w-4 shrink-0" />}
                           <div className="min-w-0">
                             <p className="truncate font-medium text-slate-900">{org.name}</p>
-                            {shopify?.shop_domain ? (
-                              <p className="truncate text-xs text-slate-500">{shopify.shop_domain}</p>
-                            ) : null}
                           </div>
                         </div>
                       </td>

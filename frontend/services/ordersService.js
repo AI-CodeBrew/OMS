@@ -51,6 +51,29 @@ class OrdersService {
     return data;
   }
 
+  // The Manual Order form's Store picker: [{store_id, store_name,
+  // organization_id, organization_name, organization_code}].
+  async storeOptions() {
+    const response = await fetch(`${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderStoreOptions}`, {
+      headers: authService.getAuthHeaders(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Failed to load stores");
+    return data.results || [];
+  }
+
+  // The Manual Order form's product name <-> SKU fill: [{product_name, sku}]
+  // matching q (organization_id needed in the Dispatch Hub).
+  async productLookup(params) {
+    const response = await fetch(
+      `${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderProductLookup}${buildQuery(params)}`,
+      { headers: authService.getAuthHeaders() }
+    );
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) return [];
+    return data.results || [];
+  }
+
   // One list filter's choices (field: f_shop / f_city / f_province /
   // f_courier) for the orders the page shows: {results: [{value, label,
   // count}], truncated}.

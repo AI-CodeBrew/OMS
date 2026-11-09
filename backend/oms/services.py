@@ -69,6 +69,113 @@ def create_order(*, organization_id, order_number, customer_name, customer_phone
     return order
 
 
+MANUAL_ORDER_SUFFIX = "M"
+
+
+def manual_order_placeholder():
+    """A unique stand-in order number until the order has its OMS Order ID
+    (assign_manual_order_number) - never left on an order."""
+    import uuid
+
+    return f"TMP-{uuid.uuid4().hex[:20]}"
+
+
+def assign_manual_order_number(order):
+    """A manual order not created on Shopify is numbered by its OMS Order
+    ID plus M (OMS ID 15420 -> "15420M") - can never collide with a Shopify
+    number, unlike "the store's next number" did (#12790)."""
+    order.refresh_from_db(fields=["supabase_order_no"])
+    order.order_number = f"{order.supabase_order_no}{MANUAL_ORDER_SUFFIX}"
+    Order.all_objects.filter(pk=order.pk).update(order_number=order.order_number)
+    return order
+
+
+# Not real stores - what manual orders used to be saved under.
+_NOT_A_STORE = {"manual"}
+
+
+def store_options(organization_ids):
+    """[{store_id, store_name, organization_id, organization_name,
+    organization_code}] - the stores (oms.Store, by shop name) of these
+    organizations, for the Manual Order form. "Manual" isn't a store; an
+    organization with no store yet is offered under its Shopify store name,
+    else its own name (store_id None until its first order)."""
+    from core.models import Organization
+    from integrations.models import ShopifyConnection
+
+    from .models import Store
+
+    orgs = {
+        str(o.id): o
+        for o in Organization.objects.filter(id__in=[i for i in organization_ids if i], is_platform=False)
+    }
+    shop_names = dict(
+        ShopifyConnection.all_objects.filter(organization_id__in=list(orgs), is_connected=True)
+        .exclude(shop_name="")
+        .values_list("organization_id", "shop_name")
+    )
+    by_org = {}
+    for store in Store.all_objects.filter(organization_id__in=list(orgs)).order_by("store_id"):
+        if store.name.strip().lower() in _NOT_A_STORE:
+            continue
+        by_org.setdefault(str(store.organization_id), []).append((store.store_id, store.name))
+    options = []
+    for org_id, org in orgs.items():
+        stores = by_org.get(org_id) or [(None, shop_names.get(org.id) or org.name)]
+        for store_id, name in stores:
+            options.append({
+                "store_id": store_id,
+                "store_name": name,
+                "organization_id": org_id,
+                "organization_name": org.name,
+                "organization_code": org.store_code,
+            })
+    options.sort(key=lambda o: (o["store_name"].lower(), o["organization_name"].lower()))
+    return options
+
+
+def product_lookup(organization_id, q, *, limit=20):
+    """[{product_name, sku}] of one store matching `q` by name or SKU -
+    its WMS inventory first, then products on its past orders - for the
+    Manual Order form's name <-> SKU fill. Exact SKU matches come first."""
+    from django.db.models import Q
+
+    from wms.models import StockItem
+
+    q = (q or "").strip()
+    if not organization_id or not q:
+        return []
+    seen, results = set(), []
+
+    def add(name, sku):
+        name, sku = (name or "").strip(), (sku or "").strip()
+        key = (name.lower(), sku.lower())
+        if not name or key in seen:
+            return
+        seen.add(key)
+        results.append({"product_name": name, "sku": sku})
+
+    match = Q(product_name__icontains=q) | Q(sku__icontains=q)
+    for name, sku in (
+        StockItem.all_objects.filter(match, organization_id=organization_id)
+        .values_list("product_name", "sku").order_by("product_name")[:limit]
+    ):
+        add(name, sku)
+    if len(results) < limit:
+        for name, sku in (
+            OrderItem.all_objects.filter(
+                Q(product_name__icontains=q) | Q(barcode__icontains=q), organization_id=organization_id
+            )
+            .exclude(barcode="")
+            .values_list("product_name", "barcode").distinct().order_by("product_name")[: limit * 3]
+        ):
+            add(name, sku)
+            if len(results) >= limit:
+                break
+    results.sort(key=lambda r: (r["sku"].lower() != q.lower(), r["product_name"].lower() != q.lower()))
+    return results[:limit]
+
+
 def next_order_number(organization_id):
     """The number after this store's newest order - "#1176" -> "#1177",
     "PB-0099" -> "PB-0100" - for a manual order on a store that doesn't
