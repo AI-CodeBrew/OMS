@@ -317,6 +317,8 @@ export const ACTIONS_BY_STATUS = {
   // Undelivered: tell the courier Reattempt or Return (Shipper Advice).
   attempt: [{ action: "shipper_advice", label: "Shipper Advice" }],
   delivered: [],
-  cancelled: [],
+  // Back to Awaiting Confirmation, tagged "moved from cancel orders" - same
+  // order IDs (backend: services.revert_cancelled_order).
+  cancelled: [{ key: "revert_cancelled", action: "revert_cancelled", label: "Revert to Awaiting Confirmation" }],
   returned: [],
 };

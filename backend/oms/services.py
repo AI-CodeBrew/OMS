@@ -1015,6 +1015,32 @@ def cancel_order(order, *, reason="", actor_user_id=None, propagate_to_courier=T
     )
 
 
+# The Cancelled card's Revert: back to Awaiting Confirmation (New) to be
+# checked and approved again. Same OMS Order ID and store order ID; its
+# cancel reason and any (already cancelled) booking leftovers are cleared,
+# and it's tagged so it's clear where it came from.
+CANCEL_REVERT_TAG = "moved from cancel orders"
+
+
+def revert_cancelled_order(order, *, actor_user_id=None):
+    if order.status != "cancelled":
+        raise InvalidTransition(
+            f"Order {order.order_number} is {order.get_status_display()} - only Cancelled orders can be reverted here."
+        )
+    return _force_transition(
+        order,
+        "new",
+        actor_user_id=actor_user_id,
+        note=f"{REVERT_NOTE_PREFIX}Awaiting Confirmation - from Cancelled",
+        extra_fields={
+            **_BOOKING_FIELDS_CLEARED,
+            "cancel_reason": "",
+            "workflow_flag": "",
+            "tag": CANCEL_REVERT_TAG,
+        },
+    )
+
+
 # Why an order came back to Approved with its booking cancelled - see
 # Order.workflow_flag.
 FLAG_CANCELLED_FROM_ASSIGNING = "cancelled_from_assigning"

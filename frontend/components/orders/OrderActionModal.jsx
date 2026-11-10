@@ -66,6 +66,11 @@ const CONFIRM_BY_ACTION = {
   },
   approve: { title: "Approve order(s)", button: "Approve", result: "move to Approved" },
   self_deliver: { title: "Self Deliver", button: "Self Deliver", result: "move to Self Delivered" },
+  revert_cancelled: {
+    title: "Revert to Awaiting Confirmation",
+    button: "Revert",
+    result: 'move back to Awaiting Confirmation, tagged "moved from cancel orders"',
+  },
   dispatch: { title: "Dispatch order(s)", button: "Dispatch", result: "be marked Dispatched" },
   cancel_fulfillment: {
     title: "Cancel fulfillment",

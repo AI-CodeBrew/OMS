@@ -229,6 +229,9 @@ BULK_ACTIONS = {
         order, advice=str(params.get("advice") or ""), remarks=str(params.get("remarks") or ""),
         actor_user_id=actor,
     ),
+    "revert_cancelled": lambda order, params, actor: services.revert_cancelled_order(
+        order, actor_user_id=actor
+    ),
     "revert_to_confirmation": lambda order, params, actor: services.revert_to_awaiting_confirmation(
         order, tag=str(params.get("tag") or ""), actor_user_id=actor
     ),
