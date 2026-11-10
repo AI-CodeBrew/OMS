@@ -69,12 +69,12 @@ export default function PurchaseOrderDetailModal({ po, onClose, onReceive }) {
   const [error, setError] = useState("");
   if (!po) return null;
 
-  // This PO's full report - the same columns as the page's Export.
+  // This PO as a PDF - FynkTech + store name, details, products and costs.
   async function download() {
     setDownloading(true);
     setError("");
     try {
-      await wmsService.exportPurchaseOrders({ id: po.id, filename: `${po.po_number}.csv` });
+      await wmsService.downloadPurchaseOrderPdf(po.id, `${po.po_number}.pdf`);
     } catch (err) {
       setError(err.message || "Download failed");
     } finally {

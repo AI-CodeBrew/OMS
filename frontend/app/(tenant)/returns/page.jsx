@@ -13,6 +13,7 @@ import ScanPanel from "../../../components/wms/ScanPanel";
 import { describeReturnOutcome, SCAN_DESKS } from "../../../lib/scanDesks";
 import { usePhoneScanStore } from "../../../lib/phoneScanSession";
 import ReturnBreakdownModal from "../../../components/wms/ReturnBreakdownModal";
+import ReturnsImportModal from "../../../components/wms/ReturnsImportModal";
 import Modal from "../../../components/shared/Modal";
 
 import { formatDateTime } from "../../../lib/formatDate";
@@ -99,6 +100,30 @@ export default function ReturnsPage() {
   const [receiving, setReceiving] = useState(null);
   // The Scan popup (Awaiting Scan's Scan button).
   const [scanOpen, setScanOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
+
+  // The page's own filters - for Export and the Import sheet.
+  const pageFilters = {
+    search: appliedSearch || undefined,
+    search_field: appliedSearch ? "all" : undefined,
+    date_from: dateFrom || undefined,
+    date_to: dateTo || undefined,
+  };
+
+  async function exportList() {
+    setExporting(true);
+    setError("");
+    try {
+      // The card on screen: Awaiting Scan / Received / everything.
+      const received = bucket === "awaiting" ? "no" : bucket === "received" ? "yes" : undefined;
+      await wmsService.exportReturns({ ...pageFilters, received });
+    } catch (err) {
+      setError(err.message || "Export failed");
+    } finally {
+      setExporting(false);
+    }
+  }
   // The order whose details are open (read only), or null.
   const [detailOrderId, setDetailOrderId] = useState(null);
 
@@ -204,6 +229,15 @@ export default function ReturnsPage() {
         <div>
           <h1 className="text-2xl font-semibold text-slate-900" title={"Scan a returned parcel when it arrives, then count each SKU as good, damaged or lost/missing. Only good units go back into stock."}>Returns</h1>
         </div>
+        <div className="flex flex-wrap items-center gap-2">
+        <Button variant="secondary" loading={exporting} onClick={exportList}>
+          Export
+        </Button>
+        {canWrite ? (
+          <Button variant="secondary" onClick={() => setImportOpen(true)}>
+            Import
+          </Button>
+        ) : null}
         <DateRangeFilter
           dateFrom={dateFrom}
           dateTo={dateTo}
@@ -218,6 +252,7 @@ export default function ReturnsPage() {
             setPage(1);
           }}
         />
+        </div>
       </div>
 
       {error ? (
@@ -455,6 +490,12 @@ export default function ReturnsPage() {
       {/* After the Scan popup, so the count popup opens on top of it. */}
       <ReturnBreakdownModal request={receiving} onConfirm={confirmReceive} onClose={() => setReceiving(null)} />
 
+      <ReturnsImportModal
+        open={importOpen}
+        filters={pageFilters}
+        onClose={() => setImportOpen(false)}
+        onImported={() => load()}
+      />
     </div>
   );
 }

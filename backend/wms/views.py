@@ -11,6 +11,7 @@ from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 
 from core.permissions import RequireAnyModule, RequireModule
@@ -169,11 +170,40 @@ class PurchaseOrderViewSet(viewsets.ReadOnlyModelViewSet):
             for row in (request.data.get("receipts") or [])
             if isinstance(row, dict) and row.get("line")
         }
+        # Editable on Receive: the logistics cost and each product's cost.
+        unit_prices = request.data.get("unit_prices") or {}
+        if not isinstance(unit_prices, dict):
+            return Response({"detail": "unit_prices must be {line: price}."}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            services.receive_purchase_order(po, receipts, actor_user_id=request.user_id)
+            with transaction.atomic():
+                services.update_purchase_order_costs(
+                    po, logistics_cost=request.data.get("logistics_cost"), unit_prices=unit_prices
+                )
+                if receipts:
+                    services.receive_purchase_order(po, receipts, actor_user_id=request.user_id)
         except services.PurchaseOrderError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(self.get_serializer(self.get_queryset().get(id=po.id)).data)
+
+    @action(detail=True, methods=["get"])
+    def pdf(self, request, pk=None):
+        """The PO as a PDF (the PO popup's Download PO): FynkTech's name,
+        the store, every detail, products and costs - see wms/po_pdf.py."""
+        from django.http import HttpResponse
+
+        from integrations.barqraftar.loadsheet import render_pdf
+
+        from .po_pdf import po_html
+
+        po = self.get_object()
+        data = self.get_serializer(po).data
+        try:
+            pdf_bytes = render_pdf(po_html(data, po.organization.name), context="purchase order")
+        except Exception as exc:  # noqa: BLE001 - the worker's own message is the useful part
+            return Response({"detail": str(exc).replace("BarqRaftar ", "")}, status=status.HTTP_502_BAD_GATEWAY)
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = f'attachment; filename="{po.po_number}.pdf"'
+        return response
 
     @action(detail=False, methods=["get"])
     def export(self, request):
@@ -790,6 +820,60 @@ class ReturnRestockView(viewsets.ViewSet):
     permission_classes = [RequireAnyModule]
     required_any_module = ("wms", "returns")
     page_access = {"*": {"read": ("wms.returns_desk",), "write": ("wms.returns_desk",)}}
+
+    def _csv_response(self, rows, filename):
+        class Echo:
+            def write(self, value):
+                return value
+
+        writer = csv.writer(Echo())
+        response = StreamingHttpResponse((writer.writerow(r) for r in rows), content_type="text/csv")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
+
+    @action(detail=False, methods=["get"], url_path="export")
+    def export(self, request):
+        """The desk's orders as a list - the card on screen (received=yes /
+        no / blank for all), its dates and search (see returns_io)."""
+        from zoneinfo import ZoneInfo
+
+        from . import returns_io
+
+        pkt = ZoneInfo("Asia/Karachi")
+        received = {"yes": True, "no": False}.get(request.query_params.get("received") or "")
+        qs = returns_io.returned_orders(org_filter(request), request.query_params, received=received)
+        when = lambda v: v.astimezone(pkt).strftime("%d/%m/%Y %I:%M %p") if v else ""
+        return self._csv_response(returns_io.export_rows(qs, when), "returns.csv")
+
+    @action(detail=False, methods=["get"], url_path="import-sheet")
+    def import_sheet(self, request):
+        """The Import file to fill in: one row per line of every order still
+        Awaiting Scan (with the page's dates / search), Good = full qty."""
+        from . import returns_io
+
+        qs = returns_io.returned_orders(org_filter(request), request.query_params, received=False)
+        return self._csv_response(returns_io.import_sheet_rows(qs), "returns_import.csv")
+
+    @action(detail=False, methods=["post"], url_path="import", parser_classes=[MultiPartParser, FormParser])
+    def import_counts(self, request):
+        """Receives many returned parcels from a file of SKU-wise Good /
+        Damaged / Lost counts - exactly what a scan does, per order. A dry
+        run unless apply=true."""
+        from . import returns_io
+
+        upload = request.FILES.get("file")
+        if not upload:
+            return Response({"detail": "Attach a CSV file as 'file'"}, status=status.HTTP_400_BAD_REQUEST)
+        apply = str(request.data.get("apply", "")).lower() in ("1", "true", "yes")
+        try:
+            result = returns_io.run_import(
+                org_filter(request), upload, apply=apply,
+                actor_user_id=request.user_id, actor_email=getattr(request, "auth_email", "") or "",
+            )
+        except UnicodeDecodeError:
+            return Response({"detail": "Could not read the file - please upload a UTF-8 CSV."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        return Response(result)
 
     @action(detail=False, methods=["post"], url_path="lookup")
     def lookup(self, request):

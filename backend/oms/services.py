@@ -2657,70 +2657,96 @@ def compute_order_counts(organization_id):
 # function narrowing an Order queryset to its orders). An order can sit
 # under more than one card. The page lists them with
 # ?critical_reason=<key> (OrderViewSet._apply_filters).
-STUCK_BOOKING_HOURS = 24
-COURIER_CANCEL_NOTE_PREFIX = "Booking cancelled on "
+ASSIGNING_STUCK_HOURS = 24
+RETURNING_DAYS = 15
+# Not yet with a courier - where a wrong address / phone can still be fixed.
+_BEFORE_COURIER = WORKFLOW_CARD_STATUSES["awaiting_confirmation"] | WORKFLOW_CARD_STATUSES["approved"]
+# A phone normalize_phone (approval_checks) reads as an 11-digit local
+# number: optional leading zeros, optional 92/91 country code, then 10
+# digits not starting with 0.
+_VALID_PHONE_DIGITS = r"^0*((92|91)0*)?[1-9][0-9]{9}$"
 
 
-def _stuck_in_booking(qs):
+def _city_address_issue(qs):
+    # In City Issue, or not with a courier yet and the address is blank.
     return qs.filter(
-        status="booking_pending",
-        updated_at__lt=timezone.now() - timedelta(hours=STUCK_BOOKING_HOURS),
+        Q(status="city_issue")
+        | Q(status__in=_BEFORE_COURIER) & (Q(address_line1__regex=r"^\s*$") | Q(city__regex=r"^\s*$"))
     )
 
 
-def _booking_cancelled_by_courier(qs):
-    # Back in Approved because the courier cancelled the booking
-    # (unbook_cancelled_by_courier) and not booked again since.
-    from django.db.models import Exists
+def _contact_issue(qs):
+    # Not with a courier yet and the phone can't be read as a valid number.
+    from django.db.models import CharField, F, Func, Value
 
-    latest_move_here = (
-        OrderStatusEvent.all_objects.filter(order_id=OuterRef("pk"), to_status="awaiting_assigning")
-        .order_by("-created_at")
-        .values("note")[:1]
+    digits = Func(
+        F("customer_phone"), Value(r"\D"), Value(""), Value("g"),
+        function="REGEXP_REPLACE", output_field=CharField(),
     )
     return (
-        qs.filter(status="awaiting_assigning")
-        .annotate(_last_note=Subquery(latest_move_here))
-        .filter(_last_note__startswith=COURIER_CANCEL_NOTE_PREFIX)
+        qs.filter(status__in=_BEFORE_COURIER)
+        .annotate(_phone_digits=digits)
+        .exclude(_phone_digits__regex=_VALID_PHONE_DIGITS)
+    )
+
+
+def _assigning_over_24h(qs):
+    # In the Assigning Courier card for more than ASSIGNING_STUCK_HOURS,
+    # counted from when it last came into the card (a move inside the card,
+    # e.g. Awaiting Booking -> Ready to Print, doesn't restart the clock).
+    statuses = WORKFLOW_CARD_STATUSES["assigning_courier"]
+    entered = (
+        OrderStatusEvent.all_objects.filter(order_id=OuterRef("pk"), to_status__in=statuses)
+        .exclude(from_status__in=statuses)
+        .order_by("-created_at")
+        .values("created_at")[:1]
+    )
+    return (
+        qs.filter(status__in=statuses)
+        .annotate(_assigning_since=Coalesce(Subquery(entered), "booked_at", "updated_at", output_field=DateTimeField()))
+        .filter(_assigning_since__lt=timezone.now() - timedelta(hours=ASSIGNING_STUCK_HOURS))
+    )
+
+
+def _returning_over_15d(qs):
+    # The courier started the return more than RETURNING_DAYS ago and it
+    # still hasn't come back (not Returned yet).
+    return qs.filter(
+        status__in=RETURNABLE_STATUSES,
+        return_in_progress_at__lte=timezone.now() - timedelta(days=RETURNING_DAYS),
     )
 
 
 CRITICAL_REASONS = [
     (
+        "city_address_issue",
+        "City / Address Issue",
+        "In City Issue, or not with a courier yet and the city or address is blank.",
+        _city_address_issue,
+    ),
+    (
+        "contact_issue",
+        "Contact No. Issue",
+        "Not with a courier yet and the phone number isn't a valid 11-digit number.",
+        _contact_issue,
+    ),
+    (
+        "assigning_24h",
+        f"In Assigning Courier {ASSIGNING_STUCK_HOURS}h+",
+        f"In the Assigning Courier card for more than {ASSIGNING_STUCK_HOURS} hours.",
+        _assigning_over_24h,
+    ),
+    (
         "in_transit",
         f"In transit {CRITICAL_TRANSIT_DAYS}+ days",
         f"Dispatched more than {CRITICAL_TRANSIT_DAYS} days ago and still not delivered.",
-        lambda qs: critical_transit_orders(qs).order_by("_in_transit_since"),
+        lambda qs: critical_transit_orders(qs).filter(return_in_progress_at__isnull=True).order_by("_in_transit_since"),
     ),
     (
-        "attempt",
-        "Delivery attempt failed",
-        "The courier couldn't deliver - needs a call to the customer.",
-        lambda qs: qs.filter(status="attempt"),
-    ),
-    (
-        "dispatch_issue",
-        "Dispatch issue",
-        "Marked with a dispatch issue and not dispatched yet.",
-        lambda qs: qs.filter(status="dispatch_issue"),
-    ),
-    (
-        "city_issue",
-        "City issue",
-        "The city needs fixing before it can go to a courier.",
-        lambda qs: qs.filter(status="city_issue"),
-    ),
-    (
-        "stuck_booking",
-        f"Stuck in booking {STUCK_BOOKING_HOURS}h+",
-        f"In Awaiting Booking for more than {STUCK_BOOKING_HOURS} hours.",
-        _stuck_in_booking,
-    ),
-    (
-        "courier_cancelled",
-        "Booking cancelled by courier",
-        "The courier cancelled the booking - back in Approved to book again.",
-        _booking_cancelled_by_courier,
+        "returning_15d",
+        f"Returning {RETURNING_DAYS}+ days",
+        f"Return started more than {RETURNING_DAYS} days ago and still not Returned.",
+        lambda qs: _returning_over_15d(qs).order_by("return_in_progress_at"),
     ),
 ]
 CRITICAL_REASON_FILTERS = {key: fn for key, _label, _hint, fn in CRITICAL_REASONS}

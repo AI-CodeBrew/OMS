@@ -6,6 +6,7 @@ import dynamic from "next/dynamic";
 import { useRouter, useSearchParams } from "next/navigation";
 import Pagination from "../../../components/shared/Pagination";
 import OrdersTable from "../../../components/orders/OrdersTable";
+import CsvExportButton from "../../../components/orders/CsvExportButton";
 import ordersService from "../../../services/ordersService";
 import couriersService from "../../../services/couriersService";
 import { useEffectiveUser } from "../../../store/authStore";
@@ -17,12 +18,11 @@ const OrderDetailPanel = dynamic(() => import("../../../components/orders/OrderD
 // Card accents, by reason - red for what's already late/failed, amber for
 // what needs a hand before it can move on.
 const REASON_TONE = {
+  city_address_issue: "border-l-amber-500",
+  contact_issue: "border-l-amber-500",
+  assigning_24h: "border-l-amber-500",
   in_transit: "border-l-red-500",
-  attempt: "border-l-red-500",
-  dispatch_issue: "border-l-amber-500",
-  city_issue: "border-l-amber-500",
-  stuck_booking: "border-l-amber-500",
-  courier_cancelled: "border-l-amber-500",
+  returning_15d: "border-l-red-500",
 };
 
 // Orders that need attention, by reason (backend: oms.services.
@@ -95,13 +95,21 @@ export default function CriticalOrdersPage() {
 
   return (
     <div>
-      <div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold text-slate-900" title={"Orders that need attention, by reason. Pick a card to see its orders."}>Critical Orders</h1>
+        {/* Export the picked card's orders - all of them, or one courier's. */}
+        {active ? (
+          <CsvExportButton
+            filterParams={{ critical_reason: active }}
+            allAndCourierOnly
+            filePrefix={`critical_${active}`}
+          />
+        ) : null}
       </div>
 
       {/* One row of small cards, like the All Orders status tabs. */}
       <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
-        {(reasons || Array.from({ length: 6 }, (_, i) => ({ key: `loading-${i}` }))).map((r) => {
+        {(reasons || Array.from({ length: 5 }, (_, i) => ({ key: `loading-${i}` }))).map((r) => {
           const isActive = r.key === active;
           const loaded = r.count !== undefined;
           return (

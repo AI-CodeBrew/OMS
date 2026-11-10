@@ -1,39 +1,28 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import inventoryAdminService from "../../../../services/inventoryAdminService";
 import Button from "../../../../components/shared/Button";
 import Pagination from "../../../../components/shared/Pagination";
+import Modal from "../../../../components/shared/Modal";
 import InventoryItemDetailModal from "../../../../components/wms/InventoryItemDetailModal";
 
 // The super admin's Inventory: one row per SKU over every store - each
-// number the sum of all stores holding it. The arrow beside a SKU opens its
-// store rows (same columns, per store and warehouse). Read only - stock is
-// adjusted from the store's own Inventory page.
+// number the sum of all stores holding it. The dropdown beside a SKU opens a
+// popup with its store rows (same columns, per store and warehouse). Read
+// only - stock is adjusted from the store's own Inventory page.
 
 const ACTIVITY_CARDS = [
-  { value: "", key: "total", label: "Total SKUs", tone: "default" },
-  { value: "active", key: "active", label: "Active SKUs", tone: "success", hint: "In stock, and ordered" },
-  { value: "inactive", key: "inactive", label: "Inactive SKUs", tone: "warning", hint: "In stock, no orders" },
-  { value: "out_of_stock", key: "out_of_stock", label: "Out of Stock", tone: "danger", hint: "None in stock" },
+  { value: "", key: "total", label: "Total SKUs" },
+  { value: "active", key: "active", label: "Active SKUs", hint: "In stock, and ordered" },
+  { value: "inactive", key: "inactive", label: "Inactive SKUs", hint: "In stock, no orders" },
+  { value: "out_of_stock", key: "out_of_stock", label: "Out of Stock", hint: "None in stock" },
 ];
-
-const ACTIVITY_DOT = {
-  active: "bg-green-500",
-  inactive: "bg-amber-400",
-  out_of_stock: "bg-red-500",
-};
 
 const TH_LEFT = "whitespace-nowrap px-3 py-2.5 text-left align-middle";
 const TH_NUM = "whitespace-nowrap px-3 py-2.5 text-right align-middle";
 
-function SummaryCard({ label, value, tone = "default", hint, active, onClick }) {
-  const tones = {
-    default: "text-slate-900",
-    success: "text-green-600",
-    danger: "text-red-600",
-    warning: "text-amber-500",
-  };
+function SummaryCard({ label, value, hint, active, onClick }) {
   return (
     <button
       type="button"
@@ -44,7 +33,7 @@ function SummaryCard({ label, value, tone = "default", hint, active, onClick }) 
       }`}
     >
       <span className="truncate text-[11px] font-medium uppercase tracking-wide text-slate-500">{label}</span>
-      <span className={`text-lg font-semibold tabular-nums ${tones[tone]}`}>{value}</span>
+      <span className="text-lg font-semibold tabular-nums text-slate-900">{value}</span>
     </button>
   );
 }
@@ -61,16 +50,10 @@ function UnitsAndOrders({ units, orders }) {
   );
 }
 
-function ChevronIcon({ open }) {
+function DropdownIcon() {
   return (
-    <svg
-      className={`h-3.5 w-3.5 transition-transform ${open ? "rotate-90" : ""}`}
-      fill="none"
-      viewBox="0 0 24 24"
-      stroke="currentColor"
-      strokeWidth={2.5}
-    >
-      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+    <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
     </svg>
   );
 }
@@ -81,13 +64,7 @@ function NumberCells({ row }) {
     <>
       <td className="px-3 py-1.5 text-right tabular-nums">{row.order_placed ?? 0}</td>
       <td className="px-3 py-1.5 text-right tabular-nums">{row.total_inbound}</td>
-      <td
-        className={`px-3 py-1.5 text-right font-semibold tabular-nums ${
-          row.available < 0 ? "text-red-600" : "text-slate-900"
-        }`}
-      >
-        {row.available}
-      </td>
+      <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-900">{row.available}</td>
       <UnitsAndOrders units={row.delivered} orders={row.delivered_orders} />
       <UnitsAndOrders units={row.dispatched} orders={row.dispatched_orders} />
       <UnitsAndOrders units={row.failed_delivery} orders={row.failed_delivery_orders} />
@@ -118,17 +95,8 @@ export default function AdminInventoryPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [viewing, setViewing] = useState(null);
-  // SKU rows opened to show their stores (by row key).
-  const [expanded, setExpanded] = useState(() => new Set());
-
-  function toggle(key) {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  }
+  // The SKU whose stores are shown in the popup.
+  const [storesOf, setStoresOf] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -197,7 +165,6 @@ export default function AdminInventoryPage() {
             key={card.key}
             label={card.label}
             value={summary[card.key] ?? 0}
-            tone={card.tone}
             hint={card.hint}
             active={activity === card.value}
             onClick={() => {
@@ -246,27 +213,19 @@ export default function AdminInventoryPage() {
                 </td>
               </tr>
             ) : (
-              rows.map((group) => {
-                const open = expanded.has(group.key);
-                return (
-                  <Fragment key={group.key}>
-                    <tr className="border-b border-surface-border last:border-0 hover:bg-surface">
+              rows.map((group) => (
+                    <tr key={group.key} className="border-b border-surface-border last:border-0 hover:bg-surface">
                       <td className="whitespace-nowrap px-3 py-1.5 font-medium text-slate-800">
                         <span className="flex items-center gap-2">
                           <button
                             type="button"
-                            onClick={() => toggle(group.key)}
-                            aria-expanded={open}
-                            aria-label={open ? "Hide Stores" : "Show Stores"}
-                            title={open ? "Hide Stores" : "Show Stores"}
-                            className="rounded p-0.5 text-slate-500 hover:bg-white hover:text-brand-700"
+                            onClick={() => setStoresOf(group)}
+                            aria-label="Show Stores"
+                            title="Show Stores"
+                            className="rounded border border-surface-border p-0.5 text-slate-500 hover:bg-white hover:text-brand-700"
                           >
-                            <ChevronIcon open={open} />
+                            <DropdownIcon />
                           </button>
-                          <span
-                            className={`h-2 w-2 shrink-0 rounded-full ${ACTIVITY_DOT[group.activity] || "bg-slate-300"}`}
-                            title={ACTIVITY_CARDS.find((c) => c.value === group.activity)?.label || ""}
-                          />
                           {group.sku || "—"}
                         </span>
                       </td>
@@ -276,7 +235,7 @@ export default function AdminInventoryPage() {
                       <td className="whitespace-nowrap px-3 py-1.5">
                         <button
                           type="button"
-                          onClick={() => toggle(group.key)}
+                          onClick={() => setStoresOf(group)}
                           className="text-xs font-medium text-brand-700 hover:underline"
                         >
                           {group.store_count} {group.store_count === 1 ? "Store" : "Stores"}
@@ -285,35 +244,7 @@ export default function AdminInventoryPage() {
                       <NumberCells row={group} />
                       <td className="px-2 py-1" />
                     </tr>
-                    {open
-                      ? group.stores.map((item) => (
-                          <tr key={item.id} className="border-b border-surface-border bg-slate-50/70 text-[13px]">
-                            <td className="whitespace-nowrap py-1.5 pl-12 pr-3 text-slate-500">{item.sku || "—"}</td>
-                            <td className="max-w-[260px] truncate px-3 py-1.5 text-slate-500" title={item.product_name}>
-                              {item.product_name || "—"}
-                            </td>
-                            <td className="whitespace-nowrap px-3 py-1.5">
-                              <div className="font-medium text-slate-800">{item.store_name}</div>
-                              <div className="text-[11px] text-slate-400">{item.warehouse_name}</div>
-                            </td>
-                            <NumberCells row={item} />
-                            <td className="px-2 py-1 text-right">
-                              <button
-                                type="button"
-                                onClick={() => setViewing(item)}
-                                aria-label={`Details for ${item.sku || item.product_name} in ${item.store_name}`}
-                                title="Details"
-                                className="rounded p-1 text-slate-500 hover:bg-white hover:text-brand-700"
-                              >
-                                <EyeIcon />
-                              </button>
-                            </td>
-                          </tr>
-                        ))
-                      : null}
-                  </Fragment>
-                );
-              })
+              ))
             )}
           </tbody>
         </table>
@@ -331,6 +262,72 @@ export default function AdminInventoryPage() {
           setPage(1);
         }}
       />
+
+      {/* One SKU's stores - the same columns, per store and warehouse. */}
+      <Modal
+        open={Boolean(storesOf)}
+        onClose={() => setStoresOf(null)}
+        width="max-w-6xl"
+        title={
+          storesOf ? (
+            <span>
+              {storesOf.sku || "—"}
+              <span className="ml-2 font-normal text-slate-500">{storesOf.product_name}</span>
+              <span className="ml-2 text-xs font-normal text-slate-400">
+                {storesOf.store_count} {storesOf.store_count === 1 ? "Store" : "Stores"}
+              </span>
+            </span>
+          ) : ""
+        }
+      >
+        {storesOf ? (
+          <div className="overflow-x-auto rounded-lg border border-surface-border">
+            <table className="w-full text-sm">
+              <thead className="border-b border-surface-border bg-surface text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className={TH_LEFT}>Store / Warehouse</th>
+                  <th className={TH_NUM}>Order Placed</th>
+                  <th className={TH_NUM}>Total Inbound</th>
+                  <th className={TH_NUM}>Available</th>
+                  <th className={TH_NUM}>Delivered</th>
+                  <th className={TH_NUM}>Dispatched</th>
+                  <th className={TH_NUM}>Failed Delivery</th>
+                  <th className={TH_NUM}>Return in Transit</th>
+                  <th className={TH_NUM}>Damaged/Lost</th>
+                  <th className="w-10 px-2 py-2.5" />
+                </tr>
+              </thead>
+              <tbody>
+                {storesOf.stores.map((item) => (
+                  <tr key={item.id} className="border-b border-surface-border last:border-0 hover:bg-surface">
+                    <td className="whitespace-nowrap px-3 py-1.5">
+                      <div className="font-medium text-slate-800">{item.store_name}</div>
+                      <div className="text-[11px] text-slate-400">{item.warehouse_name}</div>
+                    </td>
+                    <NumberCells row={item} />
+                    <td className="px-2 py-1 text-right">
+                      <button
+                        type="button"
+                        onClick={() => setViewing(item)}
+                        aria-label={`Details for ${item.sku || item.product_name} in ${item.store_name}`}
+                        title="Details"
+                        className="rounded p-1 text-slate-500 hover:bg-white hover:text-brand-700"
+                      >
+                        <EyeIcon />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                <tr className="border-t border-surface-border bg-surface font-medium">
+                  <td className="px-3 py-1.5 text-slate-700">Total</td>
+                  <NumberCells row={storesOf} />
+                  <td />
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+      </Modal>
 
       <InventoryItemDetailModal
         item={viewing}

@@ -21,11 +21,13 @@ function slug(text) {
  * - Selected Orders: just the ticked rows (selectedIds), whatever the
  *   filters.
  * The Smartlane upload template stays at the bottom.
+ * allAndCourierOnly: just the first two (pages without ticking, e.g.
+ * Critical Orders); filePrefix names the downloaded files.
  *
  * No global loadingStore here on purpose - a download is quiet; the inline
  * spinner is the only feedback.
  */
-export default function CsvExportButton({ filterParams, selectedIds = [] }) {
+export default function CsvExportButton({ filterParams, selectedIds = [], allAndCourierOnly = false, filePrefix = "orders" }) {
   const [open, setOpen] = useState(false);
   const [showCouriers, setShowCouriers] = useState(false);
   const [couriers, setCouriers] = useState(null);
@@ -112,7 +114,7 @@ export default function CsvExportButton({ filterParams, selectedIds = [] }) {
           <button
             type="button"
             className={itemClass}
-            onClick={() => download({ ...filterParams, template: "all" }, `orders_${today()}.csv`)}
+            onClick={() => download({ ...filterParams, template: "all" }, `${filePrefix}_${today()}.csv`)}
           >
             <span>
               <span className="block font-medium">All Orders</span>
@@ -142,7 +144,7 @@ export default function CsvExportButton({ filterParams, selectedIds = [] }) {
                     onClick={() =>
                       download(
                         { ...filterParams, template: "all", f_courier: JSON.stringify([c.value]) },
-                        `orders_${slug(c.label)}_${today()}.csv`
+                        `${filePrefix}_${slug(c.label)}_${today()}.csv`
                       )
                     }
                   >
@@ -154,6 +156,8 @@ export default function CsvExportButton({ filterParams, selectedIds = [] }) {
             </div>
           ) : null}
 
+          {allAndCourierOnly ? null : (
+          <>
           <button
             type="button"
             className={itemClass}
@@ -178,6 +182,8 @@ export default function CsvExportButton({ filterParams, selectedIds = [] }) {
           >
             Smartlane Template
           </button>
+          </>
+          )}
         </div>
       ) : null}
     </div>

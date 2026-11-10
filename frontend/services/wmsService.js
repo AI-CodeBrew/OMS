@@ -106,11 +106,33 @@ class WmsService {
   }
 
   // receipts: [{line, good, damaged}] - added to what's already received.
-  async receivePurchaseOrder(id, receipts) {
+  // costs (optional): { logisticsCost, unitPrices: {lineId: price} } - the
+  // Receive popup's editable costs, saved with (or without) a delivery.
+  async receivePurchaseOrder(id, receipts, { logisticsCost, unitPrices } = {}) {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.purchaseOrderReceive(id)}`, {
       method: "POST",
-      body: JSON.stringify({ receipts }),
+      body: JSON.stringify({ receipts, logistics_cost: logisticsCost, unit_prices: unitPrices }),
     });
+  }
+
+  // One PO as a PDF (FynkTech + store name, details, products, costs).
+  async downloadPurchaseOrderPdf(id, filename) {
+    const response = await fetch(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.purchaseOrderPdf(id)}`, {
+      headers: authService.getAuthHeaders(),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.detail || "Could not make the PDF");
+    }
+    const blob = await response.blob();
+    const href = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = href;
+    link.download = filename || "purchase_order.pdf";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(href);
   }
 
   // { sku, product_name, image_url } for an exact SKU, or null if there's none.
@@ -286,6 +308,53 @@ class WmsService {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.returnBulkReceive}`, {
       method: "POST",
       body: JSON.stringify({ order_numbers: orderNumbers, condition, note }),
+    });
+  }
+
+  // Downloads a CSV from `url` (Export / Import sheet) under `filename`.
+  async _downloadCsv(url, filename) {
+    const response = await fetch(url, { headers: authService.getAuthHeaders() });
+    if (!response.ok) throw new Error("Download failed");
+    const blob = await response.blob();
+    const href = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = href;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(href);
+  }
+
+  // The desk's orders as a list - params: received (yes / no / ""), search,
+  // search_field, date_from, date_to.
+  async exportReturns(params = {}) {
+    const day = new Date().toISOString().slice(0, 10);
+    return this._downloadCsv(
+      `${apiConfig.baseUrl}${API_ENDPOINTS.wms.returnExport}${buildQuery(params)}`,
+      `returns_${day}.csv`
+    );
+  }
+
+  // The Import file to fill in: every line of the orders Awaiting Scan.
+  async downloadReturnsImportSheet(params = {}) {
+    return this._downloadCsv(
+      `${apiConfig.baseUrl}${API_ENDPOINTS.wms.returnImportSheet}${buildQuery(params)}`,
+      "returns_import.csv"
+    );
+  }
+
+  // SKU-wise Good / Damaged / Lost counts for many parcels - a dry run
+  // unless apply. Returns {orders, ready, problems, received, results, ...}.
+  async importReturns(file, { apply = false } = {}) {
+    const body = new FormData();
+    body.append("file", file);
+    body.append("apply", apply ? "true" : "false");
+    const { "Content-Type": _json, ...headers } = authService.getAuthHeaders();
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.returnImport}`, {
+      method: "POST",
+      headers,
+      body,
     });
   }
 

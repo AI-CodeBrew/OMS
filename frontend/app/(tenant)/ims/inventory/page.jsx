@@ -33,12 +33,6 @@ const ACTIVITY_CARDS = [
   { value: "out_of_stock", key: "out_of_stock", label: "Out of Stock", tone: "danger", hint: "None in stock" },
 ];
 
-const ACTIVITY_DOT = {
-  active: "bg-green-500",
-  inactive: "bg-amber-400",
-  out_of_stock: "bg-red-500",
-};
-
 function SummaryCard({ label, value, tone = "default", hint, active, onClick }) {
   const tones = {
     default: "text-slate-900",
@@ -314,13 +308,7 @@ export default function WmsPage() {
                       className="cursor-pointer border-b border-surface-border last:border-0 hover:bg-surface focus:outline-none focus-visible:bg-surface"
                     >
                       <td className="whitespace-nowrap px-3 py-1.5 font-medium text-slate-800">
-                        <span className="flex items-center gap-2">
-                          <span
-                            className={`h-2 w-2 shrink-0 rounded-full ${ACTIVITY_DOT[item.activity] || "bg-slate-300"}`}
-                            title={ACTIVITY_CARDS.find((c) => c.value === item.activity)?.label || "No stock, no orders"}
-                          />
-                          {item.sku || "—"}
-                        </span>
+                        {item.sku || "—"}
                       </td>
                       <td className="max-w-[260px] truncate px-3 py-1.5 text-slate-600" title={item.product_name}>
                         {item.product_name || "—"}

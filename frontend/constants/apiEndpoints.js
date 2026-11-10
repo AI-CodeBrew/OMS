@@ -134,6 +134,9 @@ export const API_ENDPOINTS = {
     returnLookup: "/api/wms/returns/lookup/",
     returnScan: "/api/wms/returns/scan/",
     returnBulkReceive: "/api/wms/returns/bulk-receive/",
+    returnExport: "/api/wms/returns/export/",
+    returnImportSheet: "/api/wms/returns/import-sheet/",
+    returnImport: "/api/wms/returns/import/",
     packingScan: "/api/wms/packing/scan/",
     packingBulkPack: "/api/wms/packing/bulk-pack/",
     suppliers: "/api/wms/suppliers/",
@@ -142,6 +145,7 @@ export const API_ENDPOINTS = {
     purchaseOrderProduct: "/api/wms/purchase-orders/product/",
     purchaseOrderSyncShopify: "/api/wms/purchase-orders/sync-shopify/",
     purchaseOrderReceive: (id) => `/api/wms/purchase-orders/${id}/receive/`,
+    purchaseOrderPdf: (id) => `/api/wms/purchase-orders/${id}/pdf/`,
   },
   finance: {
     bankDetails: "/api/finance/bank-details/",

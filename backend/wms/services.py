@@ -668,6 +668,41 @@ def create_purchase_order(
 
 
 @transaction.atomic
+def update_purchase_order_costs(po, *, logistics_cost=None, unit_prices=None):
+    """Receive PO's editable costs: the PO's logistics cost and each line's
+    product cost (unit_price) - {line_id: price}. Blank / None leaves a
+    value as it is; never negative."""
+    from decimal import Decimal, InvalidOperation
+
+    def amount(value, label):
+        try:
+            number = Decimal(str(value).replace(",", "").strip())
+        except (InvalidOperation, ValueError):
+            raise PurchaseOrderError(f"{label} must be a number.")
+        if number < 0:
+            raise PurchaseOrderError(f"{label} can't be negative.")
+        return number.quantize(Decimal("0.01"))
+
+    if logistics_cost not in (None, ""):
+        cost = amount(logistics_cost, "Logistics cost")
+        if cost != po.logistics_cost:
+            po.logistics_cost = cost
+            po.save(update_fields=["logistics_cost", "updated_at"])
+    if unit_prices:
+        lines = {str(line.id): line for line in po.lines.all()}
+        for line_id, value in unit_prices.items():
+            line = lines.get(str(line_id))
+            if line is None:
+                raise PurchaseOrderError("That product isn't on this PO.")
+            if value in (None, ""):
+                continue
+            price = amount(value, f"Product cost of {line.sku or line.product_name}")
+            if price != line.unit_price:
+                line.unit_price = price
+                line.save(update_fields=["unit_price", "updated_at"])
+    return po
+
+
 def receive_purchase_order(po, receipts, *, actor_user_id=None):
     """Another delivery against an existing PO: `receipts` is
     {line_id: {good, damaged}}, added to what's already received."""
