@@ -2455,6 +2455,16 @@ def update_order_detail(order, *, fields, items=None):
         order.total_amount = total
         order.save(update_fields=["total_amount"])
 
+    # A prepaid / Paid order stays fully paid through an edit: Amount Paid
+    # follows the new total, so the receivable (the COD the courier is told
+    # to collect) stays 0 - the same as a paid Shopify order arrives
+    # (integrations.services._shopify_payment).
+    if order.is_fully_prepaid:
+        paid_in_full = max(order.grand_total - order.extra_discount, Decimal("0"))
+        if order.amount_paid != paid_in_full:
+            order.amount_paid = paid_in_full
+            order.save(update_fields=["amount_paid"])
+
     # Drops the store's cached Orders lists and patches its open tabs
     # (core/realtime.py) - without it an edit made elsewhere, e.g. from the
     # Dispatch Hub, kept showing the old values to the store.

@@ -10,7 +10,7 @@ import OrderDetailTabs from "./OrderDetailTabs";
 import OrderMoneySummary from "./OrderMoneySummary";
 import OrderActionsMenu from "./OrderActionsMenu";
 import LineItemsTab from "./tabs/LineItemsTab";
-import { draftPayable } from "./orderMoney";
+import { draftPayable, withPrepaidPaid } from "./orderMoney";
 import OrderActionModal from "./OrderActionModal";
 import VerifyDispatchModal from "./VerifyDispatchModal";
 import StockShortageModal from "./StockShortageModal";
@@ -191,30 +191,48 @@ export default function OrderDetailPanel({
     // Payment Status sets Amount Paid to match it - nothing typed for
     // another status carries over:
     // - back to the order's saved status: its saved Amount Paid;
-    // - Paid: the whole amount payable (then it stays fixed and the
-    //   receivable follows any later change);
+    // - Paid: the whole amount payable (and it keeps following the total
+    //   on any later change - withPrepaidPaid - so the receivable stays 0);
     // - Pending / Partially Paid: 0, to be typed in for Partially Paid.
     if (field === "payment_status") {
       setDraft((d) => {
         let paid = "0.00";
         if (value === order?.payment_status) paid = toAmount(order.amount_paid);
         else if (value === "paid") paid = draftPayable(d).toFixed(2);
-        return { ...d, amount_receivable: undefined, payment_status: value, amount_paid: paid };
+        return withPrepaidPaid({ ...d, amount_receivable: undefined, payment_status: value, amount_paid: paid });
       });
       return;
     }
     // Discount: Shopify's part stays as it is - what's typed beyond (or
     // below) it is the OMS discount, which lowers only the receivable.
     if (field === "discount_total") {
-      setDraft((d) => ({
-        ...d,
-        amount_receivable: undefined,
-        discount_total: value,
-        extra_discount: ((Number(value) || 0) - (Number(d.coupon_discount) || 0)).toFixed(2),
-      }));
+      setDraft((d) =>
+        withPrepaidPaid({
+          ...d,
+          amount_receivable: undefined,
+          discount_total: value,
+          extra_discount: ((Number(value) || 0) - (Number(d.coupon_discount) || 0)).toFixed(2),
+        })
+      );
       return;
     }
-    setDraft((d) => ({ ...d, amount_receivable: undefined, [field]: value }));
+    // Order Type to COD (not Paid / Partially Paid): nothing has been paid
+    // yet - the saved Amount Paid if it was COD already, else 0 - so the
+    // whole amount becomes receivable again instead of staying at 0.
+    if (field === "payment_gateway" && value === "cod") {
+      setDraft((d) => {
+        let paid = d.amount_paid;
+        if (d.payment_status !== "paid" && d.payment_status !== "partially_paid") {
+          paid = order?.payment_gateway === "cod" ? toAmount(order.amount_paid) : "0.00";
+        }
+        return { ...d, amount_receivable: undefined, payment_gateway: value, amount_paid: paid };
+      });
+      return;
+    }
+    // Every other change (items, shipping, Order Type to Prepaid...): a
+    // prepaid / Paid order's Amount Paid follows the new total, so its
+    // receivable stays 0 - the backend does the same on save.
+    setDraft((d) => withPrepaidPaid({ ...d, amount_receivable: undefined, [field]: value }));
   }
 
   function toggleEdit() {

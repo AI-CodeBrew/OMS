@@ -425,10 +425,18 @@ class Order(TenantScopedModel):
         )
 
     @property
+    def is_fully_prepaid(self):
+        # Prepaid (not COD) or marked Paid - nothing to collect on delivery.
+        # A Partially Paid order is left out: its advance is typed in.
+        if self.payment_status == "paid":
+            return True
+        return self.payment_gateway != "cod" and self.payment_status != "partially_paid"
+
+    @property
     def amount_receivable(self):
-        # Whatever amount_paid doesn't cover - so on a prepaid order a later
-        # discount/shipping change moves the receivable while what was paid
-        # stays put. A Paid order with no amount_paid recorded (older rows,
+        # Whatever amount_paid doesn't cover. An edit to a prepaid / Paid
+        # order moves amount_paid with the new total (is_fully_prepaid,
+        # services.update_order_detail), so its receivable stays 0. A Paid order with no amount_paid recorded (older rows,
         # CSV imports) is taken as paid in full, never as cash to collect.
         if self.payment_status == "paid" and not self.amount_paid:
             return Decimal("0")

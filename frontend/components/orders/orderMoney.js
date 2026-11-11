@@ -35,6 +35,20 @@ export function draftDiscountTotal(draft) {
   return n(draft.coupon_discount) + n(draft.extra_discount);
 }
 
+// Mirror of Order.is_fully_prepaid: Prepaid (not COD) or Paid, but not
+// Partially Paid - nothing left to collect on delivery.
+export function draftIsFullyPrepaid(draft) {
+  if (draft.payment_status === "paid") return true;
+  return draft.payment_gateway !== "cod" && draft.payment_status !== "partially_paid";
+}
+
+// A fully prepaid draft keeps Amount Paid at the whole amount payable, so
+// an edit (items, shipping, discount...) never leaves a receivable on it.
+export function withPrepaidPaid(draft) {
+  if (!draftIsFullyPrepaid(draft)) return draft;
+  return { ...draft, amount_paid: Math.max(draftPayable(draft), 0).toFixed(2) };
+}
+
 export function draftReceivable(draft) {
   if (draft.payment_status === "paid" && !n(draft.amount_paid)) return 0;
   return Math.max(draftPayable(draft) - n(draft.amount_paid), 0);
