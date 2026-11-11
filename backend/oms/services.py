@@ -161,6 +161,43 @@ def default_store_name(organization_id):
     return Organization.objects.filter(id=organization_id).values_list("name", flat=True).first() or "Store"
 
 
+def follow_shopify_store_rename(organization_id, shop_name):
+    """The store renamed itself on Shopify ("My Store" -> "Sam's Foods"):
+    keeps its Store ID. An organization has one Shopify store, so the first
+    new order under a name the organization has no Store for yet, while its
+    earlier Shopify orders all sit under one other name, renames that Store
+    and moves every order under the old name (manual ones too) to the new
+    one - instead of the new name getting a Store ID of its own
+    (store_ids_for). Nothing changes when the name already has a Store, the
+    organization has no Shopify orders yet, or they sit under several
+    names (not clearly one store). Returns the old name, or None."""
+    from .models import Store
+
+    shop_name = (shop_name or "").strip()[:150]
+    if not shop_name:
+        return None
+    if Store.all_objects.filter(organization_id=organization_id, name=shop_name).exists():
+        return None
+    old_names = {
+        name
+        for name in Order.all_objects.filter(
+            organization_id=organization_id, shopify_order_id__isnull=False
+        )
+        .exclude(shop__in=["", shop_name])
+        .values_list("shop", flat=True)
+        .distinct()
+        if name.strip().lower() not in _NOT_A_STORE
+    }
+    if len(old_names) != 1:
+        return None
+    old_name = old_names.pop()
+    with transaction.atomic():
+        Order.all_objects.filter(organization_id=organization_id, shop=old_name).update(shop=shop_name)
+        Store.all_objects.filter(organization_id=organization_id, name=old_name).update(name=shop_name)
+    logger.info("org %s: Shopify store renamed %r -> %r, Store ID kept", organization_id, old_name, shop_name)
+    return old_name
+
+
 def product_lookup(organization_id, q, *, limit=20):
     """[{product_name, sku}] of one store matching `q` by name or SKU -
     its WMS inventory first, then products on its past orders - for the

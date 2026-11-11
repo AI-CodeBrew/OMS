@@ -368,6 +368,10 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
     ).first()
     if existing is not None:
         return existing, False
+    # A Shopify store renamed since its last order keeps its Store ID.
+    from oms.services import follow_shopify_store_rename
+
+    follow_shopify_store_rename(organization_id, shop_label)
     customer = shopify_order.get("customer") or {}
     shipping_address = shopify_order.get("shipping_address") or {}
     # Orders created from OMS (create_order_on_shopify) carry no customer

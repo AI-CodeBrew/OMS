@@ -105,7 +105,10 @@ function buildDraft(order) {
     draft[field] = order[field];
   });
   draft.items = order.items.map((item) => ({ ...item }));
-  return draft;
+  // An order already saved as Prepaid with nothing recorded as paid (a CSV
+  // import sets the Order Type but never Amount Paid) opens with Amount
+  // Paid = the whole total, so Edit shows - and Save stores - receivable 0.
+  return withPrepaidPaid(draft);
 }
 
 // What Save sends: the draft minus the view-only receivable, and items only
