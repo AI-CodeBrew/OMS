@@ -22,13 +22,11 @@ export default function TrackingLink({ courier, tracking, fallback = "—", clas
           // Two steps in the new tab: the first URL saves the number on the
           // courier's side, then the tab moves on to the result page.
           e.preventDefault();
+          // Keep the tab's opener: a browser only lets this page move a tab
+          // it opened while that link is intact (cutting it with
+          // `opener = null` silently blocks the second step).
           const tab = window.open(link.url, "_blank");
           if (tab) {
-            try {
-              tab.opener = null;
-            } catch {
-              // Only hardening - the tab still works.
-            }
             setTimeout(() => {
               try {
                 tab.location.href = link.then;
