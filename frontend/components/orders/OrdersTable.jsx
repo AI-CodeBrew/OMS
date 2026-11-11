@@ -186,7 +186,7 @@ export default function OrdersTable({
             <th className="w-24 px-3 py-2">Courier</th>
             {showTransitColumn ? <th className="w-24 px-3 py-2">In Transit</th> : null}
             <th className="w-32 px-3 py-2">Tracking ID (CN)</th>
-            <th className="w-24 px-3 py-2 text-right">Amount</th>
+            <th className="w-24 px-3 py-2 text-right">Grand Total</th>
             <th className="w-28 px-3 py-2">Order Type</th>
             <th className="w-10 px-2 py-2" aria-label="Actions" />
           </tr>

@@ -54,7 +54,9 @@ export default function LoginPage() {
       const data = await authService.login(email, password);
       if (data.user?.role === "super_admin") {
         await authService.logout();
-        setError("Use the super admin portal to sign in.");
+        // Same words as a wrong password - the store login never says a
+        // super admin account exists or where its portal is.
+        setError("Invalid login credentials");
         return;
       }
       // Prove JWT works: protected health call before navigating. Also where

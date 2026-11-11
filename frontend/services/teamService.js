@@ -64,6 +64,17 @@ class TeamService {
     const qs = search.toString();
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.auditLogs}${qs ? `?${qs}` : ""}`);
   }
+
+  // Order Logs tab: {q} (store order ID / OMS order ID / tracking) or
+  // {order_id} -> {orders, order, logs}.
+  orderLogs(params = {}) {
+    const search = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== "") search.set(key, String(value));
+    });
+    const qs = search.toString();
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.orderLogs}${qs ? `?${qs}` : ""}`);
+  }
 }
 
 export const teamService = new TeamService();

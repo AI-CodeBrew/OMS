@@ -29,6 +29,12 @@ class ActivityLogsAdminService {
   list(params = {}) {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.activityLogs}${buildQuery(params)}`);
   }
+
+  // Order Logs tab, every store: {q} (store order ID / OMS order ID /
+  // tracking) or {order_id} -> {orders, order, logs}.
+  orderLogs(params = {}) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.orderLogs}${buildQuery(params)}`);
+  }
 }
 
 export const activityLogsAdminService = new ActivityLogsAdminService();

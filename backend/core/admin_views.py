@@ -161,3 +161,11 @@ def activity_logs(request):
     """Every store's activity log, newest first - see
     activity_log_service.list_activity for the filters."""
     return Response({"success": True, **activity_log_service.list_activity(request.query_params)})
+
+
+@api_view(["GET"])
+@permission_classes([IsSuperAdmin])
+def order_logs(request):
+    """The Logs page's Order Logs tab, across every store - see
+    activity_log_service.order_logs."""
+    return Response({"success": True, **activity_log_service.order_logs(request.query_params)})

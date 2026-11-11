@@ -423,3 +423,185 @@ def list_activity(params):
         "page_size": page_size,
         "results": [_row(r) for r in qs[start : start + page_size]],
     }
+
+
+# --------------------------------------------------------- Order Logs tab --
+# One order's complete history: its log rows (edits, status changes, by a
+# person, a courier, Shopify or the system) plus the status-history lines
+# that never got a log row (older orders, courier notes, fixes made by
+# hand), oldest first. Found by store order ID, OMS order ID or tracking
+# number.
+
+ORDER_LOG_MATCHES = 20
+ORDER_LOG_LIMIT = 1000
+# A status change writes both a log row and a status-history line a moment
+# apart - the line is a repeat when one is this close.
+_SAME_CHANGE_SECONDS = 10
+_ORDER_PREFIX = re.compile(r"^Order [^:]+:\s*")
+_ORDER_ACTIONS = {
+    "order.status_change": "Status changed",
+    "order.updated": "Order edited",
+    "order.created": "Order created",
+    "order.import": "Imported",
+    "order.shopify_sync_failed": "Shopify update failed",
+    "oms.shopify_order_create": "Created on Shopify",
+}
+
+
+def _humanize_action(action):
+    """"order.shopify_sync_failed" -> "Shopify sync failed"."""
+    word = (action or "").rsplit(".", 1)[-1].replace("_", " ").replace("-", " ").strip()
+    return word[:1].upper() + word[1:] if word else "Change"
+
+
+def _order_brief(order):
+    from oms import services as oms_services
+
+    return {
+        "id": str(order.id),
+        "oms_order_id": order.supabase_order_no,
+        "order_number": order.original_order_number or order.order_number,
+        "organization_name": order.organization.name,
+        "status": oms_services.card_label(order),
+        "tracking_number": order.tracking_number,
+        "created_at": order.created_at.isoformat(),
+    }
+
+
+def find_orders(q, organization_id=None):
+    """Orders matching `q` exactly - store order ID (with or without #),
+    OMS order ID or tracking number - newest first."""
+    from oms.models import Order
+
+    q = (q or "").strip()
+    bare = q.lstrip("#")
+    if not bare:
+        return []
+    match = (
+        Q(order_number__iexact=bare) | Q(order_number__iexact=f"#{bare}")
+        | Q(original_order_number__iexact=bare) | Q(original_order_number__iexact=f"#{bare}")
+        | Q(tracking_number__iexact=q)
+    )
+    if bare.isdigit():
+        match |= Q(supabase_order_no=int(bare))
+    qs = Order.all_objects.filter(match)
+    if organization_id:
+        qs = qs.filter(organization_id=organization_id)
+    return [_order_brief(o) for o in qs.select_related("organization").order_by("-created_at")[:ORDER_LOG_MATCHES]]
+
+
+def _status_label(value):
+    from oms.models import Order
+
+    return dict(Order.STATUS_CHOICES).get(value, value or "-")
+
+
+def order_timeline(order_id, organization_id=None):
+    """{"order": brief, "logs": [{id, created_at, actor, actor_role,
+    action, details, failed}]} oldest first, or None if there's no such
+    order (in this store)."""
+    from oms.models import Order, OrderStatusEvent
+
+    qs = Order.all_objects.filter(id=order_id).select_related("organization")
+    if organization_id:
+        qs = qs.filter(organization_id=organization_id)
+    order = qs.first()
+    if order is None:
+        return None
+
+    logs = list(
+        OrganizationAuditLog.all_objects.filter(entity_type="order", entity_id=str(order.id))
+        .order_by("created_at")[:ORDER_LOG_LIMIT]
+    )
+    events = list(OrderStatusEvent.all_objects.filter(order_id=order.id).order_by("created_at")[:ORDER_LOG_LIMIT])
+
+    emails = {str(r.actor_user_id): r.actor_email for r in logs if r.actor_user_id and r.actor_email}
+    unknown = {e.actor_user_id for e in events if e.actor_user_id and str(e.actor_user_id) not in emails}
+    if unknown:
+        for user_id, email in (
+            OrganizationAuditLog.all_objects.filter(actor_user_id__in=unknown)
+            .exclude(actor_email="").values_list("actor_user_id", "actor_email")
+        ):
+            emails.setdefault(str(user_id), email)
+
+    rows = []
+    status_rows = []
+    for r in logs:
+        meta = r.metadata or {}
+        details = _ORDER_PREFIX.sub("", r.summary or "")
+        if r.action == "order.status_change":
+            status_rows.append((r.created_at, meta.get("from_status"), meta.get("to_status")))
+            if meta.get("note"):
+                details = f"{details} · {meta['note']}"
+        action = _ORDER_ACTIONS.get(r.action)
+        if action is None:
+            summary = r.summary or ""
+            head, colon, rest = summary.partition(":")
+            if _ORDER_PREFIX.match(summary):
+                # "Order #1006: couldn't update Shopify" - the order is the page's.
+                action, details = _humanize_action(r.action), rest.strip()
+            elif colon:
+                action, details = head, rest.strip()
+            else:
+                action, details = summary, ""
+        rows.append({
+            "id": str(r.id),
+            "created_at": r.created_at.isoformat(),
+            "actor": actor_display(r),
+            "actor_role": r.actor_role,
+            "action": action.strip() or "Change",
+            "details": details,
+            "failed": r.status_code is not None and r.status_code >= 400,
+        })
+
+    for e in events:
+        changed = e.from_status != e.to_status
+        if changed and any(
+            from_status == e.from_status and to_status == e.to_status
+            and abs((at - e.created_at).total_seconds()) <= _SAME_CHANGE_SECONDS
+            for at, from_status, to_status in status_rows
+        ):
+            continue
+        details = f"{_status_label(e.from_status)} → {_status_label(e.to_status)}" if changed else ""
+        if e.note:
+            details = f"{details} · {e.note}" if details else e.note
+        rows.append({
+            "id": f"event-{e.id}",
+            "created_at": e.created_at.isoformat(),
+            "actor": emails.get(str(e.actor_user_id), "") if e.actor_user_id else "",
+            "actor_role": "",
+            "action": "Status changed" if changed else "Note",
+            "details": details,
+            "failed": False,
+        })
+
+    # "Edited order #1009" -> "Edited order": the page is about this order.
+    numbers = {n for n in (order.order_number, order.original_order_number) if n}
+    for row in rows:
+        row["actor"] = row["actor"] or "System"
+        for number in numbers:
+            row["action"] = row["action"].replace(f" {number}", "").strip()
+    rows.sort(key=lambda row: row["created_at"])
+    return {"order": _order_brief(order), "logs": rows}
+
+
+def order_logs(params, organization_id=None):
+    """The Order Logs tab: ?order_id=<uuid> -> that order's history, else
+    ?q=<order ID / OMS ID / tracking> -> the matching orders (and, when
+    exactly one matches, its history straight away)."""
+    import uuid
+
+    order_id = (params.get("order_id") or "").strip()
+    if order_id:
+        try:
+            uuid.UUID(order_id)
+        except ValueError:
+            return {"orders": [], "order": None, "logs": []}
+        timeline = order_timeline(order_id, organization_id)
+        if timeline is None:
+            return {"orders": [], "order": None, "logs": []}
+        return {"orders": [timeline["order"]], **timeline}
+    orders = find_orders(params.get("q"), organization_id)
+    if len(orders) == 1:
+        return {"orders": orders, **order_timeline(orders[0]["id"], organization_id)}
+    return {"orders": orders, "order": None, "logs": []}

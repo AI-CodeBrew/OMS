@@ -2582,13 +2582,16 @@ class OrderViewSet(viewsets.ModelViewSet):
 
             last_event =OrderStatusEvent.all_objects.filter(order=OuterRef("pk")).order_by("-created_at")
             last_note = OrderNote.all_objects.filter(order=OuterRef("pk")).order_by("-created_at")
-            # Approved: out of the Awaiting Confirmation card into the
-            # Approved one - its latest time, if approved more than once.
-            last_approved = OrderStatusEvent.all_objects.filter(
-                order=OuterRef("pk"),
-                from_status__in=services.WORKFLOW_CARD_STATUSES["awaiting_confirmation"],
-                to_status__in=services.WORKFLOW_CARD_STATUSES["approved"],
-            ).order_by("-created_at")
+            # Approved: out of the Awaiting Confirmation card and onward -
+            # into Approved, or straight past it (booked on Smartlane's own
+            # portal, a courier sheet import, marked by hand) - its latest
+            # time, if that happened more than once. Never a cancel.
+            confirmation = services.WORKFLOW_CARD_STATUSES["awaiting_confirmation"]
+            last_approved = (
+                OrderStatusEvent.all_objects.filter(order=OuterRef("pk"), from_status__in=confirmation)
+                .exclude(to_status__in=confirmation | {"cancelled"})
+                .order_by("-created_at")
+            )
             queryset = (
                 queryset.select_related("courier", "organization")
                 .prefetch_related(
@@ -2626,7 +2629,9 @@ class OrderViewSet(viewsets.ModelViewSet):
                 "Store Name",
                 # When the order landed in OMS (created_at) - one time only.
                 "Order Date (PKT)",
-                # When it was last approved (out of Awaiting Confirmation).
+                # When it was last approved - moved on from Awaiting
+                # Confirmation, however that happened. Blank for orders
+                # with no history (older orders).
                 "Last Approved At (PKT)",
                 "Customer Name",
                 "Phone",

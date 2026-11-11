@@ -98,3 +98,15 @@ def audit_logs(request):
     }
     params["organization"] = request.organization_id
     return Response({"success": True, **activity_log_service.list_activity(params)})
+
+
+@api_view(["GET"])
+@permission_classes([IsOrgAdmin])
+def order_logs(request):
+    """The store's Order Logs tab - one of this store's orders only."""
+    if not request.organization_id:
+        return Response({"success": True, "orders": [], "order": None, "logs": []})
+    return Response({
+        "success": True,
+        **activity_log_service.order_logs(request.query_params, organization_id=request.organization_id),
+    })

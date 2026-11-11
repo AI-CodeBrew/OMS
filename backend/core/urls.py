@@ -10,6 +10,7 @@ urlpatterns = [
     path("team/", team_views.team_members, name="team-members"),
     path("team/<uuid:user_id>/", team_views.team_member_detail, name="team-member-detail"),
     path("audit-logs/", team_views.audit_logs, name="audit-logs"),
+    path("order-logs/", team_views.order_logs, name="order-logs"),
     path("stores/", views.stores, name="stores"),
     path("scan-sessions/", views.scan_session, name="scan-session"),
     path("notifications/", notification_views.notifications, name="notifications"),
@@ -37,6 +38,7 @@ urlpatterns = [
         name="admin-dispatch-hub-store-detail",
     ),
     path("admin/activity-logs/", admin_views.activity_logs, name="admin-activity-logs"),
+    path("admin/order-logs/", admin_views.order_logs, name="admin-order-logs"),
     # Lives in the integrations app but is mounted here on purpose: the
     # /api/core/admin/ prefix is what AdminIPAllowlistMiddleware matches.
     path("admin/smartlane/", include("integrations.admin_urls")),

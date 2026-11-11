@@ -49,6 +49,7 @@ export const API_ENDPOINTS = {
     smartlaneRequestReject: (id) => `/api/core/admin/smartlane/requests/${id}/reject/`,
     // Every store's activity log (the Logs tab).
     activityLogs: "/api/core/admin/activity-logs/",
+    orderLogs: "/api/core/admin/order-logs/",
     tickets: "/api/core/admin/tickets/",
     ticketStoreOrders: "/api/core/admin/tickets/store-orders/",
     cities: "/api/core/admin/cities/",
@@ -64,6 +65,7 @@ export const API_ENDPOINTS = {
   team: "/api/core/team/",
   teamMember: (userId) => `/api/core/team/${userId}/`,
   auditLogs: "/api/core/audit-logs/",
+  orderLogs: "/api/core/order-logs/",
   stores: "/api/core/stores/",
   // The store's bell (core/notification_views.py).
   notifications: "/api/core/notifications/",

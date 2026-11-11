@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import ActivityLog from "../../../components/logs/ActivityLog";
+import LogsTabs from "../../../components/logs/LogsTabs";
 import teamService from "../../../services/teamService";
 import useAuthStore, { useEffectiveUser } from "../../../store/authStore";
 
@@ -18,21 +18,16 @@ export default function LogsPage() {
   }, [hydrated, isOrgAdmin, router]);
 
   const fetchLogs = useCallback((params) => teamService.listAuditLogs(params), []);
+  const fetchOrderLogs = useCallback((params) => teamService.orderLogs(params), []);
 
   if (!hydrated || !isOrgAdmin) {
     return <p className="text-sm text-slate-500">Checking access…</p>;
   }
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold text-slate-900">Logs</h1>
-        <p className="mt-1 text-sm text-slate-500">
-          What changed in this store, when, and who changed it. Click an order&apos;s log to see its
-          full history.
-        </p>
-      </div>
-      <ActivityLog fetchLogs={fetchLogs} />
+    <div className="space-y-4">
+      <h1 className="text-xl font-semibold text-slate-900">Logs</h1>
+      <LogsTabs fetchLogs={fetchLogs} fetchOrderLogs={fetchOrderLogs} />
     </div>
   );
 }
