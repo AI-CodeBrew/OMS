@@ -55,3 +55,6 @@ build/
 # Deploy config (backend/fly.toml, backend/deploy/, backend/.dockerignore) is
 # deliberately NOT ignored - it is infrastructure source and the only thing
 # keeping the two Fly apps reproducible.
+
+# Data sheets kept in the project root - never commit them.
+/*.csv
