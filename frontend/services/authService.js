@@ -60,15 +60,7 @@ export function buildUser(session) {
   };
 }
 
-// Set by a super admin page that lists every store's orders without
-// entering a store ("all", like All Orders); null when it closes.
-let hubScopeOverride = null;
-
 class AuthService {
-  setHubScopeOverride(scope) {
-    hubScopeOverride = scope || null;
-  }
-
   getAuthHeaders() {
     const { accessToken: token, user, actingStore } = useAuthStore.getState();
     const headers = {
@@ -78,11 +70,7 @@ class AuthService {
     if (token) {
       headers.Authorization = `Bearer ${token}`;
     }
-    if (user?.role === "super_admin" && hubScopeOverride) {
-      // A super admin page outside any store that reads every store's
-      // orders (the Logs page) - see setHubScopeOverride.
-      headers["X-Dispatch-Hub"] = hubScopeOverride;
-    } else if (user?.role === "super_admin" && actingStore?.hub) {
+    if (user?.role === "super_admin" && actingStore?.hub) {
       // "all": the super admin's All Orders - every store, same Hub mode.
       headers["X-Dispatch-Hub"] = actingStore.allStores ? "all" : "1";
     } else if (user?.role === "super_admin" && actingStore?.id) {

@@ -1,379 +1,365 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import authService from "../../services/authService";
-import ordersService from "../../services/ordersService";
-import dispatchHubAdminService from "../../services/dispatchHubAdminService";
-import OrderStatusTabs from "../orders/OrderStatusTabs";
-import OrderFieldFilters, { activeFilterCount } from "../orders/OrderFieldFilters";
-import DateRangeFilter from "../orders/DateRangeFilter";
-import { STATUS_LABELS, cardTab } from "../orders/statusConfig";
-import Pagination from "../shared/Pagination";
-import { useDateFilterStore } from "../../store/dateFilterStore";
-import { formatDateTime } from "../../lib/formatDate";
-import { formatWhen, Who } from "./logFormat";
+import { useCallback, useEffect, useState } from "react";
+import { formatWhen, isFailed, Who } from "./logFormat";
 
-// The super admin's Logs page: every store's orders, with the same status
-// cards, search and Filters (one value or many) as All Orders. Opening an
-// order shows its whole history right under it, A to Z - what happened,
-// when, and who did it. The orders come from the All Orders list, read with
-// the "all stores" scope while this is open (authService.setHubScopeOverride);
-// fetchOrderLogs({order_id}) -> {order, logs} gives one order's history.
+// The super admin's Logs page. Opens on the last few order updates (no
+// order list is loaded). Searching an order - store order ID, OMS order ID
+// or tracking number - shows its whole log as a table, oldest first, the
+// last row being where the order is now.
+//   fetchLogs(params)      -> {results}        (activity log rows)
+//   fetchOrderLogs(params) -> {orders, order, logs}
 
-const EMPTY_FILTERS = {
-  date_from: "", date_to: "", store: "", product: "",
-  f_oms_id: "", f_store_order_id: "", f_customer: "", f_phone: "", f_tracking: "",
-  f_shop: "", f_city: "", f_province: "", f_courier: "",
-};
+const RECENT_COUNT = 10;
 
 const th = "whitespace-nowrap px-3 py-2.5 text-left font-medium";
-const td = "px-3 py-2";
-const COLS = 9;
+const td = "px-3 py-2 align-top";
 
-function statusOf(order) {
-  const card = cardTab(order.workflow_card);
-  if (card) return card.label;
-  return STATUS_LABELS[order.status] || String(order.status || "-").replace(/_/g, " ");
+function Table({ head, children }) {
+  return (
+    <div className="overflow-x-auto rounded-lg border border-surface-border bg-white">
+      <table className="w-full text-sm">
+        <thead className="border-b border-surface-border bg-surface text-[11px] uppercase tracking-wide text-slate-500">
+          <tr>{head}</tr>
+        </thead>
+        <tbody className="divide-y divide-surface-border">{children}</tbody>
+      </table>
+    </div>
+  );
 }
 
-function Chevron({ open }) {
+function Message({ colSpan, children }) {
   return (
-    <svg
-      className={`h-3.5 w-3.5 transition-transform ${open ? "rotate-180" : ""}`}
-      fill="none"
-      viewBox="0 0 24 24"
-      stroke="currentColor"
-      strokeWidth={2.5}
-    >
-      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+    <tr>
+      <td colSpan={colSpan} className="px-3 py-8 text-center text-slate-500">
+        {children}
+      </td>
+    </tr>
+  );
+}
+
+function When({ iso }) {
+  const when = formatWhen(iso);
+  return (
+    <>
+      <div className="whitespace-nowrap text-slate-800">{when.date}</div>
+      <div className="whitespace-nowrap text-xs text-slate-500">{when.time}</div>
+    </>
+  );
+}
+
+function FailedTag() {
+  return (
+    <span className="ml-2 rounded bg-red-50 px-1.5 py-0.5 text-[11px] font-semibold text-red-700">Failed</span>
+  );
+}
+
+// "Order #1009: Status changed ..." -> "#1009" and "Status changed ...".
+function splitSummary(log) {
+  const number = log.metadata?.order_number || log.summary?.match(/#[\w-]+/)?.[0] || "";
+  const what = (log.summary || "").replace(/^Order [^:]+:\s*/, "") || log.action;
+  return { number: String(number).replace(/^#/, ""), what };
+}
+
+function SearchIcon() {
+  return (
+    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <circle cx="11" cy="11" r="7" />
+      <path strokeLinecap="round" d="M20 20l-3.5-3.5" />
     </svg>
   );
 }
 
-// One order's history, oldest first - loaded when it is opened.
-function OrderHistory({ orderId, fetchOrderLogs }) {
-  const [logs, setLogs] = useState([]);
+// The last few order updates over every store, newest first. A row with an
+// order opens that order's full log.
+function RecentUpdates({ fetchLogs, onOpenOrder }) {
+  const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  useEffect(() => {
-    let cancelled = false;
+  const load = useCallback(() => {
     setLoading(true);
     setError("");
-    fetchOrderLogs({ order_id: orderId })
-      .then((data) => !cancelled && setLogs(data.logs || []))
-      .catch((err) => !cancelled && setError(err.message || "Failed to load logs"))
-      .finally(() => !cancelled && setLoading(false));
-    return () => {
-      cancelled = true;
-    };
-  }, [orderId, fetchOrderLogs]);
-
-  if (loading) return <p className="py-4 text-center text-sm text-slate-500">Loading history…</p>;
-  if (error) return <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>;
-  if (!logs.length) return <p className="py-4 text-center text-sm text-slate-500">No logs for this order.</p>;
-
-  return (
-    <ol className="relative space-y-3 border-l border-surface-border pl-5">
-      {logs.map((log, i) => {
-        const when = formatWhen(log.created_at);
-        return (
-          <li key={log.id} className="relative">
-            <span
-              className={`absolute -left-[26px] top-1.5 h-2.5 w-2.5 rounded-full ring-4 ring-slate-50 ${
-                log.failed ? "bg-red-500" : i === logs.length - 1 ? "bg-brand-500" : "bg-slate-300"
-              }`}
-            />
-            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
-              <span className="whitespace-nowrap text-xs text-slate-500">
-                {when.date} · {when.time}
-              </span>
-              <span className="text-sm font-medium text-slate-900">
-                {log.action}
-                {log.failed ? (
-                  <span className="ml-2 rounded bg-red-50 px-1.5 py-0.5 text-[11px] font-semibold text-red-700">
-                    Failed
-                  </span>
-                ) : null}
-              </span>
-              <span className="text-xs">
-                <span className="text-slate-500">by </span>
-                <Who log={log} />
-              </span>
-            </div>
-            {log.details ? <p className="mt-0.5 text-sm text-slate-600">{log.details}</p> : null}
-          </li>
-        );
-      })}
-    </ol>
-  );
-}
-
-export default function OrderLogsBrowser({ fetchOrderLogs }) {
-  const [activeStatus, setActiveStatus] = useState("all");
-  const [search, setSearch] = useState("");
-  const [appliedSearch, setAppliedSearch] = useState("");
-  const [filtersOpen, setFiltersOpen] = useState(false);
-  const setSessionRange = useDateFilterStore((s) => s.setRange);
-  const [appliedFilters, setAppliedFilters] = useState(() => {
-    const shared = useDateFilterStore.getState();
-    return { ...EMPTY_FILTERS, date_from: shared.dateFrom, date_to: shared.dateTo };
-  });
-  const [orders, setOrders] = useState([]);
-  const [count, setCount] = useState(0);
-  const [counts, setCounts] = useState(null);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(25);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [stores, setStores] = useState([]);
-  const [openIds, setOpenIds] = useState(() => new Set());
-  const loadGen = useRef(0);
-  // Set during render (not in an effect) so it is already on for the
-  // first load below; taken off again when the page closes.
-  authService.setHubScopeOverride("all");
-  useEffect(() => {
-    authService.setHubScopeOverride("all");
-    return () => authService.setHubScopeOverride(null);
-  }, []);
-
-  useEffect(() => {
-    dispatchHubAdminService
-      .listStores({ allStores: true })
-      .then((list) => setStores(list.map((s) => ({ id: s.id, name: s.name }))))
-      .catch(() => setStores([]));
-  }, []);
-
-  const queryParams = useMemo(
-    () => ({
-      status: activeStatus === "all" ? undefined : activeStatus,
-      search: appliedSearch || undefined,
-      search_field: appliedSearch ? "all" : undefined,
-      ...appliedFilters,
-    }),
-    [activeStatus, appliedSearch, appliedFilters]
-  );
-
-  // A new tab, search or filter starts again on page 1.
-  useEffect(() => {
-    setPage(1);
-  }, [queryParams]);
-
-  const load = useCallback(async () => {
-    const gen = ++loadGen.current;
-    setLoading(true);
-    setError("");
-    try {
-      const { status, ...countParams } = queryParams;
-      const [list, tabCounts] = await Promise.all([
-        ordersService.list({ ...queryParams, page, page_size: pageSize }),
-        ordersService.counts(countParams).catch(() => null),
-      ]);
-      if (gen !== loadGen.current) return;
-      setOrders(list.results || []);
-      setCount(list.count || 0);
-      if (tabCounts) setCounts(tabCounts);
-    } catch (err) {
-      if (gen !== loadGen.current) return;
-      setError(err.message || "Failed to load orders");
-      setOrders([]);
-      setCount(0);
-    } finally {
-      if (gen === loadGen.current) setLoading(false);
-    }
-  }, [queryParams, page, pageSize]);
+    fetchLogs({ category: "orders", page_size: RECENT_COUNT })
+      .then((data) => setRows(data.results || []))
+      .catch((err) => setError(err.message || "Failed to load logs"))
+      .finally(() => setLoading(false));
+  }, [fetchLogs]);
 
   useEffect(() => {
     load();
   }, [load]);
 
-  function toggle(id) {
-    setOpenIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-slate-800">Last {RECENT_COUNT} order updates</h2>
+        <button
+          type="button"
+          onClick={load}
+          disabled={loading}
+          className="rounded-md border border-surface-border bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+        >
+          {loading ? "Loading…" : "Refresh"}
+        </button>
+      </div>
+      {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+      <Table
+        head={
+          <>
+            <th className={th}>When</th>
+            <th className={th}>Store</th>
+            <th className={th}>Order</th>
+            <th className={th}>What happened</th>
+            <th className={th}>Who</th>
+          </>
+        }
+      >
+        {loading && rows.length === 0 ? (
+          <Message colSpan={5}>Loading…</Message>
+        ) : rows.length === 0 ? (
+          <Message colSpan={5}>No order updates yet.</Message>
+        ) : (
+          rows.map((log) => {
+            const { number, what } = splitSummary(log);
+            const canOpen = log.entity_type === "order" && log.entity_id;
+            return (
+              <tr key={log.id} className="hover:bg-surface">
+                <td className={td}>
+                  <When iso={log.created_at} />
+                </td>
+                <td className={`${td} whitespace-nowrap text-slate-700`}>{log.organization_name}</td>
+                <td className={`${td} whitespace-nowrap`}>
+                  {canOpen ? (
+                    <button
+                      type="button"
+                      onClick={() => onOpenOrder(log.entity_id)}
+                      title="Show this order's full log"
+                      className="font-semibold text-brand-700 hover:underline"
+                    >
+                      {number || "Open"}
+                    </button>
+                  ) : (
+                    <span className="text-slate-700">{number || "—"}</span>
+                  )}
+                </td>
+                <td className={`${td} text-slate-800`}>
+                  {what}
+                  {isFailed(log) ? <FailedTag /> : null}
+                </td>
+                <td className={td}>
+                  <Who log={log} />
+                </td>
+              </tr>
+            );
+          })
+        )}
+      </Table>
+    </div>
+  );
+}
+
+// One order's whole log, oldest first; the last row is where it is now.
+function OrderLog({ order, logs }) {
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-1 rounded-lg border border-surface-border bg-white px-4 py-3 text-sm">
+        <div>
+          <span className="text-slate-500">Order </span>
+          <span className="font-semibold text-slate-900">{String(order.order_number || "").replace(/^#/, "")}</span>
+        </div>
+        <div>
+          <span className="text-slate-500">OMS ID </span>
+          <span className="font-medium text-slate-800">{order.oms_order_id ?? "—"}</span>
+        </div>
+        <div>
+          <span className="text-slate-500">Store </span>
+          <span className="font-medium text-slate-800">{order.organization_name}</span>
+        </div>
+        <div>
+          <span className="text-slate-500">Tracking </span>
+          <span className="font-medium text-slate-800">{order.tracking_number || "—"}</span>
+        </div>
+        <div>
+          <span className="text-slate-500">Current status </span>
+          <span className="rounded-full bg-brand-50 px-2 py-0.5 text-xs font-semibold text-brand-800">
+            {order.status}
+          </span>
+        </div>
+      </div>
+
+      <Table
+        head={
+          <>
+            <th className={`${th} w-12`}>#</th>
+            <th className={th}>When</th>
+            <th className={th}>Action</th>
+            <th className={th}>Details</th>
+            <th className={th}>Who</th>
+          </>
+        }
+      >
+        {logs.length === 0 ? (
+          <Message colSpan={5}>No logs for this order.</Message>
+        ) : (
+          logs.map((log, i) => {
+            const current = i === logs.length - 1;
+            return (
+              <tr key={log.id} className={current ? "bg-brand-50" : "hover:bg-surface"}>
+                <td className={`${td} tabular-nums text-slate-500`}>{i + 1}</td>
+                <td className={td}>
+                  <When iso={log.created_at} />
+                </td>
+                <td className={`${td} whitespace-nowrap font-medium text-slate-900`}>
+                  {log.action}
+                  {log.failed ? <FailedTag /> : null}
+                  {current ? (
+                    <span className="ml-2 rounded bg-brand-700 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-white">
+                      Current
+                    </span>
+                  ) : null}
+                </td>
+                <td className={`${td} text-slate-700`}>{log.details || "—"}</td>
+                <td className={td}>
+                  <Who log={log} />
+                </td>
+              </tr>
+            );
+          })
+        )}
+      </Table>
+    </div>
+  );
+}
+
+export default function OrderLogsBrowser({ fetchLogs, fetchOrderLogs }) {
+  const [search, setSearch] = useState("");
+  // null: nothing searched - the recent updates show.
+  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function load(params) {
+    setLoading(true);
+    setError("");
+    try {
+      const data = await fetchOrderLogs(params);
+      setResult((prev) => ({
+        // Picking one of several matches keeps the list to pick from.
+        orders: params.q !== undefined ? data.orders || [] : prev?.orders || [],
+        order: data.order || null,
+        logs: data.logs || [],
+      }));
+    } catch (err) {
+      setError(err.message || "Failed to load logs");
+    } finally {
+      setLoading(false);
+    }
   }
 
-  const activeFilters = activeFilterCount(appliedFilters, { hub: true });
+  function clear() {
+    setSearch("");
+    setResult(null);
+    setError("");
+  }
+
+  const several = (result?.orders.length || 0) > 1;
 
   return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            setAppliedSearch(search.trim());
-          }}
-          className="flex min-w-0 flex-1 items-center gap-2"
-        >
+    <div className="space-y-4">
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          const q = search.trim();
+          if (q) load({ q });
+        }}
+        className="flex flex-wrap items-center gap-2"
+      >
+        <div className="relative w-full max-w-md">
+          <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
+            <SearchIcon />
+          </span>
           <input
             type="search"
             value={search}
             onChange={(e) => {
               setSearch(e.target.value);
-              if (!e.target.value.trim() && appliedSearch) setAppliedSearch("");
+              if (!e.target.value.trim()) clear();
             }}
-            placeholder="Search order no., customer, phone, tracking, city…"
-            className="w-full min-w-0 rounded-md border border-surface-border bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 sm:w-96 sm:flex-none"
+            placeholder="Search order: Store order ID, OMS order ID or tracking number"
+            className="w-full rounded-md border border-surface-border bg-white py-2 pl-9 pr-3 text-sm outline-none focus:border-brand-500"
           />
-          <button
-            type="submit"
-            className="rounded-md border border-surface-border bg-white px-4 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50"
-          >
-            Search
+        </div>
+        <button
+          type="submit"
+          disabled={loading || !search.trim()}
+          className="rounded-md bg-brand-700 px-4 py-2 text-sm font-medium text-white hover:bg-brand-800 disabled:opacity-50"
+        >
+          {loading ? "Searching…" : "Search"}
+        </button>
+        {result ? (
+          <button type="button" onClick={clear} className="text-sm font-medium text-slate-600 hover:underline">
+            Back to recent updates
           </button>
-          <button
-            type="button"
-            onClick={() => setFiltersOpen((o) => !o)}
-            className={`inline-flex items-center gap-1.5 rounded-md border px-4 py-2 text-sm font-medium ${
-              activeFilters || filtersOpen
-                ? "border-brand-300 bg-brand-50 text-brand-800"
-                : "border-surface-border bg-white text-slate-800 hover:bg-slate-50"
-            }`}
-          >
-            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M3 4h18l-7 8v6l-4 2v-8L3 4z" />
-            </svg>
-            Filters{activeFilters ? ` (${activeFilters})` : ""}
-          </button>
-        </form>
-        <DateRangeFilter
-          dateFrom={appliedFilters.date_from}
-          dateTo={appliedFilters.date_to}
-          onApplyDateRange={(date_from, date_to) => {
-            setSessionRange(date_from, date_to);
-            setAppliedFilters((f) => ({ ...f, date_from, date_to }));
-          }}
-          onClearDateRange={() => {
-            setSessionRange("", "");
-            setAppliedFilters((f) => ({ ...f, date_from: "", date_to: "" }));
-          }}
-        />
-      </div>
-
-      <OrderStatusTabs counts={counts} activeStatus={activeStatus} onChange={setActiveStatus} />
-
-      {filtersOpen ? (
-        <OrderFieldFilters
-          applied={appliedFilters}
-          baseParams={queryParams}
-          hub={{ stores, status: activeStatus === "all" ? undefined : activeStatus }}
-          onApply={(next) => setAppliedFilters((f) => ({ ...f, ...next }))}
-          onClose={() => setFiltersOpen(false)}
-        />
-      ) : null}
+        ) : null}
+      </form>
 
       {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
 
-      <div className="overflow-x-auto rounded-lg border border-surface-border bg-white">
-        <table className="w-full text-sm">
-          <thead className="border-b border-surface-border bg-surface text-[11px] uppercase tracking-wide text-slate-500">
-            <tr>
-              <th className="w-10 px-2 py-2.5" />
-              <th className={th}>Store</th>
-              <th className={th}>Order ID</th>
-              <th className={th}>OMS ID</th>
-              <th className={th}>Placed</th>
-              <th className={th}>Customer</th>
-              <th className={th}>City</th>
-              <th className={th}>Courier / Tracking</th>
-              <th className={th}>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading && orders.length === 0 ? (
-              <tr>
-                <td colSpan={COLS} className="px-3 py-8 text-center text-slate-500">
-                  Loading…
-                </td>
-              </tr>
-            ) : orders.length === 0 ? (
-              <tr>
-                <td colSpan={COLS} className="px-3 py-8 text-center text-slate-500">
-                  No orders found.
-                </td>
-              </tr>
-            ) : (
-              orders.map((order) => {
-                const open = openIds.has(order.id);
-                return (
-                  <Fragment key={order.id}>
-                    <tr
-                      onClick={() => toggle(order.id)}
-                      className={`cursor-pointer border-b border-surface-border hover:bg-surface ${
-                        open ? "bg-brand-50/60" : ""
-                      }`}
-                    >
-                      <td className="px-2 py-2 text-center">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggle(order.id);
-                          }}
-                          aria-expanded={open}
-                          aria-label={open ? "Hide logs" : "Show logs"}
-                          title={open ? "Hide logs" : "Show logs"}
-                          className="rounded border border-surface-border p-0.5 text-slate-500 hover:bg-white hover:text-brand-700"
-                        >
-                          <Chevron open={open} />
-                        </button>
-                      </td>
-                      <td className={`${td} max-w-[180px] truncate text-slate-700`} title={order.store_name}>
-                        {order.store_name || "—"}
-                      </td>
-                      <td className={`${td} whitespace-nowrap font-semibold text-slate-900`}>
-                        {String(order.order_number ?? "").replace(/^#/, "") || "—"}
-                      </td>
-                      <td className={`${td} whitespace-nowrap text-slate-700`}>{order.supabase_order_no ?? "—"}</td>
-                      <td className={`${td} whitespace-nowrap text-slate-600`}>
-                        {formatDateTime(order.placed_at || order.created_at) || "—"}
-                      </td>
-                      <td className={`${td} max-w-[180px] truncate text-slate-700`} title={order.customer_name}>
-                        {order.customer_name || "—"}
-                      </td>
-                      <td className={`${td} text-slate-700`}>{order.city || "—"}</td>
-                      <td className={`${td} whitespace-nowrap text-slate-700`}>
-                        <div>{order.courier_name || "—"}</div>
-                        {order.tracking_number ? (
-                          <div className="text-[11px] text-slate-400">{order.tracking_number}</div>
-                        ) : null}
-                      </td>
-                      <td className={`${td} whitespace-nowrap`}>
-                        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-700">
-                          {statusOf(order)}
-                        </span>
-                      </td>
-                    </tr>
-                    {open ? (
-                      <tr className="border-b border-surface-border bg-slate-50">
-                        <td />
-                        <td colSpan={COLS - 1} className="px-3 py-4">
-                          <OrderHistory orderId={order.id} fetchOrderLogs={fetchOrderLogs} />
-                        </td>
-                      </tr>
-                    ) : null}
-                  </Fragment>
-                );
-              })
-            )}
-          </tbody>
-        </table>
-      </div>
+      {!result ? (
+        <RecentUpdates fetchLogs={fetchLogs} onOpenOrder={(id) => load({ order_id: id })} />
+      ) : (
+        <>
+          {several ? (
+            <div className="space-y-2">
+              <h2 className="text-sm font-semibold text-slate-800">
+                {result.orders.length} orders match - pick one
+              </h2>
+              <Table
+                head={
+                  <>
+                    <th className={th}>Store</th>
+                    <th className={th}>Order</th>
+                    <th className={th}>OMS ID</th>
+                    <th className={th}>Tracking</th>
+                    <th className={th}>Status</th>
+                    <th className={th}>Created</th>
+                  </>
+                }
+              >
+                {result.orders.map((o) => (
+                  <tr
+                    key={o.id}
+                    onClick={() => load({ order_id: o.id })}
+                    className={`cursor-pointer hover:bg-surface ${result.order?.id === o.id ? "bg-brand-50" : ""}`}
+                  >
+                    <td className={`${td} whitespace-nowrap text-slate-700`}>{o.organization_name}</td>
+                    <td className={`${td} whitespace-nowrap font-semibold text-brand-700`}>
+                      {String(o.order_number || "").replace(/^#/, "")}
+                    </td>
+                    <td className={`${td} text-slate-700`}>{o.oms_order_id ?? "—"}</td>
+                    <td className={`${td} whitespace-nowrap text-slate-700`}>{o.tracking_number || "—"}</td>
+                    <td className={`${td} whitespace-nowrap text-slate-700`}>{o.status}</td>
+                    <td className={td}>
+                      <When iso={o.created_at} />
+                    </td>
+                  </tr>
+                ))}
+              </Table>
+            </div>
+          ) : null}
 
-      <Pagination
-        page={page}
-        pageSize={pageSize}
-        count={count}
-        itemLabel="orders"
-        onPageChange={setPage}
-        onPageSizeChange={(size) => {
-          setPageSize(size);
-          setPage(1);
-        }}
-      />
+          {loading && !result.order ? <p className="text-sm text-slate-500">Loading…</p> : null}
+
+          {result.order ? (
+            <OrderLog order={result.order} logs={result.logs} />
+          ) : !loading && !several ? (
+            <p className="rounded-lg border border-surface-border bg-white px-4 py-8 text-center text-sm text-slate-500">
+              No order found.
+            </p>
+          ) : null}
+        </>
+      )}
     </div>
   );
 }
