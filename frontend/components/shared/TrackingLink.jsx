@@ -18,6 +18,27 @@ export default function TrackingLink({ courier, tracking, fallback = "—", clas
       title={link.copy ? `Open ${link.label} tracking (number copied - paste it there)` : `Track on ${link.label}`}
       onClick={(e) => {
         e.stopPropagation();
+        if (link.then) {
+          // Two steps in the new tab: the first URL saves the number on the
+          // courier's side, then the tab moves on to the result page.
+          e.preventDefault();
+          const tab = window.open(link.url, "_blank");
+          if (tab) {
+            try {
+              tab.opener = null;
+            } catch {
+              // Only hardening - the tab still works.
+            }
+            setTimeout(() => {
+              try {
+                tab.location.href = link.then;
+              } catch {
+                // Tab closed in the meantime.
+              }
+            }, 2000);
+          }
+          return;
+        }
         if (link.copy) {
           try {
             navigator.clipboard?.writeText(value);

@@ -4,9 +4,15 @@
 
 const COURIERS = {
   barqraftar: { label: "BarqRaftar", url: (t) => `https://barqraftar.pk/track?tracking_number=${t}` },
-  // No tracking-number parameter on this page - it opens and the number is
-  // copied, ready to paste (same as Tranzo).
-  leopards: { label: "Leopards", url: () => "https://pk.leopardscourier.com/tracking", copy: true },
+  // Leopards' result page only reads the CN from its session: the page's own
+  // form first calls /shipment_tracking-new (which saves the CN there), then
+  // opens /shipment_tracking_view. The link does the same two steps in the
+  // new tab - see TrackingLink's `then`.
+  leopards: {
+    label: "Leopards",
+    url: (t) => `https://pk.leopardscourier.com/shipment_tracking-new?cn_number=${t}`,
+    then: () => "https://pk.leopardscourier.com/shipment_tracking_view",
+  },
   postex: { label: "PostEx", url: (t) => `https://postex.pk/tracking?cn=${t}` },
   trax: { label: "Trax", url: (t) => `https://trax.pk/tracking/${t}` },
   tcs: { label: "TCS", url: (t) => `https://www.tcsexpress.com/track/${t}` },
@@ -48,5 +54,11 @@ export function trackingLink(courierName, trackingNumber) {
   if (key === "smartlane") key = carrierFromNumber(tracking);
   const courier = COURIERS[key];
   if (!courier) return null;
-  return { url: courier.url(encodeURIComponent(tracking)), label: courier.label, copy: Boolean(courier.copy) };
+  const encoded = encodeURIComponent(tracking);
+  return {
+    url: courier.url(encoded),
+    then: courier.then ? courier.then(encoded) : null,
+    label: courier.label,
+    copy: Boolean(courier.copy),
+  };
 }
