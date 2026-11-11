@@ -1,16 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import inventoryAdminService from "../../../../services/inventoryAdminService";
 import Button from "../../../../components/shared/Button";
 import Pagination from "../../../../components/shared/Pagination";
-import Modal from "../../../../components/shared/Modal";
 import InventoryItemDetailModal from "../../../../components/wms/InventoryItemDetailModal";
 
 // The super admin's Inventory: one row per SKU over every store - each
-// number the sum of all stores holding it. The dropdown beside a SKU opens a
-// popup with its store rows (same columns, per store and warehouse). Read
-// only - stock is adjusted from the store's own Inventory page.
+// number the sum of all stores holding it. The dropdown beside a SKU opens
+// its store rows right under it (same columns, per store and warehouse).
+// Read only - stock is adjusted from the store's own Inventory page.
 
 const ACTIVITY_CARDS = [
   { value: "", key: "total", label: "Total SKUs" },
@@ -50,9 +49,9 @@ function UnitsAndOrders({ units, orders }) {
   );
 }
 
-function DropdownIcon() {
+function DropdownIcon({ open }) {
   return (
-    <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+    <svg className={`h-3.5 w-3.5 transition-transform ${open ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
     </svg>
   );
@@ -95,8 +94,15 @@ export default function AdminInventoryPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [viewing, setViewing] = useState(null);
-  // The SKU whose stores are shown in the popup.
-  const [storesOf, setStoresOf] = useState(null);
+  // SKUs (by key) whose store rows are open under them.
+  const [openKeys, setOpenKeys] = useState(() => new Set());
+  const toggleOpen = (key) =>
+    setOpenKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -213,18 +219,22 @@ export default function AdminInventoryPage() {
                 </td>
               </tr>
             ) : (
-              rows.map((group) => (
-                    <tr key={group.key} className="border-b border-surface-border last:border-0 hover:bg-surface">
+              rows.map((group) => {
+                const open = openKeys.has(group.key);
+                return (
+                  <Fragment key={group.key}>
+                    <tr className={`border-b border-surface-border hover:bg-surface ${open ? "bg-surface" : ""}`}>
                       <td className="whitespace-nowrap px-3 py-1.5 font-medium text-slate-800">
                         <span className="flex items-center gap-2">
                           <button
                             type="button"
-                            onClick={() => setStoresOf(group)}
-                            aria-label="Show Stores"
-                            title="Show Stores"
+                            onClick={() => toggleOpen(group.key)}
+                            aria-expanded={open}
+                            aria-label={open ? "Hide Stores" : "Show Stores"}
+                            title={open ? "Hide Stores" : "Show Stores"}
                             className="rounded border border-surface-border p-0.5 text-slate-500 hover:bg-white hover:text-brand-700"
                           >
-                            <DropdownIcon />
+                            <DropdownIcon open={open} />
                           </button>
                           {group.sku || "—"}
                         </span>
@@ -235,7 +245,7 @@ export default function AdminInventoryPage() {
                       <td className="whitespace-nowrap px-3 py-1.5">
                         <button
                           type="button"
-                          onClick={() => setStoresOf(group)}
+                          onClick={() => toggleOpen(group.key)}
                           className="text-xs font-medium text-brand-700 hover:underline"
                         >
                           {group.store_count} {group.store_count === 1 ? "Store" : "Stores"}
@@ -244,7 +254,38 @@ export default function AdminInventoryPage() {
                       <NumberCells row={group} />
                       <td className="px-2 py-1" />
                     </tr>
-              ))
+                    {/* This SKU's stores, opened in place - same columns, per store and warehouse. */}
+                    {open
+                      ? (group.stores || []).map((item) => (
+                          <tr key={item.id} className="border-b border-surface-border bg-slate-50/60 text-slate-700">
+                            <td className="whitespace-nowrap py-1.5 pl-10 pr-3 text-[11px] text-slate-400">
+                              {item.sku || group.sku || "—"}
+                            </td>
+                            <td className="max-w-[260px] truncate px-3 py-1.5 text-slate-500" title={item.product_name}>
+                              {item.product_name || "—"}
+                            </td>
+                            <td className="whitespace-nowrap px-3 py-1.5">
+                              <div className="font-medium text-slate-800">{item.store_name}</div>
+                              <div className="text-[11px] text-slate-400">{item.warehouse_name}</div>
+                            </td>
+                            <NumberCells row={item} />
+                            <td className="px-2 py-1 text-right">
+                              <button
+                                type="button"
+                                onClick={() => setViewing(item)}
+                                aria-label={`Details for ${item.sku || item.product_name} in ${item.store_name}`}
+                                title="Details"
+                                className="rounded p-1 text-slate-500 hover:bg-white hover:text-brand-700"
+                              >
+                                <EyeIcon />
+                              </button>
+                            </td>
+                          </tr>
+                        ))
+                      : null}
+                  </Fragment>
+                );
+              })
             )}
           </tbody>
         </table>
@@ -262,72 +303,6 @@ export default function AdminInventoryPage() {
           setPage(1);
         }}
       />
-
-      {/* One SKU's stores - the same columns, per store and warehouse. */}
-      <Modal
-        open={Boolean(storesOf)}
-        onClose={() => setStoresOf(null)}
-        width="max-w-6xl"
-        title={
-          storesOf ? (
-            <span>
-              {storesOf.sku || "—"}
-              <span className="ml-2 font-normal text-slate-500">{storesOf.product_name}</span>
-              <span className="ml-2 text-xs font-normal text-slate-400">
-                {storesOf.store_count} {storesOf.store_count === 1 ? "Store" : "Stores"}
-              </span>
-            </span>
-          ) : ""
-        }
-      >
-        {storesOf ? (
-          <div className="overflow-x-auto rounded-lg border border-surface-border">
-            <table className="w-full text-sm">
-              <thead className="border-b border-surface-border bg-surface text-[11px] font-medium uppercase tracking-wide text-slate-500">
-                <tr>
-                  <th className={TH_LEFT}>Store / Warehouse</th>
-                  <th className={TH_NUM}>Order Placed</th>
-                  <th className={TH_NUM}>Total Inbound</th>
-                  <th className={TH_NUM}>Available</th>
-                  <th className={TH_NUM}>Delivered</th>
-                  <th className={TH_NUM}>Dispatched</th>
-                  <th className={TH_NUM}>Failed Delivery</th>
-                  <th className={TH_NUM}>Return in Transit</th>
-                  <th className={TH_NUM}>Damaged/Lost</th>
-                  <th className="w-10 px-2 py-2.5" />
-                </tr>
-              </thead>
-              <tbody>
-                {storesOf.stores.map((item) => (
-                  <tr key={item.id} className="border-b border-surface-border last:border-0 hover:bg-surface">
-                    <td className="whitespace-nowrap px-3 py-1.5">
-                      <div className="font-medium text-slate-800">{item.store_name}</div>
-                      <div className="text-[11px] text-slate-400">{item.warehouse_name}</div>
-                    </td>
-                    <NumberCells row={item} />
-                    <td className="px-2 py-1 text-right">
-                      <button
-                        type="button"
-                        onClick={() => setViewing(item)}
-                        aria-label={`Details for ${item.sku || item.product_name} in ${item.store_name}`}
-                        title="Details"
-                        className="rounded p-1 text-slate-500 hover:bg-white hover:text-brand-700"
-                      >
-                        <EyeIcon />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-                <tr className="border-t border-surface-border bg-surface font-medium">
-                  <td className="px-3 py-1.5 text-slate-700">Total</td>
-                  <NumberCells row={storesOf} />
-                  <td />
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        ) : null}
-      </Modal>
 
       <InventoryItemDetailModal
         item={viewing}
