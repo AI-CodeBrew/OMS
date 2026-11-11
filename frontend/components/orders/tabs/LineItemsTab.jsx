@@ -2,6 +2,7 @@
 
 import EditableField from "../../shared/EditableField";
 import FynkTechDispatchTag from "../FynkTechDispatchTag";
+import TrackingLink from "../../shared/TrackingLink";
 import { ReplacementMark, TicketMark } from "../OrdersTable";
 
 // The order's discount is edited once, in the money summary below the
@@ -61,7 +62,12 @@ export default function LineItemsTab({ order, draft, editing, onChange }) {
         </div>
         <div>
           <div className="text-[10px] uppercase tracking-wide text-brand-100">Tracking Number</div>
-          {order.tracking_number || (order.courier_name === "Self Deliver" ? "Self Deliver" : "N/A")}
+          <TrackingLink
+            onDark
+            courier={order.courier_name}
+            tracking={order.tracking_number}
+            fallback={order.courier_name === "Self Deliver" ? "Self Deliver" : "N/A"}
+          />
         </div>
       </div>
 

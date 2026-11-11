@@ -464,6 +464,8 @@ def _order_brief(order):
         "organization_name": order.organization.name,
         "status": oms_services.card_label(order),
         "tracking_number": order.tracking_number,
+        # For the tracking number's link to the courier's own tracking page.
+        "courier_name": order.courier.name if order.courier_id else "",
         "created_at": order.created_at.isoformat(),
     }
 
@@ -487,7 +489,7 @@ def find_orders(q, organization_id=None):
     qs = Order.all_objects.filter(match)
     if organization_id:
         qs = qs.filter(organization_id=organization_id)
-    return [_order_brief(o) for o in qs.select_related("organization").order_by("-created_at")[:ORDER_LOG_MATCHES]]
+    return [_order_brief(o) for o in qs.select_related("organization", "courier").order_by("-created_at")[:ORDER_LOG_MATCHES]]
 
 
 def _status_label(value):
@@ -502,7 +504,7 @@ def order_timeline(order_id, organization_id=None):
     order (in this store)."""
     from oms.models import Order, OrderStatusEvent
 
-    qs = Order.all_objects.filter(id=order_id).select_related("organization")
+    qs = Order.all_objects.filter(id=order_id).select_related("organization", "courier")
     if organization_id:
         qs = qs.filter(organization_id=organization_id)
     order = qs.first()

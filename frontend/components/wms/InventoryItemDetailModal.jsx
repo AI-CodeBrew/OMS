@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Modal from "../shared/Modal";
 import Button from "../shared/Button";
 import wmsService from "../../services/wmsService";
+import TrackingLink from "../shared/TrackingLink";
 
 import { formatDate, formatDateTime } from "../../lib/formatDate";
 const PAGE_SIZE = 10;
@@ -110,7 +111,7 @@ const TABS = [
       ["Created At", (o) => <span className="text-slate-600">{fmtDate(o.created_at)}</span>],
       ["Total", (o) => <span className="tabular-nums text-slate-800">{o.total}</span>, true],
       ["Courier Name", (o) => <span className="text-slate-600">{o.courier || "N/A"}</span>],
-      ["Courier Tracking ID", (o) => <span className="text-slate-600">{o.tracking_number || "N/A"}</span>],
+      ["Courier Tracking ID", (o) => <TrackingLink className="text-slate-600" courier={o.courier} tracking={o.tracking_number} fallback="N/A" />],
       [
         "Status",
         (o) => (

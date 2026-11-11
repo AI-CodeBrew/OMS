@@ -15,6 +15,7 @@ import { usePhoneScanStore } from "../../../lib/phoneScanSession";
 import ReturnBreakdownModal from "../../../components/wms/ReturnBreakdownModal";
 import ReturnsImportModal from "../../../components/wms/ReturnsImportModal";
 import Modal from "../../../components/shared/Modal";
+import TrackingLink from "../../../components/shared/TrackingLink";
 
 import { formatDateTime } from "../../../lib/formatDate";
 // The order's details, read only - opened by clicking its number.
@@ -378,7 +379,9 @@ export default function ReturnsPage() {
                           {order.order_number}
                         </button>
                       </td>
-                      <td className="px-3 py-2 font-mono text-xs text-slate-700">{order.tracking_number || "—"}</td>
+                      <td className="px-3 py-2 font-mono text-xs text-slate-700">
+                        <TrackingLink courier={order.courier_name} tracking={order.tracking_number} />
+                      </td>
                       <td className="px-3 py-2 text-slate-600">{order.customer_name}</td>
                       <td className="px-3 py-2 text-slate-600">{order.courier_name || "—"}</td>
                       <td className="px-3 py-2 text-slate-500">

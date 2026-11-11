@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { formatWhen, isFailed, Who } from "./logFormat";
+import TrackingLink from "../shared/TrackingLink";
 
 // The super admin's Logs page. Opens on the last few order updates (no
 // order list is loaded). Searching an order - store order ID, OMS order ID
@@ -178,7 +179,7 @@ function OrderLog({ order, logs }) {
         </div>
         <div>
           <span className="text-slate-500">Tracking </span>
-          <span className="font-medium text-slate-800">{order.tracking_number || "—"}</span>
+          <TrackingLink className="font-medium" courier={order.courier_name} tracking={order.tracking_number} />
         </div>
         <div>
           <span className="text-slate-500">Current status </span>
@@ -338,7 +339,9 @@ export default function OrderLogsBrowser({ fetchLogs, fetchOrderLogs }) {
                       {String(o.order_number || "").replace(/^#/, "")}
                     </td>
                     <td className={`${td} text-slate-700`}>{o.oms_order_id ?? "—"}</td>
-                    <td className={`${td} whitespace-nowrap text-slate-700`}>{o.tracking_number || "—"}</td>
+                    <td className={`${td} whitespace-nowrap text-slate-700`}>
+                      <TrackingLink courier={o.courier_name} tracking={o.tracking_number} />
+                    </td>
                     <td className={`${td} whitespace-nowrap text-slate-700`}>{o.status}</td>
                     <td className={td}>
                       <When iso={o.created_at} />

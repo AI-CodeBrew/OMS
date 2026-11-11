@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { formatWhen, Who } from "./logFormat";
+import TrackingLink from "../shared/TrackingLink";
 
 const control =
   "rounded-lg border border-surface-border bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-brand-500";
@@ -40,7 +41,9 @@ function OrderCells({ order, showStore }) {
       {showStore ? <td className={`${td} whitespace-nowrap text-slate-700`}>{order.organization_name}</td> : null}
       <td className={`${td} whitespace-nowrap font-medium text-slate-900`}>{order.order_number}</td>
       <td className={`${td} whitespace-nowrap text-slate-700`}>{order.oms_order_id ?? "-"}</td>
-      <td className={`${td} whitespace-nowrap text-slate-700`}>{order.tracking_number || "-"}</td>
+      <td className={`${td} whitespace-nowrap text-slate-700`}>
+        <TrackingLink courier={order.courier_name} tracking={order.tracking_number} fallback="-" />
+      </td>
       <td className={`${td} whitespace-nowrap text-slate-700`}>{order.status}</td>
       <td className={`${td} whitespace-nowrap text-slate-700`}>
         {created.date} <span className="text-xs text-slate-500">{created.time}</span>

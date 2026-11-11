@@ -11,6 +11,7 @@ import { useSessionDateRange } from "../../../../store/dateFilterStore";
 import ScanPanel from "../../../../components/wms/ScanPanel";
 import { SCAN_DESKS } from "../../../../lib/scanDesks";
 import { SEARCH_FIELDS } from "../../../../components/orders/statusConfig";
+import TrackingLink from "../../../../components/shared/TrackingLink";
 
 import { formatDateTime } from "../../../../lib/formatDate";
 // The queue is just the OMS pipeline read from the warehouse's side: an
@@ -313,7 +314,9 @@ export default function PackingPage() {
                       <td className="px-3 py-2 text-slate-600">{order.customer_name}</td>
                       <td className="px-3 py-2 text-slate-600">{order.city || "—"}</td>
                       <td className="px-3 py-2 text-slate-600">{order.courier_name || "—"}</td>
-                      <td className="px-3 py-2 text-slate-600">{order.tracking_number || "—"}</td>
+                      <td className="px-3 py-2 text-slate-600">
+                        <TrackingLink courier={order.courier_name} tracking={order.tracking_number} />
+                      </td>
                       <td className="px-3 py-2 text-slate-500">
                         {formatDate(order.placed_at || order.created_at)}
                       </td>

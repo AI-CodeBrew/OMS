@@ -2,6 +2,7 @@
 
 import Checkbox from "../shared/Checkbox";
 import Dropdown from "../shared/Dropdown";
+import TrackingLink from "../shared/TrackingLink";
 import FynkTechDispatchTag from "./FynkTechDispatchTag";
 import { formatPakPhone } from "../../lib/formatPhone";
 import { STATUS_LABELS, cardTab, latestTag } from "./statusConfig";
@@ -381,7 +382,11 @@ export default function OrdersTable({
                   </td>
                 ) : null}
                 <td className="px-3 py-1.5 text-slate-500">
-                  {order.tracking_number || (order.courier_name === SELF_DELIVER ? SELF_DELIVER : "—")}
+                  <TrackingLink
+                    courier={order.courier_name}
+                    tracking={order.tracking_number}
+                    fallback={order.courier_name === SELF_DELIVER ? SELF_DELIVER : "—"}
+                  />
                 </td>
                 <td className="px-3 py-1.5 text-right font-medium tabular-nums text-slate-900">
                   {/* What the customer pays - total_amount is the items before discounts. */}
