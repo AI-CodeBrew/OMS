@@ -602,18 +602,30 @@ SELF_DELIVER_COURIER = "Self Deliver"
 
 
 def self_deliver(order, *, actor_user_id=None):
-    """The Approved card's Self Deliver: the store ships it itself - no
-    courier booking. Approved (Awaiting Courier) -> Self Delivered (plain
-    Approved), with the "Self Deliver" courier."""
-    if order.status != "awaiting_assigning":
-        raise InvalidTransition("Only orders awaiting a courier can be self delivered.")
+    """The Approved card's Self Deliver: the store delivered it itself - no
+    courier booking. Approved (Awaiting Courier, or the old Self Delivered =
+    plain Approved) -> Delivered in one step (_force_transition, like
+    set_outcome_by_hand), with the "Self Deliver" courier and delivered_at
+    stamped. Its products leave stock here, the way a courier booking takes
+    them (wms consume_for_order) - nothing took them earlier in Approved.
+    force=True: the goods are already with the customer, so a shortage
+    shows as a negative balance on the stock screen instead of blocking."""
+    from wms import services as wms_services
+
+    if order.status not in ("awaiting_assigning", "approved"):
+        raise InvalidTransition("Only Approved orders can be self delivered.")
     courier, _ = Courier.all_objects.get_or_create(
         organization_id=order.organization_id, name=SELF_DELIVER_COURIER, defaults={"is_active": True}
     )
-    return _transition(
-        order, "approved", actor_user_id=actor_user_id, note="Self Deliver",
-        extra_fields={"courier_id": courier.id},
-    )
+    extra = {"courier_id": courier.id}
+    if not order.delivered_at:
+        extra["delivered_at"] = timezone.now()
+    with transaction.atomic():
+        order = _force_transition(
+            order, "delivered", actor_user_id=actor_user_id, note="Self Deliver", extra_fields=extra,
+        )
+        wms_services.consume_for_order(order, force=True, actor_user_id=actor_user_id)
+    return order
 
 
 def queue_for_dispatch(order, *, actor_user_id=None):

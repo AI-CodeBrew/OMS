@@ -256,13 +256,13 @@ export const ACTIONS_BY_STATUS = {
   // or back to Awaiting Confirmation with a tag saying why (backend:
   // oms.services.revert_to_awaiting_confirmation). An order in plain
   // Approved (shipped without booking) can only be sent back.
-  // Self Deliver: the store ships it itself - on to Self Delivered.
+  // Self Deliver: the store delivered it itself - straight to Delivered.
   awaiting_assigning: [
     { action: "assign_courier", label: "Assign courier" },
     REVERT_TO_CONFIRMATION,
     { action: "self_deliver", label: "Self Deliver" },
   ],
-  approved: [REVERT_TO_CONFIRMATION],
+  approved: [REVERT_TO_CONFIRMATION, { action: "self_deliver", label: "Self Deliver" }],
   // Handed to the courier (its load sheet made, or the courier reports it
   // Booked / Awaiting Pickup) and waiting for the rider. The documents stay
   // on offer here for a re-print - the Batch page keeps every one as well.

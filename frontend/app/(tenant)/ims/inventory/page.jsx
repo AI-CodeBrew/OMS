@@ -367,7 +367,6 @@ export default function WmsPage() {
             pageSize={pageSize}
             count={count}
             itemLabel="products"
-            maxPageSize={500}
             onPageChange={setPage}
             onPageSizeChange={(size) => {
               setPageSize(size);

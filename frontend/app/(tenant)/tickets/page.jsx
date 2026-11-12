@@ -146,7 +146,6 @@ export default function TicketsPage() {
           page={page}
           pageSize={pageSize}
           count={count}
-          maxPageSize={1000}
           itemLabel="tickets"
           onPageChange={setPage}
           onPageSizeChange={(size) => {

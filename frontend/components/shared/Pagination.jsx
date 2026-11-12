@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react";
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
-// The most rows a page shows - a preset or a custom number, never more.
+// The most rows a page shows by default - a preset or a custom number. A
+// page can pass its own maxPageSize (All Orders allows 500).
 const MAX_PAGE_SIZE = 100;
 
 function buildPageList(current, total) {
@@ -18,9 +19,9 @@ function buildPageList(current, total) {
   return withGaps;
 }
 
-// Rows per page: 10 / 25 / 50 / 100 or a custom number up to 100 - no
-// "All", so a big list never pulls thousands of rows at once.
-// maxPageSize: a lower cap for an endpoint that allows fewer than 100.
+// Rows per page: 10 / 25 / 50 / 100 or a custom number up to maxPageSize
+// (100 unless the page says otherwise) - no "All", so a big list never
+// pulls thousands of rows at once.
 export default function Pagination({
   page,
   pageSize,
@@ -30,7 +31,7 @@ export default function Pagination({
   maxPageSize = MAX_PAGE_SIZE,
   itemLabel = "orders",
 }) {
-  const cap = Math.min(maxPageSize, MAX_PAGE_SIZE);
+  const cap = maxPageSize;
   // A larger size remembered from before (the old "All") comes back down.
   useEffect(() => {
     if (pageSize > cap) onPageSizeChange(cap);

@@ -65,7 +65,7 @@ const CONFIRM_BY_ACTION = {
     result: "go back to the status they were in before this one",
   },
   approve: { title: "Approve order(s)", button: "Approve", result: "move to Approved" },
-  self_deliver: { title: "Self Deliver", button: "Self Deliver", result: "move to Self Delivered" },
+  self_deliver: { title: "Self Deliver", button: "Self Deliver", result: "move to Delivered" },
   revert_cancelled: {
     title: "Revert to Awaiting Confirmation",
     button: "Revert",

@@ -243,7 +243,6 @@ export default function AdminInventoryPage() {
         pageSize={pageSize}
         count={count}
         itemLabel="SKUs"
-        maxPageSize={500}
         onPageChange={setPage}
         onPageSizeChange={(size) => {
           setPageSize(size);

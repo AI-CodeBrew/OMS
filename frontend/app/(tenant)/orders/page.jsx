@@ -1277,6 +1277,7 @@ export default function OrdersPage() {
           page={page}
           pageSize={pageSize}
           count={orderCount}
+          maxPageSize={500}
           onPageChange={setPage}
           onPageSizeChange={(size) => {
             setPageSize(size);
