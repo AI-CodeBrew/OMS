@@ -642,6 +642,14 @@ def mark_dispatch_issue(order, *, note="", actor_user_id=None):
     )
 
 
+# Order.tag values set from Assigning Courier (Update Tag / print airway bill).
+# Prefer these over the card's workflow_tag so the printed state shows on the row.
+TAG_TO_BE_PACKED = "To be packed"
+TAG_PRINTED_AIRWAYBILL = "Printed Airwaybill"
+TAG_PACKED = "Packed"
+OWN_PRIORITY_TAGS = frozenset({TAG_TO_BE_PACKED, TAG_PRINTED_AIRWAYBILL, "Ready to Pack"})
+
+
 def set_order_tag(order, *, tag, actor_user_id=None):
     """Update Tag: the order's own free-form tag (Order.tag - the orders
     table's Tag column). The status doesn't change; the change is in the
@@ -670,6 +678,18 @@ def set_order_tag(order, *, tag, actor_user_id=None):
         },
     )
     return order
+
+
+def mark_orders_airway_bill_printed(organization_id, order_numbers, actor_user_id=None):
+    """After a successful airway-bill PDF: tag each order Printed Airwaybill."""
+    numbers = [str(n) for n in (order_numbers or []) if n]
+    if not numbers or not organization_id:
+        return
+    orders = Order.all_objects.filter(
+        organization_id=organization_id, order_number__in=numbers,
+    )
+    for order in orders:
+        set_order_tag(order, tag=TAG_PRINTED_AIRWAYBILL, actor_user_id=actor_user_id)
 
 
 # The day an order "is on" for date filters and the Dashboard - Pakistan's,
@@ -1854,11 +1874,17 @@ def card_label(order):
 def latest_tag(order):
     """The ONE tag the screens show (frontend statusConfig.latestTag /
     OrdersTable.tagText): in Awaiting Confirmation, or when the card has no
-    tag of its own, the order's own tag; otherwise the card's tag, with the
-    attempt number on a re-attempted parcel."""
+    tag of its own, the order's own tag; Printed Airwaybill / To be packed
+    always win over Assigning Courier's workflow tag; otherwise the card's
+    tag, with the attempt number on a re-attempted parcel."""
     card = workflow_card(order)
     card_tag = workflow_tag(order)
-    if order.tag and (card == "awaiting_confirmation" or not card_tag):
+    # Scan-pack sets packed_at → show Packed over Printed Airwaybill / To be packed.
+    if order.tag and (
+        card == "awaiting_confirmation"
+        or not card_tag
+        or (order.tag in OWN_PRIORITY_TAGS and not order.packed_at)
+    ):
         return order.tag
     attempts = order.delivery_attempts or 0
     if card_tag and attempts > 1 and card in ("dispatched", "undelivered"):

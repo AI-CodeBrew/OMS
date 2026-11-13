@@ -1,6 +1,6 @@
 """The Orders page's field filters (frontend OrderFieldFilters): OMS Order
 ID, Store Order ID, Customer Name, Phone, Tracking (typed values) and Store,
-City, Province, Courier (picked from a list - filter_options below gives
+City, Province, Courier, Tag (picked from a list - filter_options below gives
 the choices). Organization is the existing `store` param (organization ids).
 
 Each filter is a query param holding a JSON array. Several values in one
@@ -17,7 +17,7 @@ from django.db.models.functions import Lower, Trim
 # Filters typed in (one or more values each).
 TEXT_FILTERS = ("f_oms_id", "f_store_order_id", "f_customer", "f_phone", "f_tracking")
 # Filters picked from filter_options' list.
-LIST_FILTERS = ("f_shop", "f_city", "f_province", "f_courier")
+LIST_FILTERS = ("f_shop", "f_city", "f_province", "f_courier", "f_tag")
 ALL_FILTERS = TEXT_FILTERS + LIST_FILTERS
 
 # Picked under Province for orders whose city has no province on the super
@@ -127,11 +127,65 @@ def apply_field_filters(qs, params):
             conditions.append(Q(courier__isnull=True))
         qs = qs.filter(_any(conditions))
 
+    tags = _values(params, "f_tag")
+    if tags:
+        qs = qs.filter(_tag_filter_q(tags))
+
     return qs
 
 
-OPTION_FIELDS = ("f_shop", "f_city", "f_province", "f_courier")
+OPTION_FIELDS = ("f_shop", "f_city", "f_province", "f_courier", "f_tag")
 OPTION_LIMIT = 300
+
+
+def _to_be_packed_q():
+    """Assigning Courier orders still waiting to pack, plus those tagged
+    To be packed. Excludes Printed Airwaybill, Packed, and Booking Pending."""
+    from oms.services import TAG_PRINTED_AIRWAYBILL, TAG_TO_BE_PACKED, WORKFLOW_CARD_STATUSES
+
+    assigning = WORKFLOW_CARD_STATUSES["assigning_courier"]
+    return Q(tag=TAG_TO_BE_PACKED, packed_at__isnull=True) | (
+        Q(status__in=assigning)
+        & Q(packed_at__isnull=True)
+        & Q(tracking_number__gt="")
+        & ~Q(status="booking_pending")
+        & ~Q(tag=TAG_PRINTED_AIRWAYBILL)
+    )
+
+
+def _printed_airwaybill_q():
+    """Printed but not yet scan-packed."""
+    from oms.services import TAG_PRINTED_AIRWAYBILL
+
+    return Q(tag=TAG_PRINTED_AIRWAYBILL, packed_at__isnull=True)
+
+
+def _packed_q():
+    """Scan-packed on Assigning Courier (packed_at set)."""
+    from oms.services import WORKFLOW_CARD_STATUSES
+
+    assigning = WORKFLOW_CARD_STATUSES["assigning_courier"]
+    return Q(status__in=assigning, packed_at__isnull=False)
+
+
+def _tag_filter_q(tags):
+    """Match fixed Assigning Courier tag filters (and any legacy Order.tag)."""
+    from oms.services import TAG_PACKED, TAG_PRINTED_AIRWAYBILL, TAG_TO_BE_PACKED
+
+    printed_aliases = {TAG_PRINTED_AIRWAYBILL, "Printed Airwaybills"}
+    to_pack_aliases = {TAG_TO_BE_PACKED, "To Be Packed"}
+    packed_aliases = {TAG_PACKED, "Packed"}
+    condition = Q()
+    for tag in tags:
+        if tag in printed_aliases:
+            condition |= _printed_airwaybill_q()
+        elif tag in to_pack_aliases:
+            condition |= _to_be_packed_q()
+        elif tag in packed_aliases:
+            condition |= _packed_q()
+        else:
+            condition |= Q(tag=tag)
+    return condition
 
 
 def filter_options(qs, field, q=""):
@@ -154,6 +208,33 @@ def filter_options(qs, field, q=""):
             }
             for r in qs.order_by().values("courier__name").annotate(n=Count("id"))
         ]
+    elif field == "f_tag":
+        # Fixed Assigning Courier choices (not every free-form Order.tag).
+        from oms.services import TAG_PACKED, TAG_PRINTED_AIRWAYBILL, TAG_TO_BE_PACKED
+
+        rows = [
+            {
+                "value": TAG_TO_BE_PACKED,
+                "label": "To be packed",
+                "count": qs.filter(_to_be_packed_q()).count(),
+            },
+            {
+                "value": TAG_PRINTED_AIRWAYBILL,
+                "label": "Printed Airwaybills",
+                "count": qs.filter(_printed_airwaybill_q()).count(),
+            },
+            {
+                "value": TAG_PACKED,
+                "label": "Packed",
+                "count": qs.filter(_packed_q()).count(),
+            },
+        ]
+        if q:
+            rows = [
+                r for r in rows
+                if q in r["label"].lower() or q in r["value"].lower()
+            ]
+        return rows, False
     elif field in ("f_city", "f_province"):
         city_rows = _city_norm(qs).order_by().values("_city_norm").annotate(n=Count("id"))
         if field == "f_city":

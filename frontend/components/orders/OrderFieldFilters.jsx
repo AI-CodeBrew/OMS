@@ -18,6 +18,7 @@ export const LIST_FILTERS = [
   { key: "f_city", label: "City" },
   { key: "f_province", label: "Province" },
   { key: "f_courier", label: "Courier" },
+  { key: "f_tag", label: "Tag" },
 ];
 export const FIELD_FILTER_KEYS = [...TEXT_FILTERS, ...LIST_FILTERS].map((f) => f.key);
 // Dispatch Hub / All Orders: organizations (`store`, comma-separated ids)

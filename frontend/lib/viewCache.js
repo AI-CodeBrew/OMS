@@ -15,7 +15,7 @@ export function ordersListKey({ status, page, pageSize, filters = {} }) {
     "search", "city", "courier_id", "gateway", "date_from", "date_to", "store", "product", "dispatch_requested",
     // The Filters popup's fields (OrderFieldFilters).
     "f_oms_id", "f_store_order_id", "f_customer", "f_phone", "f_tracking",
-    "f_shop", "f_city", "f_province", "f_courier",
+    "f_shop", "f_city", "f_province", "f_courier", "f_tag",
   ]
     .map((k) => filters[k] || "")
     .join("|");

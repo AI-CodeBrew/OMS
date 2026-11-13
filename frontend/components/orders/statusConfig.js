@@ -162,16 +162,23 @@ export const EDIT_LOCKED_STATUSES = new Set([
   "cancelled",
 ]);
 
-// Assigning Courier's own three, offered first for any selection that is
-// all in that card (whatever each order's own status there) - the orders
-// page puts the statuses' print/load-sheet actions after them.
+// Assigning Courier Update Tag / print airway bill — prefer these over the
+// card's workflow tag (To Be Packed) so Printed Airwaybill shows on the row.
+const OWN_PRIORITY_TAGS = new Set(["To be packed", "Printed Airwaybill", "Ready to Pack"]);
+
 // The ONE tag an order shows - the latest: in Awaiting Confirmation its own
 // tag (a revert reason, Cancelled from Courier Booking, Update Tag, ...) is
-// newer than the card's default (New); from Approved on, the stage's tag
-// (To Be Packed, Stock Not Available, ...) is. Either falls back to the
-// other. Returns { text, own } - own: the order's own tag.
+// newer than the card's default (New); Printed Airwaybill / To be packed
+// always win; otherwise the stage's tag. Returns { text, own }.
 export function latestTag(order) {
-  if (order.tag && (order.workflow_card === "awaiting_confirmation" || !order.workflow_tag)) {
+  // Scan-pack sets packed_at → workflow "Packed" wins over Printed Airwaybill.
+  if (
+    order.tag &&
+    !order.packed_at &&
+    (order.workflow_card === "awaiting_confirmation" ||
+      !order.workflow_tag ||
+      OWN_PRIORITY_TAGS.has(order.tag))
+  ) {
     return { text: order.tag, own: true };
   }
   return order.workflow_tag ? { text: order.workflow_tag, own: false } : null;

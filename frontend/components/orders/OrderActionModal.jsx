@@ -16,8 +16,8 @@ const FIELD_BY_ACTION = {
   // `options` (the couriers this store can book with) comes from the page.
   change_courier: { key: "courier", label: "New courier", type: "option-select" },
   print_loadsheet: { key: "courier", label: "Courier", type: "smartlane-courier-select" },
-  // Suggests the tags the store's orders already carry; a new one can be typed.
-  update_tag: { key: "tag", label: "Tag", type: "tag-input" },
+  // Fixed choices for Assigning Courier; free-form typing stays on revert.
+  update_tag: { key: "tag", label: "Tag", type: "tag-select" },
   // Approved card. `options` (its booking choices) come from the page.
   move_to_assigning: { key: "courier", label: "Courier", type: "option-select" },
   revert_to_confirmation: { key: "tag", label: "Tag (why it goes back)", type: "tag-input" },
@@ -27,6 +27,9 @@ const FIELD_BY_ACTION = {
 
 // Shipper Advice's choices (backend: oms.services.SHIPPER_ADVICES).
 const SHIPPER_ADVICES = ["Reattempt", "Return"];
+
+// Update Tag's fixed choices for now.
+const UPDATE_TAG_OPTIONS = ["To be packed"];
 
 const ACTION_TITLES = {
   assign_courier: "Assign courier",
@@ -331,6 +334,24 @@ export default function OrderActionModal({ action, couriers, options, count, fro
               className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
             />
           </>
+        ) : field.type === "tag-select" ? (
+          <>
+            <select
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
+            >
+              <option value="">Select a tag…</option>
+              {UPDATE_TAG_OPTIONS.map((tag) => (
+                <option key={tag} value={tag}>
+                  {tag}
+                </option>
+              ))}
+            </select>
+            <p className="mt-2 text-xs text-slate-500">
+              Replaces the order&apos;s tag. The status doesn&apos;t change.
+            </p>
+          </>
         ) : field.type === "tag-input" ? (
           <>
             <input
@@ -347,9 +368,7 @@ export default function OrderActionModal({ action, couriers, options, count, fro
               ))}
             </datalist>
             <p className="mt-2 text-xs text-slate-500">
-              {action === "revert_to_confirmation"
-                ? "The order goes back to Awaiting Confirmation with this tag, to be checked and approved again."
-                : "Replaces the order's tag. The status doesn't change."}
+              The order goes back to Awaiting Confirmation with this tag, to be checked and approved again.
             </p>
           </>
         ) : (

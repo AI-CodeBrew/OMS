@@ -109,7 +109,7 @@ const ScanPackModal = dynamic(() => import("../../../components/orders/ScanPackM
 const EMPTY_FILTERS = {
   city: "", courier_id: "", gateway: "", date_from: "", date_to: "", store: "", product: "", dispatch_requested: "",
   f_oms_id: "", f_store_order_id: "", f_customer: "", f_phone: "", f_tracking: "",
-  f_shop: "", f_city: "", f_province: "", f_courier: "",
+  f_shop: "", f_city: "", f_province: "", f_courier: "", f_tag: "",
 };
 // "critical" is time-dependent rather than a status an order is moved into,
 // so the backend never caches it or includes it in the warmup - leave it
@@ -854,6 +854,7 @@ export default function OrdersPage() {
       beginLoading("Preparing airway bill");
       try {
         await ordersService.printSmartlaneAirwayBill(orderIds);
+        reloadAfterChange();
       } catch (err) {
         setError(err.message || "Print failed");
       } finally {
@@ -1312,7 +1313,7 @@ export default function OrdersPage() {
         count={pendingAction?.orderIds?.length || 0}
         fromCard={pendingFromCard}
         currentCourier={[...new Set(pendingOrders.map((o) => o.courier_name).filter(Boolean))].join(", ")}
-        currentTag={[...new Set(pendingOrders.map((o) => latestTag(o)).filter(Boolean))].join(", ")}
+        currentTag={[...new Set(pendingOrders.map((o) => latestTag(o)?.text).filter(Boolean))].join(", ")}
         couriers={
           pendingAction?.action === "assign_courier" && bookingAccounts.length
             ? // Only the synthetic booking-account entries actually book
@@ -1349,14 +1350,15 @@ export default function OrdersPage() {
         accounts={printAccounts}
         onClose={() => setPrintRequest(null)}
         onPrinted={(kind) => {
-          // Any courier's load sheet moves its orders on to Awaiting Dispatched.
-          if (kind === "loadsheet") reloadAfterChange();
+          // Loadsheet advances status; airway bill stamps Printed Airwaybill.
+          if (kind === "loadsheet" || kind === "airway_bill") reloadAfterChange();
         }}
       />
       <AirwayBillFilterModal
         orders={airwayBillFilterOrders}
         byCourier={Boolean(user?.isDispatchHub)}
         onClose={() => setAirwayBillFilterOrders(null)}
+        onGenerated={() => reloadAfterChange()}
       />
       <OrderDetailPanel
         orderId={detailOrderId}

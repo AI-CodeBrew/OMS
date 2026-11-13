@@ -539,7 +539,7 @@ export default function OrderDetailPanel({
         count={1}
         fromCard={cardTab(order?.workflow_card)?.label}
         currentCourier={order?.courier_name}
-        currentTag={order ? latestTag(order) : ""}
+        currentTag={order ? latestTag(order)?.text || "" : ""}
         couriers={
           pendingAction === "assign_courier" && bookingAccounts.length
             ? // Booking accounts stay first/default; real courier rows are
