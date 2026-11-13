@@ -43,6 +43,7 @@ from integrations.services import InventorySyncError, create_order_on_shopify
 from wms.services import InsufficientStock
 
 from . import csv_report, importers, order_importer, services
+from .scan_codes import scanned_code
 from .order_filters import apply_field_filters as _apply_field_filters
 from .models import (
     Courier,
@@ -1940,7 +1941,8 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["post"], url_path="scan-dispatch")
     def scan_dispatch(self, request):
-        order_number = (request.data.get("order_number") or "").strip()
+        # A scanner's QR text ("CN,code,COD" on Leopards' slip) - see oms/scan_codes.py.
+        order_number = scanned_code(request.data.get("order_number"))
         if not order_number:
             return Response({"detail": "order_number is required"}, status=status.HTTP_400_BAD_REQUEST)
         organization_id, error = self._resolve_scan_org(request, order_number)
@@ -1951,7 +1953,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             lambda: services.scan_dispatch(
                 organization_id=organization_id,
                 order_number=order_number,
-                tracking_number=(request.data.get("tracking_number") or "").strip(),
+                tracking_number=scanned_code(request.data.get("tracking_number")),
                 actor_user_id=request.user_id,
             ),
         )
@@ -1960,8 +1962,9 @@ class OrderViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["post"], url_path="scan-pack")
     def scan_pack(self, request):
         """Assigning Courier's Scan - a parcel's barcode (tracking number,
-        or else order number) marks it Packed (services.scan_pack)."""
-        code = (request.data.get("code") or "").strip()
+        or else order number) marks it Packed (services.scan_pack). Leopards'
+        QR text ("CN,code,COD") is cut down to the CN - oms/scan_codes.py."""
+        code = scanned_code(request.data.get("code"))
         if not code:
             return Response({"detail": "code is required"}, status=status.HTTP_400_BAD_REQUEST)
         numbers = [code] if code.startswith("#") else [code, f"#{code}"]
@@ -1997,7 +2000,7 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["post"], url_path="scan-return")
     def scan_return(self, request):
-        order_number = (request.data.get("order_number") or "").strip()
+        order_number = scanned_code(request.data.get("order_number"))
         if not order_number:
             return Response({"detail": "order_number is required"}, status=status.HTTP_400_BAD_REQUEST)
         organization_id, error = self._resolve_scan_org(request, order_number)

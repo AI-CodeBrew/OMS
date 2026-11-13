@@ -642,12 +642,30 @@ def mark_dispatch_issue(order, *, note="", actor_user_id=None):
     )
 
 
-# Order.tag values set from Assigning Courier (Update Tag / print airway bill).
-# Prefer these over the card's workflow_tag so the printed state shows on the row.
+# The Assigning Courier tags, in the order an order goes through them once
+# its booking has a tracking number:
+#
+#   To be printed       nothing printed yet (the card's own tag - workflow_tag)
+#   Airwaybill Printed  only the airway bill downloaded  } stored on Order.tag
+#   Loadsheet Printed   only the load sheet printed      } by mark_orders_printed
+#   To be packed        BOTH printed, in either order    }
+#   Packed              scan-packed (packed_at) - shown over every other tag,
+#                       and a print never re-tags a packed order
+#
+# The stored ones are preferred over the card's tag (OWN_PRIORITY_TAGS) so
+# what was printed shows on the row. "Printed Airwaybill" is the old
+# wording of Airwaybill Printed, still on orders tagged before - read the
+# same everywhere.
+TAG_TO_BE_PRINTED = "To be printed"
+TAG_AIRWAYBILL_PRINTED = "Airwaybill Printed"
+TAG_LOADSHEET_PRINTED = "Loadsheet Printed"
 TAG_TO_BE_PACKED = "To be packed"
-TAG_PRINTED_AIRWAYBILL = "Printed Airwaybill"
 TAG_PACKED = "Packed"
-OWN_PRIORITY_TAGS = frozenset({TAG_TO_BE_PACKED, TAG_PRINTED_AIRWAYBILL, "Ready to Pack"})
+LEGACY_AIRWAYBILL_PRINTED = "Printed Airwaybill"
+AIRWAYBILL_PRINTED_TAGS = frozenset({TAG_AIRWAYBILL_PRINTED, LEGACY_AIRWAYBILL_PRINTED})
+# One of the two documents printed, not yet both.
+PRINT_TAGS = AIRWAYBILL_PRINTED_TAGS | {TAG_LOADSHEET_PRINTED}
+OWN_PRIORITY_TAGS = frozenset({TAG_TO_BE_PACKED, "Ready to Pack"} | PRINT_TAGS)
 
 
 def set_order_tag(order, *, tag, actor_user_id=None):
@@ -680,39 +698,87 @@ def set_order_tag(order, *, tag, actor_user_id=None):
     return order
 
 
-def mark_orders_airway_bill_printed(organization_id, order_numbers, actor_user_id=None):
-    """After a successful airway-bill PDF: tag each order Printed Airwaybill.
+def mark_orders_printed(organization_id, order_numbers, kind, actor_user_id=None):
+    """After a successful airway bill ("airway_bill") or load sheet
+    ("loadsheet") PDF: tags each order with what has now been printed for it
 
-    In bulk - one update, one batch of order-log rows, one batch of Logs-tab
-    rows - instead of set_order_tag per order (a save, its change-log row
-    and its order-log row each, ~4 database round trips an order), which
-    held a 100-order print up by seconds before the PDF came back. Writes
-    exactly what set_order_tag would have: the order log's "Tag changed
-    from X to Printed Airwaybill", the Logs tab's "Order #1042: Tag: X ->
-    Printed Airwaybill", and an order.updated event per order so open
-    screens refresh. Orders already tagged so are left alone."""
+        airway bill only  -> Airwaybill Printed
+        load sheet only   -> Loadsheet Printed
+        both (any order)  -> To be packed   (next: scan -> Packed)
+
+    An order already To be packed stays To be packed on a reprint (see
+    below). "Printed before" is read from the order's current print tag AND from the
+    saved prints (PrintBatch - the Batch page's copies, which list their
+    orders), so a tag changed by hand in between doesn't lose the earlier
+    print. A booking cancelled and redone gets a new order number (-1), so
+    the old booking's prints don't count for it - correct, they're void.
+
+    A scan-packed order (packed_at) is left exactly as it is - it shows
+    Packed, and a reprint never takes that away.
+
+    In bulk - one update per resulting tag, one batch of order-log rows, one
+    batch of Logs-tab rows - instead of set_order_tag per order (~4 database
+    round trips an order). Writes what set_order_tag would have: the order
+    log's "Tag changed from X to Y", the Logs tab's "Order #1042: Tag: X ->
+    Y", and an order.updated event per order so open screens refresh."""
     from core.activity_log_service import category_for
     from core.context import current_request_meta
     from core.models import OrganizationAuditLog
 
+    from .models import PrintBatch
+
+    if kind not in ("airway_bill", "loadsheet"):
+        return
     numbers = [str(n) for n in (order_numbers or []) if n]
     if not numbers or not organization_id:
         return
     orders = list(
-        Order.all_objects.filter(organization_id=organization_id, order_number__in=numbers)
-        .exclude(tag=TAG_PRINTED_AIRWAYBILL)
-        .only("id", "organization_id", "order_number", "status", "tag")
+        Order.all_objects.filter(
+            organization_id=organization_id, order_number__in=numbers, packed_at__isnull=True,
+        ).only("id", "organization_id", "order_number", "status", "tag")
     )
     if not orders:
         return
-    tag = TAG_PRINTED_AIRWAYBILL
-    Order.all_objects.filter(id__in=[o.id for o in orders]).update(tag=tag, updated_at=timezone.now())
+
+    other_kind = "loadsheet" if kind == "airway_bill" else "airway_bill"
+    order_numbers_here = [o.order_number for o in orders]
+    printed_other = set()
+    for listed in PrintBatch.all_objects.filter(
+        organization_id=organization_id, kind=other_kind, order_numbers__has_any_keys=order_numbers_here,
+    ).values_list("order_numbers", flat=True):
+        printed_other.update(str(n) for n in (listed or []))
+
+    # To be packed already means both are done (or someone set it by hand):
+    # a reprint keeps it there, never sends an order back a step.
+    airway_tags = AIRWAYBILL_PRINTED_TAGS | {TAG_TO_BE_PACKED}
+    loadsheet_tags = {TAG_LOADSHEET_PRINTED, TAG_TO_BE_PACKED}
+    changes = []  # (order, new tag)
+    for order in orders:
+        before = order.order_number in printed_other
+        has_airway = kind == "airway_bill" or order.tag in airway_tags or (other_kind == "airway_bill" and before)
+        has_sheet = kind == "loadsheet" or order.tag in loadsheet_tags or (other_kind == "loadsheet" and before)
+        if has_airway and has_sheet:
+            tag = TAG_TO_BE_PACKED
+        else:
+            tag = TAG_AIRWAYBILL_PRINTED if has_airway else TAG_LOADSHEET_PRINTED
+        if order.tag != tag:
+            changes.append((order, tag))
+    if not changes:
+        return
+
+    now = timezone.now()
+    by_tag = {}
+    for order, tag in changes:
+        by_tag.setdefault(tag, []).append(order.id)
+    for tag, ids in by_tag.items():
+        # packed_at checked again: a scan landing meanwhile still wins.
+        Order.all_objects.filter(id__in=ids, packed_at__isnull=True).update(tag=tag, updated_at=now)
     OrderStatusEvent.all_objects.bulk_create([
         OrderStatusEvent(
             organization_id=o.organization_id, order_id=o.id, from_status=o.status, to_status=o.status,
             note=f"Tag changed from {o.tag or '(none)'} to {tag}", actor_user_id=actor_user_id,
         )
-        for o in orders
+        for o, tag in changes
     ])
     meta = current_request_meta.get() or {}
     path = meta.get("path", "")
@@ -733,9 +799,9 @@ def mark_orders_airway_bill_printed(organization_id, order_numbers, actor_user_i
             request_method=meta.get("method", "")[:8],
             request_path=path[:255],
         )
-        for o in orders
+        for o, tag in changes
     ])
-    for o in orders:
+    for o, _tag in changes:
         publish_event(
             "order.updated",
             {
@@ -745,6 +811,16 @@ def mark_orders_airway_bill_printed(organization_id, order_numbers, actor_user_i
                 "source": "tag",
             },
         )
+
+
+def mark_orders_airway_bill_printed(organization_id, order_numbers, actor_user_id=None):
+    """After a successful airway-bill PDF - see mark_orders_printed."""
+    mark_orders_printed(organization_id, order_numbers, "airway_bill", actor_user_id=actor_user_id)
+
+
+def mark_orders_load_sheet_printed(organization_id, order_numbers, actor_user_id=None):
+    """After a successful load sheet PDF - see mark_orders_printed."""
+    mark_orders_printed(organization_id, order_numbers, "loadsheet", actor_user_id=actor_user_id)
 
 
 # The day an order "is on" for date filters and the Dashboard - Pakistan's,
@@ -1929,12 +2005,12 @@ def card_label(order):
 def latest_tag(order):
     """The ONE tag the screens show (frontend statusConfig.latestTag /
     OrdersTable.tagText): in Awaiting Confirmation, or when the card has no
-    tag of its own, the order's own tag; Printed Airwaybill / To be packed
+    tag of its own, the order's own tag; the print tags / To be packed
     always win over Assigning Courier's workflow tag; otherwise the card's
     tag, with the attempt number on a re-attempted parcel."""
     card = workflow_card(order)
     card_tag = workflow_tag(order)
-    # Scan-pack sets packed_at → show Packed over Printed Airwaybill / To be packed.
+    # Scan-pack sets packed_at → show Packed over the print tags / To be packed.
     if order.tag and (
         card == "awaiting_confirmation"
         or not card_tag
@@ -1964,7 +2040,7 @@ def card_queryset(qs, card):
 
 
 def workflow_tag(order):
-    """The order's tag on its card: where in that card it is - To Be Packed
+    """The order's tag on its card: where in that card it is - To be printed
     or Packed, In Transit or Out for Delivery, or the courier's own word
     for a failed attempt or a return."""
     card = workflow_card(order)
@@ -1989,11 +2065,14 @@ def workflow_tag(order):
     if card == "assigning_courier":
         if status == "dispatch_issue":
             return "Dispatch Issue"
-        # Not To Be Packed until the courier has actually given a tracking
+        # Not To be printed until the courier has actually given a tracking
         # number - a Smartlane booking waits for one in Booking Pending.
         if status == "booking_pending" or not order.tracking_number:
             return "Awaiting Tracking"
-        return "Packed" if order.packed_at else "To Be Packed"
+        # Nothing printed yet. Once something is, the order's own tag
+        # (Airwaybill Printed / Loadsheet Printed / To be packed - see
+        # mark_orders_printed) shows instead (latest_tag).
+        return TAG_PACKED if order.packed_at else TAG_TO_BE_PRINTED
     if card == "dispatched":
         return "Out for Delivery" if status == "out_for_delivery" else "In Transit"
     if card == "undelivered":

@@ -86,19 +86,23 @@ def save_print_batch(*, organization_id, kind, courier, order_numbers, content,
     Reprinting the same kind for the same batch (same orders and courier)
     replaces that document's file instead of piling up a duplicate.
 
-    Airway bills also stamp each order's tag as Printed Airwaybill (before
-    the file write, so a storage hiccup still leaves the tag updated)."""
+    Airway bills and load sheets also stamp each order's tag - Printed
+    Airwaybill, Printed Loadsheet, or Printed Loadsheet & Airwaybill once
+    both are done (oms.services.mark_orders_printed) - before the file
+    write, so a storage hiccup still leaves the tag updated."""
     sorted_numbers = sorted({str(n) for n in order_numbers})
-    if kind == "airway_bill" and sorted_numbers:
+    if kind in ("airway_bill", "loadsheet") and sorted_numbers:
+        # Printed Airwaybill / Printed Loadsheet / both - see
+        # oms.services.mark_orders_printed.
         try:
-            from oms.services import mark_orders_airway_bill_printed
+            from oms.services import mark_orders_printed
 
-            mark_orders_airway_bill_printed(
-                organization_id, sorted_numbers, actor_user_id=actor_user_id,
+            mark_orders_printed(
+                organization_id, sorted_numbers, kind, actor_user_id=actor_user_id,
             )
         except Exception:
             logger.exception(
-                "failed to mark airway bill printed (%s)", organization_id,
+                "failed to mark %s printed (%s)", kind, organization_id,
             )
     try:
         courier = courier or ""

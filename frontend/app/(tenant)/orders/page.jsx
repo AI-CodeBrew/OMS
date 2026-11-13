@@ -893,7 +893,7 @@ export default function OrdersPage() {
           ? barqraftarService.printLoadSheet(orderIds)
           : barqraftarService.printLabels(orderIds));
         // A load sheet moves its orders on to Awaiting Dispatched; labels
-        // tag them Printed Airwaybill - either way the rows change.
+        // tag them Airwaybill Printed (To be packed once both are) - either way the rows change.
         await reloadAfterChange();
       } catch (err) {
         setError(err.message || "Print failed");
@@ -1248,7 +1248,7 @@ export default function OrdersPage() {
         {activeStatus === ASSIGNING_COURIER_TAB ? (
           <div className="mb-3 flex items-center justify-between gap-3 rounded-md border border-surface-border bg-white px-4 py-2">
             <span className="text-sm text-slate-600">
-              Scan each parcel&apos;s barcode to mark it Packed - only orders with a tracking number (To Be Packed).
+              Scan each parcel&apos;s barcode to mark it Packed - only orders with a tracking number (To be printed / printed / To be packed).
             </span>
             <Button onClick={() => setScanOpen(true)}>Scan</Button>
           </div>

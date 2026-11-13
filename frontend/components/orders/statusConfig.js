@@ -170,9 +170,18 @@ export const EDIT_LOCKED_STATUSES = new Set([
   "cancelled",
 ]);
 
-// Assigning Courier Update Tag / print airway bill — prefer these over the
-// card's workflow tag (To Be Packed) so Printed Airwaybill shows on the row.
-const OWN_PRIORITY_TAGS = new Set(["To be packed", "Printed Airwaybill", "Ready to Pack"]);
+// Assigning Courier Update Tag / printing — prefer these over the card's
+// workflow tag (To be printed) so what was printed shows on the row:
+// Airwaybill Printed or Loadsheet Printed after one, To be packed after both
+// (backend: oms.services.mark_orders_printed). Scan-pack (packed_at) still
+// shows Packed over all. "Printed Airwaybill" is the old wording.
+const OWN_PRIORITY_TAGS = new Set([
+  "To be packed",
+  "Airwaybill Printed",
+  "Loadsheet Printed",
+  "Printed Airwaybill",
+  "Ready to Pack",
+]);
 
 // The ONE tag an order shows - the latest: in Awaiting Confirmation its own
 // tag (a revert reason, Cancelled from Courier Booking, Update Tag, ...) is

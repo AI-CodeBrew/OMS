@@ -138,26 +138,26 @@ OPTION_FIELDS = ("f_shop", "f_city", "f_province", "f_courier", "f_tag")
 OPTION_LIMIT = 300
 
 
-def _to_be_packed_q():
-    """Assigning Courier orders still waiting to pack, plus those tagged
-    To be packed. Excludes Printed Airwaybill, Packed, and Booking Pending."""
-    from oms.services import TAG_PRINTED_AIRWAYBILL, TAG_TO_BE_PACKED, WORKFLOW_CARD_STATUSES
+def _to_be_printed_q():
+    """Assigning Courier orders with a tracking number and nothing printed
+    yet - the card's own "To be printed" (oms.services.workflow_tag): not
+    packed, not Booking Pending, no print tag and not To be packed."""
+    from oms.services import PRINT_TAGS, TAG_TO_BE_PACKED, WORKFLOW_CARD_STATUSES
 
     assigning = WORKFLOW_CARD_STATUSES["assigning_courier"]
-    return Q(tag=TAG_TO_BE_PACKED, packed_at__isnull=True) | (
+    return (
         Q(status__in=assigning)
         & Q(packed_at__isnull=True)
         & Q(tracking_number__gt="")
         & ~Q(status="booking_pending")
-        & ~Q(tag=TAG_PRINTED_AIRWAYBILL)
+        & ~Q(tag__in=PRINT_TAGS | {TAG_TO_BE_PACKED})
     )
 
 
-def _printed_airwaybill_q():
-    """Printed but not yet scan-packed."""
-    from oms.services import TAG_PRINTED_AIRWAYBILL
-
-    return Q(tag=TAG_PRINTED_AIRWAYBILL, packed_at__isnull=True)
+def _not_packed_tag_q(tags):
+    """Orders carrying one of these tags, not yet scan-packed - a packed
+    order shows Packed, whatever was printed for it."""
+    return Q(tag__in=list(tags), packed_at__isnull=True)
 
 
 def _packed_q():
@@ -168,23 +168,33 @@ def _packed_q():
     return Q(status__in=assigning, packed_at__isnull=False)
 
 
-def _tag_filter_q(tags):
-    """Match fixed Assigning Courier tag filters (and any legacy Order.tag)."""
-    from oms.services import TAG_PACKED, TAG_PRINTED_AIRWAYBILL, TAG_TO_BE_PACKED
+def _tag_choices():
+    """The Tag filter's fixed Assigning Courier choices, in the order an
+    order moves through them: [(value, label, Q, also-accepted values)]."""
+    from oms.services import (
+        AIRWAYBILL_PRINTED_TAGS, TAG_AIRWAYBILL_PRINTED, TAG_LOADSHEET_PRINTED, TAG_PACKED,
+        TAG_TO_BE_PACKED, TAG_TO_BE_PRINTED,
+    )
 
-    printed_aliases = {TAG_PRINTED_AIRWAYBILL, "Printed Airwaybills"}
-    to_pack_aliases = {TAG_TO_BE_PACKED, "To Be Packed"}
-    packed_aliases = {TAG_PACKED, "Packed"}
+    return [
+        (TAG_TO_BE_PRINTED, "To be printed", _to_be_printed_q(), {"To Be Printed"}),
+        (TAG_AIRWAYBILL_PRINTED, "Airwaybill Printed", _not_packed_tag_q(AIRWAYBILL_PRINTED_TAGS),
+         {"Printed Airwaybill", "Printed Airwaybills"}),
+        (TAG_LOADSHEET_PRINTED, "Loadsheet Printed", _not_packed_tag_q({TAG_LOADSHEET_PRINTED}),
+         {"Printed Loadsheet"}),
+        (TAG_TO_BE_PACKED, "To be packed", _not_packed_tag_q({TAG_TO_BE_PACKED}), {"To Be Packed"}),
+        (TAG_PACKED, "Packed", _packed_q(), set()),
+    ]
+
+
+def _tag_filter_q(tags):
+    """Match the fixed Assigning Courier tag filters (several = any of
+    them), and any other Order.tag as itself."""
+    choices = _tag_choices()
     condition = Q()
     for tag in tags:
-        if tag in printed_aliases:
-            condition |= _printed_airwaybill_q()
-        elif tag in to_pack_aliases:
-            condition |= _to_be_packed_q()
-        elif tag in packed_aliases:
-            condition |= _packed_q()
-        else:
-            condition |= Q(tag=tag)
+        match = next((q for value, _label, q, aliases in choices if tag == value or tag in aliases), None)
+        condition |= match if match is not None else Q(tag=tag)
     return condition
 
 
@@ -210,24 +220,9 @@ def filter_options(qs, field, q=""):
         ]
     elif field == "f_tag":
         # Fixed Assigning Courier choices (not every free-form Order.tag).
-        from oms.services import TAG_PACKED, TAG_PRINTED_AIRWAYBILL, TAG_TO_BE_PACKED
-
         rows = [
-            {
-                "value": TAG_TO_BE_PACKED,
-                "label": "To be packed",
-                "count": qs.filter(_to_be_packed_q()).count(),
-            },
-            {
-                "value": TAG_PRINTED_AIRWAYBILL,
-                "label": "Printed Airwaybills",
-                "count": qs.filter(_printed_airwaybill_q()).count(),
-            },
-            {
-                "value": TAG_PACKED,
-                "label": "Packed",
-                "count": qs.filter(_packed_q()).count(),
-            },
+            {"value": value, "label": label, "count": qs.filter(cond).count()}
+            for value, label, cond, _aliases in _tag_choices()
         ]
         if q:
             rows = [

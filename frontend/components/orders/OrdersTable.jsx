@@ -25,7 +25,14 @@ const TONE_BADGE = {
 const TAG_TONE = {
   Packed: "green",
   Delivered: "green",
-  "To Be Packed": "amber",
+  // Assigning Courier, in order: nothing printed -> one of the two printed
+  // -> both printed (To be packed) -> scanned (Packed). "Printed Airwaybill"
+  // is the old wording of Airwaybill Printed.
+  "To be printed": "amber",
+  "Airwaybill Printed": "blue",
+  "Loadsheet Printed": "blue",
+  "Printed Airwaybill": "blue",
+  "To be packed": "amber",
   "Pending Approval": "amber",
   "City Issue": "amber",
   "Dispatch Issue": "red",
@@ -328,7 +335,9 @@ export default function OrdersTable({
                     if (tag.own) {
                       return (
                         <span
-                          className="inline-block max-w-full truncate rounded-full bg-brand-50 px-2 py-0.5 text-[11px] font-medium text-brand-700"
+                          className={`inline-block max-w-full truncate rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                            TONE_BADGE[TAG_TONE[tag.text]] || "bg-brand-50 text-brand-700"
+                          }`}
                           title={tag.text}
                         >
                           {tag.text}

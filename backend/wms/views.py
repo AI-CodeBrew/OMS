@@ -721,12 +721,16 @@ def _find_order(org_kwargs, request_data):
     string was searched by, used only to label a not_found result (there's
     no order to pull a real order_number from in that case).
     """
-    tracking_number = (request_data.get("tracking_number") or "").strip()
+    # A scanner's QR text ("CN,code,COD" on Leopards' slip) is cut down to
+    # the code itself - see oms/scan_codes.py.
+    from oms.scan_codes import scanned_code
+
+    tracking_number = scanned_code(request_data.get("tracking_number"))
     if tracking_number:
         order = Order.objects.filter(tracking_number=tracking_number, **org_kwargs).first()
         return order, tracking_number
 
-    order_number = (request_data.get("order_number") or "").strip()
+    order_number = scanned_code(request_data.get("order_number"))
     order = Order.objects.filter(order_number=order_number, **org_kwargs).first()
     return order, order_number
 
