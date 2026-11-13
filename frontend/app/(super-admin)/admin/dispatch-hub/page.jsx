@@ -7,13 +7,16 @@ import tenantsService from "../../../../services/tenantsService";
 import useAuthStore from "../../../../store/authStore";
 import { invalidateViewCache } from "../../../../lib/viewCache";
 import Button from "../../../../components/shared/Button";
+import { useRememberedData } from "../../../../lib/pageMemory";
 
 export default function DispatchHubPage() {
   const router = useRouter();
   const enterStore = useAuthStore((s) => s.enterStore);
 
-  const [hubStores, setHubStores] = useState([]);
-  const [allStores, setAllStores] = useState([]);
+  // Back (e.g. out of the Hub) shows the last loaded lists at once.
+  const { recall, remember } = useRememberedData("dispatchHub");
+  const [hubStores, setHubStores] = useState(() => recall()?.hub || []);
+  const [allStores, setAllStores] = useState(() => recall()?.orgs || []);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -32,12 +35,13 @@ export default function DispatchHubPage() {
       ]);
       setHubStores(hub);
       setAllStores(orgs.organizations || []);
+      remember({ hub, orgs: orgs.organizations || [] });
     } catch (err) {
       setError(err.message || "Failed to load the Dispatch Hub");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [remember]);
 
   useEffect(() => {
     load();
@@ -148,7 +152,7 @@ export default function DispatchHubPage() {
       </form>
 
       <div className="overflow-hidden rounded-xl border border-surface-border bg-white shadow-sm">
-        {loading ? (
+        {loading && hubStores.length === 0 ? (
           <p className="px-5 py-10 text-sm text-slate-500">Loading…</p>
         ) : hubStores.length === 0 ? (
           <p className="px-5 py-12 text-center text-sm text-slate-500">

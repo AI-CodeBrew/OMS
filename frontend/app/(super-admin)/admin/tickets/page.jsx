@@ -8,6 +8,7 @@ import TicketsTable from "../../../../components/tickets/TicketsTable";
 import { TICKET_STATUSES, TICKET_STATUS_LABEL } from "../../../../components/tickets/ticketStatus";
 import ticketsAdminService from "../../../../services/ticketsAdminService";
 import tenantsService from "../../../../services/tenantsService";
+import { useRememberedData, useRememberedState } from "../../../../lib/pageMemory";
 import CreateTicketDialog from "../../../../components/tickets/CreateTicketDialog";
 
 // Cross-org - every organization's tickets. Opening a ticket goes to
@@ -24,14 +25,17 @@ const VIEWS = [
 
 export default function AdminTicketsPage() {
   const router = useRouter();
-  const [tickets, setTickets] = useState([]);
-  const [count, setCount] = useState(0);
-  const [search, setSearch] = useState("");
-  const [appliedSearch, setAppliedSearch] = useState("");
-  const [view, setView] = useState("admin");
-  const [status, setStatus] = useState("");
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  // Back (e.g. from a ticket) brings the list back as it was left - same
+  // view, filter, search and page, its last rows shown at once.
+  const { recall, remember } = useRememberedData("tickets");
+  const [tickets, setTickets] = useState(() => recall()?.tickets || []);
+  const [count, setCount] = useState(() => recall()?.count || 0);
+  const [search, setSearch] = useRememberedState("search", "");
+  const [appliedSearch, setAppliedSearch] = useRememberedState("appliedSearch", "");
+  const [view, setView] = useRememberedState("view", "admin");
+  const [status, setStatus] = useRememberedState("status", "");
+  const [page, setPage] = useRememberedState("page", 1);
+  const [pageSize, setPageSize] = useRememberedState("pageSize", 20);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
@@ -50,12 +54,13 @@ export default function AdminTicketsPage() {
       });
       setTickets(data.tickets || []);
       setCount(data.count || 0);
+      remember({ tickets: data.tickets || [], count: data.count || 0 });
     } catch (err) {
       setError(err.message || "Failed to load tickets");
     } finally {
       setLoading(false);
     }
-  }, [view, appliedSearch, status, page, pageSize]);
+  }, [view, appliedSearch, status, page, pageSize, remember]);
 
   useEffect(() => {
     load();
@@ -145,7 +150,7 @@ export default function AdminTicketsPage() {
 
       <TicketsTable
         tickets={tickets}
-        loading={loading}
+        loading={loading && tickets.length === 0}
         emptyText="No tickets match these filters."
         onOpen={(t) => router.push(`/admin/tickets/${t.id}`)}
         showStore

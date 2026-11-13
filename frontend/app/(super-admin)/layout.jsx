@@ -7,6 +7,7 @@ import ProtectedRoute from "../../components/shared/ProtectedRoute";
 import authService from "../../services/authService";
 import useAuthStore from "../../store/authStore";
 import { invalidateViewCache } from "../../lib/viewCache";
+import { useScrollMemory } from "../../lib/pageMemory";
 import {
   LayersIcon,
   ShopBagIcon,
@@ -109,6 +110,9 @@ function SuperAdminShell({ children }) {
   const actingStore = useAuthStore((s) => s.actingStore);
   const exitStore = useAuthStore((s) => s.exitStore);
   const [expanded, setExpanded] = useState(false);
+  // Back/Forward lands where the page was scrolled to (lib/pageMemory).
+  const [mainEl, setMainEl] = useState(null);
+  useScrollMemory(mainEl);
 
   // Leaving for another page shouldn't leave the sidebar open over it.
   useEffect(() => {
@@ -197,7 +201,7 @@ function SuperAdminShell({ children }) {
           </div>
         </aside>
       </div>
-      <main className="min-w-0 flex-1 overflow-auto">
+      <main ref={setMainEl} className="min-w-0 flex-1 overflow-auto">
         {/* The OMS Courier account pages are the store admin's own
             integration screens (tables, tabs) - give them the width they
             were built for. */}

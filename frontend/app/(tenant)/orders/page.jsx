@@ -65,6 +65,7 @@ import leopardsService from "../integrations/leopards/_lib/leopardsService";
 import useLeopardsStatusStore from "../integrations/leopards/_lib/leopardsStatusStore";
 import { withLeopardsActions } from "../integrations/leopards/_lib/orderActions";
 import { forOrdersBookingAccounts } from "../../../components/orders/orderBookingAccount";
+import { useRememberedState } from "../../../lib/pageMemory";
 
 // Modals/panels only ever render once opened (each returns null while
 // closed) - loading them on demand instead of bundling them into the
@@ -220,8 +221,13 @@ export default function OrdersPage() {
   const user = useEffectiveUser();
 
   const [activeStatus, setActiveStatusState] = useState(() => searchParams.get("status") || "all");
-  const [search, setSearch] = useState("");
-  const [appliedSearch, setAppliedSearch] = useState("");
+  // Search, filters, page and page size come back as they were left on
+  // Back (lib/pageMemory) - the tab is already in the URL. A dashboard
+  // card's link opens clean instead: exactly that card's orders.
+  const [openedFromCard] = useState(() => searchParams.get("from") === "dashboard");
+  const clearIfFromCard = (value) => (openedFromCard ? "" : value);
+  const [search, setSearch] = useRememberedState("search", "", clearIfFromCard);
+  const [appliedSearch, setAppliedSearch] = useRememberedState("appliedSearch", "", clearIfFromCard);
   const [filtersOpen, setFiltersOpen] = useState(false);
   // A dashboard card links here with its date range (and its statuses as
   // the tab) - read once on arrival; after that the date filter is the
@@ -236,15 +242,20 @@ export default function OrdersPage() {
       ? { date_from: searchParams.get("date_from") || "", date_to: searchParams.get("date_to") || "" }
       : { date_from: shared.dateFrom, date_to: shared.dateTo };
   });
-  const [filters, setFilters] = useState(() => ({ ...EMPTY_FILTERS, ...initialRange }));
-  const [appliedFilters, setAppliedFilters] = useState(() => ({ ...EMPTY_FILTERS, ...initialRange }));
+  // Remembered too, except the dates: those always follow the dashboard
+  // link or the session's shared date filter, as before.
+  const withArrivalDates = (f) => ({ ...EMPTY_FILTERS, ...(openedFromCard ? {} : f), ...initialRange });
+  const [filters, setFilters] = useRememberedState("filters", EMPTY_FILTERS, withArrivalDates);
+  const [appliedFilters, setAppliedFilters] = useRememberedState(
+    "appliedFilters", EMPTY_FILTERS, withArrivalDates
+  );
   const fromDashboard = searchParams.get("from") === "dashboard";
   const dashboardGroup = searchParams.get("group") || "";
 
   const [orders, setOrders] = useState([]);
   const [orderCount, setOrderCount] = useState(0);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(10);
+  const [page, setPage] = useRememberedState("page", 1, (p) => (openedFromCard ? 1 : p));
+  const [pageSize, setPageSize] = useRememberedState("pageSize", 10);
   const [counts, setCounts] = useState(() => getCachedCounts());
   const [couriers, setCouriers] = useState([]);
   const [smartlaneConnected, setSmartlaneConnected] = useState(false);
@@ -342,7 +353,15 @@ export default function OrdersPage() {
   // Any filter change invalidates the current page - and the selection:
   // it's kept across pages of the same list (pick 10 here, 10 on the next
   // page...), but not carried into a different tab, search or filter.
+  // Not on arrival, though: Back brings the remembered page back.
+  const seenQuery = useRef(null);
   useEffect(() => {
+    const signature = JSON.stringify(queryParams);
+    if (seenQuery.current === null || seenQuery.current === signature) {
+      seenQuery.current = signature;
+      return;
+    }
+    seenQuery.current = signature;
     setPage(1);
     setSelectedIds(new Set());
   }, [queryParams]);

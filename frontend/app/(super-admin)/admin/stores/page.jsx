@@ -6,6 +6,7 @@ import tenantsService from "../../../../services/tenantsService";
 import dispatchHubAdminService from "../../../../services/dispatchHubAdminService";
 import useAuthStore from "../../../../store/authStore";
 import { invalidateViewCache } from "../../../../lib/viewCache";
+import { useRememberedData, useRememberedState } from "../../../../lib/pageMemory";
 import GreenTick from "../../../../components/shared/GreenTick";
 import Modal from "../../../../components/shared/Modal";
 import Button from "../../../../components/shared/Button";
@@ -130,10 +131,13 @@ function enabledModules(org) {
 export default function StoresPage() {
   const router = useRouter();
   const enterStore = useAuthStore((s) => s.enterStore);
-  const [stores, setStores] = useState([]);
+  // Back shows the last loaded list (and search) at once while a fresh
+  // list loads.
+  const { recall, remember } = useRememberedData("stores");
+  const [stores, setStores] = useState(() => recall() || []);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useRememberedState("search", "");
   const [hubBusyId, setHubBusyId] = useState("");
   const [modelBusyId, setModelBusyId] = useState("");
   const [bankOrg, setBankOrg] = useState(null);
@@ -144,12 +148,13 @@ export default function StoresPage() {
     try {
       const data = await tenantsService.listOrganizations();
       setStores(data.organizations || []);
+      remember(data.organizations || []);
     } catch (err) {
       setError(err.message || "Failed to load stores");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [remember]);
 
   useEffect(() => {
     load();
@@ -225,7 +230,7 @@ export default function StoresPage() {
       ) : null}
 
       <div className="overflow-hidden rounded-xl border border-surface-border bg-white shadow-sm">
-        {loading ? (
+        {loading && stores.length === 0 ? (
           <p className="px-5 py-10 text-sm text-slate-500">Loading stores…</p>
         ) : visible.length === 0 ? (
           <p className="px-5 py-12 text-center text-sm text-slate-500">

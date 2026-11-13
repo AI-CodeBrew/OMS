@@ -14,6 +14,7 @@ import {
   getVisibleModules,
 } from "../../components/layout/moduleNav";
 import useAuthStore, { useEffectiveUser } from "../../store/authStore";
+import { useScrollMemory } from "../../lib/pageMemory";
 import authService, {
   ACCESS_REVOKED_CODE,
   ORG_SUSPENDED_CODE,
@@ -64,6 +65,9 @@ function TenantShell({ children }) {
   const actingStore = useAuthStore((s) => s.actingStore);
   const activeModule = getActiveModule(pathname);
   const [lastModule, setLastModule] = useState(null);
+  // Back/Forward lands where the page was scrolled to (lib/pageMemory).
+  const [mainEl, setMainEl] = useState(null);
+  useScrollMemory(mainEl);
   const superAdminWithoutStore = user?.role === "super_admin" && !actingStore;
 
   // A phone paired before this page loaded carries on scanning, on any page.
@@ -167,7 +171,7 @@ function TenantShell({ children }) {
         {/* Phones: no rail beside it (MobileNav is above instead), so it's
             a plain full-width block that scrolls with the page - the
             sticky/fixed-height box only applies from md up. */}
-        <main className="min-h-[calc(100vh-4rem)] min-w-0 flex-1 bg-surface px-4 py-5 md:sticky md:top-16 md:h-[calc(100vh-4rem)] md:min-h-0 md:overflow-y-auto md:rounded-tl-2xl md:px-6 md:py-8">
+        <main ref={setMainEl} className="min-h-[calc(100vh-4rem)] min-w-0 flex-1 bg-surface px-4 py-5 md:sticky md:top-16 md:h-[calc(100vh-4rem)] md:min-h-0 md:overflow-y-auto md:rounded-tl-2xl md:px-6 md:py-8">
           {children}
         </main>
       </div>

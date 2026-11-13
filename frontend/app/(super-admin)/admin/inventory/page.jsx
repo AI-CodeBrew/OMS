@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import inventoryAdminService from "../../../../services/inventoryAdminService";
+import { useRememberedData, useRememberedState } from "../../../../lib/pageMemory";
 import Button from "../../../../components/shared/Button";
 import Pagination from "../../../../components/shared/Pagination";
 import Modal from "../../../../components/shared/Modal";
@@ -76,14 +77,17 @@ function EyeIcon() {
 }
 
 export default function AdminInventoryPage() {
-  const [rows, setRows] = useState([]);
-  const [count, setCount] = useState(0);
-  const [summary, setSummary] = useState({});
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(25);
-  const [search, setSearch] = useState("");
-  const [appliedSearch, setAppliedSearch] = useState("");
-  const [activity, setActivity] = useState("");
+  // Back brings the page back as it was left - same page, size, search
+  // and filter, its last rows shown at once while fresh ones load.
+  const { recall, remember } = useRememberedData("inventory");
+  const [rows, setRows] = useState(() => recall()?.rows || []);
+  const [count, setCount] = useState(() => recall()?.count || 0);
+  const [summary, setSummary] = useState(() => recall()?.summary || {});
+  const [page, setPage] = useRememberedState("page", 1);
+  const [pageSize, setPageSize] = useRememberedState("pageSize", 25);
+  const [search, setSearch] = useRememberedState("search", "");
+  const [appliedSearch, setAppliedSearch] = useRememberedState("appliedSearch", "");
+  const [activity, setActivity] = useRememberedState("activity", "");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [viewing, setViewing] = useState(null);
@@ -104,12 +108,13 @@ export default function AdminInventoryPage() {
       setRows(data.results || []);
       setCount(data.count || 0);
       setSummary(data.summary || {});
+      remember({ rows: data.results || [], count: data.count || 0, summary: data.summary || {} });
     } catch (err) {
       setError(err.message || "Failed to load inventory");
     } finally {
       setLoading(false);
     }
-  }, [page, pageSize, appliedSearch, activity]);
+  }, [page, pageSize, appliedSearch, activity, remember]);
 
   useEffect(() => {
     load();

@@ -6,6 +6,7 @@ import Link from "next/link";
 import Button from "../../../../components/shared/Button";
 import PasswordInput from "../../../../components/shared/PasswordInput";
 import tenantsService from "../../../../services/tenantsService";
+import { useRememberedData } from "../../../../lib/pageMemory";
 
 const EMPTY_CREATE = {
   name: "",
@@ -16,7 +17,9 @@ const EMPTY_CREATE = {
 
 export default function OrganizationsPage() {
   const router = useRouter();
-  const [organizations, setOrganizations] = useState([]);
+  // Back shows the last loaded list at once while a fresh one loads.
+  const { recall, remember } = useRememberedData("organizations");
+  const [organizations, setOrganizations] = useState(() => recall() || []);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -31,12 +34,13 @@ export default function OrganizationsPage() {
     try {
       const data = await tenantsService.listOrganizations();
       setOrganizations(data.organizations || []);
+      remember(data.organizations || []);
     } catch (err) {
       setError(err.message || "Failed to load organizations");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [remember]);
 
   useEffect(() => {
     load();
@@ -182,7 +186,7 @@ export default function OrganizationsPage() {
       ) : null}
 
       <div className="overflow-hidden rounded-xl border border-surface-border bg-white shadow-sm">
-        {loading ? (
+        {loading && organizations.length === 0 ? (
           <p className="px-5 py-10 text-sm text-slate-500">Loading organizations…</p>
         ) : organizations.length === 0 ? (
           <div className="px-5 py-12 text-center">

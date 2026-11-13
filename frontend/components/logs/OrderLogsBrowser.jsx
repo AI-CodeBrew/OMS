@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { formatWhen, isFailed, Who } from "./logFormat";
 import TrackingLink from "../shared/TrackingLink";
+import { useRememberedData, useRememberedState } from "../../lib/pageMemory";
 
 // The super admin's Logs page. Opens on the last few order updates (no
 // order list is loaded). Searching an order - store order ID, OMS order ID
@@ -74,7 +75,9 @@ function SearchIcon() {
 // The last few order updates over every store, newest first. A row with an
 // order opens that order's full log.
 function RecentUpdates({ fetchLogs, onOpenOrder }) {
-  const [rows, setRows] = useState([]);
+  // Back shows the last loaded rows at once while fresh ones load.
+  const { recall, remember } = useRememberedData("recentLogs");
+  const [rows, setRows] = useState(() => recall() || []);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -82,10 +85,13 @@ function RecentUpdates({ fetchLogs, onOpenOrder }) {
     setLoading(true);
     setError("");
     fetchLogs({ category: "orders", page_size: RECENT_COUNT })
-      .then((data) => setRows(data.results || []))
+      .then((data) => {
+        setRows(data.results || []);
+        remember(data.results || []);
+      })
       .catch((err) => setError(err.message || "Failed to load logs"))
       .finally(() => setLoading(false));
-  }, [fetchLogs]);
+  }, [fetchLogs, remember]);
 
   useEffect(() => {
     load();
@@ -234,9 +240,10 @@ function OrderLog({ order, logs }) {
 }
 
 export default function OrderLogsBrowser({ fetchLogs, fetchOrderLogs }) {
-  const [search, setSearch] = useState("");
+  // The searched order and its log come back on Back (lib/pageMemory).
+  const [search, setSearch] = useRememberedState("logSearch", "");
   // null: nothing searched - the recent updates show.
-  const [result, setResult] = useState(null);
+  const [result, setResult] = useRememberedState("logResult", null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
