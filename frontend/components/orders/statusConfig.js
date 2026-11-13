@@ -48,8 +48,16 @@ export const STATUS_LABELS = {
   critical: "Critical Orders",
 };
 
-// Cancel Order's reasons - one has to be picked.
-export const CANCEL_REASONS = ["Customer Cancelled", "On Seller Request", "Order Price Issue", "Fake/Test Order"];
+// Cancel Order's reasons - one has to be picked. "Other" is handled in
+// OrderActionModal (free-text); keep this list in sync with oms.services.CANCEL_REASONS.
+export const CANCEL_REASONS = [
+  "Customer Cancelled",
+  "On Seller Request",
+  "Order Price Issue",
+  "Fake/Test Order",
+  "No stock available",
+];
+export const CANCEL_REASON_OTHER = "__other__";
 
 // Same lists as the backend's QUEUE_COURIER_STATUSES /
 // AWAITING_PICKUP_COURIER_STATUSES (oms/services.py) - the courier's own

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Modal from "../shared/Modal";
 import Button from "../shared/Button";
-import { CANCEL_REASONS, SMARTLANE_LOAD_SHEET_COURIERS } from "./statusConfig";
+import { CANCEL_REASON_OTHER, CANCEL_REASONS, SMARTLANE_LOAD_SHEET_COURIERS } from "./statusConfig";
 import ordersService from "../../services/ordersService";
 
 const FIELD_BY_ACTION = {
@@ -166,12 +166,15 @@ export default function OrderActionModal({ action, couriers, options, count, fro
   const [value, setValue] = useState("");
   // Shipper Advice's remarks, beside its dropdown.
   const [remarks, setRemarks] = useState("");
+  // Cancel → Other: free-text reason.
+  const [otherReason, setOtherReason] = useState("");
   // City Issue's city list, or Update Tag's tags.
   const [suggestions, setSuggestions] = useState([]);
 
   useEffect(() => {
     setValue("");
     setRemarks("");
+    setOtherReason("");
   }, [action]);
 
   useEffect(() => {
@@ -210,7 +213,18 @@ export default function OrderActionModal({ action, couriers, options, count, fro
     );
   }
 
-  const canSubmit = field.optional || value.trim().length > 0;
+  const isCancelOther = field.type === "reason-select" && value === CANCEL_REASON_OTHER;
+  const canSubmit =
+    field.optional ||
+    (isCancelOther ? otherReason.trim().length > 0 : value.trim().length > 0);
+
+  function submitParams() {
+    if (field.type === "advice-select") return { advice: value, remarks };
+    if (field.type === "reason-select" && value === CANCEL_REASON_OTHER) {
+      return { [field.key]: otherReason.trim().slice(0, 255) };
+    }
+    return { [field.key]: value };
+  }
 
   return (
     <Modal open title={ACTION_TITLES[action] || action} onClose={onClose}>
@@ -247,18 +261,39 @@ export default function OrderActionModal({ action, couriers, options, count, fro
             ))}
           </select>
         ) : field.type === "reason-select" ? (
-          <select
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
-          >
-            <option value="">Select a reason…</option>
-            {CANCEL_REASONS.map((reason) => (
-              <option key={reason} value={reason}>
-                {reason}
-              </option>
-            ))}
-          </select>
+          <>
+            <select
+              value={value}
+              onChange={(e) => {
+                setValue(e.target.value);
+                if (e.target.value !== CANCEL_REASON_OTHER) setOtherReason("");
+              }}
+              className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
+            >
+              <option value="">Select a reason…</option>
+              {CANCEL_REASONS.map((reason) => (
+                <option key={reason} value={reason}>
+                  {reason}
+                </option>
+              ))}
+              <option value={CANCEL_REASON_OTHER}>Other</option>
+            </select>
+            {value === CANCEL_REASON_OTHER ? (
+              <>
+                <span className="mb-1 mt-3 block text-xs font-medium text-slate-700">
+                  Write the reason
+                </span>
+                <textarea
+                  value={otherReason}
+                  onChange={(e) => setOtherReason(e.target.value)}
+                  maxLength={255}
+                  rows={3}
+                  placeholder="Type the cancellation reason…"
+                  className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
+                />
+              </>
+            ) : null}
+          </>
         ) : field.type === "option-select" ? (
           <>
             <select
@@ -386,9 +421,7 @@ export default function OrderActionModal({ action, couriers, options, count, fro
         <Button
           disabled={!canSubmit}
           loading={submitting}
-          onClick={() =>
-            onSubmit(field.type === "advice-select" ? { advice: value, remarks } : { [field.key]: value })
-          }
+          onClick={() => onSubmit(submitParams())}
         >
           Apply
         </Button>

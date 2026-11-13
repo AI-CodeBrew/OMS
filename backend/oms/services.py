@@ -1975,7 +1975,15 @@ DASHBOARD_GROUPS = {
 }
 
 # Same list as the frontend's CANCEL_REASONS (components/orders/statusConfig.js).
-CANCEL_REASONS = ["Customer Cancelled", "On Seller Request", "Order Price Issue", "Fake/Test Order"]
+# Free-text "Other" reasons are stored as typed and land in the dashboard's
+# Other / No Reason bucket.
+CANCEL_REASONS = [
+    "Customer Cancelled",
+    "On Seller Request",
+    "Order Price Issue",
+    "Fake/Test Order",
+    "No stock available",
+]
 
 # Cards broken down by a field's own values instead of fixed types:
 # (field, label for an empty value).
