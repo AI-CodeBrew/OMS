@@ -681,15 +681,70 @@ def set_order_tag(order, *, tag, actor_user_id=None):
 
 
 def mark_orders_airway_bill_printed(organization_id, order_numbers, actor_user_id=None):
-    """After a successful airway-bill PDF: tag each order Printed Airwaybill."""
+    """After a successful airway-bill PDF: tag each order Printed Airwaybill.
+
+    In bulk - one update, one batch of order-log rows, one batch of Logs-tab
+    rows - instead of set_order_tag per order (a save, its change-log row
+    and its order-log row each, ~4 database round trips an order), which
+    held a 100-order print up by seconds before the PDF came back. Writes
+    exactly what set_order_tag would have: the order log's "Tag changed
+    from X to Printed Airwaybill", the Logs tab's "Order #1042: Tag: X ->
+    Printed Airwaybill", and an order.updated event per order so open
+    screens refresh. Orders already tagged so are left alone."""
+    from core.activity_log_service import category_for
+    from core.context import current_request_meta
+    from core.models import OrganizationAuditLog
+
     numbers = [str(n) for n in (order_numbers or []) if n]
     if not numbers or not organization_id:
         return
-    orders = Order.all_objects.filter(
-        organization_id=organization_id, order_number__in=numbers,
+    orders = list(
+        Order.all_objects.filter(organization_id=organization_id, order_number__in=numbers)
+        .exclude(tag=TAG_PRINTED_AIRWAYBILL)
+        .only("id", "organization_id", "order_number", "status", "tag")
     )
-    for order in orders:
-        set_order_tag(order, tag=TAG_PRINTED_AIRWAYBILL, actor_user_id=actor_user_id)
+    if not orders:
+        return
+    tag = TAG_PRINTED_AIRWAYBILL
+    Order.all_objects.filter(id__in=[o.id for o in orders]).update(tag=tag, updated_at=timezone.now())
+    OrderStatusEvent.all_objects.bulk_create([
+        OrderStatusEvent(
+            organization_id=o.organization_id, order_id=o.id, from_status=o.status, to_status=o.status,
+            note=f"Tag changed from {o.tag or '(none)'} to {tag}", actor_user_id=actor_user_id,
+        )
+        for o in orders
+    ])
+    meta = current_request_meta.get() or {}
+    path = meta.get("path", "")
+    OrganizationAuditLog.all_objects.bulk_create([
+        OrganizationAuditLog(
+            organization_id=o.organization_id,
+            actor_user_id=actor_user_id or meta.get("user_id") or None,
+            actor_email=(meta.get("email") or "")[:255],
+            actor_role=meta.get("role") or OrganizationAuditLog.ROLE_SYSTEM,
+            action="order.updated",
+            category=category_for("order.updated", path),
+            entity_type="order",
+            entity_id=str(o.id),
+            summary=f"Order {o.order_number}: Tag: {o.tag or '-'} → {tag}"[:500],
+            metadata={"order_number": o.order_number, "changes": {"tag": [o.tag or "-", tag]}},
+            ip_address=meta.get("ip", "")[:64],
+            user_agent=meta.get("user_agent", "")[:300],
+            request_method=meta.get("method", "")[:8],
+            request_path=path[:255],
+        )
+        for o in orders
+    ])
+    for o in orders:
+        publish_event(
+            "order.updated",
+            {
+                "organization_id": str(o.organization_id),
+                "order_id": str(o.id),
+                "order_number": o.order_number,
+                "source": "tag",
+            },
+        )
 
 
 # The day an order "is on" for date filters and the Dashboard - Pakistan's,

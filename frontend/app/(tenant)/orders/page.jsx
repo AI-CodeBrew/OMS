@@ -892,8 +892,9 @@ export default function OrdersPage() {
         await (isLoadSheet
           ? barqraftarService.printLoadSheet(orderIds)
           : barqraftarService.printLabels(orderIds));
-        // A load sheet moves its orders on to Awaiting Dispatched.
-        if (isLoadSheet) await reloadAfterChange();
+        // A load sheet moves its orders on to Awaiting Dispatched; labels
+        // tag them Printed Airwaybill - either way the rows change.
+        await reloadAfterChange();
       } catch (err) {
         setError(err.message || "Print failed");
       } finally {
@@ -917,7 +918,8 @@ export default function OrdersPage() {
       beginLoading(isLoadSheet ? "Preparing PostEx load sheet" : "Preparing PostEx airway bills");
       try {
         await (isLoadSheet ? postexService.printLoadSheet(orderIds) : postexService.printAirwayBills(orderIds));
-        if (isLoadSheet) await reloadAfterChange();
+        // Load sheet: Awaiting Dispatched. Airway bills: tagged Printed Airwaybill.
+        await reloadAfterChange();
       } catch (err) {
         setError(err.message || "Print failed");
       } finally {
@@ -940,7 +942,8 @@ export default function OrdersPage() {
       beginLoading(isLoadSheet ? "Preparing Leopards load sheet" : "Preparing Leopards airway bills");
       try {
         await (isLoadSheet ? leopardsService.printLoadSheet(orderIds) : leopardsService.printAirwayBills(orderIds));
-        if (isLoadSheet) await reloadAfterChange();
+        // Load sheet: Awaiting Dispatched. Airway bills: tagged Printed Airwaybill.
+        await reloadAfterChange();
       } catch (err) {
         setError(err.message || "Print failed");
       } finally {
