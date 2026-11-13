@@ -1,6 +1,7 @@
 import { getSupabaseBrowserClient } from "../lib/supabaseClient";
 import useAuthStore from "../store/authStore";
 import useTenantStore from "../store/tenantStore";
+import { clearPageMemory } from "../lib/pageMemory";
 
 // Mirrors backend core/middleware.py: every API call from a user whose
 // organization is suspended (or removed) fails with this code and message.
@@ -131,11 +132,18 @@ class AuthService {
     return user;
   }
 
+  // Ends the session on Supabase (its row goes, so the backend refuses the
+  // old token from then on - core/session_policy.py) and clears everything
+  // this browser kept for it, even when Supabase can't be reached.
   async logout() {
-    const supabase = getSupabaseBrowserClient();
-    await supabase.auth.signOut();
+    try {
+      await getSupabaseBrowserClient().auth.signOut();
+    } catch {
+      // Offline or already ended - the local sign-out below still happens.
+    }
     useAuthStore.getState().clearSession();
     useTenantStore.getState().clear();
+    clearPageMemory();
   }
 }
 

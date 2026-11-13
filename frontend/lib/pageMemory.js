@@ -64,6 +64,19 @@ export function useRememberedState(name, initial, onArrival) {
   return [value, set];
 }
 
+/** Forgets every remembered page (on logout - the next person at this
+ * computer starts clean). */
+export function clearPageMemory() {
+  dataMemory.clear();
+  try {
+    Object.keys(window.sessionStorage)
+      .filter((key) => key.startsWith(PREFIX))
+      .forEach((key) => window.sessionStorage.removeItem(key));
+  } catch {
+    // Storage unavailable - nothing was remembered there.
+  }
+}
+
 // A page's last loaded data, in memory for this tab - shown at once on the
 // way back while the page fetches a fresh copy.
 const dataMemory = new Map();

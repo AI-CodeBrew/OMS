@@ -359,9 +359,24 @@ def platform_connection():
     ).first()
 
 
-def connection_for_order(order):
-    """The connected account `order` was booked through."""
+def _through_platform(order, shipment=None):
+    """Whether `order`'s Leopards parcel went through FynkTech's account.
+    order.platform_reference says so - but another courier's booking
+    rewrites that field (PostEx, BarqRaftar, Smartlane all set it), so it can
+    be blank while the Leopards parcel is still FynkTech's. The shipment's
+    shipper_id is set only for bookings through FynkTech's account
+    (_finalize_booking) and nothing else touches it."""
     if order.platform_reference:
+        return True
+    if shipment is not None:
+        return bool(shipment.shipper_id)
+    return LeopardsShipment.all_objects.filter(order=order, is_active=True).exclude(shipper_id="").exists()
+
+
+def connection_for_order(order, shipment=None):
+    """The connected account `order` (its active parcel `shipment`, when the
+    caller has it) was booked through."""
+    if _through_platform(order, shipment):
         return platform_connection()
     return LeopardsConnection.all_objects.filter(
         organization_id=order.organization_id, is_connected=True

@@ -3,7 +3,8 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import useAuthStore from "../../store/authStore";
-import { installSessionGuard } from "../../lib/sessionGuard";
+import { endSession, installSessionGuard } from "../../lib/sessionGuard";
+import { isSessionExpired } from "../../lib/sessionClock";
 
 export default function ProtectedRoute({ children, requireSuperAdmin = false }) {
   const router = useRouter();
@@ -26,8 +27,16 @@ export default function ProtectedRoute({ children, requireSuperAdmin = false }) 
     }
   }, []);
 
+  // Opened or reloaded after the 12 hours: straight to the login page,
+  // nothing of the app shown or fetched first.
+  const expired = hydrated && Boolean(accessToken) && isSessionExpired(accessToken);
+
   useEffect(() => {
     if (!hydrated) return;
+    if (expired) {
+      endSession();
+      return;
+    }
     if (!accessToken) {
       router.replace(requireSuperAdmin ? "/superadmin" : "/login");
       return;
@@ -35,9 +44,9 @@ export default function ProtectedRoute({ children, requireSuperAdmin = false }) 
     if (requireSuperAdmin && user?.role !== "super_admin") {
       router.replace("/dashboard");
     }
-  }, [hydrated, accessToken, user, requireSuperAdmin, router]);
+  }, [hydrated, accessToken, user, requireSuperAdmin, router, expired]);
 
-  if (!hydrated || !accessToken) {
+  if (!hydrated || !accessToken || expired) {
     return (
       <div className="flex min-h-screen items-center justify-center text-slate-600">
         {hydrated ? "Redirecting…" : "Loading…"}

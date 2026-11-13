@@ -22,6 +22,8 @@ from core.rbac import write_audit_log
 from . import client, services
 from .client import BarqRaftarAPIError
 from .exceptions import BarqRaftarBookingError
+from integrations.print_groups import group_by_account, group_failed, nothing_printed
+
 from .models import BarqRaftarConnection, BarqRaftarSyncJob
 from .serializers import (
     BarqRaftarConnectionSerializer,
@@ -509,7 +511,7 @@ def _save_print_batch(*, organization_id, order_numbers, content, actor_user_id,
     )
 
 
-def _shipments_by_account(order_ids):
+def _shipments_by_account(order_ids, problems=None):
     """The selected orders' active shipments, grouped by (store, booking
     account) - one store's own account, or FynkTech's for a Dispatch Hub
     booking (services.connection_for_order). BarqRaftar only prints an
@@ -529,23 +531,13 @@ def _shipments_by_account(order_ids):
             {"detail": "None of the selected orders have an active BarqRaftar shipment."},
             status=http_status.HTTP_404_NOT_FOUND,
         )
-    connections = {}
-    groups = {}
-    for shipment in shipments:
-        via_platform = bool(shipment.order.platform_reference)
-        key = (str(shipment.organization_id), via_platform)
-        if key not in connections:
-            connections[key] = services.connection_for_order(shipment.order)
-            if connections[key] is None:
-                return None, Response(
-                    {"detail": (
-                        "FynkTech's BarqRaftar account isn't connected (super admin's OMS Couriers tab)."
-                        if via_platform else "BarqRaftar is not connected"
-                    )},
-                    status=http_status.HTTP_404_NOT_FOUND,
-                )
-        groups.setdefault(key, []).append(shipment)
-    return [(key[0], connections[key], group) for key, group in groups.items()], None
+    # `problems`: see integrations/print_groups.py - an order whose account
+    # isn't connected is then left out and named instead of failing all.
+    return group_by_account(
+        shipments, courier="BarqRaftar",
+        connection_for=lambda shipment: services.connection_for_order(shipment.order),
+        platform_connection=services.platform_connection, problems=problems,
+    )
 
 
 def _merge_pdfs(pdf_byte_list):
@@ -561,15 +553,16 @@ def _merge_pdfs(pdf_byte_list):
     return buffer.getvalue()
 
 
-def render_load_sheets(order_ids, actor_user_id):
+def render_load_sheets(order_ids, actor_user_id, problems=None):
     """Our own Goods Load Sheet for `order_ids`, per (store, booking
-    account). Hands the parcels over. Returns (pdf parts, error response)."""
+    account). Hands the parcels over. Returns (pdf parts, error response).
+    With `problems` a failing group is skipped and noted there."""
     from core.models import Organization
     from oms import services as oms_services
 
     from . import loadsheet
 
-    groups, error = _shipments_by_account(order_ids)
+    groups, error = _shipments_by_account(order_ids, problems)
     if error:
         return None, error
 
@@ -585,7 +578,10 @@ def render_load_sheets(order_ids, actor_user_id):
             )
             pdf_bytes = loadsheet.render_pdf(html_doc)
         except BarqRaftarAPIError as exc:
-            return None, Response({"detail": str(exc)}, status=http_status.HTTP_502_BAD_GATEWAY)
+            failure = group_failed(problems, exc, shipments)
+            if failure:
+                return None, failure
+            continue
 
         _save_print_batch(
             organization_id=organization_id,
@@ -597,6 +593,8 @@ def render_load_sheets(order_ids, actor_user_id):
         oms_services.mark_orders_handed_over(
             [s.order for s in shipments], actor_user_id=actor_user_id, note="BarqRaftar load sheet",
         )
+    if not pdf_parts:
+        return None, nothing_printed(problems)
     return pdf_parts, None
 
 
@@ -621,10 +619,11 @@ class BarqRaftarLoadSheetView(APIView):
         return HttpResponse(_merge_pdfs(pdf_parts), content_type="application/pdf")
 
 
-def render_labels(order_ids, actor_user_id):
+def render_labels(order_ids, actor_user_id, problems=None):
     """The labels of `order_ids`, per (store, booking account). Returns
-    (pdf parts, error response)."""
-    groups, error = _shipments_by_account(order_ids)
+    (pdf parts, error response). With `problems` a failing group is skipped
+    and noted there (integrations/print_groups.py)."""
+    groups, error = _shipments_by_account(order_ids, problems)
     if error:
         return None, error
     pdf_parts = []
@@ -632,13 +631,18 @@ def render_labels(order_ids, actor_user_id):
         try:
             pdf_bytes = _print_label_chunks(connection, [s.tracking_number for s in shipments])
         except BarqRaftarAPIError as exc:
-            return None, Response({"detail": str(exc)}, status=http_status.HTTP_502_BAD_GATEWAY)
+            failure = group_failed(problems, exc, shipments)
+            if failure:
+                return None, failure
+            continue
         _save_print_batch(
             organization_id=organization_id,
             order_numbers=[s.order.order_number for s in shipments],
             content=pdf_bytes, actor_user_id=actor_user_id,
         )
         pdf_parts.append(pdf_bytes)
+    if not pdf_parts:
+        return None, nothing_printed(problems)
     return pdf_parts, None
 
 

@@ -2157,23 +2157,32 @@ class OrderViewSet(viewsets.ModelViewSet):
             return error
         return HttpResponse(self._merge_pdfs(pdf_parts), content_type="application/pdf")
 
-    def _render_smartlane_airway_bills(self, orders, actor_user_id):
-        """Returns (pdf parts, error response), one store at a time."""
+    def _render_smartlane_airway_bills(self, orders, actor_user_id, problems=None):
+        """Returns (pdf parts, error response), one store at a time. With
+        `problems` (the Dispatch Hub's print-by-courier) a store that fails
+        is skipped and noted there, so the other stores still print."""
         from integrations import smartlane_client
         from integrations.models import SmartlaneConnection
+        from integrations.print_groups import group_failed, nothing_printed
 
         pdf_parts = []
         for organization_id, org_orders in self._group_orders_by_org(orders):
+            org_order_numbers = [o.order_number for o in org_orders]
             connection, error = self._smartlane_connection_or_error(org_orders)
             if error:
-                return None, error
-            org_order_numbers = [o.order_number for o in org_orders]
+                if problems is None:
+                    return None, error
+                group_failed(problems, (error.data or {}).get("detail") or "failed", org_order_numbers)
+                continue
             try:
                 pdf_bytes = smartlane_client.render_airway_bill_pdf(
                     connection.api_key, [SmartlaneConnection.reference_for(o) for o in org_orders]
                 )
             except smartlane_client.SmartlaneAPIError as exc:
-                return None, Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+                failure = group_failed(problems, exc, org_order_numbers)
+                if failure:
+                    return None, failure
+                continue
             self._save_print_batch(
                 organization_id=organization_id,
                 kind="airway_bill",
@@ -2184,6 +2193,8 @@ class OrderViewSet(viewsets.ModelViewSet):
                 actor_user_id=actor_user_id,
             )
             pdf_parts.append(pdf_bytes)
+        if not pdf_parts:
+            return None, nothing_printed(problems)
         return pdf_parts, None
 
     @action(detail=False, methods=["post"], url_path="smartlane-load-sheet")
@@ -2298,21 +2309,41 @@ class OrderViewSet(viewsets.ModelViewSet):
             )
         return pdf_parts, None
 
-    def _render_smartlane_load_sheets_any_courier(self, orders, actor_user_id):
+    def _render_smartlane_load_sheets_any_courier(self, orders, actor_user_id, problems=None):
         """Smartlane makes a load sheet for one courier at a time and we
         don't know which one it booked each order with, so ask for every
         courier and keep whichever come back. A courier with none of these
-        orders is refused by Smartlane - only an error if all of them are."""
+        orders is refused by Smartlane - expected, so only a store (booking
+        account) that got no sheet from any courier is a failure. Asked per
+        store: one store having nothing with a courier used to throw away
+        every other store's sheet for that courier too. With `problems` a
+        store that got nothing is noted there and the rest still print."""
         from integrations import smartlane_client
+        from integrations.print_groups import group_failed
 
         pdf_parts, first_error = [], None
-        for courier in sorted(smartlane_client.SUPPORTED_COURIERS):
-            parts, error = self._render_smartlane_load_sheets(orders, courier, actor_user_id)
-            if error:
-                first_error = first_error or error
-            else:
-                pdf_parts += parts
-        return (pdf_parts, None) if pdf_parts else (None, first_error)
+        for _organization_id, org_orders in self._group_orders_by_org(orders):
+            store_parts, store_error = [], None
+            for courier in sorted(smartlane_client.SUPPORTED_COURIERS):
+                parts, error = self._render_smartlane_load_sheets(org_orders, courier, actor_user_id)
+                if error:
+                    store_error = store_error or error
+                else:
+                    store_parts += parts
+            if store_parts:
+                pdf_parts += store_parts
+                continue
+            first_error = first_error or store_error
+            if problems is not None and store_error is not None:
+                group_failed(problems, (store_error.data or {}).get("detail") or "failed",
+                             [o.order_number for o in org_orders])
+        if pdf_parts:
+            return pdf_parts, None
+        if problems:
+            from integrations.print_groups import nothing_printed
+
+            return None, nothing_printed(problems)
+        return None, first_error
 
     @action(detail=False, methods=["post"], url_path="print-by-courier")
     def print_by_courier(self, request):
@@ -2364,24 +2395,29 @@ class OrderViewSet(viewsets.ModelViewSet):
             if not group:
                 continue
             ids = [str(o.id) for o in group]
+            # One store, account or order that can't be printed never blocks
+            # the rest of its courier: it's left out, noted here, and named
+            # in X-Print-Failed (integrations/print_groups.py).
+            problems = []
             if label == "BarqRaftar":
                 render = barqraftar_views.render_load_sheets if kind == "loadsheet" else barqraftar_views.render_labels
-                parts, error = render(ids, request.user_id)
+                parts, error = render(ids, request.user_id, problems)
             elif label == "PostEx":
                 render = postex_views.render_load_sheets if kind == "loadsheet" else postex_views.render_airway_bills
-                parts, error = render(ids, request.user_id)
+                parts, error = render(ids, request.user_id, problems)
             elif label == "Leopards":
                 render = leopards_views.render_load_sheets if kind == "loadsheet" else leopards_views.render_airway_bills_for_hub
-                parts, error = render(ids, request.user_id)
+                parts, error = render(ids, request.user_id, problems)
             elif kind == "loadsheet":
-                parts, error = self._render_smartlane_load_sheets_any_courier(group, request.user_id)
+                parts, error = self._render_smartlane_load_sheets_any_courier(group, request.user_id, problems)
             else:
-                parts, error = self._render_smartlane_airway_bills(group, request.user_id)
+                parts, error = self._render_smartlane_airway_bills(group, request.user_id, problems)
             if error:
                 detail = str((error.data or {}).get("detail") or "failed")
                 failed.append(f"{label}: {detail}")
             else:
                 pdf_parts += parts
+                failed += [f"{label}: {problem}" for problem in problems]
 
         if not pdf_parts:
             return Response({"detail": "; ".join(failed)}, status=status.HTTP_502_BAD_GATEWAY)

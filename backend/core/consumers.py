@@ -16,6 +16,7 @@ from channels.generic.websocket import AsyncJsonWebsocketConsumer
 
 from . import scan_sessions
 from .jwt_utils import InvalidSupabaseToken, decode_supabase_jwt
+from .session_policy import session_problem
 from .middleware import resolve_active_org_id
 
 
@@ -51,6 +52,10 @@ class OrgOrdersConsumer(AsyncJsonWebsocketConsumer):
             try:
                 claims = await sync_to_async(decode_supabase_jwt)(token)
             except InvalidSupabaseToken:
+                claims = None
+            # Same session rule as TenantMiddleware: 12 hours from sign-in,
+            # and not logged out.
+            if claims and await sync_to_async(session_problem)(claims):
                 claims = None
             if claims:
                 # Never user_metadata - the user can write that themselves.

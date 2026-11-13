@@ -22,6 +22,8 @@ from core.rbac import write_audit_log
 
 from . import client, services
 from .exceptions import LeopardsAPIError, LeopardsBookingError
+from integrations.print_groups import group_by_account, group_failed, nothing_printed
+
 from .models import LeopardsConnection, LeopardsShipment, LeopardsSyncJob, new_webhook_secret
 from .serializers import LeopardsConnectionSerializer, LeopardsStatusSerializer, LeopardsSyncJobSerializer
 
@@ -510,15 +512,18 @@ def _save_print_batch(*, organization_id, order_numbers, content, actor_user_id,
         logger.exception("leopards: failed to save print batch")
 
 
-def _shipments_by_account(order_ids):
+def _shipments_by_account(order_ids, problems=None):
     """The selected orders' active shipments, grouped by (store, booking
-    account) - one store's own account, or FynkTech's for a Dispatch Hub
-    booking (services.connection_for_order). Leopards only prints an
-    account's own parcels, and each store keeps its own print history, so
-    every group is rendered on its own. TenantManager scopes the query to
-    the store - or to every Hub store while operating the Hub. Returns
-    (groups, error_response); groups is [(organization_id, connection,
-    shipments)] in first-seen order."""
+    account) - one store's own account, or FynkTech's for a booking through
+    it (services.connection_for_order, which also reads the shipment's own
+    FynkTech shipper - order.platform_reference can be wiped by another
+    courier's booking). Leopards only prints an account's own parcels, and
+    each store keeps its own print history, so every group is rendered on
+    its own. TenantManager scopes the query to the store - or to every Hub
+    store while operating the Hub. `problems`: see integrations/
+    print_groups.py - an order whose account isn't connected is then left
+    out and named instead of failing everything. Returns (groups,
+    error_response)."""
     shipments = list(
         LeopardsShipment.objects.filter(order_id__in=order_ids, is_active=True)
         .exclude(tracking_number="").select_related("order").order_by("booked_at", "id")
@@ -528,22 +533,13 @@ def _shipments_by_account(order_ids):
             {"detail": "None of the selected orders have an active Leopards shipment."},
             status=http_status.HTTP_404_NOT_FOUND,
         )
-    connections = {}
-    groups = {}
-    for shipment in shipments:
-        via_platform = bool(shipment.order.platform_reference)
-        key = (str(shipment.organization_id), via_platform)
-        if key not in connections:
-            connections[key] = services.connection_for_order(shipment.order)
-            if connections[key] is None:
-                if via_platform:
-                    return None, Response(
-                        {"detail": "FynkTech's Leopards account isn't connected (super admin's OMS Couriers tab)."},
-                        status=http_status.HTTP_404_NOT_FOUND,
-                    )
-                return None, _not_connected()
-        groups.setdefault(key, []).append(shipment)
-    return [(key[0], connections[key], group) for key, group in groups.items()], None
+    return group_by_account(
+        shipments, courier="Leopards",
+        connection_for=lambda shipment: services.connection_for_order(shipment.order, shipment),
+        platform_connection=services.platform_connection,
+        through_platform=lambda shipment: services._through_platform(shipment.order, shipment),
+        problems=problems,
+    )
 
 
 def _merge_pdfs(pdf_byte_list):
@@ -596,13 +592,14 @@ def _is_pdf(content, content_type):
     return "pdf" in (content_type or "") or (content or b"").startswith(b"%PDF")
 
 
-def render_airway_bills(order_ids, actor_user_id):
+def render_airway_bills(order_ids, actor_user_id, problems=None):
     """The airway bills (slips) of `order_ids`, per (store, booking account).
     Leopards gives each booking a slip_link rather than a print call, so every
     saved link is fetched. Returns (pdf parts, error response, slip links);
     when a link answers with something that isn't a PDF (a web page) no PDF
-    can be made, so pdf parts is None and the links are handed back."""
-    groups, error = _shipments_by_account(order_ids)
+    can be made, so pdf parts is None and the links are handed back. With
+    `problems` a failing group is skipped and noted there."""
+    groups, error = _shipments_by_account(order_ids, problems)
     if error:
         return None, error, []
 
@@ -613,15 +610,20 @@ def render_airway_bills(order_ids, actor_user_id):
         group_pdfs, group_numbers = [], []
         for shipment in shipments:
             if not shipment.slip_link:
-                return None, Response(
-                    {"detail": f"Order {shipment.order.order_number} has no Leopards slip link saved."},
-                    status=http_status.HTTP_404_NOT_FOUND,
-                ), links
+                failure = group_failed(
+                    problems, "No Leopards slip link saved", [shipment], status=http_status.HTTP_404_NOT_FOUND,
+                )
+                if failure:
+                    return None, failure, links
+                continue
             links.append(shipment.slip_link)
             try:
                 content, content_type = client.fetch_slip(shipment.slip_link)
             except LeopardsAPIError as exc:
-                return None, _bad_gateway(exc), links
+                failure = group_failed(problems, exc, [shipment])
+                if failure:
+                    return None, failure, links
+                continue
             if _is_pdf(content, content_type):
                 group_pdfs.append(content)
                 group_numbers.append(shipment.order.order_number)
@@ -640,13 +642,15 @@ def render_airway_bills(order_ids, actor_user_id):
     return None, None, links
 
 
-def render_airway_bills_for_hub(order_ids, actor_user_id):
+def render_airway_bills_for_hub(order_ids, actor_user_id, problems=None):
     """render_airway_bills in the (pdf parts, error response) shape the
     Dispatch Hub's print-by-courier uses: slips that came back as web pages
     become an error there, since that print can only merge PDFs."""
-    parts, error, links = render_airway_bills(order_ids, actor_user_id)
+    parts, error, links = render_airway_bills(order_ids, actor_user_id, problems)
     if error or parts:
         return parts, error
+    if problems and not links:
+        return None, nothing_printed(problems)
     return None, Response(
         {"detail": "Leopards' slips opened as web pages, not PDFs - print them from the Leopards portal."},
         status=http_status.HTTP_502_BAD_GATEWAY,
@@ -674,17 +678,18 @@ class LeopardsAirwayBillView(APIView):
         return JsonResponse({"slip_links": links})
 
 
-def render_load_sheets(order_ids, actor_user_id):
+def render_load_sheets(order_ids, actor_user_id, problems=None):
     """Leopards' own load sheet PDF for `order_ids`' active shipments, per
     (store, booking account). This is the hand-over step on Leopards' side:
     generateLoadSheet makes the sheet (once per parcel - the id is kept on
     the shipment), downloadLoadSheet returns its PDF (without the airway bill
     slips Leopards puts in front - see _load_sheet_pages_only), and unlike
     PostEx's it can be downloaded again by id whenever needed. Returns (pdf
-    parts, error response)."""
+    parts, error response). With `problems` a failing group is skipped and
+    noted there (integrations/print_groups.py)."""
     from oms import services as oms_services
 
-    groups, error = _shipments_by_account(order_ids)
+    groups, error = _shipments_by_account(order_ids, problems)
     if error:
         return None, error
     pdf_parts = []
@@ -710,13 +715,18 @@ def render_load_sheets(order_ids, actor_user_id):
                 )
                 pdf_parts.append(pdf_bytes)
         except LeopardsAPIError as exc:
-            return None, _bad_gateway(exc)
+            failure = group_failed(problems, exc, shipments)
+            if failure:
+                return None, failure
+            continue
 
         # Every one of them is on a load sheet now - handed over, so out
         # of Ready to Print and into Awaiting Dispatched.
         oms_services.mark_orders_handed_over(
             [s.order for s in shipments], actor_user_id=actor_user_id, note="Leopards load sheet",
         )
+    if not pdf_parts:
+        return None, nothing_printed(problems)
     return pdf_parts, None
 
 

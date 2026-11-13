@@ -12,6 +12,7 @@ from .context import (
     current_user_id,
 )
 from .jwt_utils import InvalidSupabaseToken, decode_supabase_jwt
+from .session_policy import problem_message, session_problem
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +122,20 @@ class TenantMiddleware:
                 claims = decode_supabase_jwt(token)
             except InvalidSupabaseToken:
                 claims = None
+            # 12 hours from sign-in, or logged out: refused outright, with a
+            # code the frontend signs out on (lib/sessionGuard.js) - never
+            # treated as an anonymous caller.
+            problem = session_problem(claims) if claims else None
+            if problem:
+                return JsonResponse(
+                    {
+                        "success": False,
+                        "detail": problem_message(problem),
+                        "error": problem_message(problem),
+                        "code": problem,
+                    },
+                    status=401,
+                )
             if claims:
                 # app_metadata only: user_metadata is writable by the user
                 # themselves (supabase.auth.updateUser), so nothing that

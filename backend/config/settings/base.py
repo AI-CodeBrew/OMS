@@ -161,6 +161,14 @@ SUPABASE_ANON_KEY = env("SUPABASE_ANON_KEY")
 SUPABASE_SERVICE_ROLE_KEY = env("SUPABASE_SERVICE_ROLE_KEY", required=True)
 SUPABASE_JWT_SECRET = env("SUPABASE_JWT_SECRET", required=True)
 
+# Absolute session lifetime from sign-in (core/session_policy.py) - token
+# refreshes, reloads and store switches don't extend it. The frontend's
+# SESSION_MAX_AGE_HOURS (lib/sessionClock.js) must match.
+SESSION_MAX_AGE_SECONDS = int(float(env("SESSION_MAX_AGE_HOURS", default="12")) * 3600)
+# Refuse tokens of sessions that were logged out (row gone from Supabase's
+# auth.sessions) instead of honouring them until they expire.
+SESSION_CHECK_REVOKED = env("SESSION_CHECK_REVOKED", default="true").lower() == "true"
+
 # Where generated load sheets / airway bills are kept (oms/storage.py) - a
 # Bunny.net Storage zone. ACCESS_KEY is the zone's own password (Storage
 # Zone > FTP & API Access), not the account API key. REGION is the zone's

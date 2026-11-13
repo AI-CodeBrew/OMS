@@ -21,6 +21,8 @@ from core.rbac import write_audit_log
 
 from . import client, services
 from .exceptions import PostExAPIError, PostExBookingError
+from integrations.print_groups import group_by_account, group_failed, nothing_printed
+
 from .models import WEBHOOK_HEADER_KEY, PostExConnection, PostExShipment, PostExSyncJob, new_webhook_secret
 from .serializers import PostExConnectionSerializer, PostExStatusSerializer, PostExSyncJobSerializer
 
@@ -508,7 +510,7 @@ def _save_print_batch(*, organization_id, order_numbers, content, actor_user_id,
     )
 
 
-def _shipments_by_account(order_ids):
+def _shipments_by_account(order_ids, problems=None):
     """The selected orders' active shipments, grouped by (store, booking
     account) - one store's own account, or FynkTech's for a Dispatch Hub
     booking (services.connection_for_order). PostEx only prints an
@@ -516,7 +518,9 @@ def _shipments_by_account(order_ids):
     every group is rendered on its own. TenantManager scopes the query to
     the store - or to every Hub store while operating the Hub. Returns
     (groups, error_response); groups is [(organization_id, connection,
-    shipments)] in first-seen order."""
+    shipments)] in first-seen order. `problems`: see integrations/
+    print_groups.py - an order whose account isn't connected is then left
+    out and named instead of failing everything."""
     shipments = list(
         PostExShipment.objects.filter(order_id__in=order_ids, is_active=True)
         .exclude(tracking_number="").select_related("order").order_by("booked_at", "id")
@@ -526,22 +530,11 @@ def _shipments_by_account(order_ids):
             {"detail": "None of the selected orders have an active PostEx shipment."},
             status=http_status.HTTP_404_NOT_FOUND,
         )
-    connections = {}
-    groups = {}
-    for shipment in shipments:
-        via_platform = bool(shipment.order.platform_reference)
-        key = (str(shipment.organization_id), via_platform)
-        if key not in connections:
-            connections[key] = services.connection_for_order(shipment.order)
-            if connections[key] is None:
-                if via_platform:
-                    return None, Response(
-                        {"detail": "FynkTech's PostEx account isn't connected (super admin's OMS Couriers tab)."},
-                        status=http_status.HTTP_404_NOT_FOUND,
-                    )
-                return None, _not_connected()
-        groups.setdefault(key, []).append(shipment)
-    return [(key[0], connections[key], group) for key, group in groups.items()], None
+    return group_by_account(
+        shipments, courier="PostEx",
+        connection_for=lambda shipment: services.connection_for_order(shipment.order),
+        platform_connection=services.platform_connection, problems=problems,
+    )
 
 
 def _merge_pdfs(pdf_byte_list):
@@ -571,11 +564,12 @@ def _airway_bill_pdf(connection, tracking_numbers):
     return buffer.getvalue()
 
 
-def render_airway_bills(order_ids, actor_user_id):
+def render_airway_bills(order_ids, actor_user_id, problems=None):
     """The airway bills of `order_ids`, per (store, booking account) - a
     Dispatch Hub selection booked through FynkTech's account prints through
-    it. Returns (pdf parts, error response)."""
-    groups, error = _shipments_by_account(order_ids)
+    it. Returns (pdf parts, error response). With `problems` a failing group
+    is skipped and noted there (integrations/print_groups.py)."""
+    groups, error = _shipments_by_account(order_ids, problems)
     if error:
         return None, error
     pdf_parts = []
@@ -583,13 +577,18 @@ def render_airway_bills(order_ids, actor_user_id):
         try:
             pdf_bytes = _airway_bill_pdf(connection, [s.tracking_number for s in shipments])
         except PostExAPIError as exc:
-            return None, _bad_gateway(exc)
+            failure = group_failed(problems, exc, shipments)
+            if failure:
+                return None, failure
+            continue
         _save_print_batch(
             organization_id=organization_id,
             order_numbers=[s.order.order_number for s in shipments],
             content=pdf_bytes, actor_user_id=actor_user_id, kind="airway_bill",
         )
         pdf_parts.append(pdf_bytes)
+    if not pdf_parts:
+        return None, nothing_printed(problems)
     return pdf_parts, None
 
 
@@ -671,13 +670,14 @@ def _saved_load_sheets(organization_id, shipments):
     return parts, missing
 
 
-def render_load_sheets(order_ids, actor_user_id):
+def render_load_sheets(order_ids, actor_user_id, problems=None):
     """The load sheets of `order_ids`, per (store, booking account), same
     as the airway bills above. Generating one hands the parcels over.
-    Returns (pdf parts, error response)."""
+    Returns (pdf parts, error response). With `problems` a failing group is
+    skipped and noted there (integrations/print_groups.py)."""
     from oms import services as oms_services
 
-    groups, error = _shipments_by_account(order_ids)
+    groups, error = _shipments_by_account(order_ids, problems)
     if error:
         return None, error
     pdf_parts = []
@@ -686,14 +686,16 @@ def render_load_sheets(order_ids, actor_user_id):
         if handed_over:
             saved, missing = _saved_load_sheets(organization_id, handed_over)
             if missing:
-                return None, Response(
-                    {"detail": (
-                        f"PostEx already has these on a load sheet ({', '.join(missing)}) and "
-                        "can't make another - the earlier one isn't saved here, so download it "
-                        "from the PostEx portal."
-                    )},
-                    status=http_status.HTTP_409_CONFLICT,
+                failure = group_failed(
+                    problems,
+                    f"PostEx already has these on a load sheet ({', '.join(missing)}) and "
+                    "can't make another - the earlier one isn't saved here, so download it "
+                    "from the PostEx portal.",
+                    missing, status=http_status.HTTP_409_CONFLICT,
                 )
+                if failure:
+                    return None, failure
+                continue
             pdf_parts += saved
 
         # One sheet per pickup address the parcels were booked from:
@@ -704,11 +706,16 @@ def render_load_sheets(order_ids, actor_user_id):
         for shipment in shipments:
             if not shipment.load_sheet_at:
                 by_address.setdefault(shipment.pickup_address_code or "", []).append(shipment)
+        on_sheet = list(handed_over)
         for address_code, fresh in by_address.items():
             try:
                 pdf_bytes = _generate_load_sheet(connection, fresh, address_code)
             except PostExAPIError as exc:
-                return None, _bad_gateway(exc)
+                failure = group_failed(problems, exc, fresh)
+                if failure:
+                    return None, failure
+                continue
+            on_sheet += fresh
 
             services.mark_load_sheet_generated(fresh)
             _save_print_batch(
@@ -719,10 +726,14 @@ def render_load_sheets(order_ids, actor_user_id):
             pdf_parts.append(pdf_bytes)
 
         # Every one of them is on a load sheet now - handed over, so out
-        # of Ready to Print and into Awaiting Dispatched.
+        # of Ready to Print and into Awaiting Dispatched. (Only those that
+        # really are, when a sheet of this group failed.)
         oms_services.mark_orders_handed_over(
-            [s.order for s in shipments], actor_user_id=actor_user_id, note="PostEx load sheet",
+            [s.order for s in on_sheet],
+            actor_user_id=actor_user_id, note="PostEx load sheet",
         )
+    if not pdf_parts:
+        return None, nothing_printed(problems)
     return pdf_parts, None
 
 
