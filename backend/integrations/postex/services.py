@@ -367,12 +367,16 @@ def platform_connection():
 
 
 def connection_for_order(order):
-    """The connected account `order` was booked through."""
+    """The connected account `order` was booked through. platform_reference
+    says FynkTech's - but another courier's booking (or a rebook) clears or
+    rewrites it, so a store with no PostEx account of its own falls back to
+    FynkTech's: its parcel can only have gone through that one."""
     if order.platform_reference:
         return platform_connection()
-    return PostExConnection.all_objects.filter(
+    own = PostExConnection.all_objects.filter(
         organization_id=order.organization_id, is_connected=True
     ).first()
+    return own or platform_connection()
 
 
 def connection_for_request(request):

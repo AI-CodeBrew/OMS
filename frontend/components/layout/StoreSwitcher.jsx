@@ -30,10 +30,13 @@ export default function StoreSwitcher() {
   const [switching, setSwitching] = useState(false);
 
   const isActingSuperAdmin = rawUser?.role === "super_admin" && Boolean(actingStore);
-  const canSwitch = Boolean(effectiveUser?.isOrgAdmin) && !isActingSuperAdmin;
+  const isAdmin = Boolean(effectiveUser?.isOrgAdmin);
+  // Staff given access to several stores of an organization switch too.
+  const canList = Boolean(effectiveUser) && !isActingSuperAdmin && effectiveUser?.role !== "super_admin";
+  const canSwitch = canList && (isAdmin || (stores || []).length > 1);
 
   useEffect(() => {
-    if (!canSwitch) return;
+    if (!canList) return;
     let cancelled = false;
     storesService
       .list()
@@ -46,7 +49,7 @@ export default function StoreSwitcher() {
     return () => {
       cancelled = true;
     };
-  }, [canSwitch, effectiveUser?.organization_id]);
+  }, [canList, effectiveUser?.organization_id]);
 
   if (!effectiveUser) return null;
 
@@ -97,12 +100,16 @@ export default function StoreSwitcher() {
         ...(items.length
           ? items
           : [{ key: "loading", label: "Loading stores…", disabled: true }]),
-        { key: "divider", divider: true },
-        {
-          key: "manage",
-          label: "Manage stores",
-          onClick: () => router.push("/settings?tab=stores"),
-        },
+        ...(isAdmin
+          ? [
+              { key: "divider", divider: true },
+              {
+                key: "manage",
+                label: "Manage stores",
+                onClick: () => router.push("/settings?tab=stores"),
+              },
+            ]
+          : []),
       ]}
     />
   );

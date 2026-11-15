@@ -88,7 +88,7 @@ def delete_city(city_id):
 
 def import_from_couriers():
     """Pulls the city lists of every courier OMS can read one from - PostEx's
-    operational cities and BarqRaftar's cities, through any connected
+    operational cities, BarqRaftar's and Leopards' cities, through any connected
     account (a store's or FynkTech's own) - and adds the new names.
     Returns {"added": {courier: n}, "errors": {courier: message}}."""
     added, errors = {}, {}
@@ -131,6 +131,31 @@ def import_from_couriers():
         added["BarqRaftar"] = add_cities(barq_names, source="barqraftar")
     else:
         errors["BarqRaftar"] = barq_error
+
+    # Leopards' getAllCities - only the cities it delivers to. Its names
+    # come mostly in capitals ("ASTORE"), so they're saved title-cased like
+    # PostEx's ("Astore"); matching ignores case anyway (city_key).
+    from integrations.leopards import client as leopards_client
+    from integrations.leopards.models import LeopardsConnection
+
+    leopards_names, leopards_error = None, "No Leopards account is connected."
+    for connection in LeopardsConnection.all_objects.all():
+        try:
+            rows = leopards_client.get_all_cities(connection)
+        except Exception as exc:
+            leopards_error = f"Leopards: {exc}"
+            continue
+        if rows:
+            leopards_names = [
+                str(r.get("name") or "").title()
+                for r in rows
+                if r.get("allow_as_destination", True)
+            ]
+            break
+    if leopards_names is not None:
+        added["Leopards"] = add_cities(leopards_names, source="leopards")
+    else:
+        errors["Leopards"] = leopards_error
 
     logger.info("city import: added %s, errors %s", added, errors)
     return {"added": added, "errors": errors}

@@ -20,76 +20,98 @@ import {
   HistoryIcon,
   TicketIcon,
   GridIcon,
+  GearIcon,
 } from "../../components/layout/navIcons";
+import adminTeamService from "../../services/adminTeamService";
 
 const NAV = [
   {
     href: "/admin/organizations",
+    page: "organizations",
     label: "Organizations",
     icon: LayersIcon,
     match: (path) => path.startsWith("/admin/organizations") || path === "/admin",
   },
   {
     href: "/admin/stores",
+    page: "stores",
     label: "Stores",
     icon: ShopBagIcon,
     match: (path) => path.startsWith("/admin/stores"),
   },
   {
     href: "/admin/all-orders",
+    page: "all_orders",
     label: "All Orders",
     icon: ReceiptIcon,
     match: (path) => path.startsWith("/admin/all-orders"),
   },
   {
     href: "/admin/dispatch-hub",
+    page: "dispatch_hub",
     label: "Dispatch Hub",
     icon: TruckIcon,
     match: (path) => path.startsWith("/admin/dispatch-hub"),
   },
   {
     href: "/admin/inventory",
+    page: "inventory",
     label: "Inventory",
     icon: PackageIcon,
     match: (path) => path.startsWith("/admin/inventory"),
   },
   {
     href: "/admin/invoices",
+    page: "invoices",
     label: "Invoices",
     icon: CardIcon,
     match: (path) => path.startsWith("/admin/invoices"),
   },
   {
     href: "/admin/integrations",
+    page: "integrations",
     label: "Integrations",
     icon: IntegrationsIcon,
     match: (path) => path.startsWith("/admin/integrations"),
   },
   {
     href: "/admin/oms-courier",
+    page: "oms_courier",
     label: "OMS Couriers",
     icon: LinkIcon,
     match: (path) => path.startsWith("/admin/oms-courier") || path.startsWith("/admin/smartlane"),
   },
   {
     href: "/admin/logs",
+    page: "logs",
     label: "Logs",
     icon: HistoryIcon,
     match: (path) => path.startsWith("/admin/logs"),
   },
   {
     href: "/admin/tickets",
+    page: "tickets",
     label: "Tickets",
     icon: TicketIcon,
     match: (path) => path.startsWith("/admin/tickets"),
   },
   {
     href: "/admin/cities",
+    page: "cities",
     label: "Cities",
     icon: GridIcon,
     match: (path) => path.startsWith("/admin/cities"),
   },
 ];
+
+// Owners only: the super admin side's own staff logins and roles.
+const ADMIN_TEAM_ITEM = {
+  href: "/admin/team",
+  page: "admin_team",
+  label: "Admin Team",
+  icon: GearIcon,
+  match: (path) => path.startsWith("/admin/team"),
+};
 
 const PLATFORM_ACCOUNT_PAGES = ["barq-raftar", "postex", "leopards", "smartlane"].map(
   (slug) => `/admin/oms-courier/${slug}`
@@ -110,6 +132,44 @@ function SuperAdminShell({ children }) {
   const actingStore = useAuthStore((s) => s.actingStore);
   const exitStore = useAuthStore((s) => s.exitStore);
   const [expanded, setExpanded] = useState(false);
+  // This login's super admin access (backend core.admin_pages): an owner
+  // has every page; a staff login only the pages its role gives.
+  const [access, setAccess] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    adminTeamService
+      .me()
+      .then((data) => alive && setAccess({ isOwner: data.is_owner, permissions: data.permissions || {} }))
+      // Couldn't tell (e.g. a backend without this yet): show everything -
+      // the backend still refuses whatever this login may not do.
+      .catch(() => alive && setAccess({ isOwner: true, permissions: {}, failed: true }));
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const nav = access
+    ? [
+        ...NAV.filter(
+          (item) =>
+            access.isOwner ||
+            access.permissions[item.page] ||
+            // Pages inside the Hub also open the Dispatch Hub item.
+            (item.page === "dispatch_hub" && Object.keys(access.permissions).some((k) => k.startsWith("hub.")))
+        ),
+        ...(access.isOwner ? [ADMIN_TEAM_ITEM] : []),
+      ]
+    : [];
+  const currentItem = [...NAV, ADMIN_TEAM_ITEM].find((item) => item.match(pathname));
+  const allowed = !access || !currentItem || nav.some((item) => item.href === currentItem.href);
+  const readOnly =
+    access && !access.isOwner && currentItem && access.permissions[currentItem.page] === "read";
+
+  // A staff login landing on a page it can't open goes to its first page.
+  useEffect(() => {
+    if (!access || allowed || !nav.length) return;
+    router.replace(nav[0].href);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [access, allowed, pathname]);
   // Back/Forward lands where the page was scrolled to (lib/pageMemory).
   const [mainEl, setMainEl] = useState(null);
   useScrollMemory(mainEl);
@@ -161,7 +221,7 @@ function SuperAdminShell({ children }) {
             )}
           </div>
           <nav className={`flex flex-1 flex-col gap-1 py-3 ${expanded ? "px-3" : "items-center px-0"}`}>
-            {NAV.map((item) => {
+            {nav.map((item) => {
               const active = item.match(pathname);
               const Icon = item.icon;
               return (
@@ -210,7 +270,22 @@ function SuperAdminShell({ children }) {
             isWidePage(pathname) ? "max-w-7xl" : "max-w-5xl"
           }`}
         >
-          {children}
+          {readOnly ? (
+            <p className="mb-4 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              Read only - you can look at this page but not change anything here.
+            </p>
+          ) : null}
+          {!access ? (
+            <p className="text-sm text-slate-500">Loading…</p>
+          ) : allowed ? (
+            children
+          ) : (
+            <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
+              {nav.length
+                ? "You don't have access to this page."
+                : "Your login has no super admin pages yet - ask an owner to give you a role."}
+            </p>
+          )}
         </div>
       </main>
     </div>

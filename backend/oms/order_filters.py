@@ -169,8 +169,9 @@ def _packed_q():
 
 
 def _tag_choices():
-    """The Tag filter's fixed Assigning Courier choices, in the order an
-    order moves through them: [(value, label, Q, also-accepted values)]."""
+    """The Tag filter's fixed choices - Assigning Courier's, in the order an
+    order moves through them, then Update Tag's stock tags:
+    [(value, label, Q, also-accepted values)]."""
     from oms.services import (
         AIRWAYBILL_PRINTED_TAGS, TAG_AIRWAYBILL_PRINTED, TAG_LOADSHEET_PRINTED, TAG_PACKED,
         TAG_TO_BE_PACKED, TAG_TO_BE_PRINTED,
@@ -184,6 +185,9 @@ def _tag_choices():
          {"Printed Loadsheet"}),
         (TAG_TO_BE_PACKED, "To be packed", _not_packed_tag_q({TAG_TO_BE_PACKED}), {"To Be Packed"}),
         (TAG_PACKED, "Packed", _packed_q(), set()),
+        # Update Tag's stock tags - set by hand while an order waits for stock.
+        ("Awaiting Stock/China", "Awaiting Stock/China", Q(tag="Awaiting Stock/China"), set()),
+        ("Awaiting Stock/Local", "Awaiting Stock/Local", Q(tag="Awaiting Stock/Local"), set()),
     ]
 
 

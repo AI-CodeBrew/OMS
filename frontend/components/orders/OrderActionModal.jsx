@@ -29,7 +29,7 @@ const FIELD_BY_ACTION = {
 const SHIPPER_ADVICES = ["Reattempt", "Return"];
 
 // Update Tag's fixed choices for now.
-const UPDATE_TAG_OPTIONS = ["To be packed"];
+const UPDATE_TAG_OPTIONS = ["To be packed", "Awaiting Stock/China", "Awaiting Stock/Local"];
 
 const ACTION_TITLES = {
   assign_courier: "Assign courier",

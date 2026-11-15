@@ -2180,8 +2180,18 @@ def _upsert_stock_item_from_shopify(organization_id, warehouse, *, shopify_inven
     feature sync) is adopted on first match instead of creating a
     duplicate. Shared by the manual full sync and both the product and
     inventory-level webhooks. Returns (item, created, quantity_changed).
+
+    A store inside an organization (core.org_group) is handled by
+    _link_shopify_variant instead: there the OMS is the stock master.
     """
     from wms.models import StockItem, StockMovement
+    from wms.services import _grouped
+
+    if _grouped(organization_id):
+        return _link_shopify_variant(
+            organization_id, warehouse,
+            shopify_inventory_item_id=shopify_inventory_item_id, sku=sku, name=name, quantity=quantity,
+        )
 
     item = StockItem.all_objects.filter(
         organization_id=organization_id, warehouse=warehouse,
@@ -2249,6 +2259,72 @@ def _upsert_stock_item_from_shopify(organization_id, warehouse, *, shopify_inven
         )
         return item, False, True
     return item, False, False
+
+
+def _link_shopify_variant(store_id, warehouse, *, shopify_inventory_item_id, sku, name, quantity):
+    """One Shopify variant of a store inside an organization: the stores
+    share one inventory (under the main store) and the OMS is its master,
+    so Shopify's count never changes it. The variant is linked to the
+    organization's item - by this link if it already exists, else the item
+    with the same SKU, else the one item with the same name - and only a
+    product the inventory doesn't have yet is added, with Shopify's count
+    as its opening stock. Returns (item, created, created)."""
+    from wms.models import StockItem, StockMovement, StockShopifyLink
+    from wms.services import _stock_item_by_name, stock_org_id
+
+    root = stock_org_id(store_id)
+    link = (
+        StockShopifyLink.all_objects.filter(store_id=store_id, shopify_inventory_item_id=shopify_inventory_item_id)
+        .select_related("stock_item").first()
+    )
+    if link is not None:
+        item = link.stock_item
+        fill = {}
+        if sku and not item.sku:
+            fill["sku"] = sku
+        if name and not item.product_name:
+            fill["product_name"] = name
+        if fill:
+            StockItem.all_objects.filter(pk=item.pk).update(**fill)
+        return item, False, False
+
+    item = StockItem.all_objects.filter(
+        organization_id=root, warehouse=warehouse, shopify_inventory_item_id=shopify_inventory_item_id
+    ).first()
+    if item is None and sku:
+        item = (
+            StockItem.all_objects.filter(organization_id=root, warehouse=warehouse, sku__iexact=sku)
+            .order_by(F("shopify_inventory_item_id").asc(nulls_last=True)).first()
+        )
+    if item is None and name:
+        item = _stock_item_by_name(store_id, warehouse, name)
+
+    created = False
+    if item is None:
+        item = StockItem.all_objects.create(
+            organization_id=root,
+            warehouse=warehouse,
+            shopify_inventory_item_id=shopify_inventory_item_id,
+            sku=sku,
+            product_name=name,
+            quantity=quantity,
+        )
+        StockMovement.all_objects.create(
+            organization_id=root,
+            store_id=store_id,
+            stock_item=item,
+            delta=quantity,
+            balance_after=quantity,
+            reason="shopify_sync",
+            note="Opening stock from this store's Shopify (new product)",
+        )
+        created = True
+    StockShopifyLink.all_objects.get_or_create(
+        store_id=store_id,
+        shopify_inventory_item_id=shopify_inventory_item_id,
+        defaults={"organization_id": root, "stock_item": item},
+    )
+    return item, created, created
 
 
 def sync_inventory_from_shopify(organization_id):
@@ -2325,6 +2401,41 @@ def sync_inventory_from_shopify(organization_id):
     }
 
 
+def sync_organization_inventory_from_shopify(organization_id, *, images=False):
+    """The Inventory page's Sync from Shopify. A store on its own: its own
+    Shopify, as sync_inventory_from_shopify. A store inside an organization:
+    every store's Shopify, since they share one inventory - each one's
+    products are linked to it (counts are never pulled - the OMS is the
+    master there). Stores without Shopify connected are skipped."""
+    from core import org_group
+    from core.context import tenant_context
+
+    store_ids = org_group.group_ids(organization_id)
+    if len(store_ids) == 1:
+        result = sync_inventory_from_shopify(organization_id)
+        if images:
+            result.update(sync_product_images_from_shopify(organization_id))
+        return result
+
+    total = {"total_skus": 0, "created": 0, "updated": 0, "unchanged": 0, "images_updated": 0, "stores": 0}
+    synced_any = False
+    for store_id in store_ids:
+        if not ShopifyConnection.all_objects.filter(organization_id=store_id, is_connected=True).exists():
+            continue
+        with tenant_context(store_id):
+            result = sync_inventory_from_shopify(store_id)
+            if images:
+                result.update(sync_product_images_from_shopify(store_id))
+        synced_any = True
+        total["stores"] += 1
+        for key in total:
+            if key != "stores":
+                total[key] += result.get(key, 0)
+    if not synced_any:
+        raise InventorySyncError("None of the organization's stores has Shopify connected.")
+    return total
+
+
 def sync_product_images_from_shopify(organization_id):
     """Every WMS stock item's Shopify image (StockItem.image_url) - the
     variant's own, else its product's first - matched by inventory item id,
@@ -2347,9 +2458,19 @@ def sync_product_images_from_shopify(organization_id):
         if sku:
             by_sku.setdefault(sku, src)
 
+    from wms.models import StockShopifyLink
+    from wms.services import stock_org_id
+
+    # This store's own variant ids for the shared items (organizations).
+    linked = dict(
+        StockShopifyLink.all_objects.filter(store_id=organization_id).values_list(
+            "stock_item_id", "shopify_inventory_item_id"
+        )
+    )
     updated = 0
-    for item in StockItem.objects.filter(organization_id=organization_id):
-        src = (by_item_id.get(item.shopify_inventory_item_id) or by_sku.get(item.sku) or "")[:1000]
+    for item in StockItem.all_objects.filter(organization_id=stock_org_id(organization_id)):
+        own_id = linked.get(item.id) or item.shopify_inventory_item_id
+        src = (by_item_id.get(own_id) or by_sku.get(item.sku) or "")[:1000]
         if src and src != item.image_url:
             item.image_url = src
             item.save(update_fields=["image_url", "updated_at"])
@@ -2387,6 +2508,17 @@ def sync_stock_item_from_shopify_inventory_item(organization_id, inventory_item_
         organization_id=organization_id, warehouse=warehouse,
         shopify_inventory_item_id=inventory_item_id,
     ).first()
+    from wms.services import _grouped
+
+    if _grouped(organization_id):
+        from wms.models import StockShopifyLink
+
+        link = StockShopifyLink.all_objects.filter(
+            store_id=organization_id, shopify_inventory_item_id=inventory_item_id
+        ).select_related("stock_item").first()
+        if link is not None:
+            # The OMS is the master - Shopify's new count changes nothing.
+            return link.stock_item
     item, _, _ = _upsert_stock_item_from_shopify(
         organization_id, warehouse,
         shopify_inventory_item_id=inventory_item_id,
@@ -2472,10 +2604,17 @@ def _connected_shopify(organization_id):
 
 def pending_push_queryset(organization_id):
     """Shopify-linked stock rows with a rename or stock delta waiting for
-    Push to Shopify."""
+    Push to Shopify. For a store inside an organization: the stores'
+    StockShopifyLinks waiting (one per store's Shopify) instead."""
     from django.db.models import Q
 
-    from wms.models import StockItem
+    from wms.models import StockItem, StockShopifyLink
+    from wms.services import _grouped, stock_org_id
+
+    if _grouped(organization_id):
+        return StockShopifyLink.all_objects.filter(organization_id=stock_org_id(organization_id)).filter(
+            ~Q(pending_shopify_delta=0) | ~Q(pending_shopify_name="")
+        )
 
     return StockItem.all_objects.filter(
         organization_id=organization_id, shopify_inventory_item_id__isnull=False
@@ -2502,6 +2641,10 @@ def pending_shopify_changes(organization_id):
     counts are fetched (batched, only for the pending rows) so the stock
     line shows the real before/after on Shopify; if that fails the summary
     still renders, just without those numbers."""
+    from wms.services import _grouped
+
+    if _grouped(organization_id):
+        return _pending_group_changes(organization_id)
     _connection, args = _connected_shopify(organization_id)
     items = list(pending_push_queryset(organization_id).order_by("product_name", "sku"))
 
@@ -2636,7 +2779,10 @@ def push_stock_changes_to_shopify(organization_id, expected_changes, *, actor_us
     from django.db import transaction
 
     from wms.models import StockItem
+    from wms.services import _grouped
 
+    if _grouped(organization_id):
+        return _push_group_changes(organization_id, expected_changes, actor_user_id=actor_user_id)
     connection, args = _connected_shopify(organization_id)
     wanted = {}
     for change in expected_changes:
@@ -2744,6 +2890,184 @@ def push_stock_changes_to_shopify(organization_id, expected_changes, *, actor_us
     return {"results": results, "pushed": pushed, "failed": len(results) - pushed}
 
 
+# --- Push to Shopify for an organization's stores (core.org_group) ---
+# One inventory, several Shopifys: each StockShopifyLink is one item on one
+# store's Shopify, with its own queued change. The OMS is the master, so
+# nothing is read back from Shopify after a push.
+
+def _store_shopify(store_id):
+    """(connection, args) of one store's Shopify, or (None, None)."""
+    connection = ShopifyConnection.all_objects.filter(organization_id=store_id, is_connected=True).first()
+    if not connection:
+        return None, None
+    return connection, (connection.shop_domain, connection.access_token, settings.SHOPIFY_API_VERSION)
+
+
+def _pending_group_changes(organization_id):
+    from core.models import Organization
+
+    links = list(
+        pending_push_queryset(organization_id).select_related("stock_item")
+        .order_by("stock_item__product_name", "stock_item__sku", "store_id")
+    )
+    names = dict(Organization.objects.filter(id__in={l.store_id for l in links}).values_list("id", "name"))
+
+    live, live_errors, totals = True, [], {}
+    by_store = {}
+    for link in links:
+        if link.pending_shopify_delta:
+            by_store.setdefault(link.store_id, []).append(link.shopify_inventory_item_id)
+    for store_id, ids in by_store.items():
+        _connection, args = _store_shopify(store_id)
+        if args is None:
+            live_errors.append(f"{names.get(store_id, 'A store')}: Shopify isn't connected")
+            continue
+        try:
+            totals[store_id] = _shopify_totals(args, ids)
+        except Exception as exc:  # noqa: BLE001 - preview still useful without live counts
+            live_errors.append(f"{names.get(store_id, 'A store')}: {str(exc)[:200]}")
+    if live_errors:
+        live = False
+
+    claim_cutoff = timezone.now() - PUSH_CLAIM_TIMEOUT
+    changes = []
+    for link in links:
+        item = link.stock_item
+        lines = []
+        if link.pending_shopify_name:
+            lines.append({
+                "type": "title",
+                "label": "Product name changed",
+                "from": link.previous_shopify_name,
+                "to": link.pending_shopify_name,
+            })
+        if link.pending_shopify_delta:
+            before = totals.get(link.store_id, {}).get(link.shopify_inventory_item_id)
+            increase = link.pending_shopify_delta > 0
+            lines.append({
+                "type": "stock_increase" if increase else "stock_decrease",
+                "label": "Stock added in OMS" if increase else "Stock taken in OMS (incl. other stores' orders)",
+                "delta": link.pending_shopify_delta,
+                "from": before,
+                "to": before + link.pending_shopify_delta if before is not None else None,
+            })
+        changes.append({
+            "id": str(link.id),
+            "store": names.get(link.store_id, ""),
+            "sku": item.sku,
+            "product_name": item.product_name,
+            "wms_quantity": item.quantity,
+            "expected": {"delta": link.pending_shopify_delta, "name": link.pending_shopify_name},
+            "changes": lines,
+            "last_error": link.shopify_push_error,
+            "in_progress": bool(link.shopify_push_started_at and link.shopify_push_started_at > claim_cutoff),
+        })
+    return {"changes": changes, "live": live, "live_error": "; ".join(live_errors)}
+
+
+def _push_group_changes(organization_id, expected_changes, *, actor_user_id=None):
+    from django.db import transaction
+
+    from core.models import Organization
+    from wms.models import StockShopifyLink
+    from wms.services import stock_org_id
+
+    root = stock_org_id(organization_id)
+    wanted = {}
+    for change in expected_changes:
+        try:
+            wanted[str(change["id"])] = (int(change.get("delta") or 0), str(change.get("name") or ""))
+        except (AttributeError, KeyError, TypeError, ValueError):
+            raise PushConflict("Malformed change list - reopen Push to Shopify and try again.")
+    if not wanted:
+        return {"results": [], "pushed": 0, "failed": 0}
+
+    now = timezone.now()
+    with transaction.atomic():
+        rows = {
+            str(row.id): row
+            for row in StockShopifyLink.all_objects.select_for_update().select_related("stock_item").filter(
+                organization_id=root, id__in=list(wanted)
+            )
+        }
+        for link_id, (delta, name) in wanted.items():
+            row = rows.get(link_id)
+            if (
+                row is None
+                or not (delta or name)
+                or (row.pending_shopify_delta, row.pending_shopify_name) != (delta, name)
+            ):
+                raise PushConflict("Some changes were edited since you opened the summary - review them again.")
+            if row.shopify_push_started_at and row.shopify_push_started_at > now - PUSH_CLAIM_TIMEOUT:
+                raise PushConflict("These changes are already being pushed - wait for that push to finish.")
+        StockShopifyLink.all_objects.filter(id__in=list(rows)).update(shopify_push_started_at=now)
+
+    names = dict(Organization.objects.filter(id__in={r.store_id for r in rows.values()}).values_list("id", "name"))
+    shops, locations = {}, {}
+    results = []
+    with shopify_client.wait_out_rate_limits():
+        for link_id in wanted:
+            link = rows[link_id]
+            if link.store_id not in shops:
+                shops[link.store_id] = _store_shopify(link.store_id)
+                args = shops[link.store_id][1]
+                try:
+                    locations[link.store_id] = (
+                        shopify_client.fetch_shop_info(*args).get("primary_location_id") if args else None
+                    )
+                except Exception:  # noqa: BLE001 - fall back to the item's first stocked location
+                    locations[link.store_id] = None
+            _connection, args = shops[link.store_id]
+            if args is None:
+                pushed_name, pushed_delta, lines, errors = None, 0, [], ["Shopify isn't connected for this store"]
+            else:
+                try:
+                    pushed_name, pushed_delta, lines, errors = _push_one_item(link, args, locations[link.store_id])
+                except Exception as exc:  # noqa: BLE001 - never leave a row claimed
+                    pushed_name, pushed_delta, lines, errors = None, 0, [], [str(exc)[:300]]
+
+            with transaction.atomic():
+                fresh = StockShopifyLink.all_objects.select_for_update().get(pk=link.pk)
+                fresh.shopify_push_started_at = None
+                if pushed_name is not None and fresh.pending_shopify_name == pushed_name:
+                    fresh.pending_shopify_name = ""
+                    fresh.previous_shopify_name = ""
+                fresh.pending_shopify_delta -= pushed_delta
+                if pushed_name is not None or pushed_delta:
+                    fresh.last_pushed_to_shopify_at = timezone.now()
+                fresh.shopify_push_error = "; ".join(errors)[:500]
+                fresh.save(update_fields=[
+                    "shopify_push_started_at", "pending_shopify_name", "previous_shopify_name",
+                    "pending_shopify_delta", "last_pushed_to_shopify_at", "shopify_push_error", "updated_at",
+                ])
+            results.append({
+                "id": link_id,
+                "store": names.get(link.store_id, ""),
+                "sku": link.stock_item.sku,
+                "product_name": link.stock_item.product_name,
+                "success": not errors,
+                "changes": lines,
+                "errors": errors,
+            })
+
+    pushed = sum(1 for r in results if r["success"])
+    try:
+        from core.rbac import write_audit_log
+
+        write_audit_log(
+            organization_id=organization_id,
+            action="wms.shopify_push",
+            summary=f"Pushed {pushed} of {len(results)} inventory change(s) to the organization's Shopify stores",
+            actor_user_id=actor_user_id,
+            entity_type="stock_item",
+            entity_id="",
+            metadata={"results": [{k: r[k] for k in ("store", "sku", "success", "errors")} for r in results]},
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    return {"results": results, "pushed": pushed, "failed": len(results) - pushed}
+
+
 MAX_PRODUCT_IMAGES = 10
 MAX_PRODUCT_IMAGE_BYTES = 5 * 1024 * 1024
 PRODUCT_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
@@ -2762,13 +3086,17 @@ def create_stock_item_on_shopify(
     if that step fails the product still exists and the row just shows
     "Push failed" for a retry from the Push button. Returns (item, warning).
     """
-    from wms.models import StockItem, StockMovement
-    from wms.services import get_default_warehouse
+    from wms.models import StockItem, StockMovement, StockShopifyLink
+    from wms.services import _grouped, get_default_warehouse, stock_org_id
 
     connection, args = _connected_shopify(organization_id)
     warehouse = get_default_warehouse(organization_id)
     if not warehouse:
         raise InventorySyncError("Set up a warehouse first (WMS page).")
+    # In an organization the item joins the shared inventory, and its
+    # opening stock is queued on this store's link rather than the item.
+    store_id, grouped = organization_id, _grouped(organization_id)
+    organization_id = stock_org_id(organization_id)
     if StockItem.all_objects.filter(organization_id=organization_id, sku=sku).exists():
         raise InventorySyncError(f'SKU "{sku}" is already in your inventory - every product needs its own SKU.')
     if len(images) > MAX_PRODUCT_IMAGES:
@@ -2808,11 +3136,22 @@ def create_stock_item_on_shopify(
                 "product_name": name,
                 "reorder_level": reorder_level,
                 "quantity": quantity,
-                "pending_shopify_delta": quantity,
+                "pending_shopify_delta": 0 if grouped else quantity,
             },
         )
+        link = None
+        if grouped:
+            link, _ = StockShopifyLink.all_objects.get_or_create(
+                store_id=store_id,
+                shopify_inventory_item_id=created["inventory_item_id"],
+                defaults={"organization_id": organization_id, "stock_item": item},
+            )
+            StockShopifyLink.all_objects.filter(pk=link.pk).update(
+                pending_shopify_delta=F("pending_shopify_delta") + quantity
+            )
         StockMovement.all_objects.create(
             organization_id=organization_id,
+            store_id=store_id,
             stock_item=item,
             delta=quantity,
             balance_after=quantity,
@@ -2832,7 +3171,11 @@ def create_stock_item_on_shopify(
                     *args, inventory_item_id=created["inventory_item_id"], location_id=location_id,
                     adjustment=quantity,
                 )
-                StockItem.all_objects.filter(pk=item.pk).update(
+                pushed_row = (
+                    StockShopifyLink.all_objects.filter(pk=link.pk) if link
+                    else StockItem.all_objects.filter(pk=item.pk)
+                )
+                pushed_row.update(
                     pending_shopify_delta=F("pending_shopify_delta") - quantity,
                     last_pushed_to_shopify_at=timezone.now(),
                     shopify_push_error="",
@@ -2842,14 +3185,16 @@ def create_stock_item_on_shopify(
                     "The product was created on Shopify, but its opening stock couldn't be set "
                     f"({str(exc)[:200]}). Use Push to Shopify to retry."
                 )
-                StockItem.all_objects.filter(pk=item.pk).update(shopify_push_error=f"Stock: {str(exc)[:480]}")
+                (StockShopifyLink.all_objects.filter(pk=link.pk) if link else StockItem.all_objects.filter(pk=item.pk)).update(
+                    shopify_push_error=f"Stock: {str(exc)[:480]}"
+                )
         item.refresh_from_db()
 
     try:
         from core.rbac import write_audit_log
 
         write_audit_log(
-            organization_id=organization_id,
+            organization_id=store_id,
             action="wms.shopify_product_create",
             summary=f'Created "{name}" ({sku}) on Shopify ({connection.shop_domain}) with {quantity} in stock',
             actor_user_id=actor_user_id,

@@ -150,7 +150,8 @@ export default function ShopifyPushModal({ open, onClose, onPushed }) {
             <ul className="mt-1 list-disc pl-5">
               {result.failed.map((r) => (
                 <li key={r.id}>
-                  <strong>{r.product_name || r.sku}</strong>: {r.errors.join("; ")}
+                  <strong>{r.product_name || r.sku}</strong>
+                  {r.store ? ` (${r.store})` : ""}: {r.errors.join("; ")}
                 </li>
               ))}
             </ul>
@@ -185,7 +186,15 @@ export default function ShopifyPushModal({ open, onClose, onPushed }) {
             {changes.map((c) => (
               <li key={c.id} className="px-3 py-2.5">
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
-                  <p className="text-sm font-semibold text-slate-900">{c.product_name || "—"}</p>
+                  <p className="text-sm font-semibold text-slate-900">
+                    {c.product_name || "—"}
+                    {/* An organization's stores: which store's Shopify this goes to. */}
+                    {c.store ? (
+                      <span className="ml-2 rounded-full bg-brand-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-brand-700">
+                        {c.store} Shopify
+                      </span>
+                    ) : null}
+                  </p>
                   <p className="text-xs text-slate-500">
                     {c.sku ? `SKU ${c.sku} · ` : ""}WMS on hand {c.wms_quantity}
                   </p>

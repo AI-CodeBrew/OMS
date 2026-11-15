@@ -64,6 +64,22 @@ class TenantsService {
     });
   }
 
+  // An organization with several stores: put a store inside this
+  // organization (its inventory joins the organization's), or take it out.
+  addStoreToOrganization(id, storeId) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.organization(id)}stores/`, {
+      method: "POST",
+      body: JSON.stringify({ store_id: storeId }),
+    });
+  }
+
+  removeStoreFromOrganization(id, storeId) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.organization(id)}stores/`, {
+      method: "DELETE",
+      body: JSON.stringify({ store_id: storeId }),
+    });
+  }
+
   updateMember(userId, { email, password }) {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.user(userId)}`, {
       method: "PATCH",

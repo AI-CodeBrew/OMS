@@ -319,12 +319,16 @@ def platform_connection():
 
 
 def connection_for_order(order):
-    """The connected account `order` was booked through."""
+    """The connected account `order` was booked through. platform_reference
+    says FynkTech's - but another courier's booking (or a rebook) clears or
+    rewrites it, so a store with no BarqRaftar account of its own falls
+    back to FynkTech's: its parcel can only have gone through that one."""
     if order.platform_reference:
         return platform_connection()
-    return BarqRaftarConnection.all_objects.filter(
+    own = BarqRaftarConnection.all_objects.filter(
         organization_id=order.organization_id, is_connected=True
     ).first()
+    return own or platform_connection()
 
 
 def connection_for_request(request):
@@ -829,9 +833,12 @@ def mark_ready_for_pickup(organization_id, order_ids):
             })
             continue
         via_platform = bool(order.platform_reference)
-        if via_platform not in connections:
-            connections[via_platform] = connection_for_order(order)
-        if connections[via_platform] is None:
+        # Per store too: a store's own account is that store's, and a store
+        # without one falls back to FynkTech's (connection_for_order).
+        account_key = (via_platform, None if via_platform else str(order.organization_id))
+        if account_key not in connections:
+            connections[account_key] = connection_for_order(order)
+        if connections[account_key] is None:
             results.append({
                 "order_id": str(oid), "order_number": order.order_number, "success": False,
                 "error": (
@@ -840,10 +847,10 @@ def mark_ready_for_pickup(organization_id, order_ids):
                 ),
             })
             continue
-        by_account.setdefault(via_platform, []).append((str(oid), order, shipment))
+        by_account.setdefault(account_key, []).append((str(oid), order, shipment))
 
-    for via_platform, to_mark in by_account.items():
-        results += _mark_ready_for_pickup_chunks(connections[via_platform], to_mark)
+    for account_key, to_mark in by_account.items():
+        results += _mark_ready_for_pickup_chunks(connections[account_key], to_mark)
     return results
 
 

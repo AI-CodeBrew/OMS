@@ -63,6 +63,23 @@ def team_member_detail(request, user_id):
         return Response({"success": True, **result})
 
     body = request.data or {}
+    if "store_ids" in body:
+        # Team page's Store access - the organization's other stores.
+        try:
+            result = team_service.set_store_access(
+                organization_id=org_id,
+                user_id=user_id,
+                store_ids=body.get("store_ids") or [],
+                actor_user_id=request.user_id,
+                actor_email=getattr(request, "auth_email", "") or "",
+                limit_to_modules=_limit_to_modules(request),
+            )
+        except TeamAdminError as exc:
+            return Response(
+                {"success": False, "error": exc.message, "code": "team_admin_error"},
+                status=exc.status_code,
+            )
+        return Response({"success": True, **result})
     try:
         member = team_service.update_team_member(
             organization_id=org_id,

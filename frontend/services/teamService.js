@@ -48,6 +48,15 @@ class TeamService {
     });
   }
 
+  // Which stores of the organization this login can open (Team page's
+  // Stores column) - storeIds is the full list wanted; this store stays.
+  setStoreAccess(userId, storeIds) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.teamMember(userId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ store_ids: storeIds }),
+    });
+  }
+
   removeMember(userId) {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.teamMember(userId)}`, {
       method: "DELETE",

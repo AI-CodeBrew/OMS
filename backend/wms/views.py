@@ -32,6 +32,13 @@ from .serializers import (
 )
 
 
+def _stock_org(request):
+    """Whose inventory this request works on: the organization's main store
+    for a store inside an organization (its stores share one inventory -
+    core.org_group), else the store itself."""
+    return services.stock_org_id(request.organization_id)
+
+
 class WmsPagination(PageNumberPagination):
     page_size = 25
     page_size_query_param = "page_size"
@@ -47,13 +54,13 @@ class WarehouseViewSet(viewsets.ModelViewSet):
                          "write": ("ims.inventory", "ims.purchase_orders")}}
 
     def get_queryset(self):
-        return Warehouse.objects.filter(organization_id=self.request.organization_id)
+        return Warehouse.objects.filter(organization_id=_stock_org(self.request))
 
     def perform_create(self, serializer):
         # Warehouse codes are numbers: left out (Add Warehouse asks for
         # none), the store's next one - 1, 2, 3 ... The store's first
         # warehouse is its default.
-        existing = Warehouse.objects.filter(organization_id=self.request.organization_id)
+        existing = Warehouse.objects.filter(organization_id=_stock_org(self.request))
         code = (serializer.validated_data.get("code") or "").strip()
         if code and existing.filter(code=code).exists():
             raise ValidationError({"code": [f"Warehouse code {code} is already used."]})
@@ -61,7 +68,7 @@ class WarehouseViewSet(viewsets.ModelViewSet):
             numbers = [int(c) for c in existing.values_list("code", flat=True) if (c or "").isdigit()]
             code = str(max(numbers, default=0) + 1)
         extra = {} if existing.exists() else {"is_default": True}
-        serializer.save(organization_id=self.request.organization_id, code=code, **extra)
+        serializer.save(organization_id=_stock_org(self.request), code=code, **extra)
 
 
 class SupplierViewSet(viewsets.ModelViewSet):
@@ -72,12 +79,12 @@ class SupplierViewSet(viewsets.ModelViewSet):
     page_access = {"*": {"read": ("ims.purchase_orders", "ims.inventory"), "write": ("ims.purchase_orders",)}}
 
     def get_queryset(self):
-        return Supplier.objects.filter(organization_id=self.request.organization_id)
+        return Supplier.objects.filter(organization_id=_stock_org(self.request))
 
     def perform_create(self, serializer):
         if not (serializer.validated_data.get("name") or "").strip():
             raise ValidationError({"name": "Name is required."})
-        serializer.save(organization_id=self.request.organization_id)
+        serializer.save(organization_id=_stock_org(self.request))
 
 
 class PurchaseOrderViewSet(viewsets.ReadOnlyModelViewSet):
@@ -94,7 +101,7 @@ class PurchaseOrderViewSet(viewsets.ReadOnlyModelViewSet):
 
     def _base_qs(self):
         received = Coalesce(Sum(F("lines__good_received") + F("lines__damaged_received")), 0)
-        return PurchaseOrder.objects.filter(organization_id=self.request.organization_id).annotate(
+        return PurchaseOrder.objects.filter(organization_id=_stock_org(self.request)).annotate(
             _total=Coalesce(Sum("lines__quantity_ordered"), 0), _received=received
         )
 
@@ -134,10 +141,10 @@ class PurchaseOrderViewSet(viewsets.ReadOnlyModelViewSet):
     def create(self, request, *args, **kwargs):
         data = request.data
         supplier = Supplier.objects.filter(
-            organization_id=request.organization_id, id=data.get("supplier")
+            organization_id=_stock_org(request), id=data.get("supplier")
         ).first()
         warehouse = Warehouse.objects.filter(
-            organization_id=request.organization_id, id=data.get("warehouse")
+            organization_id=_stock_org(request), id=data.get("warehouse")
         ).first()
         if supplier is None or warehouse is None:
             return Response(
@@ -271,7 +278,7 @@ class PurchaseOrderViewSet(viewsets.ReadOnlyModelViewSet):
         Shopify image), or 404."""
         sku = (request.query_params.get("sku") or "").strip()
         item = (
-            StockItem.objects.filter(organization_id=request.organization_id, sku__iexact=sku)
+            StockItem.objects.filter(organization_id=_stock_org(request), sku__iexact=sku)
             .exclude(sku="")
             .order_by(F("shopify_inventory_item_id").asc(nulls_last=True))
             .first()
@@ -292,9 +299,10 @@ class PurchaseOrderViewSet(viewsets.ReadOnlyModelViewSet):
             sync_product_images_from_shopify,
         )
 
+        from integrations.services import sync_organization_inventory_from_shopify
+
         try:
-            result = sync_inventory_from_shopify(request.organization_id)
-            result.update(sync_product_images_from_shopify(request.organization_id))
+            result = sync_organization_inventory_from_shopify(request.organization_id, images=True)
         except InventorySyncError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as exc:  # noqa: BLE001 - surface Shopify API failures to the user, not a 500
@@ -313,7 +321,7 @@ class StockItemViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = StockItem.objects.filter(
-            organization_id=self.request.organization_id
+            organization_id=_stock_org(self.request)
         ).select_related("warehouse")
         params = self.request.query_params
 
@@ -336,10 +344,10 @@ class StockItemViewSet(viewsets.ModelViewSet):
         return qs
 
     def perform_create(self, serializer):
-        serializer.save(organization_id=self.request.organization_id)
+        serializer.save(organization_id=_stock_org(self.request))
 
     def _scoped_movements(self, request):
-        movements = StockMovement.objects.filter(organization_id=request.organization_id)
+        movements = StockMovement.objects.filter(organization_id=_stock_org(request))
         date_from = request.query_params.get("date_from")
         date_to = request.query_params.get("date_to")
         if date_from:
@@ -355,7 +363,7 @@ class StockItemViewSet(viewsets.ModelViewSet):
         if request.query_params.get("export") == "csv":
             return self._csv(request)
 
-        qs = StockItem.objects.filter(organization_id=request.organization_id)
+        qs = StockItem.objects.filter(organization_id=_stock_org(request))
 
         # On-hand snapshot (negative/low) is always "right now" - a stock
         # level has no meaningful "as of last week" reading. The movement
@@ -513,8 +521,10 @@ class StockItemViewSet(viewsets.ModelViewSet):
         at zero), this actually fetches current stock levels."""
         from integrations.services import InventorySyncError, sync_inventory_from_shopify
 
+        from integrations.services import sync_organization_inventory_from_shopify
+
         try:
-            result = sync_inventory_from_shopify(request.organization_id)
+            result = sync_organization_inventory_from_shopify(request.organization_id)
         except InventorySyncError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as exc:  # noqa: BLE001 - surface Shopify API failures to the user, not a 500
@@ -681,7 +691,7 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         qs = StockMovement.objects.filter(
-            organization_id=self.request.organization_id
+            organization_id=_stock_org(self.request)
         ).select_related("stock_item")
         sku = self.request.query_params.get("sku")
         if sku:

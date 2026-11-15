@@ -71,7 +71,10 @@ function isAdminUser(user) {
 /** Staff whose access is per page (a role, or old modules turned into
  * pages by the backend). Admins and the Dispatch Hub aren't limited. */
 export function hasPageLimits(user) {
-  return Boolean(user && !user.isDispatchHub && !isAdminUser(user) && user.pages && typeof user.pages === "object");
+  // Inside the Dispatch Hub, a super admin staff login carries the Hub
+  // pages its role gives (backend core.admin_pages.hub_store_permissions).
+  if (user?.isDispatchHub) return Boolean(user.pages && typeof user.pages === "object");
+  return Boolean(user && !isAdminUser(user) && user.pages && typeof user.pages === "object");
 }
 
 export function canReadPage(user, pageKey) {
@@ -220,6 +223,12 @@ export function getVisibleModules(user) {
 
 /** First allowed module home for redirects when staff hit a forbidden route. */
 export function getDefaultModuleHref(user) {
+  if (user?.isDispatchHub && hasPageLimits(user)) {
+    const first = [...HUB_SIDEBAR_ITEMS, REPORT_ITEM, BATCH_ITEM, TICKETS_ITEM].find((item) =>
+      canReadPage(user, item.page)
+    );
+    return first ? first.href : "/dashboard";
+  }
   const visible = getVisibleModules(user);
   if (visible.length) return visible[0].href;
   if (hasPageLimits(user)) {
@@ -232,7 +241,9 @@ export function getDefaultModuleHref(user) {
 export function canAccessPath(user, pathname) {
   if (!user) return false;
   if (user.isDispatchHub) {
-    return HUB_ALLOWED_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+    if (!HUB_ALLOWED_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`))) return false;
+    const page = hasPageLimits(user) ? pageForPath(pathname) : null;
+    return page ? canReadPage(user, page) : true;
   }
   if (isReturnsAssociate(user)) {
     return RETURNS_ASSOCIATE_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
@@ -329,8 +340,8 @@ export const RETURNS_ASSOCIATE_SIDEBAR_ITEMS = [
 ];
 
 export const HUB_SIDEBAR_ITEMS = [
-  { label: "Dashboard", href: "/dashboard", icon: DashboardIcon },
-  { label: "All Orders", href: "/orders", icon: GridIcon },
-  { label: "Critical Orders", href: "/critical-orders", icon: AlertIcon },
-  { label: "Returns Desk", href: "/returns", icon: UndoIcon },
+  { label: "Dashboard", href: "/dashboard", icon: DashboardIcon, page: "oms.dashboard" },
+  { label: "All Orders", href: "/orders", icon: GridIcon, page: "oms.orders" },
+  { label: "Critical Orders", href: "/critical-orders", icon: AlertIcon, page: "oms.critical_orders" },
+  { label: "Returns Desk", href: "/returns", icon: UndoIcon, page: "wms.returns_desk" },
 ];

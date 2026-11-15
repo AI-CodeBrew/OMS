@@ -52,6 +52,158 @@ function MemberRow({ member, isStaff, onEdit }) {
   );
 }
 
+// The stores inside this organization (one main store, others inside it).
+// They keep their own orders, Shopify and couriers; they share one
+// inventory and the main store's admins can open all of them.
+function OrganizationStores({ org, onChanged }) {
+  const [candidates, setCandidates] = useState([]);
+  const [pick, setPick] = useState("");
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const isInside = Boolean(org.parent_id);
+  const children = org.child_stores || [];
+
+  useEffect(() => {
+    if (isInside) return undefined;
+    let alive = true;
+    tenantsService
+      .listOrganizations()
+      .then((data) => {
+        if (!alive) return;
+        // Stores that can go inside: on their own, no stores inside them.
+        setCandidates(
+          (data.organizations || []).filter(
+            (o) => o.id !== org.id && !o.parent_id && !(o.child_stores || []).length,
+          ),
+        );
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [org.id, isInside, children.length]);
+
+  async function onAdd() {
+    const store = candidates.find((c) => c.id === pick);
+    if (!store) return;
+    const message = [
+      `Put ${store.name} inside ${org.name}?`,
+      "",
+      `- ${store.name} keeps its own orders, Shopify, couriers and Store ID.`,
+      `- Its stock is merged into ${org.name}'s inventory (same SKU, else same name - quantities added) and its warehouses are retired.`,
+      "- From then on both stores use ONE inventory. The OMS is the stock master: stock changes are pushed to both Shopify stores.",
+      `- ${org.name}'s admins can open ${store.name}.`,
+    ].join("\n");
+    if (!window.confirm(message)) return;
+    setBusy("add");
+    setError("");
+    setNotice("");
+    try {
+      const res = await tenantsService.addStoreToOrganization(org.id, store.id);
+      const inv = res.inventory || {};
+      setNotice(
+        `${store.name} is now inside ${org.name}. Stock: ${inv.items_merged || 0} merged, ` +
+          `${inv.items_moved || 0} moved over. Admin access added: ${res.admins_added || 0}.`,
+      );
+      setPick("");
+      onChanged();
+    } catch (err) {
+      setError(err.message || "Could not add the store");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function onRemove(store) {
+    const message = [
+      `Take ${store.name} out of ${org.name}?`,
+      "",
+      `The shared inventory stays with ${org.name}; ${store.name} starts again with no stock of its own.`,
+      "People keep the access they have.",
+    ].join("\n");
+    if (!window.confirm(message)) return;
+    setBusy(store.id);
+    setError("");
+    setNotice("");
+    try {
+      await tenantsService.removeStoreFromOrganization(org.id, store.id);
+      setNotice(`${store.name} is a separate organization again.`);
+      onChanged();
+    } catch (err) {
+      setError(err.message || "Could not remove the store");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-surface-border bg-white shadow-sm">
+      <div className="border-b border-surface-border px-5 py-3">
+        <h2 className="text-sm font-semibold text-slate-800">Stores in this organization</h2>
+        <p className="mt-0.5 text-xs text-slate-500">
+          Each store keeps its own orders, Shopify and couriers. They share one inventory, and this
+          organization&apos;s admins can open every store.
+        </p>
+      </div>
+      {error ? <p className="mx-5 mt-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+      {notice ? (
+        <p className="mx-5 mt-4 rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{notice}</p>
+      ) : null}
+      {isInside ? (
+        <p className="px-5 py-5 text-sm text-slate-600">
+          This store is inside{" "}
+          <Link href={`/admin/organizations/${org.parent_id}`} className="font-medium text-brand-700 hover:underline">
+            {org.parent_name}
+          </Link>
+          . Manage the organization&apos;s stores there.
+        </p>
+      ) : (
+        <div className="space-y-4 px-5 py-5">
+          <ul className="divide-y divide-surface-border rounded-lg border border-surface-border">
+            <li className="flex items-center justify-between gap-3 px-4 py-3 text-sm">
+              <span className="font-medium text-slate-900">{org.name}</span>
+              <span className="rounded-full bg-brand-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-brand-700">
+                Main store
+              </span>
+            </li>
+            {children.map((store) => (
+              <li key={store.id} className="flex items-center justify-between gap-3 px-4 py-3 text-sm">
+                <Link
+                  href={`/admin/organizations/${store.id}`}
+                  className="text-slate-800 hover:text-brand-700 hover:underline"
+                >
+                  {store.name}
+                </Link>
+                <Button variant="secondary" loading={busy === store.id} onClick={() => onRemove(store)}>
+                  Remove
+                </Button>
+              </li>
+            ))}
+          </ul>
+          <div className="flex flex-wrap gap-2">
+            <select
+              value={pick}
+              onChange={(e) => setPick(e.target.value)}
+              className="min-w-0 flex-1 rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
+            >
+              <option value="">Add a store to this organization…</option>
+              {candidates.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+            <Button loading={busy === "add"} disabled={!pick} onClick={onAdd}>
+              Add store
+            </Button>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export default function OrganizationDetailPage() {
   const params = useParams();
   const orgId = params?.id;
@@ -238,6 +390,8 @@ export default function OrganizationDetailPage() {
           </Button>
         </form>
       ) : null}
+
+      <OrganizationStores org={org} onChanged={load} />
 
       <section className="overflow-hidden rounded-xl border border-surface-border bg-white shadow-sm">
         <div className="border-b border-surface-border px-5 py-3">

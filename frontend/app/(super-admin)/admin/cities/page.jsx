@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import Button from "../../../../components/shared/Button";
 import citiesAdminService from "../../../../services/citiesAdminService";
 
-const SOURCE_LABEL = { manual: "Added by hand", postex: "PostEx", barqraftar: "BarqRaftar" };
+const SOURCE_LABEL = { manual: "Added by hand", postex: "PostEx", barqraftar: "BarqRaftar", leopards: "Leopards" };
 
 // The one city list every store's orders are checked against: an order
 // whose city isn't on it (e.g. "LHR" for Lahore) can't move to Approved.
@@ -135,7 +135,7 @@ export default function CitiesAdminPage() {
           </p>
         </div>
         <Button variant="secondary" loading={importing} onClick={onImport}>
-          Import from PostEx / BarqRaftar
+          Import from PostEx / BarqRaftar / Leopards
         </Button>
       </div>
 

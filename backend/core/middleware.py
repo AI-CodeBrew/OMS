@@ -114,6 +114,10 @@ class TenantMiddleware:
         request.auth_claims = None
         request.auth_email = None
         request.acting_as_org = False
+        # Super admin side (core.admin_pages): an owner can do everything;
+        # a staff login only its pages - {page: "read"|"write"} here.
+        request.is_admin_owner = False
+        request.admin_permissions = None
 
         auth_header = request.META.get("HTTP_AUTHORIZATION", "")
         if auth_header.startswith("Bearer "):
@@ -271,14 +275,24 @@ class TenantMiddleware:
             # Returns/Reports (oms+wms) are always available from here.
             request.modules = ["oms", "ims", "wms"]
 
+        if request.is_super_admin:
+            denied = self._admin_staff_gate(request, act_as, hub)
+            if denied is not None:
+                return denied
+
         # While acting as a store (or several, in the Hub), the ORM must
         # scope to those stores only - TenantManager returns every org's
         # rows when is_super_admin is set.
         org_token = current_organization_id.set(request.organization_id)
         orgs_token = current_organization_ids.set(request.organization_ids)
         user_token = current_user_id.set(request.user_id)
+        # A limited super admin login sees every store's rows only through
+        # the super admin APIs its pages allow - a store API called without
+        # a store chosen gives it nothing.
         admin_token = current_is_super_admin.set(
-            request.is_super_admin and not request.acting_as_org
+            request.is_super_admin
+            and not request.acting_as_org
+            and (request.is_admin_owner or request.path.startswith(ADMIN_API_PREFIXES))
         )
         request_meta = self._request_meta(request)
         meta_token = current_request_meta.set(request_meta)
@@ -299,6 +313,62 @@ class TenantMiddleware:
             current_user_id.reset(user_token)
             current_is_super_admin.reset(admin_token)
             current_request_meta.reset(meta_token)
+
+    @staticmethod
+    def _admin_staff_gate(request, act_as, hub):
+        """Limits a super admin STAFF login (core.models.AdminStaff) to the
+        pages it was given; an owner (no row) passes. Returns a 403 response
+        or None."""
+        from . import admin_pages
+        from .models import AdminStaff, Organization
+
+        app_meta = (request.auth_claims or {}).get("app_metadata") or {}
+        staff = AdminStaff.objects.select_related("role").filter(user_id=request.user_id).first()
+        if staff is None and not app_meta.get("admin_staff"):
+            request.is_admin_owner = True
+            return None
+
+        def deny(message, code="admin_page_denied"):
+            return JsonResponse({"success": False, "detail": message, "error": message, "code": code}, status=403)
+
+        if staff is None:
+            # The login was a staff login and its access was removed.
+            return deny(ACCESS_REVOKED_MESSAGE, ACCESS_REVOKED_CODE)
+        permissions = staff.permissions()
+        request.admin_permissions = permissions
+
+        platform = None
+        if act_as and request.acting_as_org and not request.organization_ids:
+            platform = Organization.objects.filter(id=request.organization_id, is_platform=True).exists()
+        hub_scope = None
+        if hub and request.organization_ids:
+            hub_scope = "all" if hub == "all" else "hub"
+        pages, owner_only = admin_pages.page_for_request(request.path, act_as_platform=platform, hub=hub_scope)
+        if owner_only:
+            return deny("Only an owner super admin can manage the admin team and roles.")
+        if pages is None:
+            return None
+        need = admin_pages.READ if request.method in ("GET", "HEAD", "OPTIONS") else admin_pages.WRITE
+        if hub_scope == "hub":
+            # Inside the Dispatch Hub: limited to its Hub pages exactly like
+            # a store's staff - the Hub's views check these store pages
+            # (core.permissions.page_allowed).
+            hub_pages = admin_pages.hub_store_permissions(permissions)
+            if not hub_pages:
+                return deny("You don't have access to the Dispatch Hub.")
+            request.page_permissions = hub_pages
+            return None
+        if need == admin_pages.READ and request.path.startswith("/api/core/admin/dispatch-hub/"):
+            # Hub pages only: may still see the Hub's store list to open it.
+            pages = (*pages, *admin_pages.HUB_KEYS)
+        if need == admin_pages.READ and request.path in admin_pages.SHARED_READ_PATHS:
+            return None
+        if pages and admin_pages.allows(permissions, pages, need):
+            return None
+        names = " / ".join(admin_pages.label(p) for p in pages) or "this page"
+        if need == admin_pages.WRITE and admin_pages.allows(permissions, pages, admin_pages.READ):
+            return deny(f"You have read-only access to {names} - ask an owner for Read + Write.")
+        return deny(f"You don't have access to {names}.")
 
     @staticmethod
     def _request_meta(request):

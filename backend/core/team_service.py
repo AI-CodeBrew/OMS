@@ -144,14 +144,113 @@ def list_team(organization_id, limit_to_modules=None):
     email_map = _emails_for_user_ids([m.user_id for m in memberships])
     from . import pages
 
+    # An organization with several stores (core.org_group): which of its
+    # stores each login can open - the Team page's Store access.
+    from . import org_group
+
+    group = org_group.group_stores(organization_id)
+    access = {}
+    if len(group) > 1:
+        for user_id, store_id in Membership.objects.filter(
+            user_id__in=[m.user_id for m in memberships], organization_id__in=[g["id"] for g in group]
+        ).values_list("user_id", "organization_id"):
+            access.setdefault(str(user_id), []).append(str(store_id))
+
+    def serialize(m):
+        row = _serialize_member(m, email_map.get(str(m.user_id)))
+        if len(group) > 1:
+            row["store_ids"] = access.get(str(m.user_id), [str(organization_id)])
+        return row
+
     return {
         "email_domain": staff_email_domain(organization) if organization else "",
         # The access picker's grid - this store's modules and their pages.
         "pages": pages.page_catalog(enabled_modules_for_org(organization_id)),
-        "members": [
-            _serialize_member(m, email_map.get(str(m.user_id))) for m in memberships
-        ],
+        "group_stores": (
+            [{**g, "is_current": g["id"] == str(organization_id)} for g in group] if len(group) > 1 else []
+        ),
+        "members": [serialize(m) for m in memberships],
     }
+
+
+def set_store_access(
+    *, organization_id, user_id, store_ids, actor_user_id=None, actor_email="", limit_to_modules=None
+):
+    """Which stores of the organization a staff login can open (Team page).
+    Each store it gains gets a Membership with the same pages as here -
+    trimmed to what that store has enabled; roles stay per store. Each
+    store it loses has its Membership removed. This store itself can't be
+    taken away here (Remove does that), and only stores the person making
+    the change can open themselves are touched."""
+    from . import org_group, pages
+
+    membership = Membership.objects.filter(
+        organization_id=organization_id, user_id=user_id, role="org_user"
+    ).first()
+    if not membership:
+        raise TeamAdminError("Member not found", 404)
+    _check_manageable(membership.allowed_modules, limit_to_modules)
+
+    group = {g["id"]: g["name"] for g in org_group.group_stores(organization_id)}
+    if len(group) < 2:
+        raise TeamAdminError("This store isn't part of an organization with other stores.")
+    wanted = {str(s) for s in (store_ids or [])} | {str(organization_id)}
+    unknown = wanted - set(group)
+    if unknown:
+        raise TeamAdminError("Pick stores of this organization only.")
+    allowed = {
+        str(i) for i in Membership.objects.filter(user_id=actor_user_id, organization_id__in=list(group))
+        .values_list("organization_id", flat=True)
+    } if actor_user_id else set(group)
+
+    current = {
+        str(m.organization_id): m
+        for m in Membership.objects.filter(user_id=user_id, organization_id__in=list(group))
+    }
+    added, removed = [], []
+    for store_id in group:
+        if store_id == str(organization_id) or store_id not in allowed:
+            continue
+        has = current.get(store_id)
+        if store_id in wanted and not has:
+            store_modules = enabled_modules_for_org(store_id)
+            own = None
+            if membership.page_permissions is not None:
+                own = pages.effective_permissions(
+                    pages.clean_permissions(membership.page_permissions), store_modules
+                )
+                modules = pages.modules_for(own) if own else []
+            else:
+                modules = [m for m in (membership.allowed_modules or []) if m in store_modules]
+            if not modules:
+                raise TeamAdminError(
+                    f"{group[store_id]} has none of the pages this login can open here - "
+                    "give the login pages that store uses first."
+                )
+            Membership.objects.create(
+                organization_id=store_id, user_id=user_id, role="org_user",
+                allowed_modules=modules, page_permissions=own,
+            )
+            added.append(group[store_id])
+        elif store_id not in wanted and has and has.role == "org_user":
+            has.delete()
+            removed.append(group[store_id])
+
+    if added or removed:
+        write_audit_log(
+            organization_id=organization_id,
+            action="team.store_access",
+            summary=(
+                f"Store access for {user_id}: "
+                + ", ".join([*(f"+{n}" for n in added), *(f"-{n}" for n in removed)])
+            ),
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            entity_type="membership",
+            entity_id=str(membership.id),
+            metadata={"added": added, "removed": removed},
+        )
+    return {"added": added, "removed": removed}
 
 
 def invite_team_member(
@@ -393,15 +492,11 @@ def remove_team_member(
     # otherwise the email/password would still sign in. Kept (claims
     # cleared) only if it is somehow still a member of another store.
     try:
-        if Membership.objects.filter(user_id=user_id).exists():
-            supabase_admin.update_user(
-                str(user_id),
-                app_metadata={
-                    "organization_id": None,
-                    "organization_name": None,
-                    "role": "org_user",
-                    "modules": [],
-                },
+        other = Membership.objects.filter(user_id=user_id).select_related("organization").first()
+        if other:
+            # Still has another store of the organization - sign it in there.
+            supabase_admin.set_org_claims(
+                str(user_id), other.organization, other.role, modules=other.allowed_modules
             )
         else:
             supabase_admin.delete_user(str(user_id))

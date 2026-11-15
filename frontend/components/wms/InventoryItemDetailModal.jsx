@@ -106,6 +106,8 @@ const TABS = [
     empty: "No orders for this item.",
     columns: [
       ["Order ID", (o) => <span className="font-medium text-brand-700">{o.order_number}</span>],
+      // An organization's stores share stock - which store's order it is.
+      ["Store", (o) => <span className="text-slate-700">{o.store || "—"}</span>],
       ["Customer", (o) => <span className="text-slate-700">{o.customer_name || "—"}</span>],
       ["Order Date", (o) => <span className="text-slate-600">{fmtDate(o.date)}</span>],
       ["Created At", (o) => <span className="text-slate-600">{fmtDate(o.created_at)}</span>],
@@ -159,6 +161,7 @@ const TABS = [
       ],
       ["Balance", (m) => <span className="tabular-nums text-slate-800">{m.balance_after}</span>, true],
       ["Reference", (m) => <span className="text-slate-600">{m.reference || m.note || "—"}</span>],
+      ["Store", (m) => <span className="text-slate-600">{m.store || "—"}</span>],
     ],
   },
 ];

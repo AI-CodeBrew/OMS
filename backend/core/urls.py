@@ -17,10 +17,21 @@ urlpatterns = [
     path("notifications/read/", notification_views.notifications_read, name="notifications-read"),
     path("stores/switch/", views.switch_store, name="stores-switch"),
     path("admin/organizations/", admin_views.organizations, name="admin-organizations"),
+    # Super admin side Admin Team (owner only) and this login's own access.
+    path("admin/me/", admin_views.admin_me, name="admin-me"),
+    path("admin/team/", admin_views.admin_team, name="admin-team"),
+    path("admin/team/<uuid:user_id>/", admin_views.admin_team_member, name="admin-team-member"),
+    path("admin/roles/", admin_views.admin_roles, name="admin-roles"),
+    path("admin/roles/<uuid:role_id>/", admin_views.admin_role_detail, name="admin-role-detail"),
     path(
         "admin/organizations/<uuid:organization_id>/",
         admin_views.organization_detail,
         name="admin-organization-detail",
+    ),
+    path(
+        "admin/organizations/<uuid:organization_id>/stores/",
+        admin_views.organization_stores,
+        name="admin-organization-stores",
     ),
     path(
         "admin/users/<uuid:user_id>/",

@@ -78,7 +78,9 @@ class RequireModule(BasePermission):
         if required_module is None:
             return True
         if getattr(request, "is_super_admin", False):
-            return True
+            # A super admin staff login inside the Dispatch Hub still has
+            # page limits (core.admin_pages.hub_store_permissions).
+            return page_allowed(request, view, [required_module])
         organization_id = getattr(request, "organization_id", None)
         if not organization_id:
             return False
@@ -118,7 +120,7 @@ class RequireAnyModule(BasePermission):
         if not required_modules:
             return True
         if getattr(request, "is_super_admin", False):
-            return True
+            return page_allowed(request, view, required_modules)
         organization_id = getattr(request, "organization_id", None)
         if not organization_id:
             return False

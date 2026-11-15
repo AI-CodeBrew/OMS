@@ -82,6 +82,14 @@ class Organization(models.Model):
         ("oms_only", "Just OMS"),            # OMS for visibility only
     ]
     service_model = models.CharField(max_length=20, choices=SERVICE_MODEL_CHOICES, blank=True, default="")
+    # An organization with several stores: each extra store points at the
+    # main one (one level only - a main store never has a parent). The
+    # stores keep their own orders, Shopify and couriers; the main store's
+    # org_admins can open all of them, and they share ONE inventory, held
+    # under the main store (see core.org_group and wms.models).
+    parent = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.PROTECT, related_name="child_stores"
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -307,3 +315,54 @@ class Notification(TenantScopedModel):
 
     def __str__(self):
         return f"{self.kind} ({self.organization_id})"
+
+
+class AdminRole(models.Model):
+    """A super admin side role (core.admin_pages): which super admin pages
+    it can open - {page key: "read" | "write"}; a page left out = no access.
+    Platform-wide, not a store's."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=80, unique=True)
+    permissions = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = '"core"."admin_roles"'
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+
+class AdminStaff(models.Model):
+    """A super admin login with limited access - FynkTech staff given some
+    super admin pages by an owner (a super admin login with no row here,
+    which can do everything). Access comes from `role`, or from its own
+    `page_permissions` when it has no role. The login's app_metadata also
+    says admin_staff=true, so a login whose row is gone gets nothing rather
+    than full access (core.middleware)."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user_id = models.UUIDField(unique=True)
+    email = models.CharField(max_length=255)
+    name = models.CharField(max_length=150, blank=True, default="")
+    role = models.ForeignKey(AdminRole, null=True, blank=True, on_delete=models.SET_NULL, related_name="staff")
+    page_permissions = models.JSONField(null=True, blank=True)
+    created_by = models.UUIDField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = '"core"."admin_staff"'
+        ordering = ["created_at"]
+
+    def __str__(self):
+        return self.email
+
+    def permissions(self):
+        from .admin_pages import clean_permissions
+
+        raw = self.role.permissions if self.role_id else self.page_permissions
+        return clean_permissions(raw)

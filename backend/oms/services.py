@@ -205,6 +205,7 @@ def product_lookup(organization_id, q, *, limit=20):
     from django.db.models import Q
 
     from wms.models import StockItem
+    from wms.services import stock_org_id as wms_stock_org
 
     q = (q or "").strip()
     if not organization_id or not q:
@@ -221,7 +222,7 @@ def product_lookup(organization_id, q, *, limit=20):
 
     match = Q(product_name__icontains=q) | Q(sku__icontains=q)
     for name, sku in (
-        StockItem.all_objects.filter(match, organization_id=organization_id)
+        StockItem.all_objects.filter(match, organization_id=wms_stock_org(organization_id))
         .values_list("product_name", "sku").order_by("product_name")[:limit]
     ):
         add(name, sku)

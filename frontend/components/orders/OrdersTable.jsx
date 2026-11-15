@@ -33,6 +33,9 @@ const TAG_TONE = {
   "Loadsheet Printed": "blue",
   "Printed Airwaybill": "blue",
   "To be packed": "amber",
+  // Update Tag: waiting for stock to arrive.
+  "Awaiting Stock/China": "amber",
+  "Awaiting Stock/Local": "amber",
   "Pending Approval": "amber",
   "City Issue": "amber",
   "Dispatch Issue": "red",

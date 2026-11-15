@@ -289,6 +289,10 @@ function TeamTab() {
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState({ username: "", password: "", permissions: {} });
   const [saving, setSaving] = useState(false);
+  // The organization's stores, when this store is one of several - the
+  // Stores column says which of them each login can open.
+  const [groupStores, setGroupStores] = useState([]);
+  const [storeBusy, setStoreBusy] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -298,6 +302,7 @@ function TeamTab() {
       setMembers(team.members || []);
       setEmailDomain(team.email_domain || "");
       setCatalog(team.pages || []);
+      setGroupStores(team.group_stores || []);
     } catch (err) {
       setError(err.message || "Failed to load team");
     } finally {
@@ -369,6 +374,24 @@ function TeamTab() {
       setError(err.message || "Failed to update");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function onToggleStore(member, storeId, on) {
+    const current = member.store_ids || [];
+    const next = on ? [...new Set([...current, storeId])] : current.filter((id) => id !== storeId);
+    setStoreBusy(`${member.user_id}:${storeId}`);
+    setError("");
+    setSuccess("");
+    try {
+      await teamService.setStoreAccess(member.user_id, next);
+      const store = groupStores.find((s) => s.id === storeId);
+      setSuccess(`${member.email || "Login"} ${on ? "can now open" : "can no longer open"} ${store?.name || "that store"}.`);
+      await load();
+    } catch (err) {
+      setError(err.message || "Could not change store access");
+    } finally {
+      setStoreBusy("");
     }
   }
 
@@ -465,6 +488,7 @@ function TeamTab() {
                   <th className="whitespace-nowrap px-4 py-2.5 text-left">#</th>
                   <th className="whitespace-nowrap px-4 py-2.5 text-left">Login</th>
                   <th className="px-4 py-2.5 text-left">Access</th>
+                  {groupStores.length ? <th className="whitespace-nowrap px-4 py-2.5 text-left">Stores</th> : null}
                   <th className="whitespace-nowrap px-4 py-2.5 text-left">Added On</th>
                   <th className="whitespace-nowrap px-4 py-2.5 text-right">Action</th>
                 </tr>
@@ -477,6 +501,29 @@ function TeamTab() {
                     <td className="px-4 py-3">
                       <AccessBadges access={m.access} catalog={catalog} oldModules={m.allowed_modules} />
                     </td>
+                    {groupStores.length ? (
+                      <td className="px-4 py-3">
+                        <div className="space-y-1">
+                          {groupStores.map((store) => {
+                            // This store's own access is the row itself - Remove takes it away.
+                            const has = store.is_current || (m.store_ids || []).includes(store.id);
+                            const busy = storeBusy === `${m.user_id}:${store.id}`;
+                            return (
+                              <label key={store.id} className="flex items-center gap-2 whitespace-nowrap text-xs text-slate-700">
+                                <input
+                                  type="checkbox"
+                                  checked={has}
+                                  disabled={busy || store.is_current}
+                                  onChange={(e) => onToggleStore(m, store.id, e.target.checked)}
+                                />
+                                {store.name}
+                                {store.is_current ? <span className="text-slate-400">(this store)</span> : null}
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </td>
+                    ) : null}
                     <td className="whitespace-nowrap px-4 py-3 text-slate-500">
                       {m.created_at ? formatDate(m.created_at) : "—"}
                     </td>
@@ -642,7 +689,8 @@ function StoresTab() {
   return (
     <div className="max-w-3xl space-y-6">
       <p className="text-sm text-slate-500">
-        One login, several stores - switch between them from the header any time.
+        One login, several stores - switch between them from the header any time. Stores of the same
+        organization share one inventory; a new store you create here joins your organization.
       </p>
 
       {error ? (
@@ -665,6 +713,11 @@ function StoresTab() {
                     <p className="font-medium text-slate-900">{store.name}</p>
                     <p className="text-xs text-slate-500">
                       {store.is_manual_store ? "Manual store (CSV import)" : "Shopify / integrations"}
+                      {store.organization_name
+                        ? store.is_main
+                          ? ` · Main store of ${store.organization_name}`
+                          : ` · In ${store.organization_name} (shared inventory)`
+                        : ""}
                       {!store.is_active ? " · Suspended" : ""}
                     </p>
                   </div>

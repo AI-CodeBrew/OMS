@@ -153,6 +153,8 @@ class StockMovementSerializer(serializers.ModelSerializer):
     sku = serializers.CharField(source="stock_item.sku", read_only=True, default="")
     product_name = serializers.CharField(source="stock_item.product_name", read_only=True, default="")
     reason_display = serializers.CharField(source="get_reason_display", read_only=True)
+    # Which store's order it was - an organization's stores share one stock.
+    store_name = serializers.CharField(source="store.name", read_only=True, default="")
 
     class Meta:
         model = StockMovement
@@ -166,6 +168,7 @@ class StockMovementSerializer(serializers.ModelSerializer):
             "reason",
             "reason_display",
             "order_number",
+            "store_name",
             "note",
             "created_at",
         ]

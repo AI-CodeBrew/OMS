@@ -7,10 +7,41 @@ import uuid
 from django.db import models
 from django.db.models.expressions import RawSQL
 
+from core.context import current_is_super_admin, current_organization_id, current_organization_ids
 from core.models import TenantScopedModel
 
 
-class Warehouse(TenantScopedModel):
+class StockScopedManager(models.Manager):
+    """The default manager of every WMS model. Like core's TenantManager,
+    but scoped to the store's *organization*: the stores of an organization
+    share one inventory, held under its main store (core.org_group), so a
+    request in any of its stores reads the main store's rows. A store on
+    its own is its own main store - nothing changes for it."""
+
+    def get_queryset(self):
+        from core import org_group
+
+        qs = super().get_queryset()
+        if current_is_super_admin.get():
+            return qs
+        organization_ids = current_organization_ids.get()
+        if organization_ids:
+            return qs.filter(organization_id__in={org_group.root_id(i) for i in organization_ids})
+        organization_id = current_organization_id.get()
+        if organization_id is None:
+            return qs.none()
+        return qs.filter(organization_id=org_group.root_id(organization_id))
+
+
+class StockScopedModel(TenantScopedModel):
+    objects = StockScopedManager()
+    all_objects = models.Manager()
+
+    class Meta:
+        abstract = True
+
+
+class Warehouse(StockScopedModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     code = models.CharField(max_length=50)
     name = models.CharField(max_length=150)
@@ -38,7 +69,7 @@ class Warehouse(TenantScopedModel):
         return f"{self.name} ({self.code})"
 
 
-class StockItem(TenantScopedModel):
+class StockItem(StockScopedModel):
     """On-hand quantity of one SKU in one warehouse.
 
     `quantity` is a plain signed IntegerField, NOT PositiveInteger, on
@@ -125,7 +156,7 @@ class StockItem(TenantScopedModel):
         return bool(self.pending_shopify_delta or self.pending_shopify_name)
 
 
-class StockMovement(TenantScopedModel):
+class StockMovement(StockScopedModel):
     """Append-only ledger of every quantity change. Never updated or
     deleted - StockItem.quantity is the running total, this is the audit
     trail explaining how it got there (which order consumed it, which
@@ -154,6 +185,14 @@ class StockMovement(TenantScopedModel):
     order_number = models.CharField(max_length=50, blank=True, default="")
     note = models.CharField(max_length=255, blank=True, default="")
     actor_user_id = models.UUIDField(null=True, blank=True)
+    # The store whose order moved the stock - an organization's stores share
+    # one inventory, so `organization` is always the main store and this
+    # says which store's order it was. Null for movements no order caused,
+    # and for ones written before stores could share (then it's
+    # `organization`'s own).
+    store = models.ForeignKey(
+        "core.Organization", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
 
     class Meta:
         db_table = '"wms"."stock_movements"'
@@ -163,7 +202,7 @@ class StockMovement(TenantScopedModel):
         return f"{self.stock_item_id} {self.delta:+d} ({self.reason})"
 
 
-class Supplier(TenantScopedModel):
+class Supplier(StockScopedModel):
     """Who a purchase order is bought from."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -179,7 +218,7 @@ class Supplier(TenantScopedModel):
         return self.name
 
 
-class PurchaseOrder(TenantScopedModel):
+class PurchaseOrder(StockScopedModel):
     """Stock bought from a supplier into one warehouse. Its lines say what
     was ordered and how much has arrived (good + damaged); whether it's
     Received, Partially Received or Not Received is worked out from those
@@ -213,7 +252,7 @@ class PurchaseOrder(TenantScopedModel):
         return f"PO-{self.number:06d}" if self.number else ""
 
 
-class PurchaseOrderLine(TenantScopedModel):
+class PurchaseOrderLine(StockScopedModel):
     """One SKU on a purchase order. good_received units are in stock
     (each receipt adds them - see wms.services.receive_purchase_order);
     damaged_received units arrived but were never added."""
@@ -238,3 +277,39 @@ class PurchaseOrderLine(TenantScopedModel):
     @property
     def received(self):
         return self.good_received + self.damaged_received
+
+
+class StockShopifyLink(StockScopedModel):
+    """Where one stock item lives on one store's Shopify - for the stores
+    of an organization (core.org_group), which share one inventory but each
+    have their own Shopify, so one item can be a variant on several of them.
+
+    In an organization the OMS is the stock master: Shopify's counts are
+    never pulled into StockItem.quantity. Changes are queued here per store
+    (pending_shopify_delta) and sent by Push to Shopify - see
+    integrations.services. A store on its own keeps using the push fields
+    on StockItem itself instead."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    stock_item = models.ForeignKey(StockItem, on_delete=models.CASCADE, related_name="shopify_links")
+    # The store whose Shopify this is (`organization` is the main store).
+    store = models.ForeignKey("core.Organization", on_delete=models.CASCADE, related_name="+")
+    shopify_inventory_item_id = models.BigIntegerField()
+    pending_shopify_delta = models.IntegerField(default=0)
+    pending_shopify_name = models.CharField(max_length=255, blank=True, default="")
+    previous_shopify_name = models.CharField(max_length=255, blank=True, default="")
+    shopify_push_started_at = models.DateTimeField(null=True, blank=True)
+    shopify_push_error = models.CharField(max_length=500, blank=True, default="")
+    last_pushed_to_shopify_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = '"wms"."stock_shopify_links"'
+        constraints = [
+            models.UniqueConstraint(
+                fields=["store", "shopify_inventory_item_id"], name="wms_shopify_link_per_store_item"
+            ),
+        ]
+        ordering = ["created_at"]
+
+    def __str__(self):
+        return f"{self.stock_item_id} @ {self.store_id}: {self.shopify_inventory_item_id}"

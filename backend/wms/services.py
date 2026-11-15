@@ -3,10 +3,25 @@ oms/services.py) so OMS can call straight into it - the stock check that
 gates Ready to Print lives here, not in an HTTP handler."""
 
 from django.db import transaction
-from django.db.models import F
+from django.db.models import F, Q
 from django.utils import timezone
 
-from .models import StockItem, StockMovement, Warehouse
+from .models import StockItem, StockMovement, StockShopifyLink, Warehouse
+
+
+def stock_org_id(organization_id):
+    """Whose inventory a store uses: its organization's main store (the
+    stores of an organization share one - see core.org_group), or its own
+    for a store on its own."""
+    from core import org_group
+
+    return org_group.root_id(organization_id)
+
+
+def _grouped(organization_id):
+    from core import org_group
+
+    return org_group.is_grouped(organization_id)
 
 
 class InsufficientStock(Exception):
@@ -28,9 +43,10 @@ def get_default_warehouse(organization_id):
     """The warehouse order fulfilment draws from. Falls back to any active
     warehouse when none is explicitly flagged default, so a single-warehouse
     org works without configuring anything."""
+    organization_id = stock_org_id(organization_id)
     return (
-        Warehouse.objects.filter(organization_id=organization_id, is_active=True, is_default=True).first()
-        or Warehouse.objects.filter(organization_id=organization_id, is_active=True).first()
+        Warehouse.all_objects.filter(organization_id=organization_id, is_active=True, is_default=True).first()
+        or Warehouse.all_objects.filter(organization_id=organization_id, is_active=True).first()
     )
 
 
@@ -51,6 +67,34 @@ def _order_line_requirements(order):
         entry = required.setdefault(sku, {"quantity": 0, "product_name": item.product_name})
         entry["quantity"] += item.quantity
     return required, unmatched
+
+
+def _named_requirements(order):
+    """{product name: {quantity, product_name}} of the order's lines with no
+    SKU - matched to stock by exact name in an organization with several
+    stores (see _stock_item_by_name)."""
+    named = {}
+    for item in order.items.all():
+        if (item.barcode or "").strip():
+            continue
+        name = (item.product_name or "").strip()
+        if not name:
+            continue
+        entry = named.setdefault(name, {"quantity": 0, "product_name": name})
+        entry["quantity"] += item.quantity
+    return named
+
+
+def _stock_item_by_name(organization_id, warehouse, name):
+    """The one stock item in the warehouse with exactly this name (any
+    case), or None - also None when two items share it, so a unit is never
+    taken from the wrong row."""
+    candidates = list(
+        StockItem.all_objects.filter(
+            organization_id=stock_org_id(organization_id), warehouse=warehouse, product_name__iexact=name.strip()
+        )[:2]
+    )
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def return_line_summary(order):
@@ -87,8 +131,8 @@ def _return_stock_item(order, warehouse, line):
     name-matched shortages there would start warning on/blocking bookings.
     """
     if line["sku"]:
-        item, _ = StockItem.objects.get_or_create(
-            organization_id=order.organization_id,
+        item, _ = StockItem.all_objects.get_or_create(
+            organization_id=stock_org_id(order.organization_id),
             warehouse=warehouse,
             sku=line["sku"],
             defaults={"product_name": line["product_name"]},
@@ -97,12 +141,7 @@ def _return_stock_item(order, warehouse, line):
     name = line["key"][len("name:"):]
     if not name:
         return None
-    candidates = list(
-        StockItem.objects.filter(
-            organization_id=order.organization_id, warehouse=warehouse, product_name__iexact=name
-        )[:2]
-    )
-    return candidates[0] if len(candidates) == 1 else None
+    return _stock_item_by_name(order.organization_id, warehouse, name)
 
 
 class InvalidReturnBreakdown(Exception):
@@ -169,29 +208,40 @@ def check_order_stock(order, warehouse=None, reserved=None, strict=False):
         return [_unverifiable("All items", units, "no warehouse set up for this store in WMS")]
 
     required, unmatched = _order_line_requirements(order)
+    # An organization with several stores matches a line with no SKU by its
+    # exact product name; a store on its own checks by SKU alone.
+    by_name = {}
+    if _grouped(order.organization_id):
+        for name, need in _named_requirements(order).items():
+            item = _stock_item_by_name(order.organization_id, warehouse, name)
+            if item is not None:
+                by_name[name] = (item, need)
     problems = []
     if strict:
         if not required and not unmatched:
             return [_unverifiable("No items", 0, "order has no items to check stock for")]
         for item in order.items.all():
-            if not (item.barcode or "").strip():
+            if not (item.barcode or "").strip() and (item.product_name or "").strip() not in by_name:
                 problems.append(
                     _unverifiable(item.product_name or "(unnamed item)", item.quantity, "no SKU - can't check stock")
                 )
-    if not required:
+    if not required and not by_name:
         return problems
 
     on_hand = {
         item.sku: item
-        for item in StockItem.objects.filter(
-            organization_id=order.organization_id, warehouse=warehouse, sku__in=required.keys()
+        for item in StockItem.all_objects.filter(
+            organization_id=stock_org_id(order.organization_id), warehouse=warehouse, sku__in=required.keys()
         )
     }
+    # (reserve key, stock item or None, need, sku) - the reserve key is the
+    # SKU, or "name:<name>" for a name-matched line.
+    checks = [(sku, on_hand.get(sku), need, sku) for sku, need in required.items()]
+    checks += [(f"name:{name.lower()}", item, need, "") for name, (item, need) in by_name.items()]
 
     shortages = problems
-    for sku, need in required.items():
-        item = on_hand.get(sku)
-        available = (item.quantity if item else 0) - (reserved or {}).get(sku, 0)
+    for key, item, need, sku in checks:
+        available = (item.quantity if item else 0) - (reserved or {}).get(key, 0)
         if available < need["quantity"]:
             shortages.append(
                 {
@@ -203,8 +253,8 @@ def check_order_stock(order, warehouse=None, reserved=None, strict=False):
                 }
             )
     if reserved is not None and not shortages:
-        for sku, need in required.items():
-            reserved[sku] = reserved.get(sku, 0) + need["quantity"]
+        for key, _item, need, _sku in checks:
+            reserved[key] = reserved.get(key, 0) + need["quantity"]
     return shortages
 
 
@@ -228,21 +278,35 @@ def consume_for_order(order, *, force=False, actor_user_id=None, warehouse=None)
         raise InsufficientStock(shortages)
 
     required, _unmatched = _order_line_requirements(order)
-    movements = []
+    stock_org = stock_org_id(order.organization_id)
+    takes = []
     for sku, need in required.items():
-        item, _ = StockItem.objects.get_or_create(
-            organization_id=order.organization_id,
+        item, _ = StockItem.all_objects.get_or_create(
+            organization_id=stock_org,
             warehouse=warehouse,
             sku=sku,
             defaults={"product_name": need["product_name"]},
         )
-        item.quantity -= need["quantity"]
+        takes.append((item, need["quantity"]))
+    if _grouped(order.organization_id):
+        for name, need in _named_requirements(order).items():
+            item = _stock_item_by_name(order.organization_id, warehouse, name)
+            if item is not None:
+                takes.append((item, need["quantity"]))
+
+    movements = []
+    for item, quantity in takes:
+        item.quantity -= quantity
         item.save(update_fields=["quantity", "updated_at"])
+        # The order's own Shopify already took these units when the order
+        # was placed - only the organization's other stores need telling.
+        _queue_shopify_delta(item, -quantity, order_store=order.organization_id)
         movements.append(
-            StockMovement.objects.create(
-                organization_id=order.organization_id,
+            StockMovement.all_objects.create(
+                organization_id=stock_org,
+                store_id=order.organization_id,
                 stock_item=item,
-                delta=-need["quantity"],
+                delta=-quantity,
                 balance_after=item.quantity,
                 reason="order_dispatch",
                 order_number=order.order_number,
@@ -315,8 +379,9 @@ def restock_from_return(
             item.save(update_fields=["quantity", "updated_at"])
             _queue_shopify_delta(item, line["good"])
             movements.append(
-                StockMovement.objects.create(
-                    organization_id=order.organization_id,
+                StockMovement.all_objects.create(
+                    organization_id=stock_org_id(order.organization_id),
+                    store_id=order.organization_id,
                     stock_item=item,
                     delta=line["good"],
                     balance_after=item.quantity,
@@ -357,21 +422,20 @@ def release_order_stock(order, *, actor_user_id=None, warehouse=None, note=""):
     if warehouse is None:
         return []
 
-    already = StockMovement.objects.filter(
-        organization_id=order.organization_id,
-        order_number=order.order_number,
-        note__contains=_BOOKING_REVERSAL_MARKER,
-    ).exists()
-    if already:
+    stock_org = stock_org_id(order.organization_id)
+    # This order's movements: the store is on every movement written since
+    # stores could share an inventory; older ones (no store) are the main
+    # store's own - order numbers alone can repeat across stores.
+    mine = Q(store_id=order.organization_id)
+    if str(stock_org) == str(order.organization_id):
+        mine |= Q(store__isnull=True)
+    ours = StockMovement.all_objects.filter(mine, organization_id=stock_org, order_number=order.order_number)
+    if ours.filter(note__contains=_BOOKING_REVERSAL_MARKER).exists():
         return []
 
     # Net of every dispatch consumption for this order, per stock item.
     taken = {}
-    consumed = StockMovement.objects.filter(
-        organization_id=order.organization_id,
-        order_number=order.order_number,
-        reason="order_dispatch",
-    ).select_related("stock_item")
+    consumed = ours.filter(reason="order_dispatch").select_related("stock_item")
     for movement in consumed:
         taken[movement.stock_item] = taken.get(movement.stock_item, 0) + movement.delta
 
@@ -381,9 +445,11 @@ def release_order_stock(order, *, actor_user_id=None, warehouse=None, note=""):
             continue  # nothing was actually taken for this line
         item.quantity -= delta  # delta is negative, so this adds it back
         item.save(update_fields=["quantity", "updated_at"])
+        _queue_shopify_delta(item, -delta, order_store=order.organization_id)
         movements.append(
-            StockMovement.objects.create(
-                organization_id=order.organization_id,
+            StockMovement.all_objects.create(
+                organization_id=stock_org,
+                store_id=order.organization_id,
                 stock_item=item,
                 delta=-delta,
                 balance_after=item.quantity,
@@ -408,10 +474,13 @@ def import_skus_from_orders(*, organization_id, warehouse):
     Existing rows are left untouched, so it is safe to re-run as new
     products appear.
     """
+    from core import org_group
     from oms.models import OrderItem
 
+    store_ids = org_group.group_ids(organization_id)
+    organization_id = stock_org_id(organization_id)
     rows = (
-        OrderItem.objects.filter(organization_id=organization_id)
+        OrderItem.all_objects.filter(organization_id__in=store_ids)
         .exclude(barcode="")
         .values_list("barcode", "product_name")
     )
@@ -420,7 +489,7 @@ def import_skus_from_orders(*, organization_id, warehouse):
         seen.setdefault(sku, product_name)
 
     existing = set(
-        StockItem.objects.filter(
+        StockItem.all_objects.filter(
             organization_id=organization_id, warehouse=warehouse
         ).values_list("sku", flat=True)
     )
@@ -436,16 +505,31 @@ def import_skus_from_orders(*, organization_id, warehouse):
         for sku, product_name in seen.items()
         if sku not in existing
     ]
-    StockItem.objects.bulk_create(created)
+    StockItem.all_objects.bulk_create(created)
     return {"created": len(created), "skipped": len(seen) - len(created), "total_skus": len(seen)}
 
 
-def _queue_shopify_delta(stock_item, delta):
+def _queue_shopify_delta(stock_item, delta, *, order_store=None):
     """For a Shopify-linked row, queue `delta` for "Push to Shopify". Shopify
     sync (integrations.services) sets quantity = Shopify's + this pending
     delta, so without it the next sync or inventory webhook would wipe the
-    change. Added with F() so it can't race a push clearing what it sent."""
-    if not stock_item.shopify_inventory_item_id:
+    change. Added with F() so it can't race a push clearing what it sent.
+
+    `order_store`: the change is an order's booking (or its undoing) in
+    that store - its own Shopify already counted the order, so it isn't
+    queued there. A store on its own therefore queues nothing for orders.
+
+    In an organization with several stores the item's StockShopifyLinks
+    are queued instead - one per store's Shopify."""
+    if not delta:
+        return
+    if _grouped(stock_item.organization_id):
+        links = StockShopifyLink.all_objects.filter(stock_item_id=stock_item.pk)
+        if order_store:
+            links = links.exclude(store_id=order_store)
+        links.update(pending_shopify_delta=F("pending_shopify_delta") + delta)
+        return
+    if order_store or not stock_item.shopify_inventory_item_id:
         return
     StockItem.all_objects.filter(pk=stock_item.pk).update(
         pending_shopify_delta=F("pending_shopify_delta") + delta
@@ -464,8 +548,8 @@ def adjust_stock(*, organization_id, stock_item, delta, actor_user_id=None, note
     stock_item.quantity += delta
     stock_item.save(update_fields=["quantity", "updated_at"])
     _queue_shopify_delta(stock_item, delta)
-    movement = StockMovement.objects.create(
-        organization_id=organization_id,
+    movement = StockMovement.all_objects.create(
+        organization_id=stock_item.organization_id,
         stock_item=stock_item,
         delta=delta,
         balance_after=stock_item.quantity,
@@ -501,14 +585,26 @@ def rename_stock_item(*, organization_id, stock_item, product_name, actor_user_i
     row the rename is queued for "Push to Shopify", remembering the name it
     replaces for the confirmation summary; renaming back to that original
     name cancels the pending rename instead of pushing a no-op."""
-    item = StockItem.all_objects.select_for_update().get(pk=stock_item.pk, organization_id=organization_id)
+    item = StockItem.all_objects.select_for_update().get(
+        pk=stock_item.pk, organization_id=stock_org_id(organization_id)
+    )
     old_name = item.product_name
     if product_name == old_name:
         return item
 
     item.product_name = product_name
     update_fields = ["product_name", "updated_at"]
-    if item.shopify_inventory_item_id:
+    if _grouped(item.organization_id):
+        # Every store's Shopify gets the new name.
+        for link in StockShopifyLink.all_objects.select_for_update().filter(stock_item=item):
+            if not link.pending_shopify_name:
+                link.previous_shopify_name = old_name
+            if product_name == link.previous_shopify_name:
+                link.pending_shopify_name = link.previous_shopify_name = ""
+            else:
+                link.pending_shopify_name = product_name
+            link.save(update_fields=["pending_shopify_name", "previous_shopify_name", "updated_at"])
+    elif item.shopify_inventory_item_id:
         if not item.pending_shopify_name:
             item.previous_shopify_name = old_name
         if product_name == item.previous_shopify_name:
@@ -557,12 +653,12 @@ def _add_purchase_stock(po, line, good, *, actor_user_id=None):
     stock row with that SKU there (a Shopify-linked one first), created if
     the warehouse has none - and logs the movement."""
     item = (
-        StockItem.objects.filter(organization_id=po.organization_id, warehouse=po.warehouse, sku=line.sku)
+        StockItem.all_objects.filter(organization_id=po.organization_id, warehouse=po.warehouse, sku=line.sku)
         .order_by(F("shopify_inventory_item_id").asc(nulls_last=True))
         .first()
     )
     if item is None:
-        item = StockItem.objects.create(
+        item = StockItem.all_objects.create(
             organization_id=po.organization_id,
             warehouse=po.warehouse,
             sku=line.sku,
@@ -572,7 +668,7 @@ def _add_purchase_stock(po, line, good, *, actor_user_id=None):
     item.quantity += good
     item.save(update_fields=["quantity", "updated_at"])
     _queue_shopify_delta(item, good)
-    return StockMovement.objects.create(
+    return StockMovement.all_objects.create(
         organization_id=po.organization_id,
         stock_item=item,
         delta=good,
@@ -619,6 +715,8 @@ def create_purchase_order(
 
     from .models import PurchaseOrder, PurchaseOrderLine
 
+    # An organization's stores buy into one shared inventory.
+    organization_id = stock_org_id(organization_id)
     try:
         logistics = Decimal(str(logistics_cost or 0).replace(",", "").strip() or "0")
     except InvalidOperation as exc:
@@ -769,11 +867,13 @@ def _order_metrics(organization_id):
     the damaged / lost units its returns desk counted."""
     from django.db.models import BooleanField, Count, ExpressionWrapper, Q, Sum
 
+    from core import org_group
     from oms.models import Order, OrderItem
 
+    store_ids = org_group.group_ids(organization_id)
     metrics = {}
     rows = (
-        OrderItem.all_objects.filter(organization_id=organization_id)
+        OrderItem.all_objects.filter(organization_id__in=store_ids)
         .exclude(order__status="cancelled")
         .annotate(
             _returning=ExpressionWrapper(
@@ -793,7 +893,7 @@ def _order_metrics(organization_id):
             m[f"{bucket}_orders"] += row["orders"] or 0
 
     received = Order.all_objects.filter(
-        organization_id=organization_id, return_breakdown__isnull=False
+        organization_id__in=store_ids, return_breakdown__isnull=False
     ).values_list("return_breakdown", flat=True)
     for breakdown in received:
         for line in breakdown or []:
@@ -814,7 +914,7 @@ def _purchase_metrics(organization_id):
     from .models import PurchaseOrderLine
 
     rows = (
-        PurchaseOrderLine.all_objects.filter(organization_id=organization_id)
+        PurchaseOrderLine.all_objects.filter(organization_id=stock_org_id(organization_id))
         .values("purchase_order__warehouse_id", "sku")
         .annotate(
             good=Sum("good_received"),
@@ -878,8 +978,22 @@ def inventory_overview(organization_id, *, search="", activity=""):
     summary counts cover every item, whatever the filter."""
     order_metrics = _order_metrics(organization_id)
     purchase_metrics = _purchase_metrics(organization_id)
-    items = StockItem.objects.filter(organization_id=organization_id).select_related("warehouse")
+    stock_org = stock_org_id(organization_id)
+    items = StockItem.all_objects.filter(organization_id=stock_org).select_related("warehouse")
     rows = [_inventory_row(item, order_metrics, purchase_metrics) for item in items]
+    if _grouped(organization_id):
+        # The push state lives on each store's link, not the item.
+        pending, errors = set(), {}
+        for item_id, delta, name, error in StockShopifyLink.all_objects.filter(organization_id=stock_org).values_list(
+            "stock_item_id", "pending_shopify_delta", "pending_shopify_name", "shopify_push_error"
+        ):
+            if delta or name:
+                pending.add(str(item_id))
+            if error:
+                errors[str(item_id)] = error
+        for row in rows:
+            row["has_pending_shopify_push"] = row["id"] in pending
+            row["shopify_push_error"] = errors.get(row["id"], "")
 
     summary = {"total": len(rows), **{a: 0 for a in INVENTORY_ACTIVITY}}
     for row in rows:
@@ -903,8 +1017,11 @@ def inventory_item_report(item):
 
     row = _inventory_row(item, _order_metrics(item.organization_id), _purchase_metrics(item.organization_id))
 
-    lines = OrderItem.all_objects.filter(organization_id=item.organization_id).select_related(
-        "order", "order__courier"
+    from core import org_group
+
+    store_ids = org_group.group_ids(item.organization_id)
+    lines = OrderItem.all_objects.filter(organization_id__in=store_ids).select_related(
+        "order", "order__courier", "order__organization"
     )
     lines = (
         lines.filter(barcode__iexact=item.sku)
@@ -915,6 +1032,7 @@ def inventory_item_report(item):
         {
             "order_id": str(line.order.id),
             "order_number": line.order.order_number,
+            "store": line.order.organization.name,
             "customer_name": line.order.customer_name,
             "status": line.order.status,
             "status_label": line.order.get_status_display(),
@@ -955,8 +1073,133 @@ def inventory_item_report(item):
             "delta": m.delta,
             "balance_after": m.balance_after,
             "reference": m.order_number,
+            "store": m.store.name if m.store_id else "",
             "note": m.note,
         }
-        for m in item.movements.order_by("-created_at")[:500]
+        for m in item.movements.select_related("store").order_by("-created_at")[:500]
     ]
     return {"item": row, "orders": orders, "purchases": purchases, "movements": movements}
+
+
+# ------------------------------------------------- Organization stores --
+
+def _next_warehouse_code(organization_id):
+    codes = [
+        int(c) for c in Warehouse.all_objects.filter(organization_id=organization_id).values_list("code", flat=True)
+        if (c or "").isdigit()
+    ]
+    return str(max(codes, default=0) + 1)
+
+
+@transaction.atomic
+def merge_store_inventory(*, parent_id, store_id):
+    """A store has just been put inside organization `parent_id` (core.
+    org_group.link_store): its inventory joins the organization's, which
+    lives under the main store.
+
+    - The main store's Shopify-linked items get a StockShopifyLink for its
+      own Shopify (carrying any change still waiting to be pushed) - from
+      now on the OMS is the stock master and pushes to every store.
+    - Each of the store's items is added onto the organization's item with
+      the same SKU (else the one item with the same name) in the main
+      store's default warehouse; items with no match move over as they are.
+      Their history moves with them, marked with the store.
+    - Its purchase orders and suppliers move over; its warehouses, now
+      empty, are removed.
+    """
+    from .models import PurchaseOrder, PurchaseOrderLine, Supplier
+
+    parent_id, store_id = str(parent_id), str(store_id)
+    result = {"items_merged": 0, "items_moved": 0, "links": 0, "purchase_orders": 0, "suppliers": 0,
+              "warehouses_removed": 0}
+
+    target = get_default_warehouse(parent_id)
+    if target is None:
+        target = Warehouse.all_objects.create(
+            organization_id=parent_id, code=_next_warehouse_code(parent_id), name="Main Warehouse", is_default=True,
+        )
+
+    # The main store's own Shopify, as links.
+    for item in StockItem.all_objects.select_for_update().filter(
+        organization_id=parent_id, shopify_inventory_item_id__isnull=False
+    ):
+        _link, created = StockShopifyLink.all_objects.get_or_create(
+            store_id=parent_id,
+            shopify_inventory_item_id=item.shopify_inventory_item_id,
+            defaults={
+                "organization_id": parent_id,
+                "stock_item": item,
+                "pending_shopify_delta": item.pending_shopify_delta,
+                "pending_shopify_name": item.pending_shopify_name,
+                "previous_shopify_name": item.previous_shopify_name,
+            },
+        )
+        if created:
+            result["links"] += 1
+            if item.pending_shopify_delta or item.pending_shopify_name:
+                StockItem.all_objects.filter(pk=item.pk).update(
+                    pending_shopify_delta=0, pending_shopify_name="", previous_shopify_name=""
+                )
+
+    for item in StockItem.all_objects.select_for_update().filter(organization_id=store_id).order_by("created_at"):
+        match = None
+        if item.sku:
+            match = (
+                StockItem.all_objects.filter(organization_id=parent_id, warehouse=target, sku__iexact=item.sku)
+                .order_by(F("shopify_inventory_item_id").asc(nulls_last=True)).first()
+            )
+        elif item.product_name:
+            candidates = list(
+                StockItem.all_objects.filter(
+                    organization_id=parent_id, warehouse=target, product_name__iexact=item.product_name.strip()
+                )[:2]
+            )
+            match = candidates[0] if len(candidates) == 1 else None
+
+        StockMovement.all_objects.filter(stock_item=item, store__isnull=True).update(store_id=store_id)
+        if match is not None:
+            StockMovement.all_objects.filter(stock_item=item).update(stock_item=match, organization_id=parent_id)
+            if item.quantity:
+                match.quantity += item.quantity
+                match.save(update_fields=["quantity", "updated_at"])
+                StockMovement.all_objects.create(
+                    organization_id=parent_id, store_id=store_id, stock_item=match, delta=item.quantity,
+                    balance_after=match.quantity, reason="manual_adjustment",
+                    note=f"Stock of the same item merged in from another store ({item.sku or item.product_name})"[:255],
+                )
+            owner = match
+            result["items_merged"] += 1
+        else:
+            owner = item
+            result["items_moved"] += 1
+        if item.shopify_inventory_item_id:
+            StockShopifyLink.all_objects.get_or_create(
+                store_id=store_id,
+                shopify_inventory_item_id=item.shopify_inventory_item_id,
+                defaults={
+                    "organization_id": parent_id,
+                    "stock_item": owner,
+                    "pending_shopify_delta": item.pending_shopify_delta,
+                    "pending_shopify_name": item.pending_shopify_name,
+                    "previous_shopify_name": item.previous_shopify_name,
+                },
+            )
+            result["links"] += 1
+        if match is not None:
+            item.delete()
+        else:
+            StockItem.all_objects.filter(pk=item.pk).update(
+                organization_id=parent_id, warehouse=target,
+                pending_shopify_delta=0, pending_shopify_name="", previous_shopify_name="",
+            )
+            StockMovement.all_objects.filter(stock_item_id=item.pk).update(organization_id=parent_id)
+
+    result["purchase_orders"] = PurchaseOrder.all_objects.filter(organization_id=store_id).update(
+        organization_id=parent_id, warehouse=target
+    )
+    PurchaseOrderLine.all_objects.filter(organization_id=store_id).update(organization_id=parent_id)
+    result["suppliers"] = Supplier.all_objects.filter(organization_id=store_id).update(organization_id=parent_id)
+    emptied = Warehouse.all_objects.filter(organization_id=store_id)
+    result["warehouses_removed"] = emptied.count()
+    emptied.delete()
+    return result

@@ -15,6 +15,25 @@ const EMPTY_CREATE = {
   plan: "starter",
 };
 
+// Each organization's main store, then the stores inside it, indented.
+function groupedOrganizations(organizations) {
+  const byParent = {};
+  for (const org of organizations) {
+    if (org.parent_id) {
+      byParent[org.parent_id] = byParent[org.parent_id] || [];
+      byParent[org.parent_id].push(org);
+    }
+  }
+  const ids = new Set(organizations.map((o) => o.id));
+  const rows = [];
+  for (const org of organizations) {
+    if (org.parent_id && ids.has(org.parent_id)) continue;
+    rows.push({ org, inside: Boolean(org.parent_id) });
+    for (const child of byParent[org.id] || []) rows.push({ org: child, inside: true });
+  }
+  return rows;
+}
+
 export default function OrganizationsPage() {
   const router = useRouter();
   // Back shows the last loaded list at once while a fresh one loads.
@@ -208,18 +227,25 @@ export default function OrganizationsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-surface-border">
-                {organizations.map((org) => {
+                {groupedOrganizations(organizations).map(({ org, inside }) => {
                   const stores = org.stores || [];
                   const busy = busyId === org.id;
+                  const childCount = (org.child_stores || []).length;
                   return (
-                    <tr key={org.id} className="transition hover:bg-slate-50">
-                      <td className="px-5 py-3">
+                    <tr key={org.id} className={`transition hover:bg-slate-50 ${inside ? "bg-slate-50/60" : ""}`}>
+                      <td className={`py-3 ${inside ? "pl-10 pr-5" : "px-5"}`}>
+                        {inside ? <span className="mr-1.5 text-slate-400">↳</span> : null}
                         <Link
                           href={`/admin/organizations/${org.id}`}
                           className="font-medium text-slate-900 hover:text-brand-700 hover:underline"
                         >
                           {org.name}
                         </Link>
+                        {!inside && childCount ? (
+                          <span className="ml-2 rounded-full bg-brand-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-brand-700">
+                            {childCount + 1} stores
+                          </span>
+                        ) : null}
                       </td>
                       <td className="px-4 py-3 text-slate-700">
                         {stores.length ? (

@@ -6,7 +6,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 from . import scan_sessions, store_service
-from .permissions import IsOrgAdmin
+from .permissions import IsAuthenticatedTenant, IsOrgAdmin
 from .store_service import StoreAdminError
 
 
@@ -82,17 +82,21 @@ def health_protected(request):
 
 
 @api_view(["GET", "POST"])
-@permission_classes([IsOrgAdmin])
+@permission_classes([IsAuthenticatedTenant])
 def stores(request):
     """GET: every store this login belongs to (current store first).
     POST: add a new store to this same login - either another Shopify
     store or a manual (CSV-only) one - and make the caller its org admin.
     A super admin acting as a store manages that store, not their own
     stores list, so this is org-admin only, same as team management."""
+    # Staff given access to several stores of an organization list (and
+    # switch between) them too; only an admin adds stores.
     if request.method == "GET":
         data = store_service.list_my_stores(request.user_id, request.organization_id)
         return Response({"success": True, "stores": data})
 
+    if not IsOrgAdmin().has_permission(request, None):
+        return Response({"success": False, "error": "Only the store admin can add stores."}, status=403)
     body = request.data or {}
     try:
         store = store_service.create_store(
@@ -110,7 +114,7 @@ def stores(request):
 
 
 @api_view(["POST"])
-@permission_classes([IsOrgAdmin])
+@permission_classes([IsAuthenticatedTenant])
 def switch_store(request):
     """Points this login's JWT at another store it already belongs to.
     Returns no session itself - Supabase issued the current one, so the

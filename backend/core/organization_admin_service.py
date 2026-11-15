@@ -87,7 +87,8 @@ def list_organizations(*, include_emails=False):
     # core.platform_service.
     orgs = (
         Organization.objects.filter(is_platform=False)
-        .prefetch_related("memberships", "modules")
+        .select_related("parent")
+        .prefetch_related("memberships", "modules", "child_stores")
         .order_by("-created_at")
     )
     email_map = {}
@@ -314,6 +315,12 @@ def delete_organization(organization_id, *, confirm_name, actor_email=""):
     if (confirm_name or "").strip() != org.name:
         raise OrganizationAdminError("Type the organization's exact name to confirm removal.")
 
+    if org.child_stores.exists():
+        # They share its inventory, which would go with it.
+        raise OrganizationAdminError(
+            f"{org.name} has other stores inside it - remove them from the organization first.", 409
+        )
+
     name = org.name
     user_ids = [str(uid) for uid in org.memberships.values_list("user_id", flat=True)]
     try:
@@ -415,6 +422,14 @@ def _serialize_org(org, members, hub_ids=None, stores=None, bank=False):
         "is_manual_store": org.is_manual_store,
         "store_code": org.store_code,
         "service_model": org.service_model,
+        # Organization with several stores (core.org_group): the main
+        # store it is inside, or the stores inside it.
+        "parent_id": str(org.parent_id) if org.parent_id else None,
+        "parent_name": org.parent.name if org.parent_id else "",
+        "child_stores": [
+            {"id": str(c.id), "name": c.name, "store_code": c.store_code, "is_active": c.is_active}
+            for c in org.child_stores.all().order_by("name")
+        ],
         # Its stores (shop names) with their Store IDs - the orders report's
         # Store ID column.
         "stores": stores if stores is not None else _stores_by_org(org.id).get(str(org.id), []),

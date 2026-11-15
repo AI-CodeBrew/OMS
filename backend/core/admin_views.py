@@ -85,6 +85,34 @@ def organization_detail(request, organization_id):
     return Response({"success": True, "organization": org})
 
 
+@api_view(["POST", "DELETE"])
+@permission_classes([IsSuperAdmin])
+def organization_stores(request, organization_id):
+    """An organization's stores (core.org_group). POST {"store_id"} puts
+    that store inside this organization; DELETE {"store_id"} takes it out."""
+    from . import org_group
+
+    body = request.data or {}
+    actor_email = getattr(request, "auth_email", "") or ""
+    store_id = body.get("store_id")
+    if not store_id:
+        return Response({"success": False, "error": "Pick a store."}, status=400)
+    try:
+        if request.method == "POST":
+            result = org_group.link_store(
+                parent_id=organization_id, store_id=store_id,
+                actor_user_id=request.user_id, actor_email=actor_email,
+            )
+        else:
+            parent = org_group.root_id(store_id)
+            if str(parent) != str(organization_id):
+                return Response({"success": False, "error": "That store isn't inside this organization."}, status=400)
+            result = org_group.unlink_store(store_id=store_id, actor_user_id=request.user_id, actor_email=actor_email)
+    except org_group.OrgGroupError as exc:
+        return Response({"success": False, "error": exc.message}, status=exc.status_code)
+    return Response({"success": True, **result, "organization": service.get_organization(organization_id)})
+
+
 @api_view(["PATCH"])
 @permission_classes([IsSuperAdmin])
 def update_member(request, user_id):
@@ -169,3 +197,128 @@ def order_logs(request):
     """The Logs page's Order Logs tab, across every store - see
     activity_log_service.order_logs."""
     return Response({"success": True, **activity_log_service.order_logs(request.query_params)})
+
+
+# ------------------------------------------------ Super admin Admin Team --
+
+def _owner_only(request):
+    if not getattr(request, "is_admin_owner", False):
+        return Response(
+            {"success": False, "error": "Only an owner super admin can manage the admin team and roles."},
+            status=403,
+        )
+    return None
+
+
+def _team_error(exc):
+    return Response({"success": False, "error": exc.message}, status=exc.status_code)
+
+
+@api_view(["GET"])
+@permission_classes([IsSuperAdmin])
+def admin_me(request):
+    """This super admin login's own access - the panel's sidebar and
+    read-only notes use it. is_owner: everything, including Admin Team."""
+    from . import admin_pages
+
+    owner = bool(getattr(request, "is_admin_owner", False))
+    permissions = (
+        {p: admin_pages.WRITE for p in admin_pages.PAGE_KEYS} if owner else (request.admin_permissions or {})
+    )
+    return Response({
+        "success": True, "is_owner": owner, "permissions": permissions, "pages": admin_pages.PAGES,
+        # Store pages it may use inside the Dispatch Hub (null = all).
+        "hub_pages": None if owner else admin_pages.hub_store_permissions(permissions),
+    })
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsSuperAdmin])
+def admin_team(request):
+    """GET: the Admin Team page (staff logins, roles, the page list).
+    POST {email, password, name, role_id | permissions}: a new staff login."""
+    from . import admin_team_service as team
+
+    denied = _owner_only(request)
+    if denied:
+        return denied
+    if request.method == "GET":
+        return Response({"success": True, **team.overview()})
+    body = request.data or {}
+    try:
+        staff = team.create_staff(
+            email=body.get("email"), password=body.get("password"), name=body.get("name") or "",
+            role_id=body.get("role_id") or None, permissions=body.get("permissions"),
+            actor_user_id=request.user_id, actor_email=getattr(request, "auth_email", "") or "",
+        )
+    except team.AdminTeamError as exc:
+        return _team_error(exc)
+    return Response({"success": True, "staff": staff}, status=201)
+
+
+@api_view(["PATCH", "DELETE"])
+@permission_classes([IsSuperAdmin])
+def admin_team_member(request, user_id):
+    """PATCH {name?, password?, role_id | permissions (with "access": true)};
+    DELETE removes the login."""
+    from . import admin_team_service as team
+
+    denied = _owner_only(request)
+    if denied:
+        return denied
+    actor = {"actor_user_id": request.user_id, "actor_email": getattr(request, "auth_email", "") or ""}
+    try:
+        if request.method == "DELETE":
+            return Response({"success": True, **team.remove_staff(user_id, **actor)})
+        body = request.data or {}
+        staff = team.update_staff(
+            user_id, name=body.get("name"), role_id=body.get("role_id") or None,
+            permissions=body.get("permissions"), set_access=bool(body.get("access")),
+            password=body.get("password") or None, **actor,
+        )
+    except team.AdminTeamError as exc:
+        return _team_error(exc)
+    return Response({"success": True, "staff": staff})
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsSuperAdmin])
+def admin_roles(request):
+    from . import admin_team_service as team
+
+    denied = _owner_only(request)
+    if denied:
+        return denied
+    if request.method == "GET":
+        return Response({"success": True, "roles": team.overview()["roles"]})
+    body = request.data or {}
+    try:
+        role = team.create_role(
+            name=body.get("name"), permissions=body.get("permissions"),
+            actor_user_id=request.user_id, actor_email=getattr(request, "auth_email", "") or "",
+        )
+    except team.AdminTeamError as exc:
+        return _team_error(exc)
+    return Response({"success": True, "role": role}, status=201)
+
+
+@api_view(["PATCH", "DELETE"])
+@permission_classes([IsSuperAdmin])
+def admin_role_detail(request, role_id):
+    from . import admin_team_service as team
+
+    denied = _owner_only(request)
+    if denied:
+        return denied
+    actor = {"actor_user_id": request.user_id, "actor_email": getattr(request, "auth_email", "") or ""}
+    try:
+        if request.method == "DELETE":
+            return Response({"success": True, **team.delete_role(role_id, **actor)})
+        body = request.data or {}
+        role = team.update_role(
+            role_id, name=body.get("name"),
+            permissions=body.get("permissions") if "permissions" in body else None, **actor,
+        )
+    except team.AdminTeamError as exc:
+        return _team_error(exc)
+    return Response({"success": True, "role": role})

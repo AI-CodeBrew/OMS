@@ -3,11 +3,23 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import dispatchHubAdminService from "../../../../services/dispatchHubAdminService";
+import adminTeamService from "../../../../services/adminTeamService";
 import tenantsService from "../../../../services/tenantsService";
 import useAuthStore from "../../../../store/authStore";
 import { invalidateViewCache } from "../../../../lib/viewCache";
 import Button from "../../../../components/shared/Button";
 import { useRememberedData } from "../../../../lib/pageMemory";
+
+// Where a limited login lands in the Hub - its first page.
+const HUB_LANDING = [
+  ["oms.dashboard", "/dashboard"],
+  ["oms.orders", "/orders"],
+  ["oms.critical_orders", "/critical-orders"],
+  ["wms.returns_desk", "/returns"],
+  ["reports", "/reports"],
+  ["batch", "/batch"],
+  ["tickets", "/tickets"],
+];
 
 export default function DispatchHubPage() {
   const router = useRouter();
@@ -91,10 +103,18 @@ export default function DispatchHubPage() {
     }
   }
 
-  function openHub() {
-    enterStore({ hub: true, name: "Dispatch Hub", modules: ["oms", "wms"], storeCount: hubStores.length });
+  async function openHub() {
+    // A super admin staff login sees only the Hub pages its role gives.
+    let pages = null;
+    try {
+      pages = (await adminTeamService.me()).hub_pages || null;
+    } catch {
+      pages = null;
+    }
+    enterStore({ hub: true, name: "Dispatch Hub", modules: ["oms", "wms"], storeCount: hubStores.length, pages });
     invalidateViewCache();
-    router.push("/dashboard");
+    const first = pages ? HUB_LANDING.find(([key]) => pages[key]) : null;
+    router.push(first ? first[1] : "/dashboard");
   }
 
   return (

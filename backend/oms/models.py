@@ -777,6 +777,7 @@ class City(models.Model):
         ("manual", "Added by hand"),
         ("postex", "PostEx"),
         ("barqraftar", "BarqRaftar"),
+        ("leopards", "Leopards"),
     ]
 
     name = models.CharField(max_length=100)

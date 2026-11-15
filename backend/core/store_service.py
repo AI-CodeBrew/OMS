@@ -45,9 +45,15 @@ def list_my_stores(user_id, current_organization_id):
         .select_related("organization")
         .order_by("organization__name")
     )
+    parent_names = dict(
+        Organization.objects.filter(
+            id__in=[m.organization.parent_id for m in memberships if m.organization.parent_id]
+        ).values_list("id", "name")
+    )
     stores = []
     for membership in memberships:
         org = membership.organization
+        root_id = org.parent_id or org.id
         stores.append(
             {
                 "id": str(org.id),
@@ -56,6 +62,11 @@ def list_my_stores(user_id, current_organization_id):
                 "is_active": org.is_active,
                 "role": membership.role,
                 "is_current": str(org.id) == str(current_organization_id),
+                # The organization it belongs to (core.org_group) - its main
+                # store's name; is_main for the main store itself.
+                "organization_id": str(root_id),
+                "organization_name": parent_names.get(org.parent_id) if org.parent_id else org.name,
+                "is_main": not org.parent_id,
             }
         )
     stores.sort(key=lambda s: (not s["is_current"], s["name"].lower()))
@@ -77,12 +88,15 @@ def create_store(*, user_id, source_organization_id, name, is_manual_store=False
     except Organization.DoesNotExist as exc:
         raise StoreAdminError("Current organization not found", 404) from exc
 
+    # A new store joins the caller's organization (core.org_group): same
+    # admins, one shared inventory.
     organization = Organization.objects.create(
         name=name,
         slug=_unique_slug(name),
         plan=source_org.plan,
         is_active=True,
         is_manual_store=bool(is_manual_store),
+        parent_id=source_org.parent_id or source_org.id,
     )
 
     module_names = list(
@@ -101,6 +115,16 @@ def create_store(*, user_id, source_organization_id, name, is_manual_store=False
         role="org_admin",
         allowed_modules=module_names,
     )
+
+    from . import org_group
+
+    org_group.clear_cache()
+    org_group.sync_group_admins(organization.parent_id)
+    # The main store's Shopify-linked stock becomes the organization's
+    # (one link per store's Shopify) - see wms.services.merge_store_inventory.
+    from wms.services import merge_store_inventory
+
+    merge_store_inventory(parent_id=organization.parent_id, store_id=organization.id)
 
     write_audit_log(
         organization_id=organization.id,
