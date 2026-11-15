@@ -229,6 +229,10 @@ def admin_me(request):
         "success": True, "is_owner": owner, "permissions": permissions, "pages": admin_pages.PAGES,
         # Store pages it may use inside the Dispatch Hub (null = all).
         "hub_pages": None if owner else admin_pages.hub_store_permissions(permissions),
+        # Hub pages but not the Hub's own page: Dispatch Hub opens straight
+        # into the Hub.
+        "hub_direct": (not owner) and not permissions.get("dispatch_hub")
+        and bool(admin_pages.hub_store_permissions(permissions)),
     })
 
 

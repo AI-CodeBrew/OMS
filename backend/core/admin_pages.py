@@ -21,8 +21,10 @@ PAGES = [
     {"key": "organizations", "label": "Organizations", "hint": "Organizations, their stores, admins and logins"},
     {"key": "stores", "label": "Stores", "hint": "Stores list, service model, open a store"},
     {"key": "all_orders", "label": "All Orders", "hint": "Every store's orders"},
-    {"key": "dispatch_hub", "label": "Dispatch Hub (everything)",
-     "hint": "Hub stores and rates, and every page inside the Hub"},
+    # The Dispatch Hub group: its own management page, then each page
+    # inside the Hub (HUB_PAGES below).
+    {"key": "dispatch_hub", "label": "Hub stores & rates",
+     "hint": "The Dispatch Hub page itself - which stores are in it, their rates", "group": "hub"},
     # Pages INSIDE the Dispatch Hub, one by one (HUB_PAGES below).
     {"key": "hub.dashboard", "label": "Dispatch Hub · Dashboard", "hint": "Inside the Hub", "group": "hub"},
     {"key": "hub.orders", "label": "Dispatch Hub · All Orders", "hint": "Inside the Hub", "group": "hub"},
@@ -58,16 +60,9 @@ HUB_KEYS = tuple(HUB_PAGES)
 
 def hub_store_permissions(permissions):
     """The store pages (core.pages keys) a staff login may use inside the
-    Dispatch Hub: each Hub page it has, and every one of them at the
-    "Dispatch Hub (everything)" level if it has that - the higher wins."""
+    Dispatch Hub - one for each Hub page it has, at the same level."""
     permissions = permissions or {}
-    whole = permissions.get("dispatch_hub")
-    out = {}
-    for hub_key, store_key in HUB_PAGES.items():
-        levels = {permissions.get(hub_key), whole} - {None}
-        if levels:
-            out[store_key] = WRITE if WRITE in levels else READ
-    return out
+    return {store_key: permissions[hub_key] for hub_key, store_key in HUB_PAGES.items() if permissions.get(hub_key)}
 
 # Admin Team (logins and roles of the super admin side) is owner-only:
 # a staff login that could edit roles could give itself everything.

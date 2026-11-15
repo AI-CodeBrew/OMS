@@ -13,63 +13,120 @@ const LEVELS = [
   { value: "write", label: "Read + Write" },
 ];
 
-// Every super admin page with None / Read / Read + Write.
+function LevelButtons({ level, onPick }) {
+  return (
+    <span className="inline-flex overflow-hidden rounded-md border border-surface-border">
+      {LEVELS.map((o) => (
+        <button
+          key={o.value || "none"}
+          type="button"
+          onClick={() => onPick(o.value)}
+          aria-pressed={level === o.value}
+          className={`px-3 py-1 text-xs font-medium transition ${
+            level === o.value
+              ? o.value
+                ? "bg-brand-600 text-white"
+                : "bg-slate-200 text-slate-700"
+              : "bg-white text-slate-500 hover:bg-surface"
+          }`}
+        >
+          {o.label}
+        </button>
+      ))}
+    </span>
+  );
+}
+
+function SetAll({ onPick }) {
+  return (
+    <span className="flex gap-2 text-xs">
+      {LEVELS.map((o) => (
+        <button key={o.value || "none"} type="button" onClick={() => onPick(o.value)} className="text-brand-700 hover:underline">
+          All {o.label}
+        </button>
+      ))}
+    </span>
+  );
+}
+
+function PageRow({ page, level, onPick, short }) {
+  return (
+    <li className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
+      <span>
+        <span className="text-sm text-slate-800">{short ? page.label.replace(/^Dispatch Hub · /, "") : page.label}</span>
+        {page.hint && !page.group ? <span className="block text-xs text-slate-400">{page.hint}</span> : null}
+        {page.key === "dispatch_hub" ? <span className="block text-xs text-slate-400">{page.hint}</span> : null}
+      </span>
+      <LevelButtons level={level} onPick={onPick} />
+    </li>
+  );
+}
+
+// Every super admin page with None / Read / Read + Write. The Dispatch Hub
+// is one group: open it to pick the pages inside the Hub one by one.
 function PagePicker({ pages, value, onChange }) {
   const granted = value || {};
+  const flat = pages.filter((p) => p.group !== "hub");
+  const hub = pages.filter((p) => p.group === "hub");
+  const hubCount = hub.filter((p) => granted[p.key]).length;
+  const [hubOpen, setHubOpen] = useState(hubCount > 0);
+
   function setPage(key, level) {
     const next = { ...granted };
     if (level) next[key] = level;
     else delete next[key];
     onChange(next);
   }
-  function setAll(level) {
-    const next = {};
-    if (level) pages.forEach((p) => (next[p.key] = level));
+  function setMany(list, level) {
+    const next = { ...granted };
+    list.forEach((p) => {
+      if (level) next[p.key] = level;
+      else delete next[p.key];
+    });
     onChange(next);
   }
+
   return (
     <div className="overflow-hidden rounded-md border border-surface-border">
       <div className="flex flex-wrap items-center justify-between gap-2 bg-surface px-3 py-1.5">
         <span className="text-xs font-semibold uppercase tracking-wide text-slate-600">Super admin pages</span>
-        <span className="flex gap-2 text-xs">
-          {LEVELS.map((o) => (
-            <button key={o.value || "none"} type="button" onClick={() => setAll(o.value)} className="text-brand-700 hover:underline">
-              All {o.label}
-            </button>
-          ))}
-        </span>
+        <SetAll onPick={(level) => setMany(pages, level)} />
       </div>
       <ul className="divide-y divide-surface-border">
-        {pages.map((page) => {
-          const level = granted[page.key] || "";
-          return (
-            <li key={page.key} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
-              <span>
-                <span className="text-sm text-slate-800">{page.label}</span>
-                {page.hint ? <span className="block text-xs text-slate-400">{page.hint}</span> : null}
+        {flat.map((page) => (
+          <PageRow key={page.key} page={page} level={granted[page.key] || ""} onPick={(l) => setPage(page.key, l)} />
+        ))}
+        <li>
+          <button
+            type="button"
+            onClick={() => setHubOpen((v) => !v)}
+            className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left hover:bg-surface"
+          >
+            <span>
+              <span className="text-sm font-medium text-slate-800">Dispatch Hub</span>
+              <span className="block text-xs text-slate-400">
+                {hubCount ? `${hubCount} of ${hub.length} pages given` : "Open to pick the pages inside the Hub"}
               </span>
-              <span className="inline-flex overflow-hidden rounded-md border border-surface-border">
-                {LEVELS.map((o) => (
-                  <button
-                    key={o.value || "none"}
-                    type="button"
-                    onClick={() => setPage(page.key, o.value)}
-                    aria-pressed={level === o.value}
-                    className={`px-3 py-1 text-xs font-medium transition ${
-                      level === o.value
-                        ? o.value
-                          ? "bg-brand-600 text-white"
-                          : "bg-slate-200 text-slate-700"
-                        : "bg-white text-slate-500 hover:bg-surface"
-                    }`}
-                  >
-                    {o.label}
-                  </button>
+            </span>
+            <span className="text-xs font-medium text-brand-700">{hubOpen ? "Close ▲" : "Open ▼"}</span>
+          </button>
+          {hubOpen ? (
+            <div className="border-t border-surface-border bg-slate-50/60 pl-4">
+              <div className="flex justify-end px-3 py-1.5">
+                <SetAll onPick={(level) => setMany(hub, level)} />
+              </div>
+              <ul className="divide-y divide-surface-border border-t border-surface-border">
+                {hub.map((page) => (
+                  <PageRow key={page.key} page={page} short level={granted[page.key] || ""} onPick={(l) => setPage(page.key, l)} />
                 ))}
-              </span>
-            </li>
-          );
-        })}
+              </ul>
+              <p className="px-3 py-2 text-xs text-slate-500">
+                Without &quot;Hub stores &amp; rates&quot;, clicking Dispatch Hub opens the Hub straight on the first page
+                given here.
+              </p>
+            </div>
+          ) : null}
+        </li>
       </ul>
     </div>
   );

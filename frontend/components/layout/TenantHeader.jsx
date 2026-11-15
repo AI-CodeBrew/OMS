@@ -51,7 +51,7 @@ export default function TenantHeader({ activeModule }) {
     const target = actingStore?.allStores
       ? "/admin/organizations"
       : actingStore?.hub
-        ? "/admin/dispatch-hub"
+        ? actingStore.exitTo || "/admin/dispatch-hub"
         : "/admin/stores";
     exitStore();
     invalidateViewCache();
@@ -73,7 +73,8 @@ export default function TenantHeader({ activeModule }) {
           instead of just wrapping. */}
       <div className="flex h-16 items-center justify-between gap-2 px-3 sm:px-6">
         <div className="flex shrink-0 items-center gap-1.5">
-          {actingStore ? (
+          {/* A Hub-only staff login has nowhere else to go - no back arrow. */}
+          {actingStore && actingStore.exitTo !== null ? (
             <button
               type="button"
               onClick={exitActingStore}

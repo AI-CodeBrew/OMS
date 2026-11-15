@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import dispatchHubAdminService from "../../../../services/dispatchHubAdminService";
-import adminTeamService from "../../../../services/adminTeamService";
+import adminTeamService, { ADMIN_PAGE_HREFS } from "../../../../services/adminTeamService";
 import tenantsService from "../../../../services/tenantsService";
 import useAuthStore from "../../../../store/authStore";
 import { invalidateViewCache } from "../../../../lib/viewCache";
@@ -36,6 +36,30 @@ export default function DispatchHubPage() {
   const [addingRate, setAddingRate] = useState("");
   const [saving, setSaving] = useState(false);
   const [rateEdits, setRateEdits] = useState({});
+
+  // This login's access: a staff login with Hub pages but not "Hub stores
+  // & rates" never sees this page - it goes straight into the Hub.
+  const [me, setMe] = useState(null);
+  const direct = Boolean(me?.hub_direct);
+  const canManage = !me || me.is_owner || me.permissions?.dispatch_hub === "write";
+
+  useEffect(() => {
+    let alive = true;
+    adminTeamService
+      .me()
+      .then((data) => {
+        if (!alive) return;
+        setMe(data);
+        // After the panel's own "leave any store" step on arrival (the
+        // layout's effect runs after this page's), so it isn't undone.
+        if (data.hub_direct) setTimeout(() => enterHub(data), 0);
+      })
+      .catch(() => alive && setMe({ is_owner: true }));
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -103,18 +127,28 @@ export default function DispatchHubPage() {
     }
   }
 
-  async function openHub() {
+  function enterHub(access) {
     // A super admin staff login sees only the Hub pages its role gives.
-    let pages = null;
-    try {
-      pages = (await adminTeamService.me()).hub_pages || null;
-    } catch {
-      pages = null;
+    const pages = access && !access.is_owner ? access.hub_pages || {} : null;
+    // Leaving the Hub: back here, or - when this page is skipped - to the
+    // login's first other super admin page (none: no way out but log out).
+    let exitTo = "/admin/dispatch-hub";
+    if (access?.hub_direct) {
+      const other = ADMIN_PAGE_HREFS.find(([key]) => access.permissions?.[key]);
+      exitTo = other ? other[1] : null;
     }
-    enterStore({ hub: true, name: "Dispatch Hub", modules: ["oms", "wms"], storeCount: hubStores.length, pages });
+    enterStore({ hub: true, name: "Dispatch Hub", modules: ["oms", "wms"], storeCount: hubStores.length, pages, exitTo });
     invalidateViewCache();
     const first = pages ? HUB_LANDING.find(([key]) => pages[key]) : null;
-    router.push(first ? first[1] : "/dashboard");
+    router.replace(first ? first[1] : "/dashboard");
+  }
+
+  function openHub() {
+    enterHub(me);
+  }
+
+  if (!me || direct) {
+    return <p className="text-sm text-slate-500">{direct ? "Opening Dispatch Hub…" : "Loading…"}</p>;
   }
 
   return (
@@ -136,6 +170,7 @@ export default function DispatchHubPage() {
         <p className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>
       ) : null}
 
+      {canManage ? (
       <form
         onSubmit={onAdd}
         className="flex flex-wrap items-end gap-3 rounded-xl border border-surface-border bg-white p-5"
@@ -170,6 +205,7 @@ export default function DispatchHubPage() {
           Add to Hub
         </Button>
       </form>
+      ) : null}
 
       <div className="overflow-hidden rounded-xl border border-surface-border bg-white shadow-sm">
         {loading && hubStores.length === 0 ? (
@@ -208,6 +244,7 @@ export default function DispatchHubPage() {
                     </span>
                   </p>
                 </div>
+                {canManage ? (
                 <div className="flex items-center gap-2">
                   <input
                     type="number"
@@ -231,6 +268,9 @@ export default function DispatchHubPage() {
                     Remove
                   </Button>
                 </div>
+                ) : (
+                  <span className="text-sm tabular-nums text-slate-600">Rs {store.per_order_rate}</span>
+                )}
               </li>
             ))}
           </ul>

@@ -23,6 +23,21 @@ async function request(path, options = {}) {
   return data;
 }
 
+// Super admin page -> its address (same order as the panel's sidebar) -
+// where a staff login goes when it leaves the Hub.
+export const ADMIN_PAGE_HREFS = [
+  ["organizations", "/admin/organizations"],
+  ["stores", "/admin/stores"],
+  ["all_orders", "/admin/all-orders"],
+  ["inventory", "/admin/inventory"],
+  ["invoices", "/admin/invoices"],
+  ["integrations", "/admin/integrations"],
+  ["oms_courier", "/admin/oms-courier"],
+  ["logs", "/admin/logs"],
+  ["tickets", "/admin/tickets"],
+  ["cities", "/admin/cities"],
+];
+
 const adminTeamService = {
   // {is_owner, permissions: {page: "read"|"write"}, pages}
   me: () => request("/me/"),

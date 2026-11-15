@@ -105,6 +105,7 @@ def list_organizations(*, include_emails=False):
     hub_ids = _hub_organization_ids()
     stores_by_org = _stores_by_org()
     bank_by_org = _bank_details_by_org()
+    shopify_by_org = _shopify_by_org()
 
     results = []
     for org in orgs:
@@ -116,6 +117,7 @@ def list_organizations(*, include_emails=False):
             _serialize_org(
                 org, members, hub_ids=hub_ids, stores=stores_by_org.get(str(org.id), []),
                 bank=bank_by_org.get(str(org.id)),
+                shopify_by_org=shopify_by_org,
             )
         )
     return results
@@ -389,16 +391,27 @@ def update_member_credentials(user_id, *, email=None, password=None):
     }
 
 
-def _serialize_org(org, members, hub_ids=None, stores=None, bank=False):
+def _shopify_by_org(organization_id=None):
+    """{org id: its newest ShopifyConnection} - one query for the whole
+    list rather than one per organization (each query is a round trip to
+    the database, ~0.15 s from the live server)."""
+    from integrations.models import ShopifyConnection
+
+    qs = ShopifyConnection.all_objects.order_by("organization_id", "-updated_at")
+    if organization_id:
+        qs = qs.filter(organization_id=organization_id)
+    result = {}
+    for conn in qs:
+        result.setdefault(str(conn.organization_id), conn)
+    return result
+
+
+def _serialize_org(org, members, hub_ids=None, stores=None, bank=False, shopify_by_org=None):
     shopify = None
     try:
-        from integrations.models import ShopifyConnection
-
-        conn = (
-            ShopifyConnection.all_objects.filter(organization_id=org.id)
-            .order_by("-updated_at")
-            .first()
-        )
+        if shopify_by_org is None:
+            shopify_by_org = _shopify_by_org(org.id)
+        conn = shopify_by_org.get(str(org.id))
         if conn:
             shopify = {
                 "shop_domain": conn.shop_domain,
@@ -426,9 +439,10 @@ def _serialize_org(org, members, hub_ids=None, stores=None, bank=False):
         # store it is inside, or the stores inside it.
         "parent_id": str(org.parent_id) if org.parent_id else None,
         "parent_name": org.parent.name if org.parent_id else "",
+        # Sorted here, not with order_by(), so the list's prefetch is used.
         "child_stores": [
             {"id": str(c.id), "name": c.name, "store_code": c.store_code, "is_active": c.is_active}
-            for c in org.child_stores.all().order_by("name")
+            for c in sorted(org.child_stores.all(), key=lambda c: c.name.lower())
         ],
         # Its stores (shop names) with their Store IDs - the orders report's
         # Store ID column.
