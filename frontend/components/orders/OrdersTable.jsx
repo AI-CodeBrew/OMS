@@ -60,6 +60,12 @@ const TAG_TONE = {
   "Moving from Courier Hub": "indigo",
   "Re-Attempt": "amber",
   "Hold by Customer": "amber",
+  // BarqRaftar's sheet tags (backend integrations/barqraftar/status_map.py).
+  "Hold by CS": "amber",
+  "Remote Area": "red",
+  // Smartlane's sheet tags (backend integrations/smartlane_status_map.py).
+  "Not Received by Customer": "red",
+  Returned: "red",
   Approved: "indigo",
   New: "blue",
 };

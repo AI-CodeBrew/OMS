@@ -16,7 +16,7 @@ from core.events import publish_event
 from core.platform_service import is_platform_organization
 from oms.models import Courier, Order, OrderItem
 
-from . import shopify_client, smartlane_client
+from . import shopify_client, smartlane_client, smartlane_status_map
 from .models import ShopifyConnection, ShopifySyncJob, SmartlaneShipment
 
 logger = logging.getLogger(__name__)
@@ -804,6 +804,9 @@ _SMARTLANE_STATUS_MAP = {
     "out_for_delivery": "out_for_delivery",
     "ofd": "out_for_delivery",
     "attempt": "attempt",
+    # "Not received by customer" - FynkTech's sheet sends it to Undelivered,
+    # even after Delivered (smartlane_status_map).
+    "dispute": "dispute",
 }
 
 # Shared with the webhook (views.smartlane_shipment_webhook) so a status
@@ -854,6 +857,10 @@ def _resolve_smartlane_target(smartlane_status, row=None):
     final outcome (see _resolve_return_in_progress for that stage instead).
     """
     if row:
+        # A dispute comes after delivery - it wins over complete, but not
+        # over a return that followed it.
+        if _stage_happened(row, "dispute") and not _stage_happened(row, "return"):
+            return "dispute"
         if _stage_happened(row, "complete"):
             return "delivered"
         if _stage_happened(row, "return"):
@@ -1234,6 +1241,64 @@ def _advance_to_dispatch_substate(order, target, tracking_number=""):
 
 @audit_source("Smartlane")
 def apply_smartlane_status(order, smartlane_status, *, tracking_number="", organization_id, row=None):
+    """_apply_smartlane_status, then the order's Sub Status and Tag from
+    FynkTech's Smartlane sheet (record_smartlane_sheet_words) - also when
+    the status didn't move or was refused as stale."""
+    try:
+        return _apply_smartlane_status(
+            order, smartlane_status, tracking_number=tracking_number, organization_id=organization_id, row=row,
+        )
+    finally:
+        try:
+            order.refresh_from_db()
+            record_smartlane_sheet_words(order, smartlane_status, row)
+        except Exception:  # the words must never break a status update
+            logger.exception("smartlane: could not record sheet words for %s", order.order_number)
+
+
+_SMARTLANE_SHEET_STATUSES = {"dispatched", "out_for_delivery", "attempt", "delivered", "returned"}
+_SMARTLANE_ADVICE_TAGS = {smartlane_status_map.TAG_REATTEMPT_REQUESTED, smartlane_status_map.TAG_RETURN_REQUESTED}
+
+
+def record_smartlane_raw_label(order, row):
+    """Before Dispatched (and where the sheet has nothing) the Sub Status
+    is Smartlane's own word, as before; from Dispatched on the sheet's
+    words take over (record_smartlane_sheet_words), so this leaves those
+    orders alone."""
+    from oms import services as oms_services
+
+    if order.status in _SMARTLANE_SHEET_STATUSES:
+        return False
+    if order.status in ("new", "awaiting_assigning") and order.courier_status == smartlane_status_map.SUB_BOOKING_CANCELLED:
+        return False
+    return oms_services.record_courier_status(order, smartlane_status_label(row or {}))
+
+
+def record_smartlane_sheet_words(order, smartlane_status, row):
+    """Saves the order's Sub Status and Tag from FynkTech's Smartlane sheet
+    (smartlane_status_map) for the card it is on now. A repeat after our
+    Shipper Advice keeps "Reattempt / Return Requested". Returns whether
+    anything changed."""
+    from oms import services as oms_services
+
+    if order.status not in _SMARTLANE_SHEET_STATUSES:
+        return False
+    disputed = _resolve_smartlane_target(smartlane_status, row) == "dispute"
+    reason = smartlane_return_reason(row)
+    words = smartlane_status_map.sheet_words(
+        oms_services.workflow_card(order), status=order.status, disputed=disputed, reason=reason,
+    )
+    if words is None:
+        return False
+    sub_status, tag = words
+    if sub_status == "Undelivered" and order.courier_status == sub_status and order.courier_tag in _SMARTLANE_ADVICE_TAGS:
+        tag = order.courier_tag
+    return oms_services.record_courier_words(
+        order, sub_status=sub_status, tag=tag, reason=smartlane_status_map.normalize_reason(reason) or None,
+    )
+
+
+def _apply_smartlane_status(order, smartlane_status, *, tracking_number="", organization_id, row=None):
     """Applies one Smartlane status to one order. Shared by the webhook and
     the poller so a status seen either way can never produce a different
     outcome. Returns True if the order actually moved.
@@ -1269,21 +1334,25 @@ def apply_smartlane_status(order, smartlane_status, *, tracking_number="", organ
         if order.status == "returned":
             return False
         _catch_up_to_dispatched(order, tracking_number)
-        # scan_return reports failure by return value, not by raising, so
-        # an unusable status would otherwise be a silent no-op here.
-        result = oms_services.scan_return(
-            organization_id=organization_id,
-            order_number=order.order_number,
-            reason=smartlane_return_reason(row) or _SMARTLANE_DEFAULT_RETURN_REASON,
+        # The same as the other couriers: straight to Returned from
+        # whichever dispatch sub-stage it is in. (scan_return, used before,
+        # refused Out for Delivery / Undelivered - so a parcel that had a
+        # failed attempt never became Returned.)
+        oms_services.mark_returned_by_courier(
+            order, reason=smartlane_return_reason(row) or _SMARTLANE_DEFAULT_RETURN_REASON,
         )
-        if not result.get("success"):
-            logger.warning("smartlane: could not mark %s returned - %s",
-                           order.order_number, result.get("reason"))
-            return False
     elif target == "cancelled":
         # Cancelled on Smartlane's side: the booking is gone, not the order
-        # - it goes back to Awaiting Assigning to be booked again.
-        if not oms_services.unbook_cancelled_by_courier(order, courier_label="Smartlane"):
+        # - FynkTech's sheet sends it back to Awaiting Confirmation under
+        # the SAME order number (it changes only if it is booked with
+        # Smartlane again - oms.services.push_order_to_smartlane).
+        if not oms_services.unbook_cancelled_by_courier_keep_number(
+            order, courier_label="Smartlane",
+            tag=smartlane_status_map.TAG_BOOKING_CANCELLED, sub_status=smartlane_status_map.SUB_BOOKING_CANCELLED,
+        ):
+            return False
+    elif target == "dispute":
+        if not oms_services.mark_disputed_by_courier(order, courier_label="Smartlane"):
             return False
     elif target in ("out_for_delivery", "attempt"):
         if not _advance_to_dispatch_substate(order, target, tracking_number):
@@ -1584,7 +1653,7 @@ def _poll_smartlane_statuses_body(
                 logger.info("smartlane poll: row for %r - order moved on since the poll began, skipped",
                             row_number)
                 continue
-            oms_services.record_courier_status(order, smartlane_status_label(row))
+            record_smartlane_raw_label(order, row)
             record_smartlane_shipment_safely(
                 order, row, account=connection.courier_name, warehouse_names=warehouse_names
             )
@@ -1779,7 +1848,7 @@ def _apply_platform_smartlane_row(order, consignment, raw_status, row, oms_servi
     Ready to Print, then the status), minus absorbing. Returns True if the
     order visibly changed."""
     changed = False
-    oms_services.record_courier_status(order, smartlane_status_label(row))
+    record_smartlane_raw_label(order, row)
     if consignment and consignment != order.tracking_number:
         order.tracking_number = _truncate(consignment, 100)
         order.save(update_fields=["tracking_number", "updated_at"])

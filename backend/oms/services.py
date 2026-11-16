@@ -1098,6 +1098,25 @@ def mark_delivered(order, *, actor_user_id=None):
     )
 
 
+def mark_disputed_by_courier(order, *, courier_label, actor_user_id=None):
+    """The courier reports a dispute - the customer says the parcel never
+    arrived. FynkTech's sheet (Smartlane) puts it in Undelivered, even when
+    it was already Delivered: a Delivered order is moved back (its delivered
+    time cleared, the move logged). Returns True if the order moved; an
+    order already Undelivered, or Returned / Cancelled, is left alone."""
+    if order.status == "attempt" or order.status in ("returned", "cancelled"):
+        return False
+    note = f"Dispute reported by {courier_label} - not received by customer"
+    if order.status == "delivered":
+        _force_transition(order, "attempt", actor_user_id=actor_user_id, note=note,
+                          extra_fields={"delivered_at": None})
+        return True
+    if order.status in ("dispatched", "out_for_delivery"):
+        _transition(order, "attempt", actor_user_id=actor_user_id, note=note)
+        return True
+    return False
+
+
 def _release_courier_booking(order, *, actor_user_id=None, propagate_to_courier=True,
                              note="Order cancelled by Smartlane/staff", strict=False):
     """Undoes the courier side of a booking: asks the courier to cancel it
@@ -1759,6 +1778,23 @@ def _smartlane_courier_names():
     return set(SmartlaneConnection.COURIER_NAMES.values())
 
 
+def _used_with_smartlane(order):
+    """Whether Smartlane cancelled an earlier booking of this order that
+    went out under its current order number."""
+    from integrations.models import SmartlaneShipment
+
+    shipment = SmartlaneShipment.all_objects.filter(order=order).first()
+    if shipment is None or not shipment.cancelled_at:
+        return False
+    from core.platform_service import platform_smartlane_reference
+
+    sent = str(shipment.store_order_id or "").strip()
+    # The store's own booking goes out as the order number; a Dispatch Hub
+    # one as the store-coded platform reference.
+    return bool(sent) and sent in (order.order_number, order.order_number.lstrip("#"),
+                                   platform_smartlane_reference(order))
+
+
 def push_order_to_smartlane(order, *, actor_user_id=None, force=False, account="own", via_platform=False):
     """Submits this order to Smartlane and moves it to Booking Pending -
     the Smartlane-assigned equivalent of the manual Approve/Dispatch path,
@@ -1822,6 +1858,13 @@ def push_order_to_smartlane(order, *, actor_user_id=None, force=False, account="
 
     if account not in SmartlaneConnection.COURIER_NAMES:
         raise SmartlaneBookingError(f"Unknown booking account {account!r}.")
+    # Booked with Smartlane before under this same order number and
+    # cancelled there (which keeps the number - FynkTech's sheet): it goes
+    # out under its next store order ID, saved once Smartlane accepts it.
+    old_number = order.order_number
+    new_number = next_rebooking_number(order) if _used_with_smartlane(order) else None
+    if new_number:
+        order.order_number = new_number
     platform_reference = ""
     if via_platform and account == SmartlaneConnection.KIND_OWN:
         from core.platform_service import platform_organization_id, platform_smartlane_reference
@@ -1854,8 +1897,12 @@ def push_order_to_smartlane(order, *, actor_user_id=None, force=False, account="
             store_order_id=platform_reference or None,
         )
     except smartlane_client.SmartlaneAPIError as exc:
+        order.order_number = old_number
         logger.error("smartlane booking REJECTED for %s: %s", order.order_number, exc)
         raise SmartlaneBookingError(str(exc)) from exc
+    if new_number:
+        order.order_number = old_number
+        renumber_for_rebooking(order, courier_label="Smartlane", actor_user_id=actor_user_id, new_number=new_number)
 
     courier, _ = Courier.objects.get_or_create(
         organization_id=order.organization_id,

@@ -195,10 +195,13 @@ def _courier_tags():
     """The tags a courier with FynkTech's status sheet gives (Leopards -
     Order.courier_tag): "Rider on the Way", "Waiting for Shipper Advice",
     ..."""
+    from integrations.barqraftar.status_map import ALL_TAGS as BARQRAFTAR_TAGS
     from integrations.leopards.status_map import ALL_TAGS as LEOPARDS_TAGS
     from integrations.postex.status_map import ALL_TAGS as POSTEX_TAGS
 
-    return list(dict.fromkeys([*LEOPARDS_TAGS, *POSTEX_TAGS]))
+    from integrations.smartlane_status_map import ALL_TAGS as SMARTLANE_TAGS
+
+    return list(dict.fromkeys([*LEOPARDS_TAGS, *POSTEX_TAGS, *BARQRAFTAR_TAGS, *SMARTLANE_TAGS]))
 
 
 def _tag_filter_q(tags):

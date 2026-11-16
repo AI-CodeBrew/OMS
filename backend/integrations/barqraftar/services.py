@@ -35,7 +35,7 @@ from core.platform_service import (
 )
 
 from .client import BarqRaftarAPIError
-from . import client
+from . import client, status_map
 from .exceptions import BarqRaftarBookingError
 from .models import BarqRaftarConnection, BarqRaftarShipment, BarqRaftarSyncJob
 
@@ -51,10 +51,14 @@ TERMINAL_STATUSES = {"delivered", "returned", "cancelled"}
 # see apply_barqraftar_status.
 _DISPATCH_CODES = {3, 30, 31, 32}  # picked_up, rfc_origin, in_transit, received_at_fc
 _OUT_FOR_DELIVERY_CODES = {4}  # dispatched (rider assigned/out)
-_ATTEMPT_CODES = {5, 6, 7, 14}  # return_by_consignee, re_attempt_requested, hold_requested, re_attempt_approval
-# A re-attempt after a return was started: the parcel isn't coming back.
-_RE_ATTEMPT_CODES = {6, 14}
-_RETURN_IN_PROGRESS_CODES = {8, 10, 11, 12, 13}  # return_requested..return_rfc_origin
+# return_by_consignee, re_attempt_requested, hold_requested, return_confirmation,
+# re_attempt_approval. Return Confirmation (12) waits for our Shipper Advice
+# (FynkTech's sheet - status_map): Undelivered, not Return in Transit.
+_ATTEMPT_CODES = {5, 6, 7, 12, 14}
+# A re-attempt (or a return still waiting for our advice) after a return was
+# started: the parcel isn't on its way back.
+_RE_ATTEMPT_CODES = {6, 12, 14}
+_RETURN_IN_PROGRESS_CODES = {8, 10, 11, 13}  # return_requested, return_transit, return_in_progress, return_rfc_origin
 _DELIVERED_CODES = {9}
 _RETURNED_CODES = {98}  # returned_to_shipper
 _CANCELLED_CODES = {99}
@@ -376,6 +380,15 @@ def _as_int(value):
     return int(value) if str(value).strip().isdigit() else value
 
 
+def _used_with_barqraftar(order):
+    """Whether an earlier BarqRaftar booking of this order (now inactive)
+    went out under its current order number."""
+    base = order.order_number.lstrip("#") or order.order_number
+    return BarqRaftarShipment.all_objects.filter(
+        organization_id=order.organization_id, order=order, is_active=False, reference_id=base,
+    ).exists()
+
+
 def _next_reference_id(order):
     """order.order_number (without '#'), or -R2/-R3/... if an earlier
     attempt already used the plain form and was cancelled (see
@@ -562,8 +575,16 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False, 
             })
             continue
 
+        # Booked with BarqRaftar before under this same order number (a
+        # booking BarqRaftar cancelled keeps it - see apply_barqraftar_status):
+        # it goes out under its next store order ID, saved once accepted.
+        new_number = None
+        if _used_with_barqraftar(order):
+            from oms import services as oms_services
+
+            new_number = oms_services.next_rebooking_number(order)
         try:
-            reference_id = _next_reference_id(order)
+            reference_id = (new_number or "").lstrip("#") or _next_reference_id(order)
             payload = _build_order_payload(order, connection, city, reference_id, from_city_id)
         except BarqRaftarBookingError as exc:
             results.append({
@@ -574,6 +595,7 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False, 
 
         to_book.append({
             "order_id": str(order_id), "order": order, "reference_id": reference_id, "payload": payload,
+            "new_number": new_number,
         })
 
     if not to_book:
@@ -679,6 +701,13 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False, 
                 continue
 
             try:
+                if b["new_number"]:
+                    from oms import services as oms_services
+
+                    oms_services.renumber_for_rebooking(
+                        b["order"], courier_label="BarqRaftar", actor_user_id=actor_user_id,
+                        new_number=b["new_number"],
+                    )
                 _finalize_booking(
                     b["order"], reference_id=ref, tracking_number=tracking_number,
                     courier=courier, connection=connection, actor_user_id=actor_user_id,
@@ -984,10 +1013,13 @@ def apply_barqraftar_status(order, shipment, status_code, *, tracking_number="",
 
     if status_code in _CANCELLED_CODES:
         # Cancelled on BarqRaftar's side: the booking is gone, not the
-        # order - it goes back to Awaiting Assigning to be booked again.
-        return oms_services.unbook_cancelled_by_courier(
+        # order - FynkTech's sheet sends it back to Awaiting Confirmation
+        # under the SAME order number (it changes only if it is booked with
+        # BarqRaftar again - see book_orders).
+        return oms_services.unbook_cancelled_by_courier_keep_number(
             order, courier_label="BarqRaftar", tracking_number=tracking_number,
             actor_user_id=actor_user_id,
+            tag=status_map.TAG_BOOKING_CANCELLED, sub_status=status_map.SUB_BOOKING_CANCELLED,
         )
 
     if status_code in _OUT_FOR_DELIVERY_CODES or status_code in _ATTEMPT_CODES:
@@ -1041,9 +1073,6 @@ def _apply_fetched_status(shipment, row):
         shipment.status_label = status_label
     if logs:
         shipment.status_logs = logs
-    # BarqRaftar's own word ("Received at FC", "Return Requested") for the
-    # orders list's Sub Status - several of them land on one OMS status.
-    oms_services.record_courier_status(order, status_label)
 
     if not order.tracking_number and shipment.tracking_number:
         order.tracking_number = shipment.tracking_number
@@ -1087,12 +1116,45 @@ def _apply_fetched_status(shipment, row):
             "barqraftar: order %s at %s, ignoring status %s (stale/out of order)",
             order.order_number, order.status, status_code,
         )
-    # The Return in Transit tag: BarqRaftar's own remark, when it gives one.
-    if isinstance(row, dict):
-        oms_services.record_return_reason(order, str(row.get("remarks") or ""))
+    remark = status_map.clean_remark(row.get("remarks")) if isinstance(row, dict) else ""
+    # BarqRaftar's own remark, when it gives one, is the return reason.
+    oms_services.record_return_reason(order, remark)
+    # Sub Status and Tag from FynkTech's BarqRaftar sheet (status_map).
+    order.refresh_from_db()
+    words_changed = record_sheet_words(order, status_code, status_label, remark)
 
-    order.refresh_from_db(fields=["status"])
-    return filled_tracking or (order.status != before_status)
+    return filled_tracking or (order.status != before_status) or words_changed
+
+
+# The statuses an order has while BarqRaftar has the parcel - where the
+# sheet's words (from Picked Up onward) apply.
+_SHEET_STATUSES = {"dispatched", "out_for_delivery", "attempt", "delivered", "returned"}
+_ADVICE_TAGS = {status_map.TAG_REATTEMPT_REQUESTED, status_map.TAG_RETURN_REQUESTED}
+
+
+def record_sheet_words(order, status_code, status_label, remark=""):
+    """Saves the order's Sub Status and Tag from FynkTech's BarqRaftar sheet
+    (status_map) once its status has moved. Before Picked Up (still in
+    Assigning Courier) BarqRaftar's own word stays the Sub Status, as
+    before; so does any status the sheet doesn't have. A repeat of Return
+    Confirmation after our Shipper Advice keeps "Reattempt / Return
+    Requested". Returns whether anything changed."""
+    from oms import services as oms_services
+
+    if status_code in _CANCELLED_CODES:
+        return False  # the cancel itself set "Booking Cancelled"
+    words = status_map.sheet_words(status_code, remark)
+    if words is None or order.status not in _SHEET_STATUSES:
+        return oms_services.record_courier_status(order, status_label)
+    sub_status, tag = words
+    if (
+        (sub_status, tag) == status_map.SUB_WAITING_ADVICE
+        and order.courier_status == sub_status
+        and order.courier_tag in _ADVICE_TAGS
+    ):
+        tag = order.courier_tag
+    reason = remark or None if status_code == status_map.RETURN_BY_CONSIGNEE else None
+    return oms_services.record_courier_words(order, sub_status=sub_status, tag=tag, reason=reason)
 
 
 # --------------------------------------------------------------- Webhook --
@@ -1106,6 +1168,9 @@ def handle_webhook_event(connection, payload):
     never trusted for what status to apply, only for which shipment to
     check."""
     tracking_number, reference_id, _status_code, _status_label = extract_webhook_event(payload)
+    # BarqRaftar's API carries no failed-delivery reason (status_map); kept
+    # in the log in case the webhook does, so it can be mapped later.
+    logger.info("barqraftar webhook payload: %s", str(payload)[:1000])
     if not tracking_number and not reference_id:
         logger.warning("barqraftar webhook: payload had neither a tracking number nor a reference id")
         return

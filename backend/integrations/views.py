@@ -578,7 +578,7 @@ def smartlane_shipment_webhook(request, token):
                 )
                 order = None
             if order:
-                oms_services.record_courier_status(order, services.smartlane_status_label(payload))
+                services.record_smartlane_raw_label(order, payload)
                 services.record_smartlane_shipment_safely(
                     order, payload, account=connection.courier_name
                 )
