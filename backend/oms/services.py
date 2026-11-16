@@ -2742,6 +2742,10 @@ def update_order_detail(order, *, fields, items=None):
             f"Order {order.order_number} is {dict(Order.STATUS_CHOICES).get(order.status, order.status)} "
             "- only orders in Awaiting Confirmation can be edited."
         )
+    if items is not None and not items:
+        # Removing products (the bin in Edit) can't remove the last one -
+        # cancel the order instead.
+        raise InvalidTransition("An order needs at least one product - cancel the order instead.")
     for field, value in fields.items():
         setattr(order, field, value)
     order.save()

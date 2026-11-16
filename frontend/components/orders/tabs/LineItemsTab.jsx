@@ -25,6 +25,19 @@ export default function LineItemsTab({ order, draft, editing, onChange }) {
     );
   }
 
+  // The bin: takes the product off the order (on Save). The total follows -
+  // its price comes off, everything else stays. The last product can't go.
+  function onItemRemove(index) {
+    const item = draft.items[index];
+    if (!window.confirm(`Remove "${item.product_name}" from this order? Its price comes off the total when you Save.`)) {
+      return;
+    }
+    onChange(
+      "items",
+      draft.items.filter((_, i) => i !== index)
+    );
+  }
+
   return (
     <div>
       <div className="grid grid-cols-2 gap-3 rounded-md bg-brand-800 px-4 py-3 text-sm text-white sm:grid-cols-3 lg:grid-cols-6">
@@ -75,17 +88,35 @@ export default function LineItemsTab({ order, draft, editing, onChange }) {
         {items.map((item, index) => (
           <div key={item.id || index} className="rounded-md border border-surface-border bg-white p-3">
             {editing ? (
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                {ITEM_FIELDS.map(([field, label, type]) => (
-                  <EditableField
-                    key={field}
-                    label={label}
-                    type={type}
-                    editing
-                    value={item[field]}
-                    onChange={(v) => onItemChange(index, field, v)}
-                  />
-                ))}
+              <div className="flex items-start gap-3">
+                <div className="grid flex-1 grid-cols-2 gap-3 sm:grid-cols-3">
+                  {ITEM_FIELDS.map(([field, label, type]) => (
+                    <EditableField
+                      key={field}
+                      label={label}
+                      type={type}
+                      editing
+                      value={item[field]}
+                      onChange={(v) => onItemChange(index, field, v)}
+                    />
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onItemRemove(index)}
+                  disabled={items.length <= 1}
+                  title={items.length <= 1 ? "An order needs at least one product" : "Remove this product"}
+                  aria-label="Remove this product"
+                  className="mt-5 shrink-0 rounded-md border border-red-200 p-2 text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:border-surface-border disabled:text-slate-300 disabled:hover:bg-transparent"
+                >
+                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M19 7l-.87 12.14A2 2 0 0116.14 21H7.86a2 2 0 01-1.99-1.86L5 7m5 4v6m4-6v6M4 7h16M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3"
+                    />
+                  </svg>
+                </button>
               </div>
             ) : (
               <div className="flex items-center justify-between gap-3">
