@@ -122,6 +122,20 @@ def _normalize_status(label):
     return re.sub(r"\s+", " ", str(label or "").strip().lower())
 
 
+def _history_stage(entry):
+    """One history entry's stage. Code 0008 is shared: "Delivery Under
+    Review" and "Merchant Request For Re-Attempt" are still an attempt, but
+    "Merchant Request For Return" / "Return Process Initiated" (seen live
+    under 0008, 2026-11-16) mean the parcel is coming back."""
+    code = str(entry.get("transactionStatusMessageCode") or "")
+    stage = _STAGE_BY_HISTORY_CODE.get(code)
+    if code == "0008":
+        message = _normalize_status(entry.get("transactionStatusMessage"))
+        if "return" in message and "attempt" not in message:
+            return "return_in_progress"
+    return stage
+
+
 def _return_under_way(history):
     """True when the newest history entry that says which way the parcel is
     heading is a return one. Transit codes (0003/0031/0033/0035) are used
@@ -130,7 +144,7 @@ def _return_under_way(history):
     for entry in reversed(history or []):
         if not isinstance(entry, dict):
             continue
-        stage = _STAGE_BY_HISTORY_CODE.get(str(entry.get("transactionStatusMessageCode") or ""))
+        stage = _history_stage(entry)
         if stage in (None, "dispatched"):
             continue
         return stage == "return_in_progress"
@@ -177,6 +191,12 @@ def status_stage(label, history=None):
     )
     if is_transit and _return_under_way(history):
         return "return_in_progress"
+    # Same for the attempt texts: PostEx leaves "Attempted" / "Delivery
+    # Under Review" as the status after a return has been started ("Return
+    # Process Initiated" in the history) - that parcel belongs in Return in
+    # Transit, not Undelivered.
+    if stage == "attempt" and _return_under_way(history):
+        return "return_in_progress"
     if stage:
         return stage
     # "En-Route to Lahore warehouse" - the city is filled in per parcel.
@@ -184,7 +204,7 @@ def status_stage(label, history=None):
         return "dispatched"
     for entry in reversed(history or []):
         if isinstance(entry, dict):
-            stage = _STAGE_BY_HISTORY_CODE.get(str(entry.get("transactionStatusMessageCode") or ""))
+            stage = _history_stage(entry)
             if stage:
                 return stage
     return None

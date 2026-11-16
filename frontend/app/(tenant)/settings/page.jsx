@@ -805,7 +805,13 @@ export default function SettingsPage() {
     const asked = searchParams.get("tab") || "account";
     return asked === "rbac" || asked === "roles" ? "team" : asked;
   });
-  const tabs = SETTINGS_TABS.filter((t) => !t.adminOnly || isOrgAdmin);
+  // A super admin inside a store never gets Stores: creating or switching a
+  // store there would turn the super admin's own login into that store's
+  // admin (it happened with "sufyan" in Maisonnor).
+  const isSuperAdmin = user?.role === "super_admin";
+  const tabs = SETTINGS_TABS.filter(
+    (t) => (!t.adminOnly || isOrgAdmin) && !(t.key === "stores" && isSuperAdmin),
+  );
 
   return (
     <div>
@@ -828,7 +834,7 @@ export default function SettingsPage() {
       </div>
       <div className="mt-6">
         {tab === "account" ? <AccountTab user={user} /> : null}
-        {tab === "stores" && isOrgAdmin ? <StoresTab /> : null}
+        {tab === "stores" && isOrgAdmin && !isSuperAdmin ? <StoresTab /> : null}
         {tab === "team" && isOrgAdmin ? <TeamTab /> : null}
       </div>
     </div>

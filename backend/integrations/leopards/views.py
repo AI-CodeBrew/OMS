@@ -2,6 +2,7 @@ import hmac
 import io
 import json
 import logging
+import re
 import threading
 from datetime import date, timedelta
 
@@ -21,7 +22,9 @@ from core.rbac import write_audit_log
 
 from . import client, services
 from .exceptions import LeopardsAPIError, LeopardsBookingError
-from integrations.print_groups import group_by_account, group_failed, nothing_printed
+from integrations.print_groups import (
+    by_shared_account, group_by_account, group_failed, nothing_printed, save_load_sheet,
+)
 
 from .models import LeopardsConnection, LeopardsShipment, LeopardsSyncJob, new_webhook_secret
 from .serializers import LeopardsConnectionSerializer, LeopardsStatusSerializer, LeopardsSyncJobSerializer
@@ -483,7 +486,7 @@ class LeopardsShipmentActionView(APIView):
         return Response({"detail": f"Unknown action {action_name!r}"}, status=http_status.HTTP_400_BAD_REQUEST)
 
 
-def _save_print_batch(*, organization_id, order_numbers, content, actor_user_id, kind):
+def _save_print_batch(*, organization_id, order_numbers, content, actor_user_id, kind, mark_printed=True):
     """oms.batch_services.save_print_batch, as Leopards (PRINT_BATCH_COURIER)
     - same as PostEx's and BarqRaftar's: files the PDF into its dispatch
     batch for the Batch page, and an airway bill tags its orders Printed
@@ -495,6 +498,7 @@ def _save_print_batch(*, organization_id, order_numbers, content, actor_user_id,
     save_print_batch(
         organization_id=organization_id, kind=kind, courier=PRINT_BATCH_COURIER, order_numbers=order_numbers,
         content=content, actor_user_id=actor_user_id, filename=f"leopards_{kind}.pdf",
+        mark_printed=mark_printed,
     )
 
 
@@ -546,36 +550,88 @@ def _merge_pdfs(pdf_byte_list):
 _LOAD_SHEET_HEADING = "booked packets summary report"
 
 
-def _load_sheet_pages_only(pdf_bytes):
+# Each copy's first page opens with its name ("Courier Copy | Booked
+# Packets Summary Report | ..."); a long copy runs on over pages without it.
+_COPY_NAME = re.compile(r"\b(courier|operation|customer)\s+copy\b")
+# The copy the load sheet download leaves out - the hand-over only needs the
+# courier's and our own (customer) copy.
+_SKIPPED_COPIES = {"operation"}
+# A Leopards CN as it appears in the sheet's rows ("LE7549186958").
+_CN = re.compile(r"[A-Z]{2}\d{8,}")
+
+
+def _load_sheet_pages_only(pdf_bytes, expected_cns=()):
     """Leopards' downloadLoadSheet PDF opens with each packet's airway bill
-    slip, followed by the summary copies. The load sheet should be the
-    summary only (the slips are what "Print Airway Bill" is for), so the
-    pages before the first summary page are dropped. Everything from that
-    page on is kept: a long sheet runs over several pages and only the first
-    page of each copy carries the heading - keeping just the heading pages
-    cut a 78-parcel sheet down to 49 rows. Anything unexpected - no page
-    carries the heading (a layout change), nothing to drop, or the PDF can't
-    be read - hands back Leopards' PDF untouched, never an empty one."""
+    slip, followed by three copies of the summary: Courier, Operation and
+    Customer. The load sheet should be the Courier and Customer copies only
+    (the slips are what "Print Airway Bill" is for).
+
+    Each page from the first summary page on is given its copy: a page whose
+    text names a copy starts it, and the pages after it (a long sheet runs
+    over several pages - only the first carries the name) belong to it. The
+    Operation copy is then dropped - but only when every kept copy lists
+    every CN on the sheet and every one of `expected_cns`. If any of that
+    doesn't hold, the summary is kept whole (all three copies), so an order
+    can never go missing - at worst an extra copy prints. Anything unexpected
+    - no summary heading (a layout change) or a PDF that can't be read -
+    hands back Leopards' PDF untouched, never an empty one."""
     from pypdf import PdfReader, PdfWriter
 
     try:
         reader = PdfReader(io.BytesIO(pdf_bytes))
-        first = next(
-            (index for index, page in enumerate(reader.pages)
-             if _LOAD_SHEET_HEADING in (page.extract_text() or "").lower()),
-            None,
-        )
-        if not first:  # None (no heading) or 0 (no slips in front)
+        texts = [page.extract_text() or "" for page in reader.pages]
+        first = next((i for i, t in enumerate(texts) if _LOAD_SHEET_HEADING in t.lower()), None)
+        if first is None:
+            return pdf_bytes
+
+        summary = list(range(first, len(texts)))
+        keep = _pages_without_skipped_copies(texts, summary, expected_cns)
+        if keep == list(range(len(texts))):
             return pdf_bytes
         writer = PdfWriter()
-        for index in range(first, len(reader.pages)):
+        for index in keep:
             writer.add_page(reader.pages[index])
         buffer = io.BytesIO()
         writer.write(buffer)
         return buffer.getvalue()
     except Exception:
-        logger.exception("leopards: could not trim the slip pages off a load sheet - returning it as is")
+        logger.exception("leopards: could not trim a load sheet - returning it as is")
         return pdf_bytes
+
+
+def _pages_without_skipped_copies(texts, summary, expected_cns):
+    """The summary pages minus the _SKIPPED_COPIES, or all of `summary` when
+    that isn't provably safe (see _load_sheet_pages_only)."""
+    copy_of = {}
+    current = None
+    for index in summary:
+        if _LOAD_SHEET_HEADING in texts[index].lower():
+            found = _COPY_NAME.search(texts[index].lower())
+            current = found.group(1) if found else None
+        copy_of[index] = current
+
+    cns_by_copy = {}
+    for index in summary:
+        cns_by_copy.setdefault(copy_of[index], set()).update(_CN.findall(texts[index]))
+    all_cns = set().union(*cns_by_copy.values()) if cns_by_copy else set()
+    kept_copies = [c for c in cns_by_copy if c not in _SKIPPED_COPIES]
+
+    safe = (
+        None not in cns_by_copy  # every summary page has a known copy
+        and any(c in cns_by_copy for c in _SKIPPED_COPIES)  # something to drop
+        and kept_copies
+        and all_cns
+        and all(cns_by_copy[c] == all_cns for c in kept_copies)
+        and set(expected_cns) <= all_cns
+    )
+    if not safe:
+        if any(c in cns_by_copy for c in _SKIPPED_COPIES):
+            logger.warning(
+                "leopards: load sheet kept with all its copies - copies %s, expected %d CN(s), found %d",
+                {c: len(v) for c, v in cns_by_copy.items()}, len(set(expected_cns)), len(all_cns),
+            )
+        return summary
+    return [i for i in summary if copy_of[i] not in _SKIPPED_COPIES]
 
 
 def _is_pdf(content, content_type):
@@ -670,7 +726,9 @@ class LeopardsAirwayBillView(APIView):
 
 def render_load_sheets(order_ids, actor_user_id, problems=None):
     """Leopards' own load sheet PDF for `order_ids`' active shipments, per
-    (store, booking account). This is the hand-over step on Leopards' side:
+    booking account - the stores booked through one account (FynkTech's)
+    share one sheet (print_groups.by_shared_account; filed by
+    save_load_sheet). This is the hand-over step on Leopards' side:
     generateLoadSheet makes the sheet (once per parcel - the id is kept on
     the shipment), downloadLoadSheet returns its PDF (without the airway bill
     slips Leopards puts in front - see _load_sheet_pages_only), and unlike
@@ -683,11 +741,12 @@ def render_load_sheets(order_ids, actor_user_id, problems=None):
     if error:
         return None, error
     pdf_parts = []
-    for organization_id, connection, shipments in groups:
+    for _organization_ids, connection, shipments in by_shared_account(groups):
         try:
             # Sheets already made are downloaded again by their id.
             for sheet_id in dict.fromkeys(s.load_sheet_id for s in shipments if s.load_sheet_id):
-                pdf_parts.append(_load_sheet_pages_only(client.download_load_sheet_pdf(connection, sheet_id)))
+                on_sheet = [s.tracking_number for s in shipments if s.load_sheet_id == sheet_id]
+                pdf_parts.append(_load_sheet_pages_only(client.download_load_sheet_pdf(connection, sheet_id), on_sheet))
 
             fresh = [s for s in shipments if not s.load_sheet_id]
             if fresh:
@@ -696,13 +755,11 @@ def render_load_sheets(order_ids, actor_user_id, problems=None):
                     courier_name=connection.load_sheet_courier_name,
                     courier_code=connection.load_sheet_courier_code,
                 )
-                pdf_bytes = _load_sheet_pages_only(client.download_load_sheet_pdf(connection, sheet_id))
-                services.mark_load_sheet_generated(fresh, sheet_id)
-                _save_print_batch(
-                    organization_id=organization_id,
-                    order_numbers=[s.order.order_number for s in fresh],
-                    content=pdf_bytes, actor_user_id=actor_user_id, kind="loadsheet",
+                pdf_bytes = _load_sheet_pages_only(
+                    client.download_load_sheet_pdf(connection, sheet_id), [s.tracking_number for s in fresh],
                 )
+                services.mark_load_sheet_generated(fresh, sheet_id)
+                save_load_sheet(_save_print_batch, fresh, content=pdf_bytes, actor_user_id=actor_user_id)
                 pdf_parts.append(pdf_bytes)
         except LeopardsAPIError as exc:
             failure = group_failed(problems, exc, shipments)

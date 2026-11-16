@@ -21,7 +21,9 @@ from core.rbac import write_audit_log
 
 from . import client, services
 from .exceptions import PostExAPIError, PostExBookingError
-from integrations.print_groups import group_by_account, group_failed, nothing_printed
+from integrations.print_groups import (
+    by_shared_account, group_by_account, group_failed, nothing_printed, save_load_sheet,
+)
 
 from .models import WEBHOOK_HEADER_KEY, PostExConnection, PostExShipment, PostExSyncJob, new_webhook_secret
 from .serializers import PostExConnectionSerializer, PostExStatusSerializer, PostExSyncJobSerializer
@@ -498,7 +500,7 @@ class PostExShipmentActionView(APIView):
         return Response({"detail": f"Unknown action {action_name!r}"}, status=http_status.HTTP_400_BAD_REQUEST)
 
 
-def _save_print_batch(*, organization_id, order_numbers, content, actor_user_id, kind):
+def _save_print_batch(*, organization_id, order_numbers, content, actor_user_id, kind, mark_printed=True):
     """oms.batch_services.save_print_batch, as postex - files the PDF
     into its dispatch batch. Best-effort: a storage hiccup must not block
     the PDF the user is downloading."""
@@ -507,6 +509,7 @@ def _save_print_batch(*, organization_id, order_numbers, content, actor_user_id,
     save_print_batch(
         organization_id=organization_id, kind=kind, courier="postex", order_numbers=order_numbers,
         content=content, actor_user_id=actor_user_id, filename=f"postex_{kind}.pdf",
+        mark_printed=mark_printed,
     )
 
 
@@ -638,22 +641,27 @@ class PostExAirwayBillView(APIView):
         return HttpResponse(merged, content_type="application/pdf")
 
 
-def _saved_load_sheets(organization_id, shipments):
+def _saved_load_sheets(shipments):
     """The load sheets already generated for `shipments`, as saved then.
     PostEx puts a parcel on one load sheet only - generating it moves the
     parcel Unbooked -> Booked, and asking again is refused ("INVALID
     TRACKING NUMBER(S)", seen live when a store re-downloaded a sheet the
     Dispatch Hub had already made) - so a re-download is served from that
-    copy. Returns (pdf parts, order numbers with no saved copy)."""
+    copy - kept in the parcel's own store, or in FynkTech's (platform)
+    history for a sheet several stores shared (print_groups.save_load_sheet).
+    Returns (pdf parts, order numbers with no saved copy)."""
+    from core.platform_service import platform_organization_id
     from oms.models import PrintBatch
+
+    platform_id = platform_organization_id()
 
     parts, used, missing = [], set(), []
     for shipment in shipments:
         number = shipment.order.order_number
         batch = (
             PrintBatch.all_objects.filter(
-                organization_id=organization_id, kind="loadsheet", courier="postex",
-                order_numbers__contains=[number],
+                organization_id__in=[i for i in (shipment.organization_id, platform_id) if i],
+                kind="loadsheet", courier="postex", order_numbers__contains=[number],
             )
             .exclude(file="")
             .order_by("-created_at")
@@ -671,8 +679,10 @@ def _saved_load_sheets(organization_id, shipments):
 
 
 def render_load_sheets(order_ids, actor_user_id, problems=None):
-    """The load sheets of `order_ids`, per (store, booking account), same
-    as the airway bills above. Generating one hands the parcels over.
+    """The load sheets of `order_ids`, per booking account and pickup
+    address - the stores booked through one account (FynkTech's) share a
+    sheet when they share a pickup address (print_groups.by_shared_account;
+    filed by save_load_sheet). Generating one hands the parcels over.
     Returns (pdf parts, error response). With `problems` a failing group is
     skipped and noted there (integrations/print_groups.py)."""
     from oms import services as oms_services
@@ -681,10 +691,10 @@ def render_load_sheets(order_ids, actor_user_id, problems=None):
     if error:
         return None, error
     pdf_parts = []
-    for organization_id, connection, shipments in groups:
+    for _organization_ids, connection, shipments in by_shared_account(groups):
         handed_over = [s for s in shipments if s.load_sheet_at]
         if handed_over:
-            saved, missing = _saved_load_sheets(organization_id, handed_over)
+            saved, missing = _saved_load_sheets(handed_over)
             if missing:
                 failure = group_failed(
                     problems,
@@ -718,11 +728,7 @@ def render_load_sheets(order_ids, actor_user_id, problems=None):
             on_sheet += fresh
 
             services.mark_load_sheet_generated(fresh)
-            _save_print_batch(
-                organization_id=organization_id,
-                order_numbers=[s.order.order_number for s in fresh],
-                content=pdf_bytes, actor_user_id=actor_user_id, kind="loadsheet",
-            )
+            save_load_sheet(_save_print_batch, fresh, content=pdf_bytes, actor_user_id=actor_user_id)
             pdf_parts.append(pdf_bytes)
 
         # Every one of them is on a load sheet now - handed over, so out

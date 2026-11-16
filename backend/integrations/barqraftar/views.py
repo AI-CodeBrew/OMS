@@ -22,7 +22,9 @@ from core.rbac import write_audit_log
 from . import client, services
 from .client import BarqRaftarAPIError
 from .exceptions import BarqRaftarBookingError
-from integrations.print_groups import group_by_account, group_failed, nothing_printed
+from integrations.print_groups import (
+    by_shared_account, group_by_account, group_failed, nothing_printed, save_load_sheet,
+)
 
 from .models import BarqRaftarConnection, BarqRaftarSyncJob
 from .serializers import (
@@ -499,7 +501,8 @@ class BarqRaftarShipmentActionView(APIView):
         return Response({"detail": f"Unknown action {action_name!r}"}, status=http_status.HTTP_400_BAD_REQUEST)
 
 
-def _save_print_batch(*, organization_id, order_numbers, content, actor_user_id, kind="airway_bill"):
+def _save_print_batch(*, organization_id, order_numbers, content, actor_user_id, kind="airway_bill",
+                      mark_printed=True):
     """oms.batch_services.save_print_batch, as barqraftar - files the PDF
     into its dispatch batch. Best-effort: a storage hiccup must not block
     the PDF the user is downloading."""
@@ -508,6 +511,7 @@ def _save_print_batch(*, organization_id, order_numbers, content, actor_user_id,
     save_print_batch(
         organization_id=organization_id, kind=kind, courier="barqraftar", order_numbers=order_numbers,
         content=content, actor_user_id=actor_user_id, filename=f"{kind}.pdf",
+        mark_printed=mark_printed,
     )
 
 
@@ -554,9 +558,12 @@ def _merge_pdfs(pdf_byte_list):
 
 
 def render_load_sheets(order_ids, actor_user_id, problems=None):
-    """Our own Goods Load Sheet for `order_ids`, per (store, booking
-    account). Hands the parcels over. Returns (pdf parts, error response).
-    With `problems` a failing group is skipped and noted there."""
+    """Our own Goods Load Sheet for `order_ids`, per booking account - the
+    stores booked through one account (FynkTech's) share one sheet, each
+    store a section that follows straight on (print_groups.by_shared_account,
+    loadsheet.build_html; filed by save_load_sheet). Hands the parcels over.
+    Returns (pdf parts, error response). With `problems` a failing group is
+    skipped and noted there."""
     from core.models import Organization
     from oms import services as oms_services
 
@@ -567,14 +574,22 @@ def render_load_sheets(order_ids, actor_user_id, problems=None):
         return None, error
 
     pdf_parts = []
-    for organization_id, connection, shipments in groups:
+    for organization_ids, connection, shipments in by_shared_account(groups):
         try:
-            rows, shipper_name = loadsheet.build_rows(connection, shipments)
-            org = Organization.objects.filter(id=organization_id).first()
+            rows, _shipper_name = loadsheet.build_rows(connection, shipments)
+            names = {
+                str(oid): name
+                for oid, name in Organization.objects.filter(id__in=organization_ids).values_list("id", "name")
+            }
+            sections = {}
+            for shipment, row in zip(shipments, rows):
+                section = sections.setdefault(str(shipment.organization_id), {"customer_name": "", "rows": []})
+                section["customer_name"] = section["customer_name"] or row.get("shipper") or ""
+                section["rows"].append(row)
+            for organization_id, section in sections.items():
+                section["customer_name"] = section["customer_name"] or names.get(organization_id, "")
             html_doc = loadsheet.build_html(
-                customer_name=shipper_name or (org.name if org else ""),
-                account_number=connection.account_number,
-                rows=rows,
+                account_number=connection.account_number, sections=list(sections.values()),
             )
             pdf_bytes = loadsheet.render_pdf(html_doc)
         except BarqRaftarAPIError as exc:
@@ -583,11 +598,7 @@ def render_load_sheets(order_ids, actor_user_id, problems=None):
                 return None, failure
             continue
 
-        _save_print_batch(
-            organization_id=organization_id,
-            order_numbers=[s.order.order_number for s in shipments],
-            content=pdf_bytes, actor_user_id=actor_user_id, kind="loadsheet",
-        )
+        save_load_sheet(_save_print_batch, shipments, content=pdf_bytes, actor_user_id=actor_user_id)
         pdf_parts.append(pdf_bytes)
         # Handed over - out of Ready to Print, into Awaiting Dispatched.
         oms_services.mark_orders_handed_over(

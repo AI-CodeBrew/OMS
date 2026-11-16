@@ -46,7 +46,9 @@ def build_rows(connection, shipments):
     """One row per shipment, in booking order. Values come from BarqRaftar's
     own record of each consignment where it has one (so the sheet matches
     their portal's), falling back to our local order data only for a
-    consignment their API didn't return. Returns (rows, shipper_name)."""
+    consignment their API didn't return. Returns (rows, shipper_name); each
+    row also carries its own "shipper" (BarqRaftar's shipper_name for it, ""
+    when unknown) - a sheet shared by several stores is split on it."""
     tracking_numbers = [s.tracking_number for s in shipments]
     remote = {}
     for start in range(0, len(tracking_numbers), 50):
@@ -63,6 +65,7 @@ def build_rows(connection, shipments):
         if data:
             shipper_name = shipper_name or str(data.get("shipper_name") or "")
             rows.append({
+                "shipper": str(data.get("shipper_name") or ""),
                 "consignment": shipment.tracking_number,
                 "consignee": str(data.get("customer_name") or order.customer_name or ""),
                 "reference": str(data.get("customer_reference") or shipment.reference_id),
@@ -74,6 +77,7 @@ def build_rows(connection, shipments):
             logger.warning("barqraftar load sheet: %s not returned by BarqRaftar, using local data",
                            shipment.tracking_number)
             rows.append({
+                "shipper": "",
                 "consignment": shipment.tracking_number,
                 "consignee": order.customer_name or "",
                 "reference": shipment.reference_id,
@@ -88,17 +92,8 @@ def _fmt_total(amount):
     return f"{amount:.0f}" if float(amount).is_integer() else f"{amount:.2f}"
 
 
-def build_html(*, customer_name, account_number, rows, generated_at=None):
-    """Same layout as BarqRaftar's own portal "GOODS LOAD SHEET" (title, the
-    customer/account/date block, the 7-column table with a Total row, the
-    disclaimer, and the customer / pick-up staff signature table). The one
-    deliberate difference: the small heading above the title says the sheet
-    was generated from OMS, rather than claiming to be BarqRaftar's portal."""
-    generated_at = (generated_at or datetime.now(_PKT)).astimezone(_PKT)
-    stamp = generated_at.strftime("%m/%d/%Y %I:%M:%S ") + generated_at.strftime("%p").lower()
+def _table(rows):
     esc = html.escape
-    customer = esc(customer_name or "")
-
     body_rows = "".join(
         f"<tr><td>{i}</td><td>{esc(r['consignment'])}</td><td>{esc(r['consignee'])}</td>"
         f"<td>{esc(r['reference'])}</td><td>{esc(r['destination'])}</td>"
@@ -107,6 +102,56 @@ def build_html(*, customer_name, account_number, rows, generated_at=None):
     )
     total_pieces = sum(r["pieces"] for r in rows)
     total_cod = sum(r["cod"] for r in rows)
+    return f"""<table class="sheet">
+    <thead><tr>
+      <th>Sr. #</th><th>Consignment#</th><th>Consignee Name#</th><th>Cust. Ref. #</th>
+      <th>Destination</th><th>Pieces</th><th>COD Amount</th>
+    </tr></thead>
+    <tbody>
+      {body_rows}
+      <tr class="total"><td class="label" colspan="5">Total:</td><td>{total_pieces}</td><td>{_fmt_total(total_cod)}</td></tr>
+    </tbody>
+  </table>"""
+
+
+def build_html(*, account_number, customer_name="", rows=None, sections=None, generated_at=None):
+    """Same layout as BarqRaftar's own portal "GOODS LOAD SHEET" (title, the
+    customer/account/date block, the 7-column table with a Total row, the
+    disclaimer, and the customer / pick-up staff signature table). The one
+    deliberate difference: the small heading above the title says the sheet
+    was generated from OMS, rather than claiming to be BarqRaftar's portal.
+
+    One store: `customer_name` + `rows`, exactly that layout. Several stores
+    booked through one account (`sections`: [{"customer_name", "rows"}]):
+    one sheet, each store under its own "Customer Name" line with its own
+    table and total, the next store following straight on (no new page), a
+    grand total, and the disclaimer and signature boxes once at the end."""
+    if sections is None:
+        sections = [{"customer_name": customer_name, "rows": rows or []}]
+    generated_at = (generated_at or datetime.now(_PKT)).astimezone(_PKT)
+    stamp = generated_at.strftime("%m/%d/%Y %I:%M:%S ") + generated_at.strftime("%p").lower()
+    esc = html.escape
+    single = len(sections) == 1
+    customer = esc(", ".join(dict.fromkeys(sec["customer_name"] or "" for sec in sections if sec["customer_name"])))
+
+    if single:
+        top_customer = f"<div><b>Customer Name:</b> {customer}</div>"
+        body = _table(sections[0]["rows"])
+    else:
+        top_customer = ""
+        parts = [
+            f'<div class="store"><b>Customer Name:</b> {esc(sec["customer_name"] or "")}'
+            f' <span class="count">({len(sec["rows"])} parcel{"" if len(sec["rows"]) == 1 else "s"})</span></div>'
+            + _table(sec["rows"])
+            for sec in sections
+        ]
+        all_rows = [r for sec in sections for r in sec["rows"]]
+        parts.append(
+            f'<div class="grand">Grand Total: {len(all_rows)} parcels, '
+            f'{sum(r["pieces"] for r in all_rows)} pieces, '
+            f'COD {_fmt_total(sum(r["cod"] for r in all_rows))}</div>'
+        )
+        body = "".join(parts)
 
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>Goods Load Sheet</title>
@@ -117,9 +162,13 @@ def build_html(*, customer_name, account_number, rows, generated_at=None):
   h1 {{ text-align: center; font-size: 24px; font-weight: 600; margin: 0 0 18px; letter-spacing: .5px; }}
   .info {{ margin: 0 0 14px 26px; line-height: 1.6; }}
   .info b {{ font-weight: 700; }}
+  .store {{ margin: 16px 0 6px; font-size: 15px; page-break-after: avoid; }}
+  .store .count {{ font-size: 12px; color: #444; }}
+  .grand {{ margin: 12px 0 0; font-size: 16px; font-weight: 700; text-align: right; }}
   table {{ width: 100%; border-collapse: collapse; }}
   .sheet th, .sheet td {{ border: 1px solid #000; padding: 5px 6px; text-align: center; }}
   .sheet th {{ font-weight: 700; }}
+  .sheet thead {{ display: table-header-group; }}
   .sheet tr {{ page-break-inside: avoid; }}
   .sheet .total td {{ font-size: 20px; font-weight: 700; padding: 6px; }}
   .sheet .total .label {{ text-align: right; }}
@@ -132,22 +181,13 @@ def build_html(*, customer_name, account_number, rows, generated_at=None):
   <p class="portal">Generated from OMS</p>
   <h1>GOODS LOAD SHEET</h1>
   <div class="info">
-    <div><b>Customer Name:</b> {customer}</div>
+    {top_customer}
     <div><b>Barqraftar Express Account #:</b> {esc(account_number or "")}</div>
     <div><b>Booking Date:</b> {stamp}</div>
     <div><b>Report Run Time:</b> {stamp}</div>
     <div><b>Following Goods / Shipments have been received.</b></div>
   </div>
-  <table class="sheet">
-    <thead><tr>
-      <th>Sr. #</th><th>Consignment#</th><th>Consignee Name#</th><th>Cust. Ref. #</th>
-      <th>Destination</th><th>Pieces</th><th>COD Amount</th>
-    </tr></thead>
-    <tbody>
-      {body_rows}
-      <tr class="total"><td class="label" colspan="5">Total:</td><td>{total_pieces}</td><td>{_fmt_total(total_cod)}</td></tr>
-    </tbody>
-  </table>
+  {body}
   <h2>Disclaimer</h2>
   <div class="disclaimer">
     <p><b>{customer}</b> is to ensure that the items being handed over to Barqraftar Express Logistic's pick-up staff are pasted with right address label</p>

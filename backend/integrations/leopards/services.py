@@ -511,11 +511,12 @@ def _next_reference(order):
     return f"{base}-R{n}"
 
 
-# Leopards' Product Detail column is filled from bookPacket's
-# `special_instructions` (confirmed by Leopards support). They haven't given a
-# maximum length, so this is a conservative cap - change it here if they do.
+# Leopards' newer bookPacket payload (2026-11-16) has its own
+# `product_details` and `items`; before it, the Product Detail column was
+# filled from `special_instructions` (confirmed by Leopards support). No
+# maximum length was given, so this is a conservative cap for both - change
+# it here if they say.
 SPECIAL_INSTRUCTIONS_MAX = 250
-_NOTE_MAX = 80
 
 
 def _one_line(text):
@@ -524,18 +525,9 @@ def _one_line(text):
     return " ".join("".join(c if c.isprintable() else " " for c in str(text or "")).split())
 
 
-def _product_details(order, connection):
-    """The bookPacket `special_instructions`: the order's items ("Comb x 2,
-    Brush x 1"), then the connection's default note after " | " when there is
-    one, cut to SPECIAL_INSTRUCTIONS_MAX - at an item boundary where possible,
-    with "..." - and "N/A" when there is nothing at all (Leopards requires
-    the field)."""
-    note = _one_line(connection.default_notes)
-    if len(note) > _NOTE_MAX:
-        note = note[: _NOTE_MAX - 3].rstrip() + "..."
-    suffix = f" | {note}" if note else ""
-    budget = SPECIAL_INSTRUCTIONS_MAX - len(suffix)
-
+def _items_text(order, budget):
+    """The order's items ("Comb x 2, Brush x 1"), cut to `budget` - at an
+    item boundary where possible, with "..." - or "" when it has none."""
     # order.items is prefetched by book_orders - no query per order.
     parts = [
         f"{_one_line(item.product_name)} x {item.quantity}"
@@ -553,7 +545,30 @@ def _product_details(order, connection):
         if not kept:  # even the first item alone is too long
             kept = parts[0][: max(budget - 3, 0)].rstrip()
         items = kept + "..."
-    return (items + suffix) if items else (note or "N/A")
+    return items
+
+
+def _product_details(order):
+    """bookPacket's `product_details` (Leopards' newer payload, 2026-11-16):
+    the order's items, "N/A" when it has none."""
+    return _items_text(order, SPECIAL_INSTRUCTIONS_MAX) or "N/A"
+
+
+def _special_instructions(order, connection):
+    """bookPacket's `special_instructions`: the connection's default note
+    (rider-facing). Products now go in `product_details`; with no note set
+    the products are repeated here, so the field Leopards requires is never
+    empty and a slip that still prints this field keeps showing them."""
+    note = _one_line(connection.default_notes)
+    if len(note) > SPECIAL_INSTRUCTIONS_MAX:
+        note = note[: SPECIAL_INSTRUCTIONS_MAX - 3].rstrip() + "..."
+    return note or _product_details(order)
+
+
+def _item_count(order):
+    """bookPacket's `items`: how many units the parcel holds (sum of the
+    line quantities), at least 1."""
+    return str(max(sum(int(item.quantity or 0) for item in order.items.all()), 1))
 
 
 def _build_packet(order, connection, city, reference, shipper):
@@ -599,9 +614,9 @@ def _build_packet(order, connection, city, reference, shipper):
 
     packet = {
         "booked_packet_weight": _order_weight(order, connection),
-        "booked_packet_vol_weight_w": "",
-        "booked_packet_vol_weight_h": "",
-        "booked_packet_vol_weight_l": "",
+        "booked_packet_vol_weight_w": 0,
+        "booked_packet_vol_weight_h": 0,
+        "booked_packet_vol_weight_l": 0,
         "booked_packet_no_piece": 1,
         "booked_packet_collect_amount": _cod_amount(order),
         "booked_packet_order_id": reference,
@@ -614,12 +629,16 @@ def _build_packet(order, connection, city, reference, shipper):
         "consignment_phone_two": second if second and second != phone else "",
         "consignment_phone_three": "",
         "consignment_address": address[:500],
-        "special_instructions": _product_details(order, connection),
+        "special_instructions": _special_instructions(order, connection),
         "shipment_type": connection.default_shipment_type or "",
-        "custom_data": [],
+        # An object in Leopards' newer payload (was a list).
+        "custom_data": {},
         "return_address": "",
         "return_city": "",
         "is_vpc": 0,
+        # New in Leopards' payload (2026-11-16): unit count and products.
+        "items": _item_count(order),
+        "product_details": _product_details(order),
     }
     return packet
 

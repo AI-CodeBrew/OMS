@@ -76,7 +76,8 @@ def find_or_create_batch(*, organization_id, courier, order_numbers, actor_user_
 
 
 def save_print_batch(*, organization_id, kind, courier, order_numbers, content,
-                     content_type="application/pdf", actor_user_id=None, filename=None):
+                     content_type="application/pdf", actor_user_id=None, filename=None,
+                     mark_printed=True):
     """Keeps a permanent copy of exactly what was generated, so the Batch
     page can offer it back later without re-hitting the courier - which
     could return different data by then, or fail outright if a consignment
@@ -91,7 +92,9 @@ def save_print_batch(*, organization_id, kind, courier, order_numbers, content,
     both are done (oms.services.mark_orders_printed) - before the file
     write, so a storage hiccup still leaves the tag updated."""
     sorted_numbers = sorted({str(n) for n in order_numbers})
-    if kind in ("airway_bill", "loadsheet") and sorted_numbers:
+    # mark_printed=False: a load sheet shared by several stores, filed in
+    # FynkTech's history - its orders were tagged in their own stores.
+    if mark_printed and kind in ("airway_bill", "loadsheet") and sorted_numbers:
         # Printed Airwaybill / Printed Loadsheet / both - see
         # oms.services.mark_orders_printed.
         try:

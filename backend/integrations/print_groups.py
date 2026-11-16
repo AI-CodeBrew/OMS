@@ -66,6 +66,59 @@ def group_by_account(shipments, *, courier, connection_for, platform_connection,
     return [(key[0], connections[key], group) for key, group in groups.items()], None
 
 
+def by_shared_account(groups):
+    """Load sheets only: group_by_account's (store, account) groups merged by
+    account, so the stores booked through one account (FynkTech's, mostly)
+    share ONE load sheet - one challan, rows running on from store to store -
+    instead of a sheet per store that starts on a fresh, half-empty page.
+    Airway bills and labels stay per store. Returns [(organization_ids,
+    connection, shipments)] in first-seen order."""
+    merged = {}
+    for organization_id, connection, shipments in groups:
+        pk = getattr(connection, "pk", None)
+        key = (type(connection).__name__, pk if pk is not None else id(connection))
+        entry = merged.setdefault(key, ([], connection, []))
+        if organization_id not in entry[0]:
+            entry[0].append(organization_id)
+        entry[2].extend(shipments)
+    return list(merged.values())
+
+
+def save_load_sheet(save_print_batch, shipments, *, content, actor_user_id):
+    """Files a load sheet PDF for the Batch page. One store's sheet goes into
+    that store's history, as always. A sheet shared by several stores
+    (by_shared_account) lists every store's customers, so it is kept in
+    FynkTech's own (platform) history only - no store sees another's
+    orders - while each store's orders still get their Printed Loadsheet
+    tag. `save_print_batch`: the courier's own _save_print_batch."""
+    import logging
+
+    from core.platform_service import platform_organization_id
+    from oms.services import mark_orders_printed
+
+    by_org = {}
+    for shipment in shipments:
+        by_org.setdefault(str(shipment.organization_id), []).append(shipment.order.order_number)
+    if len(by_org) == 1:
+        (organization_id, numbers), = by_org.items()
+        save_print_batch(
+            organization_id=organization_id, order_numbers=numbers,
+            content=content, actor_user_id=actor_user_id, kind="loadsheet",
+        )
+        return
+    for organization_id, numbers in by_org.items():
+        try:
+            mark_orders_printed(organization_id, numbers, "loadsheet", actor_user_id=actor_user_id)
+        except Exception:
+            logging.getLogger(__name__).exception("failed to mark load sheet printed (%s)", organization_id)
+    platform_id = platform_organization_id()
+    if platform_id:
+        save_print_batch(
+            organization_id=platform_id, order_numbers=[n for ns in by_org.values() for n in ns],
+            content=content, actor_user_id=actor_user_id, kind="loadsheet", mark_printed=False,
+        )
+
+
 def group_failed(problems, detail, shipments_or_numbers, status=http_status.HTTP_502_BAD_GATEWAY):
     """One group's print failed: with `problems`, noted (naming its orders)
     and None returned so the caller carries on with the next group; without,

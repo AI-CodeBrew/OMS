@@ -47,8 +47,9 @@ class LeopardsConnection(TenantScopedModel):
     # own default.
     default_shipment_type = models.CharField(max_length=50, blank=True, default="")
     # Sent as special_instructions on every booking (rider-facing note,
-    # e.g. "Call before delivery"). Leopards requires the field, so an
-    # empty note goes out as "N/A" - see services._build_packet.
+    # e.g. "Call before delivery"). Leopards requires the field, so with
+    # no note the order's products go there too - see
+    # services._special_instructions.
     default_notes = models.CharField(max_length=255, blank=True, default="")
     # Leopards' generateLoadSheet asks for a courier name and code on every
     # sheet. Editable here since what it wants in them isn't documented.

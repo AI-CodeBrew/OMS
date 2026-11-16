@@ -95,6 +95,16 @@ def stores(request):
         data = store_service.list_my_stores(request.user_id, request.organization_id)
         return Response({"success": True, "stores": data})
 
+    # A super admin acting as a store passes IsOrgAdmin, but create_store
+    # would give the super admin's own login a Membership in the new store
+    # and the switch that follows would rewrite its role to org_admin -
+    # locking it out of the super admin console (happened: "sufyan").
+    if getattr(request, "is_super_admin", False):
+        return Response(
+            {"success": False, "error": "A super admin can't add stores from inside a store - "
+             "add the store from the store owner's login, or use Organizations → Add store."},
+            status=403,
+        )
     if not IsOrgAdmin().has_permission(request, None):
         return Response({"success": False, "error": "Only the store admin can add stores."}, status=403)
     body = request.data or {}
@@ -120,6 +130,13 @@ def switch_store(request):
     Returns no session itself - Supabase issued the current one, so the
     frontend calls supabase.auth.refreshSession() right after this to pick
     up the app_metadata this just wrote."""
+    # Switching rewrites the login's role claim to the store's - a super
+    # admin would lose the super admin console (see stores above).
+    if getattr(request, "is_super_admin", False):
+        return Response(
+            {"success": False, "error": "A super admin enters stores from the admin console, not by switching."},
+            status=403,
+        )
     organization_id = (request.data or {}).get("organization_id")
     if not organization_id:
         return Response(
