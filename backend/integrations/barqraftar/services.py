@@ -55,9 +55,11 @@ _OUT_FOR_DELIVERY_CODES = {4}  # dispatched (rider assigned/out)
 # re_attempt_approval. Return Confirmation (12) waits for our Shipper Advice
 # (FynkTech's sheet - status_map): Undelivered, not Return in Transit.
 _ATTEMPT_CODES = {5, 6, 7, 12, 14}
-# A re-attempt (or a return still waiting for our advice) after a return was
-# started: the parcel isn't on its way back.
-_RE_ATTEMPT_CODES = {6, 12, 14}
+# Any Undelivered status after a return was started - a new failed attempt,
+# a re-attempt, a hold, or a return still waiting for our advice: the parcel
+# isn't on its way back (seen live: #12679 stuck in Return in Transit on a
+# fresh Return by Consignee, 2026-11-16).
+_RE_ATTEMPT_CODES = {5, 6, 7, 12, 14}
 _RETURN_IN_PROGRESS_CODES = {8, 10, 11, 13}  # return_requested, return_transit, return_in_progress, return_rfc_origin
 _DELIVERED_CODES = {9}
 _RETURNED_CODES = {98}  # returned_to_shipper

@@ -244,6 +244,19 @@ def _newest_detail(row):
     return None if best is None else best[1:]
 
 
+def _failed_attempts(row):
+    """How many failed deliveries a trackBookedPacket row shows: its
+    "Pending" Tracking Detail lines that carry a reason, one per day."""
+    days = set()
+    for entry in (row or {}).get("Tracking Detail") or []:
+        if not isinstance(entry, dict):
+            continue
+        status = str(entry.get("Status") or entry.get("Staus") or "").strip()
+        if _normalize_status(status) == "pending" and str(entry.get("Reason") or "").strip():
+            days.add(str(entry.get("Activity_Date") or entry.get("Activity_datetime") or "")[:10])
+    return len(days)
+
+
 def row_status(row):
     """The status of one trackBookedPacket row. Its booked_packet_status
     lags: after a refusal it can still say "Pending" or "Assign to Courier"
@@ -263,6 +276,11 @@ def row_status_and_reason(row):
     detail = _newest_detail(row)
     if booked and status_stage(booked) in ("delivered", "returned", "cancelled"):
         return booked, str(remarks or "")
+    # A failed delivery: Leopards writes it as a "Pending" line WITH a reason
+    # ("Pending" - "CONSIGNEE NOT AVAILABLE", seen live 2026-11-16) - its
+    # First / Second Attempt (PN1 / PN2), counted by those lines.
+    if detail and _normalize_status(detail[0]) == "pending" and detail[1]:
+        return ("PN2" if _failed_attempts(row) >= 2 else "PN1"), detail[1]
     if detail and status_stage(detail[0]) is not None:
         return detail[0], detail[1]
     if booked:
@@ -984,6 +1002,11 @@ def _record_sheet_words(order, stage, *, label, reason):
     words = status_map.sheet_words(stage, attempt=attempt_number(label), reason=reason)
     if words is None or order.status not in _SHEET_STATUSES:
         return False
+    # On the way back Leopards writes the same station lines ("Arrived at
+    # Station", "Dispatched") as on the way out - an order already in Return
+    # in Transit keeps the return words (seen live, 2026-11-16).
+    if stage in ("picked", "dispatched") and oms_services.workflow_card(order) == "return_in_transit":
+        words = status_map.SUB_RETURNING
     sub_status, tag = words
     if (
         stage == "waiting_advice"
