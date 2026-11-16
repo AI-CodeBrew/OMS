@@ -268,6 +268,9 @@ class OrderSerializer(serializers.ModelSerializer):
     # services.workflow_card / workflow_tag.
     workflow_card = serializers.SerializerMethodField()
     workflow_tag = serializers.SerializerMethodField()
+    # Every Shipper Advice given on the order, newest first - the order's
+    # detail only (null in lists, where it would cost a query per row).
+    shipper_advice_history = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -309,6 +312,8 @@ class OrderSerializer(serializers.ModelSerializer):
             "courier_name",
             "tracking_number",
             "courier_status",
+            "courier_tag",
+            "courier_reason",
             "platform_reference",
             "dispatched_by_fynktech",
             "issue_note",
@@ -316,6 +321,7 @@ class OrderSerializer(serializers.ModelSerializer):
             "shipper_advice",
             "shipper_advice_remarks",
             "shipper_advice_at",
+            "shipper_advice_history",
             "total_amount",
             "coupon_discount",
             "extra_discount",
@@ -372,6 +378,8 @@ class OrderSerializer(serializers.ModelSerializer):
             "courier",
             "tracking_number",
             "courier_status",
+            "courier_tag",
+            "courier_reason",
             "courier_charges",
             "platform_reference",
             "issue_note",
@@ -426,6 +434,43 @@ class OrderSerializer(serializers.ModelSerializer):
         from .services import workflow_tag
 
         return workflow_tag(order)
+
+    def get_shipper_advice_history(self, order):
+        if not self.context.get("with_advice_history"):
+            return None
+        from .models import OrderStatusEvent
+
+        events = list(
+            OrderStatusEvent.all_objects.filter(order=order, note__startswith="Shipper advice:")
+            .order_by("-created_at")
+            .values("note", "created_at", "actor_user_id")
+        )
+        emails = {}
+        ids = {str(e["actor_user_id"]) for e in events if e["actor_user_id"]}
+        if ids:
+            try:
+                from core.organization_admin_service import _emails_for_user_ids
+
+                emails = _emails_for_user_ids(list(ids))
+            except Exception:  # noqa: BLE001 - names are a nicety
+                emails = {}
+        out = []
+        for e in events:
+            # "Shipper advice: Reattempt - call first (sent to Leopards)"
+            text = e["note"][len("Shipper advice:"):].strip()
+            sent_to = ""
+            if text.endswith(")") and " (" in text:
+                text, sent_to = text.rsplit(" (", 1)
+                sent_to = sent_to[:-1]
+            advice, _, remarks = text.partition(" - ")
+            out.append({
+                "advice": advice.strip(),
+                "remarks": remarks.strip(),
+                "sent_to": sent_to,
+                "at": e["created_at"].isoformat(),
+                "by": emails.get(str(e["actor_user_id"]), "") if e["actor_user_id"] else "",
+            })
+        return out
 
     def get_cancelled_pct(self, order):
         return self._probability(order, "cancelled_pct")

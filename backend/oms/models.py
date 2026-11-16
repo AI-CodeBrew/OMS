@@ -180,6 +180,14 @@ class Order(TenantScopedModel):
     # doesn't know this field yet (an older deploy on the same database)
     # fails every order INSERT on the NOT NULL.
     courier_status = models.CharField(max_length=100, blank=True, default="", db_default="")
+    # The courier's tag for the order, from FynkTech's status sheet (only
+    # Leopards so far - integrations.leopards.status_map): "Rider on the
+    # Way", "Waiting for Shipper Advice", ... Kept apart from `tag`, which
+    # people set by hand, so a courier update never overwrites theirs.
+    courier_tag = models.CharField(max_length=100, blank=True, default="", db_default="")
+    # The courier's latest reason for a failed delivery ("CASH NOT
+    # AVAILABLE") - shown on the order and in the Shipper Advice popup.
+    courier_reason = models.CharField(max_length=255, blank=True, default="", db_default="")
     # Last time integrations.services.poll_smartlane_statuses asked Smartlane
     # about this order - null means never checked. Drives the poll query's
     # ordering (never-checked/longest-since-checked first) so a broad "check

@@ -29,6 +29,7 @@ export const ADMIN_PAGE_HREFS = [
   ["organizations", "/admin/organizations"],
   ["stores", "/admin/stores"],
   ["all_orders", "/admin/all-orders"],
+  ["critical_orders", "/admin/critical-orders"],
   ["inventory", "/admin/inventory"],
   ["invoices", "/admin/invoices"],
   ["integrations", "/admin/integrations"],
@@ -37,6 +38,16 @@ export const ADMIN_PAGE_HREFS = [
   ["tickets", "/admin/tickets"],
   ["cities", "/admin/cities"],
 ];
+
+// Where a staff login goes when it leaves a view that opens straight in
+// (All Orders, Critical Orders, a Hub-only Dispatch Hub): its first super
+// admin page other than `skip`, or null - nowhere, so no back arrow.
+// Owners (and when access couldn't be read) keep the usual target.
+export function exitTargetFor(access, skip, fallback) {
+  if (!access || access.is_owner) return fallback;
+  const other = ADMIN_PAGE_HREFS.find(([key]) => !skip.includes(key) && access.permissions?.[key]);
+  return other ? other[1] : null;
+}
 
 const adminTeamService = {
   // {is_owner, permissions: {page: "read"|"write"}, pages}

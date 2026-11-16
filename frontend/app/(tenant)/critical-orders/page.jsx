@@ -1,5 +1,6 @@
 "use client";
 
+import useOrderNav from "../../../components/orders/useOrderNav";
 import usePageAccess from "../../../lib/usePageAccess";
 import { useCallback, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
@@ -43,6 +44,8 @@ export default function CriticalOrdersPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [detailOrderId, setDetailOrderId] = useState(null);
+  // The details panel's previous / next arrows step through this list.
+  const orderNav = useOrderNav(orders, detailOrderId, setDetailOrderId);
   const [couriers, setCouriers] = useState([]);
 
   const loadSummary = useCallback(async () => {
@@ -109,7 +112,7 @@ export default function CriticalOrdersPage() {
 
       {/* One row of small cards, like the All Orders status tabs. */}
       <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
-        {(reasons || Array.from({ length: 5 }, (_, i) => ({ key: `loading-${i}` }))).map((r) => {
+        {(reasons || Array.from({ length: 6 }, (_, i) => ({ key: `loading-${i}` }))).map((r) => {
           const isActive = r.key === active;
           const loaded = r.count !== undefined;
           return (
@@ -193,6 +196,9 @@ export default function CriticalOrdersPage() {
 
       <OrderDetailPanel
         orderId={detailOrderId}
+        onPrev={orderNav.onPrev}
+        onNext={orderNav.onNext}
+        position={orderNav.position}
         couriers={couriers}
         readOnly={!canWrite}
         onClose={() => setDetailOrderId(null)}

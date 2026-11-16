@@ -45,6 +45,16 @@ const TAG_TONE = {
   "Stock Not Available": "red",
   "Out for Delivery": "indigo",
   "In Transit": "indigo",
+  // Leopards' sheet tags (backend integrations/leopards/status_map.py).
+  "Picked by Courier": "indigo",
+  "Moving towards Customer City": "indigo",
+  "Rider on the Way": "indigo",
+  "Waiting for Shipper Advice": "red",
+  "Reattempt Requested": "amber",
+  "Return Requested": "amber",
+  "Moving back to Warehouse": "amber",
+  "Awaiting Scan": "amber",
+  "Return Received": "green",
   Approved: "indigo",
   New: "blue",
 };
@@ -62,7 +72,8 @@ function tagTone(order) {
 // failed attempt and a retry read apart.
 function tagText(order) {
   const attempts = order.delivery_attempts || 0;
-  if (attempts > 1 && ["dispatched", "undelivered"].includes(order.workflow_card)) {
+  // A courier's sheet tag (Leopards) already says which attempt it is.
+  if (attempts > 1 && !order.courier_tag && ["dispatched", "undelivered"].includes(order.workflow_card)) {
     return `${order.workflow_tag} · Attempt ${attempts}`;
   }
   return order.workflow_tag;

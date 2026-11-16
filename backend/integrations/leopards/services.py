@@ -39,7 +39,7 @@ from core.platform_service import (
     platform_organization_id,
 )
 
-from . import client
+from . import client, status_map
 from .exceptions import LeopardsAPIError, LeopardsBookingError
 from .models import LeopardsConnection, LeopardsShipment, LeopardsSyncJob
 
@@ -76,9 +76,13 @@ COURIER_NAME = "Leopards"
 #   NR    Ready for Return
 #   SP    Shipment Picked
 
+# Stages (FynkTech's status sheet, see status_map): "at_courier" (booked,
+# not picked yet - moves nothing, as before the sheet), "picked" (Shipment
+# Picked - Dispatched), "waiting_advice" (Ready for Return - Undelivered,
+# waiting for our Shipper Advice); the rest are the OMS stages they name.
 _STAGE_BY_CODE = {
-    "RC": "dispatched",
-    "SP": "dispatched",
+    "RC": "at_courier",
+    "SP": "picked",
     "AR": "dispatched",
     "DP": "dispatched",
     "AC": "out_for_delivery",
@@ -87,7 +91,7 @@ _STAGE_BY_CODE = {
     "RO": "return_in_progress",
     "RN1": "return_in_progress",
     "RN2": "return_in_progress",
-    "NR": "return_in_progress",
+    "NR": "waiting_advice",
     "DV": "delivered",
     "RW": "returned",
     "DW": "returned",
@@ -125,17 +129,20 @@ _STAGE_BY_TEXT = {
     "pickup request sent": "pending",
     "booked": "pending",
     # The push table's names (tracking answers use the same vocabulary).
-    "consignment booked": "dispatched",
-    "shipment scanned in lcs facility": "dispatched",
-    "shipment picked": "dispatched",
+    "consignment booked": "at_courier",
+    "shipment scanned in lcs facility": "at_courier",
+    "shipment picked": "picked",
     "arrived at station": "dispatched",
     "dispatched": "dispatched",
     "assigned to courier": "out_for_delivery",
+    "assign to courier": "out_for_delivery",
     "out for delivery": "out_for_delivery",
     "first attempt in forward leg": "attempt",
     "second attempt in forward leg": "attempt",
+    "first attempt": "attempt",
+    "second attempt": "attempt",
     "being return": "return_in_progress",
-    "ready for return": "return_in_progress",
+    "ready for return": "waiting_advice",
     "first attempt in reverse leg": "return_in_progress",
     "second attempt in reverse leg": "return_in_progress",
     "delivered": "delivered",
@@ -157,6 +164,31 @@ def _normalize_status(label):
     return re.sub(r"\s+", " ", text.strip().lower())
 
 
+# Longest first, so "delivered to warehouse" wins over "delivered" when a
+# tracking-history line carries a place ("Delivered to Warehouse in ...").
+_TEXT_PREFIXES = sorted(_STAGE_BY_TEXT, key=len, reverse=True)
+
+
+def split_label(label):
+    """A tracking-history line ("Ready for Return - CONSIGNEE REFUSED",
+    "Arrived at Station in KARACHI") -> (status, reason): the reason after
+    " - ", if any. The status still carries its place - status_stage reads
+    it by its start."""
+    text = str(label or "").strip()
+    if " - " in text:
+        head, tail = text.split(" - ", 1)
+        return head.strip(), tail.strip()
+    return text, ""
+
+
+def attempt_number(label):
+    """1 or 2 - which delivery attempt a Leopards status is."""
+    code = str(label or "").strip().upper()
+    if code in ("PN2", "RN2"):
+        return 2
+    return 2 if "second" in _normalize_status(label) else 1
+
+
 def status_stage(label):
     """A Leopards status - the push API's short code ("DV") or a status name
     ("Delivered") - to one of pending / dispatched / out_for_delivery /
@@ -165,10 +197,15 @@ def status_stage(label):
     code = str(label or "").strip().upper()
     if code in _STAGE_BY_CODE:
         return _STAGE_BY_CODE[code]
-    normalized = _normalize_status(label)
+    normalized = _normalize_status(split_label(label)[0])
     stage = _STAGE_BY_TEXT.get(normalized)
     if stage:
         return stage
+    # A tracking-history line names its place after the status ("Shipment
+    # picked in LAHORE", "Dispatched to KHI MAIN OFFICE").
+    for prefix in _TEXT_PREFIXES:
+        if normalized.startswith(prefix + " "):
+            return _STAGE_BY_TEXT[prefix]
     # Wordings a plain table can't list: "Second Attempt - Customer not
     # available", "Return to Shipper in transit", ...
     if "attempt" in normalized:
@@ -185,19 +222,52 @@ def status_name(label):
     return _NAME_BY_CODE.get(code) or str(label or "").strip()
 
 
+def _newest_detail(row):
+    """The newest "Tracking Detail" line of a trackBookedPacket row - (status,
+    reason, when) - or None. Leopards' sample spells the key "Staus", so
+    both spellings are read."""
+    best = None
+    for n, entry in enumerate((row or {}).get("Tracking Detail") or []):
+        if not isinstance(entry, dict):
+            continue
+        status = str(entry.get("Status") or entry.get("Staus") or "").strip()
+        if not status:
+            continue
+        when = str(entry.get("Activity_datetime") or "").strip() or (
+            f"{entry.get('Activity_Date') or ''} {entry.get('Activity_Time') or ''}".strip()
+        )
+        key = (when, n)
+        if best is None or key >= best[0]:
+            head, tail = split_label(status)
+            reason = str(entry.get("Reason") or "").strip() or tail
+            best = (key, status, reason, when)
+    return None if best is None else best[1:]
+
+
 def row_status(row):
-    """The status of one trackBookedPacket row: its booked_packet_status, or
-    - if that's empty - the newest "Tracking Detail" entry (Leopards'
-    sample spells the key "Staus", so both spellings are read)."""
-    label = str((row or {}).get("booked_packet_status") or "").strip()
-    if label:
-        return label
-    for entry in reversed((row or {}).get("Tracking Detail") or []):
-        if isinstance(entry, dict):
-            found = str(entry.get("Status") or entry.get("Staus") or "").strip()
-            if found:
-                return found
-    return ""
+    """The status of one trackBookedPacket row. Its booked_packet_status
+    lags: after a refusal it can still say "Pending" or "Assign to Courier"
+    while the newest Tracking Detail line already says "Ready for Return -
+    CONSIGNEE REFUSED". So the newest Tracking Detail line wins - unless
+    booked_packet_status is final (Delivered / Returned / Cancelled), or
+    the line can't be read."""
+    return row_status_and_reason(row)[0]
+
+
+def row_status_and_reason(row):
+    """(status, reason) of a trackBookedPacket row - see row_status."""
+    booked = str((row or {}).get("booked_packet_status") or "").strip()
+    remarks = (row or {}).get("status_remarks") or ""
+    if isinstance(remarks, list):
+        remarks = ", ".join(str(r) for r in remarks if str(r).strip())
+    detail = _newest_detail(row)
+    if booked and status_stage(booked) in ("delivered", "returned", "cancelled"):
+        return booked, str(remarks or "")
+    if detail and status_stage(detail[0]) is not None:
+        return detail[0], detail[1]
+    if booked:
+        return booked, str(remarks or "")
+    return (detail[0], detail[1]) if detail else ("", "")
 
 
 # --------------------------------------------------------------- Helpers --
@@ -828,12 +898,21 @@ def apply_leopards_status(order, stage, *, tracking_number="", actor_user_id=Non
     log/skip (a stale/out-of-order status, not a real problem)."""
     from oms import services as oms_services
 
-    if stage == "return_in_progress":
-        # Informational, same role as for the other couriers.
-        if not order.return_in_progress_at:
-            order.return_in_progress_at = timezone.now()
-            order.save(update_fields=["return_in_progress_at", "updated_at"])
+    if stage in ("pending", "at_courier"):
+        # Not picked up yet - booking, printing and packing go on as before.
         return False
+
+    if stage == "return_in_progress":
+        # Being Return / Reverse Leg: on its way back - Return in Transit.
+        return oms_services.mark_return_in_progress(
+            order, courier_label="Leopards", tracking_number=tracking_number
+        )
+
+    if stage == "waiting_advice":
+        # Ready for Return: refused, and Leopards waits for our Shipper
+        # Advice - Undelivered, not (yet) a return.
+        changed = oms_services.clear_return_in_progress(order, courier_label="Leopards")
+        return _advance_to_dispatch_substate(order, "attempt", tracking_number) or changed
 
     if stage == "delivered":
         if order.status == "delivered":
@@ -850,19 +929,22 @@ def apply_leopards_status(order, stage, *, tracking_number="", actor_user_id=Non
         return True
 
     if stage == "cancelled":
-        # Cancelled on Leopards' side: the booking is gone, not the order -
-        # back to Awaiting Confirmation to be booked again, the same as
-        # PostEx and BarqRaftar (Leopards isn't asked again - it already
-        # says cancelled).
-        return oms_services.unbook_cancelled_by_courier(
+        # Cancelled on Leopards' side (FynkTech's sheet): the booking is
+        # gone, not the order - back to Approved (Awaiting Courier) to be
+        # booked again, Sub Status "Booking Cancelled", its tag kept.
+        # Leopards isn't asked again - it already says cancelled.
+        return oms_services.unbook_cancelled_by_courier_to_approved(
             order, courier_label="Leopards", tracking_number=tracking_number,
             actor_user_id=actor_user_id,
         )
 
     if stage in ("out_for_delivery", "attempt"):
-        return _advance_to_dispatch_substate(order, stage, tracking_number)
+        changed = False
+        if stage == "attempt":
+            changed = oms_services.clear_return_in_progress(order, courier_label="Leopards")
+        return _advance_to_dispatch_substate(order, stage, tracking_number) or changed
 
-    if stage == "dispatched":
+    if stage in ("dispatched", "picked"):
         if order.status == "dispatched":
             return False
         return _catch_up_to_dispatched(order, tracking_number)
@@ -870,7 +952,37 @@ def apply_leopards_status(order, stage, *, tracking_number="", actor_user_id=Non
     return False
 
 
-def _apply_status(shipment, *, label, stage, history_entry=None, payload=None):
+# The order is with Leopards (or back) - the sheet's words apply.
+_SHEET_STATUSES = {"dispatched", "out_for_delivery", "attempt", "delivered", "returned"}
+
+
+def _record_sheet_words(order, stage, *, label, reason):
+    """The order's Sub Status, Tag and reason from FynkTech's sheet
+    (status_map), once its status has moved. A repeat of the same Ready for
+    Return after our Shipper Advice keeps "Reattempt / Return Requested"."""
+    from oms import services as oms_services
+
+    words = status_map.sheet_words(stage, attempt=attempt_number(label), reason=reason)
+    if words is None or order.status not in _SHEET_STATUSES:
+        return False
+    sub_status, tag = words
+    if (
+        stage == "waiting_advice"
+        and order.courier_status == sub_status
+        and order.courier_tag in (status_map.TAG_REATTEMPT_REQUESTED, status_map.TAG_RETURN_REQUESTED)
+    ):
+        tag = order.courier_tag
+    keep_reason = stage in ("attempt", "waiting_advice", "return_in_progress") and reason
+    changed = oms_services.record_courier_words(
+        order, sub_status=sub_status, tag=tag,
+        reason=status_map.normalize_reason(reason) if keep_reason else None,
+    )
+    if stage == "return_in_progress" and reason:
+        oms_services.record_return_reason(order, status_map.normalize_reason(reason))
+    return changed
+
+
+def _apply_status(shipment, *, label, stage, history_entry=None, payload=None, reason=""):
     """Records one Leopards status on the shipment, restores a tracking
     number Shopify's own sync may have blanked on the order, self-heals a
     stuck Booking Pending, then applies the stage. Shared by the webhook
@@ -905,9 +1017,10 @@ def _apply_status(shipment, *, label, stage, history_entry=None, payload=None):
         history.append(history_entry)
         shipment.status_history = history[-50:]
     shipment.save(update_fields=["last_checked_at", "last_payload", "status_label", "status_history", "updated_at"])
-    # Leopards' own word ("Arrived At Station", ...) for the orders list's
-    # Sub Status - most of them all land on Dispatched.
-    oms_services.record_courier_status(order, status_name(label))
+    # Before Shipment Picked the Sub Status is Leopards' own word, as it
+    # always was; from then on FynkTech's sheet says it (after the move).
+    if status_map.sheet_words(stage) is None and stage != "cancelled":
+        oms_services.record_courier_status(order, status_name(label))
 
     if not order.tracking_number and shipment.tracking_number:
         order.tracking_number = shipment.tracking_number
@@ -938,21 +1051,24 @@ def _apply_status(shipment, *, label, stage, history_entry=None, payload=None):
         logger.info("leopards: order %s at %s, ignoring %r (stale/out of order)",
                     order.order_number, order.status, label)
 
-    order.refresh_from_db(fields=["status"])
-    return filled_tracking or (order.status != before_status)
+    order.refresh_from_db()
+    words_changed = _record_sheet_words(order, stage, label=label, reason=reason)
+    return filled_tracking or words_changed or (order.status != before_status)
 
 
 def _apply_fetched_status(shipment, row):
     """One trackBookedPacket row applied to its shipment."""
     if not isinstance(row, dict):
         return False
-    label = row_status(row)
+    label, reason = row_status_and_reason(row)
     entry = {
         "status": label,
-        "reason": str(row.get("status_remarks") or ""),
+        "reason": reason,
         "activity_date": str(row.get("activity_date") or ""),
     }
-    return _apply_status(shipment, label=label, stage=status_stage(label), history_entry=entry, payload=row)
+    return _apply_status(
+        shipment, label=label, stage=status_stage(label), history_entry=entry, payload=row, reason=reason
+    )
 
 
 # --------------------------------------------------------------- Webhook --
@@ -1028,7 +1144,10 @@ def handle_webhook_event(connection, payload):
             with tenant_context(shipment.organization_id):
                 shipment = LeopardsShipment.all_objects.get(id=shipment.id)
                 shipments[cn] = shipment
-                if _apply_status(shipment, label=label, stage=stage, history_entry=entry, payload=event):
+                if _apply_status(
+                    shipment, label=label, stage=stage, history_entry=entry, payload=event,
+                    reason=str(event.get("reason") or ""),
+                ):
                     updated += 1
         except Exception:  # noqa: BLE001 - one event's failure must not drop the rest
             logger.exception("leopards webhook: unexpected error handling shipment %s", cn)
@@ -1049,6 +1168,59 @@ def handle_webhook_event(connection, payload):
                         updated += 1
             except Exception:  # noqa: BLE001
                 logger.exception("leopards webhook: unexpected error handling shipment %s", cn)
+    return updated
+
+
+# ------------------------------------------------- Shipper advice requests --
+
+def sync_shipper_advice_requests(connection):
+    """The backup behind Ready for Return: Leopards' list of parcels waiting
+    for our Shipper Advice (status PI). Each such parcel booked from OMS -
+    not delivered, returned or cancelled, and not already answered by us
+    after Leopards asked - is put on Undelivered / "Waiting for Shipper
+    Advice" with Leopards' reason. Returns how many orders changed."""
+    from oms.models import Order
+
+    try:
+        body = client._request(
+            "POST", "/shipperAdviceList/format/json/", connection, context="Shipper advice list",
+            body={"product": "", "status": "", "origionID": "", "destinationID": "", "dateFrom": "",
+                  "toDate": "", "Cn_number": "", "start": 0, "length": 500},
+        )
+    except LeopardsAPIError:
+        logger.exception("leopards: shipper advice list failed for org %s", connection.organization_id)
+        return 0
+    waiting = {}
+    for row in client._list(body, "data"):
+        if not isinstance(row, dict) or str(row.get("shipper_advice_status") or "").upper() != "PI":
+            continue
+        cn = str(row.get("cn_number") or "").strip()
+        if cn:
+            waiting[cn] = row
+    if not waiting:
+        return 0
+
+    updated = 0
+    for shipment in LeopardsShipment.all_objects.filter(is_active=True, tracking_number__in=list(waiting)):
+        row = waiting[shipment.tracking_number]
+        order = Order.all_objects.filter(id=shipment.order_id).first()
+        if not order or order.status in TERMINAL_STATUSES:
+            continue
+        # Already answered after Leopards asked: Leopards' list catches up.
+        asked = str(row.get("created_date") or "")
+        if order.shipper_advice_at and asked and order.shipper_advice_at.strftime("%Y-%m-%d %H:%M") >= asked[:16]:
+            continue
+        entry = {"status": "Ready for Return", "reason": str(row.get("reason") or ""),
+                 "activity_date": asked, "source": "shipper advice list"}
+        try:
+            with tenant_context(shipment.organization_id):
+                if _apply_status(
+                    shipment, label="Ready for Return", stage="waiting_advice", history_entry=entry,
+                    reason=str(row.get("reason") or ""),
+                ):
+                    updated += 1
+        except Exception:  # noqa: BLE001 - one parcel's failure must not drop the rest
+            logger.exception("leopards: shipper advice sync failed for %s", shipment.tracking_number)
     return updated
 
 
@@ -1131,7 +1303,11 @@ def poll_leopards_statuses(organization_id, *, limit=500, job=None):
 
     context_token = current_organization_id.set(organization_id)
     try:
-        return _poll_body(organization_id, connection, limit=limit, job=job)
+        result = _poll_body(organization_id, connection, limit=limit, job=job)
+        if not result.get("cancelled"):
+            # Parcels Leopards waits on us for, whatever their status says.
+            result["advice_updated"] = sync_shipper_advice_requests(connection)
+        return result
     finally:
         current_organization_id.reset(context_token)
 

@@ -160,8 +160,9 @@ const CONFIRM_BY_ACTION = {
 
 // fromCard: the card the orders are in now - the confirm popup's title.
 // currentCourier: Change Courier's "Previous courier" line; currentTag:
-// Update Tag's "Previous tag" line.
-export default function OrderActionModal({ action, couriers, options, count, fromCard, currentCourier, currentTag, onSubmit, onClose, submitting }) {
+// Update Tag's "Previous tag" line; courierReason: Shipper Advice's
+// "Courier's reason" line (Leopards' reason for the failed delivery).
+export default function OrderActionModal({ action, couriers, options, count, fromCard, currentCourier, currentTag, courierReason, onSubmit, onClose, submitting }) {
   const field = action ? FIELD_BY_ACTION[action] : null;
   const [value, setValue] = useState("");
   // Shipper Advice's remarks, beside its dropdown.
@@ -234,6 +235,14 @@ export default function OrderActionModal({ action, couriers, options, count, fro
           <span className="mb-1 block text-xs font-medium text-slate-700">Previous courier</span>
           <div className="w-full rounded-md border border-surface-border bg-surface px-3 py-2 text-sm text-slate-700">
             {currentCourier || "—"}
+          </div>
+        </div>
+      ) : null}
+      {action === "shipper_advice" && courierReason ? (
+        <div className="mb-3">
+          <span className="mb-1 block text-xs font-medium text-slate-700">Courier&apos;s reason</span>
+          <div className="w-full rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            {courierReason}
           </div>
         </div>
       ) : null}

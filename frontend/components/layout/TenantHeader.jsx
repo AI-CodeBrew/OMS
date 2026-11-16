@@ -39,7 +39,9 @@ export default function TenantHeader({ activeModule }) {
   // way back out to the admin panel.
   const actingStore = useAuthStore((s) => s.actingStore);
   const exitStore = useAuthStore((s) => s.exitStore);
-  const exitLabel = actingStore?.allStores
+  const exitLabel = actingStore?.critical
+    ? "Exit Critical Orders"
+    : actingStore?.allStores
     ? "Exit All Orders"
     : actingStore?.hub
       ? "Exit Dispatch Hub"
@@ -48,11 +50,9 @@ export default function TenantHeader({ activeModule }) {
   function exitActingStore() {
     // All Orders goes back to the admin panel's first page - its own tab
     // would only open All Orders again.
-    const target = actingStore?.allStores
-      ? "/admin/organizations"
-      : actingStore?.hub
-        ? actingStore.exitTo || "/admin/dispatch-hub"
-        : "/admin/stores";
+    const target =
+      actingStore?.exitTo ||
+      (actingStore?.allStores ? "/admin/organizations" : actingStore?.hub ? "/admin/dispatch-hub" : "/admin/stores");
     exitStore();
     invalidateViewCache();
     router.push(target);

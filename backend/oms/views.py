@@ -1067,6 +1067,8 @@ class OrderViewSet(viewsets.ModelViewSet):
                 **self.get_serializer_context(),
                 "probability_map": probability_map,
                 "with_previous_status": True,
+                # Every Shipper Advice given on this order (detail only).
+                "with_advice_history": True,
             },
         )
         return Response(serializer.data)

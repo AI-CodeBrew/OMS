@@ -21,6 +21,7 @@ PAGES = [
     {"key": "organizations", "label": "Organizations", "hint": "Organizations, their stores, admins and logins"},
     {"key": "stores", "label": "Stores", "hint": "Stores list, service model, open a store"},
     {"key": "all_orders", "label": "All Orders", "hint": "Every store's orders"},
+    {"key": "critical_orders", "label": "Critical Orders", "hint": "Every store's critical orders, in one place"},
     # The Dispatch Hub group: its own management page, then each page
     # inside the Hub (HUB_PAGES below).
     {"key": "dispatch_hub", "label": "Hub stores & rates",
@@ -120,7 +121,7 @@ def page_for_request(path, *, act_as_platform=None, hub=None):
                 return pages, False
         return (), False  # an admin API not listed here: owners only
     if hub is not None:
-        return (("all_orders",) if hub == "all" else ("dispatch_hub",)), False
+        return (("all_orders", "critical_orders") if hub == "all" else ("dispatch_hub",)), False
     if act_as_platform is not None:
         return (("oms_courier",) if act_as_platform else ("stores", "integrations", "dispatch_hub")), False
     return None, False

@@ -130,6 +130,48 @@ function buildPatch(order, draft) {
 // readOnly: opened from All Orders, which is for looking only - no
 // Actions and no Edit.
 // onRaiseTicket(order): the page's Raise ticket dialog.
+// Every Shipper Advice given on the order (newest first), and the
+// courier's reason for the failed delivery - shown on top of the order.
+function ShipperAdviceHistory({ order }) {
+  const history = order.shipper_advice_history || [];
+  const waiting = order.workflow_card === "undelivered";
+  if (!history.length && !(waiting && order.courier_reason)) return null;
+  return (
+    <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50/60 px-4 py-3 text-sm">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <p className="font-semibold text-slate-800">Shipper Advice</p>
+        {waiting && order.courier_reason ? (
+          <p className="text-xs text-amber-800">Courier&apos;s reason: {order.courier_reason}</p>
+        ) : null}
+      </div>
+      {history.length ? (
+        <ul className="mt-2 space-y-1.5">
+          {history.map((h, i) => (
+            <li key={`${h.at}-${i}`} className="flex flex-wrap items-baseline gap-x-2 text-slate-700">
+              <span
+                className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                  h.advice === "Return" ? "bg-red-100 text-red-700" : "bg-brand-50 text-brand-700"
+                }`}
+              >
+                {h.advice}
+              </span>
+              {h.remarks ? <span>{h.remarks}</span> : null}
+              <span className="text-xs text-slate-500">
+                {new Date(h.at).toLocaleString()}
+                {h.by ? ` · ${h.by}` : ""}
+                {h.sent_to ? ` · ${h.sent_to}` : ""}
+                {i === 0 ? " · latest" : ""}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="mt-1 text-xs text-slate-600">No Shipper Advice given yet.</p>
+      )}
+    </div>
+  );
+}
+
 export default function OrderDetailPanel({
   orderId,
   couriers,
@@ -142,6 +184,11 @@ export default function OrderDetailPanel({
   onAssigningAction,
   onClose,
   onOrderChanged,
+  // Previous / next order of the list the panel was opened from (null at
+  // either end, or when there's no list) - and "3 of 25" for the title.
+  onPrev = null,
+  onNext = null,
+  position = "",
 }) {
   const [order, setOrder] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -174,9 +221,27 @@ export default function OrderDetailPanel({
   }
 
   useEffect(() => {
-    if (orderId) load();
+    if (!orderId) return;
+    // Moving to another order (arrows) starts it fresh, not half-edited.
+    setEditing(false);
+    load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orderId]);
+
+  // Keyboard: ← / → move to the previous / next order (not while editing
+  // or typing somewhere).
+  useEffect(() => {
+    if (!orderId) return undefined;
+    function onKey(e) {
+      if (editing || e.altKey || e.ctrlKey || e.metaKey) return;
+      const tag = (e.target?.tagName || "").toLowerCase();
+      if (["input", "textarea", "select"].includes(tag) || e.target?.isContentEditable) return;
+      if (e.key === "ArrowLeft" && onPrev) onPrev();
+      if (e.key === "ArrowRight" && onNext) onNext();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [orderId, editing, onPrev, onNext]);
 
   function onDraftChange(field, value) {
     // Amount Receivable (editable while partially paid) isn't a stored
@@ -439,6 +504,31 @@ export default function OrderDetailPanel({
         title={
           order ? (
             <span className="flex flex-wrap items-center gap-2">
+              {onPrev || onNext ? (
+                <span className="inline-flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={onPrev || undefined}
+                    disabled={!onPrev || editing}
+                    title="Previous order (←)"
+                    aria-label="Previous order"
+                    className="rounded-md border border-surface-border px-2 py-0.5 text-base leading-none text-slate-600 hover:bg-surface disabled:opacity-30"
+                  >
+                    ‹
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onNext || undefined}
+                    disabled={!onNext || editing}
+                    title="Next order (→)"
+                    aria-label="Next order"
+                    className="rounded-md border border-surface-border px-2 py-0.5 text-base leading-none text-slate-600 hover:bg-surface disabled:opacity-30"
+                  >
+                    ›
+                  </button>
+                  {position ? <span className="text-xs font-normal text-slate-400">{position}</span> : null}
+                </span>
+              ) : null}
               Order {order.order_number}
               <OrderStatusBadge order={order} />
             </span>
@@ -505,6 +595,8 @@ export default function OrderDetailPanel({
             {error ? (
               <p className="mb-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
             ) : null}
+
+            <ShipperAdviceHistory order={order} />
 
             <div className="flex gap-6">
               <CustomerDetailPanel order={order} draft={draft} editing={editing} onChange={onDraftChange} />

@@ -191,13 +191,26 @@ def _tag_choices():
     ]
 
 
+def _courier_tags():
+    """The tags a courier with FynkTech's status sheet gives (Leopards -
+    Order.courier_tag): "Rider on the Way", "Waiting for Shipper Advice",
+    ..."""
+    from integrations.leopards.status_map import ALL_TAGS
+
+    return ALL_TAGS
+
+
 def _tag_filter_q(tags):
     """Match the fixed Assigning Courier tag filters (several = any of
-    them), and any other Order.tag as itself."""
+    them), the couriers' sheet tags (Order.courier_tag), and any other
+    Order.tag as itself."""
     choices = _tag_choices()
+    courier_tags = set(_courier_tags())
     condition = Q()
     for tag in tags:
         match = next((q for value, _label, q, aliases in choices if tag == value or tag in aliases), None)
+        if match is None and tag in courier_tags:
+            match = Q(courier_tag=tag)
         condition |= match if match is not None else Q(tag=tag)
     return condition
 
@@ -227,6 +240,14 @@ def filter_options(qs, field, q=""):
         rows = [
             {"value": value, "label": label, "count": qs.filter(cond).count()}
             for value, label, cond, _aliases in _tag_choices()
+        ]
+        # The couriers' sheet tags in use - one query for all of them.
+        in_use = dict(
+            qs.order_by().exclude(courier_tag="").values_list("courier_tag").annotate(n=Count("id"))
+        )
+        rows += [
+            {"value": tag, "label": tag, "count": in_use[tag]}
+            for tag in _courier_tags() if in_use.get(tag)
         ]
         if q:
             rows = [

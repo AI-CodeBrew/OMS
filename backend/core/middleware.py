@@ -358,6 +358,14 @@ class TenantMiddleware:
                 return deny("You don't have access to the Dispatch Hub.")
             request.page_permissions = hub_pages
             return None
+        if hub_scope == "all" and not permissions.get("all_orders"):
+            # Every store's orders, but only the Critical Orders tab: limited
+            # to that store page, like a store's staff.
+            level = permissions.get("critical_orders")
+            if not level:
+                return deny("You don't have access to All Orders.")
+            request.page_permissions = {"oms.critical_orders": level}
+            return None
         if need == admin_pages.READ and request.path.startswith("/api/core/admin/dispatch-hub/"):
             # Hub pages only: may still see the Hub's store list to open it.
             pages = (*pages, *admin_pages.HUB_KEYS)

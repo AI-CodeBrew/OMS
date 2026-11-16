@@ -19,6 +19,10 @@ export function OrderStatusBadge({ order }) {
       {order.courier_status ? (
         <span className="text-xs font-normal text-slate-500">Sub status: {order.courier_status}</span>
       ) : null}
+      {/* The courier's reason for a failed delivery (Leopards). */}
+      {order.courier_reason && ["undelivered", "return_in_transit"].includes(order.workflow_card) ? (
+        <span className="text-xs font-normal text-amber-700">Reason: {order.courier_reason}</span>
+      ) : null}
       {/* One tag - the latest (statusConfig.latestTag). */}
       {(() => {
         const tag = latestTag(order);

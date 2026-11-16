@@ -163,6 +163,8 @@ export function useEffectiveUser() {
       pages: actingStore.hub ? actingStore.pages || null : user.pages,
       // The super admin's All Orders tab - the hub's view over every store.
       isAllOrders: Boolean(actingStore.hub && actingStore.allStores),
+      // The super admin's Critical Orders tab - every store's critical orders.
+      isCriticalOrders: Boolean(actingStore.hub && actingStore.allStores && actingStore.critical),
     };
   }, [user, actingStore]);
 }

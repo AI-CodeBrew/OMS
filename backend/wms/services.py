@@ -363,6 +363,10 @@ def restock_from_return(
         "return_breakdown",
         "updated_at",
     ]
+    if getattr(order, "courier_tag", ""):
+        # Leopards' sheet: Awaiting Scan -> Return Received once scanned here.
+        order.courier_tag = "Return Received"
+        update_fields.append("courier_tag")
 
     movements = []
     warehouse = warehouse or get_default_warehouse(order.organization_id)

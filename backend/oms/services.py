@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 from decimal import Decimal
 
 from django.db import transaction
-from django.db.models import BooleanField, Count, DateTimeField, ExpressionWrapper, OuterRef, Q, Subquery
+from django.db.models import BooleanField, Count, DateTimeField, ExpressionWrapper, F, OuterRef, Q, Subquery
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
@@ -1038,7 +1038,13 @@ def set_shipper_advice(order, *, advice, remarks="", actor_user_id=None):
     order.shipper_advice = advice
     order.shipper_advice_remarks = remarks
     order.shipper_advice_at = timezone.now()
-    order.save(update_fields=["shipper_advice", "shipper_advice_remarks", "shipper_advice_at", "updated_at"])
+    advice_fields = ["shipper_advice", "shipper_advice_remarks", "shipper_advice_at", "updated_at"]
+    if order.courier_tag:
+        # Leopards' sheet: "Reattempt Requested" / "Return Requested" until
+        # its next status arrives.
+        order.courier_tag = "Reattempt Requested" if advice == "Reattempt" else "Return Requested"
+        advice_fields.append("courier_tag")
+    order.save(update_fields=advice_fields)
     OrderStatusEvent.objects.create(
         organization_id=order.organization_id,
         order=order,
@@ -1266,6 +1272,9 @@ _BOOKING_FIELDS_CLEARED = {
     "hub_dispatched_at": None,
     "packed_at": None,
     "packed_by_email": "",
+    # The old courier's tag and reason (Leopards' sheet words) go with it.
+    "courier_tag": "",
+    "courier_reason": "",
 }
 
 
@@ -1584,6 +1593,36 @@ def unbook_cancelled_by_courier(order, *, courier_label, tracking_number="", act
     _back_to_confirmation_after_cancel(
         order, actor_user_id=actor_user_id,
         note=f"Booking cancelled on {courier_label} - booking and tracking number removed",
+    )
+    return True
+
+
+def unbook_cancelled_by_courier_to_approved(order, *, courier_label, tracking_number="", actor_user_id=None):
+    """FynkTech's Leopards sheet for "Cancelled on Leopards": like
+    unbook_cancelled_by_courier (only the booking is cancelled - stock back,
+    courier/tracking/booking stamps cleared), but the order goes to Approved
+    (Awaiting Courier) - where a courier is assigned again - with Sub Status
+    "Booking Cancelled", keeping its order number and its tag (e.g. the
+    print tag it had). Returns True if the order changed."""
+    if order.status not in _UNBOOKABLE_STATUSES:
+        return False
+    order_tn = (order.tracking_number or "").strip()
+    cancelled_tn = (tracking_number or "").strip()
+    if not _booked_with(order, courier_label) or (order_tn and cancelled_tn and order_tn != cancelled_tn):
+        note_old_booking_update(order, courier_label=courier_label, tracking_number=cancelled_tn)
+        return False
+    _release_courier_booking(
+        order,
+        actor_user_id=actor_user_id,
+        propagate_to_courier=False,
+        note=f"Booking cancelled on {courier_label}",
+    )
+    _force_transition(
+        order,
+        "awaiting_assigning",
+        actor_user_id=actor_user_id,
+        note=f"Booking cancelled on {courier_label} - booking and tracking number removed",
+        extra_fields={**_BOOKING_FIELDS_CLEARED, "courier_status": "Booking Cancelled"},
     )
     return True
 
@@ -2011,6 +2050,11 @@ def latest_tag(order):
     tag, with the attempt number on a re-attempted parcel."""
     card = workflow_card(order)
     card_tag = workflow_tag(order)
+    # Once the parcel is with a courier that has FynkTech's status sheet
+    # (Leopards), the courier's tag wins over the print tags left from
+    # Assigning Courier.
+    if order.courier_tag and card in ("dispatched", "undelivered", "return_in_transit", "returned", "delivered"):
+        return card_tag
     # Scan-pack sets packed_at → show Packed over the print tags / To be packed.
     if order.tag and (
         card == "awaiting_confirmation"
@@ -2019,7 +2063,8 @@ def latest_tag(order):
     ):
         return order.tag
     attempts = order.delivery_attempts or 0
-    if card_tag and attempts > 1 and card in ("dispatched", "undelivered"):
+    # A sheet tag already says which attempt it is ("- 2nd Attempt").
+    if card_tag and attempts > 1 and card in ("dispatched", "undelivered") and not order.courier_tag:
         return f"{card_tag} · Attempt {attempts}"
     return card_tag
 
@@ -2074,6 +2119,14 @@ def workflow_tag(order):
         # (Airwaybill Printed / Loadsheet Printed / To be packed - see
         # mark_orders_printed) shows instead (latest_tag).
         return TAG_PACKED if order.packed_at else TAG_TO_BE_PRINTED
+    # A courier with FynkTech's status sheet (Leopards) gives its own tag
+    # on the cards it drives (Order.courier_tag); once the Returns Desk has
+    # received the parcel, Returned says so.
+    courier_tag = (getattr(order, "courier_tag", "") or "").strip()
+    if courier_tag and card in ("dispatched", "undelivered", "return_in_transit", "returned"):
+        if card == "returned" and order.return_received_at:
+            return "Return Received"
+        return courier_tag
     if card == "dispatched":
         return "Out for Delivery" if status == "out_for_delivery" else "In Transit"
     if card == "undelivered":
@@ -2459,6 +2512,35 @@ def record_courier_status(order, label):
         return False
     order.courier_status = label
     order.save(update_fields=["courier_status", "updated_at"])
+    publish_event(
+        "order.updated",
+        {
+            "organization_id": str(order.organization_id),
+            "order_id": str(order.id),
+            "order_number": order.order_number,
+            "source": "courier_status",
+        },
+    )
+    return True
+
+
+def record_courier_words(order, *, sub_status, tag, reason=None):
+    """A courier with FynkTech's status sheet (Leopards): saves its Sub
+    Status (Order.courier_status), Tag (Order.courier_tag) and - when given
+    - its reason (Order.courier_reason) in one go, and tells open Orders
+    pages. Only when something changed. Returns whether it did."""
+    changes = {
+        "courier_status": (sub_status or "").strip()[:100],
+        "courier_tag": (tag or "").strip()[:100],
+    }
+    if reason is not None:
+        changes["courier_reason"] = (reason or "").strip()[:255]
+    changed = [field for field, value in changes.items() if getattr(order, field) != value]
+    if not changed:
+        return False
+    for field in changed:
+        setattr(order, field, changes[field])
+    order.save(update_fields=[*changed, "updated_at"])
     publish_event(
         "order.updated",
         {
@@ -2945,6 +3027,28 @@ def _returning_over_15d(qs):
     )
 
 
+def _shipper_advice_needed(qs):
+    # In Undelivered and nobody has given Shipper Advice since it got there
+    # (any courier - for Leopards that's "Waiting for Shipper Advice"). An
+    # advice given for an earlier failed attempt doesn't count: counted from
+    # when the order last came into Undelivered. Once advice is given it
+    # leaves this card - it stays in Undelivered either way.
+    entered = (
+        OrderStatusEvent.all_objects.filter(order_id=OuterRef("pk"), to_status="attempt")
+        .exclude(from_status="attempt")
+        .order_by("-created_at")
+        .values("created_at")[:1]
+    )
+    return (
+        card_queryset(qs, "undelivered")
+        # No recorded move into Undelivered (e.g. imported that way): from
+        # when the order was created - never updated_at, which giving the
+        # advice itself changes.
+        .annotate(_undelivered_since=Coalesce(Subquery(entered), "created_at", output_field=DateTimeField()))
+        .filter(Q(shipper_advice_at__isnull=True) | Q(shipper_advice_at__lt=F("_undelivered_since")))
+    )
+
+
 CRITICAL_REASONS = [
     (
         "city_address_issue",
@@ -2969,6 +3073,12 @@ CRITICAL_REASONS = [
         f"In transit {CRITICAL_TRANSIT_DAYS}+ days",
         f"Dispatched more than {CRITICAL_TRANSIT_DAYS} days ago and still not delivered.",
         lambda qs: critical_transit_orders(qs).filter(return_in_progress_at__isnull=True).order_by("_in_transit_since"),
+    ),
+    (
+        "shipper_advice",
+        "Shipper Advice Needed",
+        "In Undelivered and no Shipper Advice (Re-attempt / Return) given yet.",
+        lambda qs: _shipper_advice_needed(qs).order_by("_undelivered_since"),
     ),
     (
         "returning_15d",

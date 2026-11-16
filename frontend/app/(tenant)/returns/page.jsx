@@ -1,5 +1,6 @@
 "use client";
 
+import useOrderNav from "../../../components/orders/useOrderNav";
 import usePageAccess from "../../../lib/usePageAccess";
 import { useCallback, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
@@ -127,6 +128,8 @@ export default function ReturnsPage() {
   }
   // The order whose details are open (read only), or null.
   const [detailOrderId, setDetailOrderId] = useState(null);
+  // The details panel's previous / next arrows step through this list.
+  const orderNav = useOrderNav(orders, detailOrderId, setDetailOrderId);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -484,6 +487,9 @@ export default function ReturnsPage() {
       {detailOrderId ? (
         <OrderDetailPanel
           orderId={detailOrderId}
+          onPrev={orderNav.onPrev}
+          onNext={orderNav.onNext}
+          position={orderNav.position}
           couriers={[]}
           readOnly
           onClose={() => setDetailOrderId(null)}

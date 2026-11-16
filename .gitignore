@@ -58,3 +58,6 @@ build/
 
 # Data sheets kept in the project root - never commit them.
 /*.csv
+
+# Plans and memory notes - kept locally, never pushed
+md-files/

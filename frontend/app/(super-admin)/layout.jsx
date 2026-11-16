@@ -21,6 +21,7 @@ import {
   TicketIcon,
   GridIcon,
   GearIcon,
+  AlertIcon,
 } from "../../components/layout/navIcons";
 import adminTeamService from "../../services/adminTeamService";
 
@@ -45,6 +46,14 @@ const NAV = [
     label: "All Orders",
     icon: ReceiptIcon,
     match: (path) => path.startsWith("/admin/all-orders"),
+  },
+  {
+    // Every store's critical orders in one place (opens straight in).
+    href: "/admin/critical-orders",
+    page: "critical_orders",
+    label: "Critical Orders",
+    icon: AlertIcon,
+    match: (path) => path.startsWith("/admin/critical-orders"),
   },
   {
     href: "/admin/dispatch-hub",

@@ -1,5 +1,6 @@
 "use client";
 
+import useOrderNav from "../../../components/orders/useOrderNav";
 import usePageAccess from "../../../lib/usePageAccess";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -281,6 +282,8 @@ export default function OrdersPage() {
   // per-order shortage detail plus the ids to retry with force=true.
   const [stockShortfall, setStockShortfall] = useState(null);
   const [detailOrderId, setDetailOrderId] = useState(null);
+  // The details panel's previous / next arrows step through this list.
+  const orderNav = useOrderNav(orders, detailOrderId, setDetailOrderId);
   // Edit Order opens the order straight into Edit once its booking is cancelled.
   const [detailStartEditing, setDetailStartEditing] = useState(false);
   const [scanOpen, setScanOpen] = useState(false);
@@ -1336,6 +1339,7 @@ export default function OrdersPage() {
         fromCard={pendingFromCard}
         currentCourier={[...new Set(pendingOrders.map((o) => o.courier_name).filter(Boolean))].join(", ")}
         currentTag={[...new Set(pendingOrders.map((o) => latestTag(o)?.text).filter(Boolean))].join(", ")}
+        courierReason={[...new Set(pendingOrders.map((o) => o.courier_reason).filter(Boolean))].join(", ")}
         couriers={
           pendingAction?.action === "assign_courier" && bookingAccounts.length
             ? // Only the synthetic booking-account entries actually book
@@ -1384,6 +1388,9 @@ export default function OrdersPage() {
       />
       <OrderDetailPanel
         orderId={detailOrderId}
+        onPrev={orderNav.onPrev}
+        onNext={orderNav.onNext}
+        position={orderNav.position}
         couriers={couriers}
         bookingAccounts={bookingAccounts}
         startEditing={detailStartEditing}
