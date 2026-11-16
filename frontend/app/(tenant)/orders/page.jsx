@@ -284,6 +284,11 @@ export default function OrdersPage() {
   const [detailOrderId, setDetailOrderId] = useState(null);
   // The details panel's previous / next arrows step through this list.
   const orderNav = useOrderNav(orders, detailOrderId, setDetailOrderId);
+  // An Assigning Courier action started from an order's details (Cancel
+  // Order, Change Courier, Cancel Booking) closes the details to run here;
+  // once it's done (or the popup is cancelled) they reopen on the same
+  // order - its › arrow then goes on to the next one still in the list.
+  const resumeDetailRef = useRef(null);
   // Edit Order opens the order straight into Edit once its booking is cancelled.
   const [detailStartEditing, setDetailStartEditing] = useState(false);
   const [scanOpen, setScanOpen] = useState(false);
@@ -973,7 +978,12 @@ export default function OrdersPage() {
       else runAction(params.courier, orderIds, {});
       return;
     }
-    runAction(action, orderIds, params);
+    const resume = resumeDetailRef.current;
+    resumeDetailRef.current = null;
+    Promise.resolve(runAction(action, orderIds, params)).finally(() => {
+      // Started from an order's details: back to it, once it's done.
+      if (resume) setDetailOrderId(resume.originId);
+    });
   }
 
   async function runAction(action, orderIds, params) {
@@ -1363,7 +1373,13 @@ export default function OrdersPage() {
               ? availableActions.find((a) => a.action === MOVE_TO_ASSIGNING)?.choices
               : undefined
         }
-        onClose={() => setPendingAction(null)}
+        onClose={() => {
+          setPendingAction(null);
+          // Popup cancelled: back to the order it came from.
+          const resume = resumeDetailRef.current;
+          resumeDetailRef.current = null;
+          if (resume) setDetailOrderId(resume.originId);
+        }}
         onSubmit={onSubmitPendingAction}
       />
       <StockShortageModal
@@ -1398,6 +1414,9 @@ export default function OrdersPage() {
         onRaiseTicket={setTicketOrder}
         // Assigning Courier's five, run exactly as from the selection bar.
         onAssigningAction={(action, order) => {
+          if (ASSIGNING_COURIER_ACTIONS.some((a) => a.action === action)) {
+            resumeDetailRef.current = { originId: order.id };
+          }
           setDetailOrderId(null);
           setDetailStartEditing(false);
           startAction(action, [order.id], true);
