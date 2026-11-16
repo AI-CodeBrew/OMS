@@ -1416,25 +1416,72 @@ def _next_cancel_number(order):
     return f"{base}-{n}"[:50]
 
 
-def _back_to_confirmation_after_cancel(order, *, actor_user_id, note):
+def _back_to_confirmation_after_cancel(order, *, actor_user_id, note, renumber=True,
+                                      tag=BOOKING_CANCELLED_TAG, sub_status=""):
     """The booking is already cancelled: the order goes back to Awaiting
-    Confirmation (New), tagged BOOKING_CANCELLED_TAG, under its next store
-    order ID - courier, tracking number and booking stamps cleared."""
-    original = order.original_order_number or order.order_number
-    new_number = _next_cancel_number(order)
-    return _force_transition(
+    Confirmation (New), tagged `tag`, under its next store order ID (unless
+    renumber=False) - courier, tracking number and booking stamps cleared."""
+    extra = {**_BOOKING_FIELDS_CLEARED, "workflow_flag": "", "tag": tag}
+    if renumber:
+        extra["original_order_number"] = order.original_order_number or order.order_number
+        extra["order_number"] = _next_cancel_number(order)
+    if sub_status:
+        extra["courier_status"] = sub_status
+    return _force_transition(order, "new", actor_user_id=actor_user_id, note=note, extra_fields=extra)
+
+
+def unbook_cancelled_by_courier_keep_number(order, *, courier_label, tracking_number="", actor_user_id=None,
+                                            tag="Cancelled from Assigning Courier",
+                                            sub_status="Booking Cancelled"):
+    """FynkTech's PostEx sheet for "Un-Assigned By Me" (cancelled on
+    PostEx): like unbook_cancelled_by_courier - only the booking is
+    cancelled, stock back, courier/tracking/booking stamps cleared, back to
+    Awaiting Confirmation - but the order keeps its order number: it only
+    gets a new one if it is booked with the same courier again
+    (renumber_for_rebooking). Tag and Sub Status from the sheet. Returns
+    True if the order changed."""
+    if order.status not in _UNBOOKABLE_STATUSES:
+        return False
+    order_tn = (order.tracking_number or "").strip()
+    cancelled_tn = (tracking_number or "").strip()
+    if not _booked_with(order, courier_label) or (order_tn and cancelled_tn and order_tn != cancelled_tn):
+        note_old_booking_update(order, courier_label=courier_label, tracking_number=cancelled_tn)
+        return False
+    _release_courier_booking(
         order,
-        "new",
         actor_user_id=actor_user_id,
-        note=note,
-        extra_fields={
-            **_BOOKING_FIELDS_CLEARED,
-            "workflow_flag": "",
-            "tag": BOOKING_CANCELLED_TAG,
-            "order_number": new_number,
-            "original_order_number": original,
-        },
+        propagate_to_courier=False,
+        note=f"Booking cancelled on {courier_label}",
     )
+    _back_to_confirmation_after_cancel(
+        order, actor_user_id=actor_user_id, renumber=False, tag=tag, sub_status=sub_status,
+        note=f"Booking cancelled on {courier_label} - booking and tracking number removed",
+    )
+    return True
+
+
+def next_rebooking_number(order):
+    """The store order ID renumber_for_rebooking would give (not saved)."""
+    return _next_cancel_number(order)
+
+
+def renumber_for_rebooking(order, *, courier_label, actor_user_id=None, new_number=None):
+    """The order is being booked again with a courier it was booked with
+    before (unbook_cancelled_by_courier_keep_number kept its number): it
+    gets its next store order ID now (1001 -> 1001-1), so the courier never
+    sees the same order number twice. Returns the new number."""
+    original = order.original_order_number or order.order_number
+    old = order.order_number
+    order.order_number = new_number or _next_cancel_number(order)
+    order.original_order_number = original
+    order.save(update_fields=["order_number", "original_order_number", "updated_at"])
+    OrderStatusEvent.objects.create(
+        organization_id=order.organization_id, order=order,
+        from_status=order.status, to_status=order.status,
+        note=f"Booked again with {courier_label} - store order ID changed from {old} to {order.order_number}",
+        actor_user_id=actor_user_id,
+    )
+    return order.order_number
 
 
 def unbook_for_edit(order, *, actor_user_id=None):
@@ -2053,7 +2100,9 @@ def latest_tag(order):
     # Once the parcel is with a courier that has FynkTech's status sheet
     # (Leopards), the courier's tag wins over the print tags left from
     # Assigning Courier.
-    if order.courier_tag and card in ("dispatched", "undelivered", "return_in_transit", "returned", "delivered"):
+    if order.courier_tag and card in (
+        "assigning_courier", "dispatched", "undelivered", "return_in_transit", "returned", "delivered",
+    ):
         return card_tag
     # Scan-pack sets packed_at → show Packed over the print tags / To be packed.
     if order.tag and (
@@ -2111,6 +2160,10 @@ def workflow_tag(order):
     if card == "assigning_courier":
         if status == "dispatch_issue":
             return "Dispatch Issue"
+        # A courier sheet's word before pickup - PostEx's "Voided" for an
+        # expired booking. Blank otherwise (the print tags show).
+        if (getattr(order, "courier_tag", "") or "").strip():
+            return order.courier_tag
         # Not To be printed until the courier has actually given a tracking
         # number - a Smartlane booking waits for one in Booking Pending.
         if status == "booking_pending" or not order.tracking_number:

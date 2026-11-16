@@ -36,7 +36,7 @@ from core.platform_service import (
     platform_organization_id,
 )
 
-from . import client
+from . import client, status_map
 from .exceptions import PostExAPIError, PostExBookingError
 from .models import PostExConnection, PostExShipment, PostExSyncJob
 
@@ -70,6 +70,9 @@ COURIER_NAME = "PostEx"
 _STAGE_BY_STATUS = {
     "unbooked": "pending",
     "booked": "pending",
+    # The booking lapsed before pickup - stays in Assigning Courier, tagged
+    # Voided (status_map).
+    "expired": "pending",
     "picked by postex": "dispatched",
     "postex warehouse": "dispatched",
     "in stock": "dispatched",
@@ -439,6 +442,15 @@ def _shipments_for(connection):
     return qs.filter(organization_id=connection.organization_id, order__platform_reference="")
 
 
+def _used_with_postex(order):
+    """Whether an earlier PostEx booking of this order (now inactive) went
+    out under its current order number."""
+    base = order.order_number.lstrip("#") or order.order_number
+    return PostExShipment.all_objects.filter(
+        organization_id=order.organization_id, order=order, is_active=False, reference=base,
+    ).exists()
+
+
 def _next_reference(order):
     """order.order_number (without '#'), or -R2/-R3/... if an earlier,
     since-cancelled booking already used the plain form - the old shipment
@@ -577,8 +589,16 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False, 
             })
             continue
 
+        # Booked with PostEx before under this same order number (a booking
+        # PostEx cancelled keeps it - see apply_postex_status): it goes out
+        # under its next store order ID, saved once PostEx accepts it.
+        new_number = None
+        if _used_with_postex(order):
+            from oms import services as oms_services
+
+            new_number = oms_services.next_rebooking_number(order)
         try:
-            reference = _next_reference(order)
+            reference = (new_number or "").lstrip("#") or _next_reference(order)
             payload = _build_order_payload(order, connection, city_name, reference, pickup_code)
         except PostExBookingError as exc:
             results.append({**base, "success": False, "error": str(exc)})
@@ -605,6 +625,12 @@ def book_orders(organization_id, order_ids, *, actor_user_id=None, force=False, 
                 courier = Courier.objects.create(organization_id=organization_id, name=COURIER_NAME, is_active=True)
 
         try:
+            if new_number:
+                from oms import services as oms_services
+
+                oms_services.renumber_for_rebooking(
+                    order, courier_label=COURIER_NAME, actor_user_id=actor_user_id, new_number=new_number,
+                )
             _finalize_booking(
                 order, reference=reference, tracking_number=tracking_number, courier=courier,
                 connection=connection, status_label=str(dist.get("orderStatus") or "Unbooked"),
@@ -773,10 +799,13 @@ def apply_postex_status(order, stage, *, tracking_number="", actor_user_id=None)
         return True
 
     if stage == "cancelled":
-        # Cancelled on PostEx's side: the booking is gone, not the order -
-        # it goes back to Awaiting Assigning to be booked again.
-        return oms_services.unbook_cancelled_by_courier(
-            order, courier_label="PostEx", tracking_number=tracking_number, actor_user_id=actor_user_id
+        # Cancelled on PostEx's side ("Un-Assigned By Me"): the booking is
+        # gone, not the order - FynkTech's sheet sends it back to Awaiting
+        # Confirmation under the SAME order number (it changes only if it
+        # is booked with PostEx again - see book_orders).
+        return oms_services.unbook_cancelled_by_courier_keep_number(
+            order, courier_label="PostEx", tracking_number=tracking_number, actor_user_id=actor_user_id,
+            tag=status_map.TAG_BOOKING_CANCELLED, sub_status=status_map.SUB_BOOKING_CANCELLED,
         )
 
     if stage in ("out_for_delivery", "attempt"):
@@ -825,9 +854,6 @@ def _apply_fetched_status(shipment, row):
     if history:
         shipment.status_history = history
     shipment.save(update_fields=["last_checked_at", "last_payload", "status_label", "status_history", "updated_at"])
-    # PostEx's own word ("PostEx WareHouse", "En-Route to ...") for the
-    # orders list's Sub Status - most of them all land on Dispatched.
-    oms_services.record_courier_status(order, label)
 
     if not order.tracking_number and shipment.tracking_number:
         order.tracking_number = shipment.tracking_number
@@ -861,11 +887,54 @@ def _apply_fetched_status(shipment, row):
     # started: it isn't coming back any more - back to Undelivered.
     if stage == "attempt" and not _return_under_way(history):
         oms_services.clear_return_in_progress(order, courier_label="PostEx")
-    # The Return in Transit tag: why it's coming back.
+    # Why it's coming back - kept as the order's return reason.
     oms_services.record_return_reason(order, latest_remark(history))
+    # Sub Status and Tag from FynkTech's PostEx sheet (status_map).
+    order.refresh_from_db()
+    words_changed = record_sheet_words(order, stage, label, history)
 
-    order.refresh_from_db(fields=["status"])
-    return filled_tracking or (order.status != before_status)
+    return filled_tracking or (order.status != before_status) or words_changed
+
+
+# The statuses an order has while PostEx has the parcel - where the sheet's
+# words from Picked By PostEx onward apply.
+_SHEET_STATUSES = {"dispatched", "out_for_delivery", "attempt", "delivered", "returned"}
+_ADVICE_TAGS = {status_map.TAG_REATTEMPT_REQUESTED, status_map.TAG_RETURN_REQUESTED}
+
+
+def record_sheet_words(order, stage, label, history):
+    """Saves the order's Sub Status and Tag from FynkTech's PostEx sheet
+    (status_map) for PostEx's latest `label` / `history`, once its status
+    has moved. Before pickup only the Sub Status (and Expired's "Voided"),
+    and only while the order is still in Assigning Courier; an unknown text
+    there is shown as PostEx wrote it. A repeat of Delivery Under Review
+    after our Shipper Advice keeps "Reattempt / Return Requested". Returns
+    whether anything changed."""
+    from oms import services as oms_services
+
+    card = oms_services.workflow_card(order)
+    if card == "assigning_courier":
+        words = status_map.pre_pickup_words(label)
+        if words is None:
+            return oms_services.record_courier_status(order, label)
+        sub_status, tag = words
+        return oms_services.record_courier_words(order, sub_status=sub_status, tag=tag)
+    if order.status not in _SHEET_STATUSES:
+        return False
+    words = status_map.sheet_words(stage, label, history)
+    if words is None:
+        return oms_services.record_courier_status(order, label)
+    sub_status, tag = words
+    if (
+        (sub_status, tag) == status_map.SUB_WAITING_ADVICE
+        and order.courier_status == sub_status
+        and order.courier_tag in _ADVICE_TAGS
+    ):
+        tag = order.courier_tag
+    reason = None
+    if stage in ("attempt", "return_in_progress"):
+        reason = latest_remark(history) or None
+    return oms_services.record_courier_words(order, sub_status=sub_status, tag=tag, reason=reason)
 
 
 # --------------------------------------------------------------- Webhook --

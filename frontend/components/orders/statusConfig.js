@@ -189,7 +189,11 @@ const OWN_PRIORITY_TAGS = new Set([
 // always win; otherwise the stage's tag. Returns { text, own }.
 // The cards where a courier's sheet tag (Leopards - order.courier_tag)
 // wins over the print tags left from Assigning Courier.
-const COURIER_TAG_CARDS = new Set(["dispatched", "undelivered", "return_in_transit", "returned", "delivered"]);
+// assigning_courier: PostEx's "Voided" for an expired booking (the only
+// courier tag set before pickup).
+const COURIER_TAG_CARDS = new Set([
+  "assigning_courier", "dispatched", "undelivered", "return_in_transit", "returned", "delivered",
+]);
 
 export function latestTag(order) {
   if (order.courier_tag && COURIER_TAG_CARDS.has(order.workflow_card) && order.workflow_tag) {

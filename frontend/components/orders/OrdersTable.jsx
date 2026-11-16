@@ -55,6 +55,11 @@ const TAG_TONE = {
   "Moving back to Warehouse": "amber",
   "Awaiting Scan": "amber",
   "Return Received": "green",
+  // PostEx's sheet tags (backend integrations/postex/status_map.py).
+  Voided: "red",
+  "Moving from Courier Hub": "indigo",
+  "Re-Attempt": "amber",
+  "Hold by Customer": "amber",
   Approved: "indigo",
   New: "blue",
 };
