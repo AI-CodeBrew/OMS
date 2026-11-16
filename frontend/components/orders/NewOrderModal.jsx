@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import Modal from "../shared/Modal";
 import Button from "../shared/Button";
 import DateInput from "../shared/DateInput";
+import CityInput from "../shared/CityInput";
 import ordersService from "../../services/ordersService";
 
 const ImportNewOrdersModal = dynamic(() => import("./ImportNewOrdersModal"), { ssr: false });
@@ -655,7 +656,12 @@ export default function NewOrderModal({ open, recreateFrom = null, stores = null
               <input required value={form.address_line1} onChange={updateField("address_line1")} className={INPUT} />
             </Field>
             <Field label="City" required>
-              <input required value={form.city} onChange={updateField("city")} className={INPUT} />
+              <CityInput
+                required
+                value={form.city}
+                onChange={(city) => setForm((f) => ({ ...f, city }))}
+                className={INPUT}
+              />
             </Field>
           </div>
         </section>

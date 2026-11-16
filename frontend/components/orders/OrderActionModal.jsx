@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Modal from "../shared/Modal";
 import Button from "../shared/Button";
+import CityInput from "../shared/CityInput";
 import { CANCEL_REASON_OTHER, CANCEL_REASONS, SMARTLANE_LOAD_SHEET_COURIERS } from "./statusConfig";
 import ordersService from "../../services/ordersService";
 
@@ -169,7 +170,7 @@ export default function OrderActionModal({ action, couriers, options, count, fro
   const [remarks, setRemarks] = useState("");
   // Cancel → Other: free-text reason.
   const [otherReason, setOtherReason] = useState("");
-  // City Issue's city list, or Update Tag's tags.
+  // Update Tag's tags (City Issue uses CityInput).
   const [suggestions, setSuggestions] = useState([]);
 
   useEffect(() => {
@@ -179,9 +180,10 @@ export default function OrderActionModal({ action, couriers, options, count, fro
   }, [action]);
 
   useEffect(() => {
-    if (field?.type !== "city-input" && field?.type !== "tag-input") return;
+    if (field?.type !== "tag-input") return;
     let alive = true;
-    (field.type === "tag-input" ? ordersService.getOrderTags() : ordersService.getCityNames())
+    ordersService
+      .getOrderTags()
       .then((names) => alive && setSuggestions(names))
       .catch(() => alive && setSuggestions([]));
     return () => {
@@ -338,18 +340,11 @@ export default function OrderActionModal({ action, couriers, options, count, fro
           </select>
         ) : field.type === "city-input" ? (
           <>
-            <input
+            <CityInput
               value={value}
-              onChange={(e) => setValue(e.target.value)}
-              list="courier-city-names"
-              placeholder="Start typing a city…"
+              onChange={setValue}
               className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
             />
-            <datalist id="courier-city-names">
-              {suggestions.map((name) => (
-                <option key={name} value={name} />
-              ))}
-            </datalist>
             <p className="mt-2 text-xs text-slate-500">
               Pick the city as the couriers spell it - the order then moves to Approved.
             </p>

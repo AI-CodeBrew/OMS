@@ -477,7 +477,11 @@ class OrderViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(
             rows,
             many=True,
-            context={**self.get_serializer_context(), "probability_map": probability_map},
+            context={
+                **self.get_serializer_context(),
+                "probability_map": probability_map,
+                "duplicate_map": services.get_duplicate_map(rows),
+            },
         )
         payload = {
             "count": total,
@@ -564,8 +568,13 @@ class OrderViewSet(viewsets.ModelViewSet):
         probability_map = services.get_probability_map(
             organization_filter=org_filter(request), phone_numbers=phone_numbers
         )
+        rows = list(rows)
         serializer = self.get_serializer(
-            rows, many=True, context={**self.get_serializer_context(), "probability_map": probability_map}
+            rows, many=True, context={
+                **self.get_serializer_context(),
+                "probability_map": probability_map,
+                "duplicate_map": services.get_duplicate_map(rows),
+            }
         )
         if page is not None:
             payload = self.get_paginated_response(serializer.data).data
@@ -1069,6 +1078,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                 "with_previous_status": True,
                 # Every Shipper Advice given on this order (detail only).
                 "with_advice_history": True,
+                "duplicate_map": services.get_duplicate_map([instance]),
             },
         )
         return Response(serializer.data)

@@ -119,6 +119,25 @@ export function ReplacementMark({ order, onDark = false }) {
   );
 }
 
+// "Duplicate": another order of the same store looks like this one placed
+// twice - same customer, same products, same total, same order date
+// (backend services.get_duplicate_map). Hover names the other order(s).
+export function DuplicateMark({ order, onDark = false }) {
+  const twins = order.duplicate_of || [];
+  if (!twins.length) return null;
+  const names = twins.map((t) => `${t.order_number}${t.oms_id ? ` (OMS ${t.oms_id})` : ""}`).join(", ");
+  return (
+    <span
+      className={`shrink-0 rounded px-1 text-[11px] font-bold ${
+        onDark ? "bg-red-500 text-white" : "bg-red-100 text-red-700"
+      }`}
+      title={`Possible duplicate - same customer, products, total and date as ${names}`}
+    >
+      Duplicate
+    </span>
+  );
+}
+
 // A small ticket symbol beside an order that has any support ticket - amber
 // while one is still open, grey once they're all resolved.
 export function TicketMark({ order, onDark = false }) {
@@ -261,6 +280,7 @@ export default function OrdersTable({
                       {String(order.order_number ?? "").replace(/^#/, "")}
                     </button>
                     <ReplacementMark order={order} />
+                    <DuplicateMark order={order} />
                     <TicketMark order={order} />
                     {sentByStore(order) ? (
                       <span

@@ -2681,6 +2681,62 @@ def scan_return(*, organization_id, order_number, reason="", actor_user_id=None)
 
 # --- Read helpers ------------------------------------------------------
 
+def _duplicate_key(order, items):
+    """What makes two orders the same order placed twice: same store, same
+    customer (phone digits, else name), same order DATE, same total and
+    the same products (name, quantity, price)."""
+    phone = re.sub(r"\D", "", order.customer_phone or "")[-10:]
+    who = phone or (order.customer_name or "").strip().lower()
+    when = timezone.localtime(order.placed_at or order.created_at).date() if (order.placed_at or order.created_at) else None
+    products = tuple(sorted(
+        ((i.product_name or "").strip().lower(), int(i.quantity or 0), f"{Decimal(i.unit_price or 0):.2f}") for i in items
+    ))
+    return (str(order.organization_id), who, when, f"{Decimal(order.total_amount or 0):.2f}", products)
+
+
+def get_duplicate_map(rows):
+    """{order id: [{id, order_number, oms_id}, ...]} - for each order of
+    `rows` (one page of a list), the OTHER orders that look like the same
+    order placed twice (_duplicate_key). Cancelled orders are left out on
+    both sides - a cancelled twin is already dealt with. Two queries for
+    the whole page, not one per row."""
+    rows = [o for o in rows if o.status != "cancelled"]
+    if not rows:
+        return {}
+    # Same store, same day, same total - the customer and products are
+    # compared below (a phone can be written several ways: 0300-..., +92 ...).
+    days = {timezone.localtime(o.placed_at or o.created_at).date() for o in rows if (o.placed_at or o.created_at)}
+    same_day = Q(placed_at__date__in=days) | Q(placed_at__isnull=True, created_at__date__in=days)
+    totals = {o.total_amount for o in rows}
+    candidates = list(
+        Order.all_objects.filter(same_day, organization_id__in={o.organization_id for o in rows}, total_amount__in=totals)
+        .exclude(status="cancelled")
+        .only("id", "organization_id", "customer_phone", "customer_name", "placed_at", "created_at",
+              "total_amount", "order_number", "original_order_number", "supabase_order_no", "status")
+    )
+    if len(candidates) < 2:
+        return {}
+    items = {}
+    for item in OrderItem.all_objects.filter(order_id__in=[c.id for c in candidates]).only(
+        "order_id", "product_name", "quantity", "unit_price"
+    ):
+        items.setdefault(item.order_id, []).append(item)
+    groups = {}
+    for c in candidates:
+        groups.setdefault(_duplicate_key(c, items.get(c.id, [])), []).append(c)
+    result = {}
+    for row in rows:
+        twins = groups.get(_duplicate_key(row, items.get(row.id, [])), [])
+        others = [c for c in twins if c.id != row.id]
+        if others:
+            result[str(row.id)] = [
+                {"id": str(c.id), "order_number": c.original_order_number or c.order_number,
+                 "oms_id": c.supabase_order_no}
+                for c in others
+            ]
+    return result
+
+
 def get_probability_map(*, organization_filter, phone_numbers):
     """Historical cancelled/returned/delivered percentages per customer
     phone number, computed once per list-request for only the phone

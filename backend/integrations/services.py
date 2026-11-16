@@ -347,6 +347,44 @@ def _shopify_payment(shopify_order, money):
     }
 
 
+# The stores whose super admin switch "Keep updating orders from Shopify"
+# exists (Organization.shopify_resync_orders) - OMS Testing only for now,
+# so Shopify-side testing of the app is never blocked; every other store
+# keeps "taken from Shopify once".
+SHOPIFY_RESYNC_STORES = {"OMS Testing"}
+
+
+def shopify_resync_available(organization):
+    return (organization.name or "").strip() in SHOPIFY_RESYNC_STORES
+
+
+def _shopify_resync_on(organization_id):
+    from core.models import Organization
+
+    org = Organization.objects.filter(id=organization_id).only("name", "shopify_resync_orders").first()
+    return bool(org and org.shopify_resync_orders and shopify_resync_available(org))
+
+
+def start_full_order_sync(organization_id):
+    """Starts a full Shopify order sync for the store in the background
+    (the Shopify page's own sync, every order) - used when the super admin
+    turns on "Keep updating orders from Shopify", so existing orders are
+    brought up to date at once. Returns the job, or None (no Shopify)."""
+    import threading
+
+    connection = ShopifyConnection.all_objects.filter(organization_id=organization_id, is_connected=True).first()
+    if not connection:
+        return None
+    job = ShopifySyncJob.all_objects.create(organization_id=organization_id, mode="full", ranges=[])
+    threading.Thread(
+        target=run_shopify_sync,
+        args=(organization_id, job.id),
+        kwargs={"connection_id": connection.id, "created_at_min": None, "created_at_max": None},
+        daemon=True,
+    ).start()
+    return job
+
+
 @audit_source("Shopify")
 def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
     """Create or update an oms.Order from a Shopify order payload (webhook
@@ -361,13 +399,24 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
     for it is ignored entirely (items, amounts, customer, payment, tracking,
     status, cancellation), so nothing done in OMS is ever overwritten.
     Pushes from OMS to Shopify (tags, fulfillments) are unaffected.
-    Returns (order, created) - the existing order and False when ignored."""
+    Returns (order, created) - the existing order and False when ignored.
+
+    Except where the super admin turned on "Keep updating orders from
+    Shopify" (OMS Testing only - _shopify_resync_on): there an order not yet
+    booked with a courier (Awaiting Confirmation / Approved) takes Shopify's
+    update - customer, address, products, amounts, payment, note, a
+    cancellation. Its status otherwise, its tags and its OMS order number
+    are still never touched; once booked it's left alone."""
+    from oms.services import WORKFLOW_CARD_STATUSES
+
     shopify_order_id = shopify_order["id"]
     existing = Order.all_objects.filter(
         organization_id=organization_id, shopify_order_id=shopify_order_id
     ).first()
     if existing is not None:
-        return existing, False
+        before_booking = WORKFLOW_CARD_STATUSES["awaiting_confirmation"] | WORKFLOW_CARD_STATUSES["approved"]
+        if existing.status not in before_booking or not _shopify_resync_on(organization_id):
+            return existing, False
     # A Shopify store renamed since its last order keeps its Store ID.
     from oms.services import follow_shopify_store_rename
 

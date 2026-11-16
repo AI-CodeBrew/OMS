@@ -598,6 +598,17 @@ export default function OrderDetailPanel({
               <p className="mb-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
             ) : null}
 
+            {(order.duplicate_of || []).length ? (
+              <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+                <span className="font-semibold">Possible duplicate.</span> Same customer, same products, same total and
+                same order date as{" "}
+                {order.duplicate_of
+                  .map((t) => `${t.order_number}${t.oms_id ? ` (OMS ${t.oms_id})` : ""}`)
+                  .join(", ")}
+                . Check before approving - cancel one if it was placed twice.
+              </div>
+            ) : null}
+
             <ShipperAdviceHistory order={order} />
 
             <div className="flex gap-6">

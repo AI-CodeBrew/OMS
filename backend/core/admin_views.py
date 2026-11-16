@@ -59,6 +59,14 @@ def organization_detail(request, organization_id):
             )
             return Response({"success": True, **result})
         if request.method == "PATCH":
+            if "shopify_resync_orders" in body:
+                org = service.set_shopify_resync(
+                    organization_id,
+                    enabled=body.get("shopify_resync_orders"),
+                    actor_user_id=request.user_id,
+                    actor_email=actor_email,
+                )
+                return Response({"success": True, "organization": org})
             if "service_model" in body:
                 org = service.set_service_model(
                     organization_id,

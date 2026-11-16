@@ -549,22 +549,26 @@ _LOAD_SHEET_HEADING = "booked packets summary report"
 def _load_sheet_pages_only(pdf_bytes):
     """Leopards' downloadLoadSheet PDF opens with each packet's airway bill
     slip, followed by the summary copies. The load sheet should be the
-    summary only (the slips are what "Print Airway Bill" is for), so pages
-    without the summary heading are dropped. Anything unexpected - no page
+    summary only (the slips are what "Print Airway Bill" is for), so the
+    pages before the first summary page are dropped. Everything from that
+    page on is kept: a long sheet runs over several pages and only the first
+    page of each copy carries the heading - keeping just the heading pages
+    cut a 78-parcel sheet down to 49 rows. Anything unexpected - no page
     carries the heading (a layout change), nothing to drop, or the PDF can't
     be read - hands back Leopards' PDF untouched, never an empty one."""
     from pypdf import PdfReader, PdfWriter
 
     try:
         reader = PdfReader(io.BytesIO(pdf_bytes))
-        keep = [
-            index for index, page in enumerate(reader.pages)
-            if _LOAD_SHEET_HEADING in (page.extract_text() or "").lower()
-        ]
-        if not keep or len(keep) == len(reader.pages):
+        first = next(
+            (index for index, page in enumerate(reader.pages)
+             if _LOAD_SHEET_HEADING in (page.extract_text() or "").lower()),
+            None,
+        )
+        if not first:  # None (no heading) or 0 (no slips in front)
             return pdf_bytes
         writer = PdfWriter()
-        for index in keep:
+        for index in range(first, len(reader.pages)):
             writer.add_page(reader.pages[index])
         buffer = io.BytesIO()
         writer.write(buffer)

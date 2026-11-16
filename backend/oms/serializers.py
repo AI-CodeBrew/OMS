@@ -271,6 +271,9 @@ class OrderSerializer(serializers.ModelSerializer):
     # Every Shipper Advice given on the order, newest first - the order's
     # detail only (null in lists, where it would cost a query per row).
     shipper_advice_history = serializers.SerializerMethodField()
+    # Other orders that look like this one placed twice (services.
+    # get_duplicate_map) - [] when none; null where the list didn't ask.
+    duplicate_of = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -322,6 +325,7 @@ class OrderSerializer(serializers.ModelSerializer):
             "shipper_advice_remarks",
             "shipper_advice_at",
             "shipper_advice_history",
+            "duplicate_of",
             "total_amount",
             "coupon_discount",
             "extra_discount",
@@ -434,6 +438,12 @@ class OrderSerializer(serializers.ModelSerializer):
         from .services import workflow_tag
 
         return workflow_tag(order)
+
+    def get_duplicate_of(self, order):
+        dup_map = self.context.get("duplicate_map")
+        if dup_map is None:
+            return None
+        return dup_map.get(str(order.id), [])
 
     def get_shipper_advice_history(self, order):
         if not self.context.get("with_advice_history"):

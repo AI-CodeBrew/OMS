@@ -140,6 +140,8 @@ export default function StoresPage() {
   const [search, setSearch] = useRememberedState("search", "");
   const [hubBusyId, setHubBusyId] = useState("");
   const [modelBusyId, setModelBusyId] = useState("");
+  const [resyncBusyId, setResyncBusyId] = useState("");
+  const [notice, setNotice] = useState("");
   const [bankOrg, setBankOrg] = useState(null);
 
   const load = useCallback(async () => {
@@ -205,6 +207,43 @@ export default function StoresPage() {
     }
   }
 
+  // "Keep updating orders from Shopify" - OMS Testing only (the backend
+  // says which store has it: shopify_resync_available).
+  async function toggleResync(org) {
+    const turningOn = !org.shopify_resync_orders;
+    if (
+      turningOn &&
+      !window.confirm(
+        `Keep updating ${org.name}'s orders from Shopify?
+
+Orders not yet booked with a courier (Awaiting ` +
+          "Confirmation / Approved) will take every Shopify change - customer, address, products, amounts, " +
+          "payment, cancellation. A full Shopify order sync starts now. Booked orders are never changed.",
+      )
+    ) {
+      return;
+    }
+    setResyncBusyId(org.id);
+    setError("");
+    setNotice("");
+    try {
+      const data = await tenantsService.setShopifyResync(org.id, turningOn);
+      setStores((list) =>
+        list.map((s) => (s.id === org.id ? { ...s, shopify_resync_orders: turningOn } : s))
+      );
+      setNotice(
+        turningOn
+          ? `${org.name}: orders keep updating from Shopify` +
+              (data.organization?.resync_job_started ? " - a full order sync has started." : " (Shopify not connected - no sync started).")
+          : `${org.name}: orders are taken from Shopify once again (no updates after they land).`
+      );
+    } catch (err) {
+      setError(err.message || "Could not change the setting");
+    } finally {
+      setResyncBusyId("");
+    }
+  }
+
   function openStore(org) {
     const modules = enabledModules(org);
     enterStore({ id: org.id, name: org.name, modules, is_manual_store: org.is_manual_store });
@@ -225,6 +264,9 @@ export default function StoresPage() {
         />
       </div>
 
+      {notice ? (
+        <p className="rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{notice}</p>
+      ) : null}
       {error ? (
         <p className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>
       ) : null}
@@ -288,6 +330,21 @@ export default function StoresPage() {
                         >
                           {integrated ? "Shopify Integrated" : "Manual"}
                         </span>
+                        {org.shopify_resync_available ? (
+                          <label
+                            className="mt-1.5 flex cursor-pointer items-center gap-1.5 whitespace-nowrap text-xs text-slate-600"
+                            onClick={(e) => e.stopPropagation()}
+                            title="Off: an order is taken from Shopify once. On: Shopify changes keep applying until the order is booked."
+                          >
+                            <input
+                              type="checkbox"
+                              checked={Boolean(org.shopify_resync_orders)}
+                              disabled={resyncBusyId === org.id}
+                              onChange={() => toggleResync(org)}
+                            />
+                            Keep updating orders from Shopify
+                          </label>
+                        ) : null}
                       </td>
                       <td className="px-4 py-3">
                         <select

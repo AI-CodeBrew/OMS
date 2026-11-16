@@ -246,6 +246,43 @@ def create_organization_with_admin(
     return get_organization(organization.id)
 
 
+def _resync_available(org):
+    from integrations.services import shopify_resync_available
+
+    return shopify_resync_available(org)
+
+
+def set_shopify_resync(organization_id, *, enabled, actor_user_id=None, actor_email=""):
+    """The super admin's "Keep updating orders from Shopify" switch (OMS
+    Testing only - integrations.services.SHOPIFY_RESYNC_STORES). Turning it
+    on also starts a full Shopify order sync, so the store's existing orders
+    are updated at once."""
+    org = Organization.objects.filter(id=organization_id, is_platform=False).first()
+    if not org:
+        raise OrganizationAdminError("Organization not found", 404)
+    if not _resync_available(org):
+        raise OrganizationAdminError("This switch is only available for OMS Testing.")
+    enabled = bool(enabled)
+    org.shopify_resync_orders = enabled
+    org.save(update_fields=["shopify_resync_orders", "updated_at"])
+    job = None
+    if enabled:
+        from integrations.services import start_full_order_sync
+
+        job = start_full_order_sync(org.id)
+    write_audit_log(
+        organization_id=org.id,
+        action="org.shopify_resync",
+        summary=f"Keep updating orders from Shopify turned {'on' if enabled else 'off'}"
+        + (" - full order sync started" if job else ""),
+        actor_user_id=actor_user_id,
+        actor_email=actor_email,
+    )
+    result = get_organization(org.id)
+    result["resync_job_started"] = bool(job)
+    return result
+
+
 def set_service_model(organization_id, *, service_model, actor_user_id=None, actor_email=""):
     """The Stores tab's Service model - one of Organization.SERVICE_MODEL_CHOICES,
     or blank to clear it."""
@@ -435,6 +472,9 @@ def _serialize_org(org, members, hub_ids=None, stores=None, bank=False, shopify_
         "is_manual_store": org.is_manual_store,
         "store_code": org.store_code,
         "service_model": org.service_model,
+        # "Keep updating orders from Shopify" - only where available.
+        "shopify_resync_orders": org.shopify_resync_orders,
+        "shopify_resync_available": _resync_available(org),
         # Organization with several stores (core.org_group): the main
         # store it is inside, or the stores inside it.
         "parent_id": str(org.parent_id) if org.parent_id else None,

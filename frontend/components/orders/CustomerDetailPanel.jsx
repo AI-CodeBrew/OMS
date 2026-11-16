@@ -2,6 +2,7 @@
 
 import Button from "../shared/Button";
 import EditableField from "../shared/EditableField";
+import CityInput from "../shared/CityInput";
 
 import { formatDateTime } from "../../lib/formatDate";
 const FIELD_ROWS = [
@@ -21,7 +22,17 @@ export default function CustomerDetailPanel({ order, draft, editing, onChange })
     <div className="w-72 shrink-0 space-y-3 border-r border-surface-border pr-4">
       <h3 className="text-sm font-semibold text-slate-900">Customer Detail</h3>
 
-      {FIELD_ROWS.map(([field, label]) => (
+      {FIELD_ROWS.map(([field, label]) =>
+        field === "city" && editing ? (
+          <div key={field}>
+            <div className="text-xs text-slate-500">{label}</div>
+            <CityInput
+              value={draft[field]}
+              onChange={(value) => onChange(field, value)}
+              className="mt-0.5 w-full rounded-md border border-surface-border px-2 py-1 text-sm outline-none focus:border-brand-500"
+            />
+          </div>
+        ) : (
         <EditableField
           key={field}
           label={label}
@@ -29,7 +40,8 @@ export default function CustomerDetailPanel({ order, draft, editing, onChange })
           editing={editing}
           onChange={(value) => onChange(field, value)}
         />
-      ))}
+        ),
+      )}
 
       <div>
         <div className="text-xs text-slate-500">Current Status Updated At</div>

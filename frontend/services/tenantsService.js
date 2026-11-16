@@ -48,6 +48,15 @@ class TenantsService {
     });
   }
 
+  // "Keep updating orders from Shopify" (OMS Testing only). Turning it on
+  // also starts a full Shopify order sync for the store.
+  setShopifyResync(id, enabled) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.organization(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ shopify_resync_orders: enabled }),
+    });
+  }
+
   setOrganizationActive(id, isActive) {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.organization(id)}`, {
       method: "PATCH",
