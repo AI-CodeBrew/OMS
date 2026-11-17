@@ -25,6 +25,15 @@ only says which words go with it. To change a wording, change it here.
 
 import re
 
+# Pending (1) - BarqRaftar's portal calls it "Booked": the booking and AWB
+# exist, the parcel just isn't handed over yet. Shown as "Booking Created"
+# (same word as PostEx's Booked) instead of "Pending", which read as "not
+# booked" (user, 2026-11-17). Sub Status only - the tag stays OMS's own
+# print tag, as for PostEx before pickup. Awaiting Pickup (2) keeps
+# BarqRaftar's own word.
+SUB_BOOKING_CREATED = "Booking Created"
+PRE_PICKUP_SUB_STATUS = {1: SUB_BOOKING_CREATED}
+
 SUB_PICKED = ("Picked from Warehouse", "Picked by Courier")
 SUB_EN_ROUTE = ("In Transit", "Moving towards Customer City")
 SUB_AT_HUB = ("In Transit", "Moving from Courier Hub")

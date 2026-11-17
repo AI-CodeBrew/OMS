@@ -664,15 +664,21 @@ class OrderViewSet(viewsets.ModelViewSet):
                     )
                     if term.isdigit():
                         condition |= Q(supabase_order_no=int(term))
-                qs = qs.filter(condition).distinct()
+                # A subquery, not a join: joined to its items, an order with
+                # two products came back as two rows, and counts() (which
+                # groups this queryset) counted it twice - "All 3" over a
+                # list of 2 (seen live on #1044, 2026-11-17).
+                qs = qs.filter(id__in=Order.all_objects.filter(condition).values("id"))
             elif terms:
                 lookup = SEARCHABLE_FIELDS.get(search_field, SEARCHABLE_FIELDS["order_number"])
                 condition = Q()
                 for term in terms:
                     condition |= Q(**{lookup: term})
-                qs = qs.filter(condition)
                 if search_field == "product_name":
-                    qs = qs.distinct()
+                    # Subquery for the same reason as above (no duplicate rows).
+                    qs = qs.filter(id__in=Order.all_objects.filter(condition).values("id"))
+                else:
+                    qs = qs.filter(condition)
 
         # The Critical Orders page's cards - one reason's orders.
         reason_filter = services.CRITICAL_REASON_FILTERS.get(params.get("critical_reason") or "")

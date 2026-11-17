@@ -10,12 +10,134 @@ import GreenTick from "../../../components/shared/GreenTick";
 import { STAFF_MODULE_OPTIONS } from "../../../components/layout/moduleNav";
 import teamService from "../../../services/teamService";
 import storesService from "../../../services/storesService";
+import { tenantsService } from "../../../services/tenantsService";
 import { invalidateViewCache } from "../../../lib/viewCache";
 import { useEffectiveUser } from "../../../store/authStore";
 import { useBankDetailsGate } from "../../../lib/useBankDetailsGate";
 import BankDetailsModal from "../../../components/billing/BankDetailsModal";
 
 import { formatDate } from "../../../lib/formatDate";
+// Settings > Account for a super admin inside a store: the store's admin
+// login(s), changed the same way as on the super admin's store page
+// (backend organization_admin_service.update_member_credentials - a super
+// admin's or the organization's main login is never changed from a store;
+// a new email + password gives the store its own login instead).
+function StoreLoginsForSuperAdmin({ organizationId }) {
+  const [admins, setAdmins] = useState([]);
+  const [error, setError] = useState("");
+  const [status, setStatus] = useState("");
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState({ email: "", password: "" });
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const data = await tenantsService.getOrganization(organizationId);
+      setAdmins((data.organization?.members || []).filter((m) => m.role === "org_admin"));
+    } catch (err) {
+      setError(err.message || "Failed to load this store's logins");
+    }
+  }, [organizationId]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function onSave(e) {
+    e.preventDefault();
+    setError("");
+    setStatus("");
+    const payload = {};
+    if (form.email && form.email !== editing.email) payload.email = form.email;
+    if (form.password) payload.password = form.password;
+    if (!payload.email && !payload.password) {
+      setError("Enter a new email and/or password");
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await tenantsService.updateMember(editing.user_id, { ...payload, organizationId });
+      setStatus(
+        res?.member?.updated?.own_login_created
+          ? `This store now has its own login (${res.member.email}). The other login was not changed.`
+          : "Store login updated.",
+      );
+      setEditing(null);
+      await load();
+    } catch (err) {
+      setError(err.message || "Failed to update the login");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-surface-border bg-white p-6">
+      <h2 className="text-sm font-semibold text-slate-900">This store&apos;s login</h2>
+      {error ? <p className="mt-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+      {status ? <p className="mt-2 rounded-md bg-green-50 px-3 py-2 text-sm text-green-700">{status}</p> : null}
+      <ul className="mt-3 divide-y divide-surface-border">
+        {admins.map((m) => (
+          <li key={m.user_id} className="flex items-center justify-between gap-3 py-2 text-sm">
+            <span className="text-slate-700">
+              {m.email || m.user_id}
+              {m.login_scope === "super_admin" ? (
+                <span className="ml-2 text-xs text-amber-700">(super admin login)</span>
+              ) : m.login_scope === "main_admin" ? (
+                <span className="ml-2 text-xs text-amber-700">(organization&apos;s main login)</span>
+              ) : null}
+            </span>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => {
+                setEditing(m);
+                setForm({ email: m.email || "", password: "" });
+                setError("");
+                setStatus("");
+              }}
+            >
+              Change
+            </Button>
+          </li>
+        ))}
+      </ul>
+      {editing ? (
+        <form onSubmit={onSave} className="mt-4 space-y-3">
+          {editing.login_scope === "super_admin" || editing.login_scope === "main_admin" ? (
+            <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              This login isn&apos;t changed from a store. Enter a NEW email and a password: this store gets its
+              own login, and the other login stays as it is.
+            </p>
+          ) : null}
+          <input
+            type="email"
+            placeholder="Email"
+            value={form.email}
+            onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+            className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
+          />
+          <PasswordInput
+            minLength={8}
+            autoComplete="new-password"
+            placeholder="New password (leave blank to keep)"
+            value={form.password}
+            onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
+          />
+          <div className="flex gap-2">
+            <Button type="submit" loading={saving}>
+              Save
+            </Button>
+            <Button type="button" variant="secondary" onClick={() => setEditing(null)}>
+              Cancel
+            </Button>
+          </div>
+        </form>
+      ) : null}
+    </div>
+  );
+}
+
 function AccountTab({ user }) {
   const [email, setEmail] = useState("");
   const [emailStatus, setEmailStatus] = useState("");
@@ -79,6 +201,21 @@ function AccountTab({ user }) {
     <div className="max-w-lg space-y-6">
       <p className="text-sm text-slate-500">Signed in as {user?.email}</p>
 
+      {/* A super admin login (owner or Admin Team staff) is never changed
+          from OMS - FynkTech changes it on its side (backend
+          supabase_admin._check_not_protected refuses it too). */}
+      {user?.role === "super_admin" ? (
+        <>
+          <p className="rounded-lg border border-surface-border bg-white p-6 text-sm text-slate-600">
+            This is a super admin login. Its email and password can&apos;t be changed from OMS.
+          </p>
+          {/* Inside a store the super admin can do what its admin can -
+              including changing this store's login(s). */}
+          {user?.organization_id ? <StoreLoginsForSuperAdmin organizationId={user.organization_id} /> : null}
+        </>
+      ) : (
+      <>
+
       <div className="rounded-lg border border-surface-border bg-white p-6">
         <h2 className="text-sm font-semibold text-slate-900">Change email</h2>
         {emailError ? (
@@ -134,6 +271,8 @@ function AccountTab({ user }) {
           </Button>
         </form>
       </div>
+      </>
+      )}
     </div>
   );
 }

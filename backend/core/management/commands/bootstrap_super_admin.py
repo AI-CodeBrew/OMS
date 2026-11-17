@@ -33,6 +33,9 @@ class Command(BaseCommand):
                 email=email,
                 password=password,
                 app_metadata={"role": "super_admin"},
+                # FynkTech's own way to set the owner's login - the one
+                # place allowed to (supabase_admin._check_not_protected).
+                allow_super_admin=True,
             )
         except SupabaseAdminError as exc:
             raise CommandError(exc.message) from exc

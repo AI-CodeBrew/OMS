@@ -91,7 +91,7 @@ class Organization(models.Model):
         "self", null=True, blank=True, on_delete=models.PROTECT, related_name="child_stores"
     )
     # Shopify updates to orders already in OMS (super admin's Stores page,
-    # OMS Testing only for now - integrations.services.SHOPIFY_RESYNC_STORES).
+    # test organizations only - integrations.services.SHOPIFY_RESYNC_STORES).
     # Off: an order is taken from Shopify once, when it lands. On: later
     # Shopify updates apply until the order is booked with a courier.
     shopify_resync_orders = models.BooleanField(default=False, db_default=False)

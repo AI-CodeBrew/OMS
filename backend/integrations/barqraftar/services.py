@@ -1145,6 +1145,9 @@ def record_sheet_words(order, status_code, status_label, remark=""):
 
     if status_code in _CANCELLED_CODES:
         return False  # the cancel itself set "Booking Cancelled"
+    pre_pickup = status_map.PRE_PICKUP_SUB_STATUS.get(status_code)
+    if pre_pickup and oms_services.workflow_card(order) == "assigning_courier":
+        return oms_services.record_courier_words(order, sub_status=pre_pickup, tag="")
     words = status_map.sheet_words(status_code, remark)
     if words is None or order.status not in _SHEET_STATUSES:
         return oms_services.record_courier_status(order, status_label)

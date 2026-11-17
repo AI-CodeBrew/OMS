@@ -268,9 +268,13 @@ export default function OrganizationDetailPage() {
         setSavingMember(false);
         return;
       }
-      await tenantsService.updateMember(editMember.user_id, payload);
+      const res = await tenantsService.updateMember(editMember.user_id, { ...payload, organizationId: orgId });
       setEditMember(null);
-      setSuccess("User credentials updated.");
+      setSuccess(
+        res?.member?.updated?.own_login_created
+          ? `This store now has its own login (${res.member.email}). The other login was not changed.`
+          : "User credentials updated.",
+      );
       await load();
     } catch (err) {
       setError(err.message || "Failed to update user");
@@ -358,6 +362,20 @@ export default function OrganizationDetailPage() {
               Cancel
             </Button>
           </div>
+          {/* What saving does depends on whose login this row is
+              (backend organization_admin_service.login_scope). */}
+          {editMember.login_scope === "super_admin" || editMember.login_scope === "main_admin" ? (
+            <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              {editMember.login_scope === "super_admin"
+                ? "This is the super admin's own login - it is never changed from here."
+                : "This is the organization's main login - it is not changed from a store."}{" "}
+              Enter a NEW email and a password: this store gets its own login, and the other login stays as it is.
+            </p>
+          ) : (
+            <p className="text-xs text-slate-500">
+              Changes this login everywhere it is used (every store it can open).
+            </p>
+          )}
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="block text-sm">
               <span className="mb-1.5 block font-medium text-slate-700">Email</span>

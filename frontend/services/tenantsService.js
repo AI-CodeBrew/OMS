@@ -89,10 +89,12 @@ class TenantsService {
     });
   }
 
-  updateMember(userId, { email, password }) {
+  // organizationId: the store whose member this is - only that store's
+  // login changes (a super admin's own login never does).
+  updateMember(userId, { email, password, organizationId }) {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.user(userId)}`, {
       method: "PATCH",
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ email, password, organization_id: organizationId }),
     });
   }
 }

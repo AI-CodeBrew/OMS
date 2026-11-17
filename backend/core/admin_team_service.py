@@ -181,7 +181,8 @@ def update_staff(user_id, *, name=None, role_id=None, permissions=None, set_acce
         if len(password) < 8:
             raise AdminTeamError("Password must be at least 8 characters")
         try:
-            supabase_admin.update_user(str(staff.user_id), password=password)
+            # Staff only - the owner's login is never changed from OMS.
+            supabase_admin.update_user(str(staff.user_id), password=password, allow_admin_staff=True)
         except SupabaseAdminError as exc:
             raise AdminTeamError(exc.message, exc.status_code) from exc
     staff.save()
@@ -203,7 +204,7 @@ def remove_staff(user_id, *, actor_user_id=None, actor_email=""):
     # grants nothing.
     if not Membership.objects.filter(user_id=user_id).exists():
         try:
-            supabase_admin.delete_user(str(user_id))
+            supabase_admin.delete_user(str(user_id), allow_admin_staff=True)
         except SupabaseAdminError:
             pass
     _log("admin_team.staff_remove", f"Super admin staff login {email} removed", actor_user_id, actor_email)

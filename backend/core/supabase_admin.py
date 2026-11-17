@@ -9,6 +9,39 @@ class SupabaseAdminError(Exception):
         self.status_code = status_code
 
 
+# Super admin logins (app_metadata role "super_admin": the owner, and the
+# Admin Team's staff) are never changed or deleted from OMS - not from a
+# store's member screen, a store's team, store switching or creating a
+# store with an email that already exists (user, 2026-11-17, after a store
+# member edit changed the owner's password because the store's admin was
+# the owner's own login). The owner's login is changed by FynkTech outside
+# OMS (bootstrap_super_admin, allow_super_admin=True); the Admin Team page
+# may still reset its staff's passwords (allow_admin_staff=True).
+PROTECTED_LOGIN_MESSAGE = (
+    "This is a super admin login - it can't be changed from OMS. "
+    "Give the store its own email instead."
+)
+
+
+def is_super_admin_user(user):
+    return ((user or {}).get("app_metadata") or {}).get("role") == "super_admin"
+
+
+def _check_not_protected(user_id, *, allow_super_admin=False, allow_admin_staff=False, user=None):
+    """Raises SupabaseAdminError (403) when `user_id` is a super admin login
+    this call may not touch. Fails closed: a login that can't be read is
+    not changed."""
+    if allow_super_admin:
+        return
+    if user is None:
+        user = get_user(user_id)
+    if not is_super_admin_user(user):
+        return
+    if allow_admin_staff and (user.get("app_metadata") or {}).get("admin_staff"):
+        return
+    raise SupabaseAdminError(PROTECTED_LOGIN_MESSAGE, status_code=403)
+
+
 def _headers():
     key = settings.SUPABASE_SERVICE_ROLE_KEY
     if not key:
@@ -42,7 +75,11 @@ def create_user(*, email, password, app_metadata=None):
     return response.json()
 
 
-def update_user(user_id, *, email=None, password=None, app_metadata=None):
+def update_user(user_id, *, email=None, password=None, app_metadata=None,
+                allow_super_admin=False, allow_admin_staff=False):
+    _check_not_protected(
+        user_id, allow_super_admin=allow_super_admin, allow_admin_staff=allow_admin_staff
+    )
     payload = {}
     if email is not None:
         payload["email"] = email
@@ -77,8 +114,14 @@ def get_user(user_id):
     return response.json()
 
 
-def delete_user(user_id):
-    """Deletes the Auth user. Already gone (404) counts as done."""
+def delete_user(user_id, *, allow_admin_staff=False):
+    """Deletes the Auth user. Already gone (404) counts as done. Never a
+    super admin login (_check_not_protected) - except an Admin Team staff
+    login being removed from the Admin Team page (allow_admin_staff)."""
+    existing = get_user(user_id)
+    if existing is None:
+        return
+    _check_not_protected(user_id, user=existing, allow_admin_staff=allow_admin_staff)
     response = requests.delete(_url(f"users/{user_id}"), headers=_headers(), timeout=20)
     if response.status_code == 404:
         return
@@ -118,14 +161,17 @@ def find_user_by_email(email):
     return None
 
 
-def ensure_user(*, email, password, app_metadata=None):
-    """Create the user, or update password/claims if the email already exists."""
+def ensure_user(*, email, password, app_metadata=None, allow_super_admin=False):
+    """Create the user, or update password/claims if the email already
+    exists - never a super admin login's, unless allow_super_admin
+    (bootstrap_super_admin only)."""
     existing = find_user_by_email(email)
     if existing:
         return update_user(
             existing["id"],
             password=password,
             app_metadata=app_metadata,
+            allow_super_admin=allow_super_admin,
         )
     try:
         return create_user(email=email, password=password, app_metadata=app_metadata)
@@ -137,6 +183,7 @@ def ensure_user(*, email, password, app_metadata=None):
                 existing["id"],
                 password=password,
                 app_metadata=app_metadata,
+                allow_super_admin=allow_super_admin,
             )
         raise
 

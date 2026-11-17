@@ -19,8 +19,9 @@ class OrganizationAdminError(Exception):
         self.status_code = status_code
 
 
-def _emails_for_user_ids(user_ids):
-    """Resolve Auth emails for many user ids with bounded concurrency.
+def _auth_users_for_ids(user_ids):
+    """{user id: its Auth user dict (None if unreadable)} for many ids, with
+    bounded concurrency.
 
     Avoids the old sequential N+1 (one HTTP round-trip per membership), which
     made the super-admin list feel slower than heavy tenant order pages.
@@ -39,19 +40,23 @@ def _emails_for_user_ids(user_ids):
 
     def fetch(uid):
         try:
-            user = supabase_admin.get_user(uid)
-            return uid, (user or {}).get("email")
+            return uid, supabase_admin.get_user(uid)
         except SupabaseAdminError:
             return uid, None
 
-    emails = {}
+    users = {}
     workers = min(8, len(unique))
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [pool.submit(fetch, uid) for uid in unique]
         for fut in as_completed(futures):
-            uid, email = fut.result()
-            emails[uid] = email
-    return emails
+            uid, user = fut.result()
+            users[uid] = user
+    return users
+
+
+def _emails_for_user_ids(user_ids):
+    """{user id: Auth email} for many ids (see _auth_users_for_ids)."""
+    return {uid: (user or {}).get("email") for uid, user in _auth_users_for_ids(user_ids).items()}
 
 
 def _members_payload(memberships, email_map=None):
@@ -171,8 +176,26 @@ def get_organization(organization_id):
         raise OrganizationAdminError("Organization not found", 404) from exc
 
     memberships = list(org.memberships.all())
-    email_map = _emails_for_user_ids([m.user_id for m in memberships])
-    return _serialize_org(org, _members_payload(memberships, email_map))
+    users = _auth_users_for_ids([m.user_id for m in memberships])
+    email_map = {uid: (u or {}).get("email") for uid, u in users.items()}
+    members = _members_payload(memberships, email_map)
+    # Whose login each row is - the edit form says what saving will do.
+    main_admins = set()
+    if org.parent_id:
+        main_admins = {
+            str(u) for u in Membership.objects.filter(
+                organization_id=org.parent_id, role="org_admin"
+            ).values_list("user_id", flat=True)
+        }
+    for member, membership in zip(members, memberships):
+        uid = member["user_id"]
+        if supabase_admin.is_super_admin_user(users.get(uid)):
+            member["login_scope"] = LOGIN_SUPER_ADMIN
+        elif membership.role == "org_admin" and uid in main_admins:
+            member["login_scope"] = LOGIN_MAIN_ADMIN
+        else:
+            member["login_scope"] = LOGIN_OWN
+    return _serialize_org(org, members)
 
 
 @transaction.atomic
@@ -254,14 +277,14 @@ def _resync_available(org):
 
 def set_shopify_resync(organization_id, *, enabled, actor_user_id=None, actor_email=""):
     """The super admin's "Keep updating orders from Shopify" switch (OMS
-    Testing only - integrations.services.SHOPIFY_RESYNC_STORES). Turning it
+    Testing and testing only - integrations.services.SHOPIFY_RESYNC_STORES). Turning it
     on also starts a full Shopify order sync, so the store's existing orders
     are updated at once."""
     org = Organization.objects.filter(id=organization_id, is_platform=False).first()
     if not org:
         raise OrganizationAdminError("Organization not found", 404)
     if not _resync_available(org):
-        raise OrganizationAdminError("This switch is only available for OMS Testing.")
+        raise OrganizationAdminError("This switch is only available for the test organizations (OMS Testing, testing).")
     enabled = bool(enabled)
     org.shopify_resync_orders = enabled
     org.save(update_fields=["shopify_resync_orders", "updated_at"])
@@ -392,7 +415,18 @@ def delete_organization(organization_id, *, confirm_name, actor_email=""):
     return {"name": name, "users_removed": users_removed, "user_errors": user_errors}
 
 
-def update_member_credentials(user_id, *, email=None, password=None):
+def update_member_credentials(user_id, *, email=None, password=None, organization_id=None,
+                              actor_user_id=None, actor_email=""):
+    """A member edit on the super admin's store page (user, 2026-11-17):
+
+    - a store's own login (its admin, or a role/staff login): that login
+      changes - everywhere it is used, so a role login shared by several
+      stores of an organization gets the new email/password in all of them;
+    - an organization's main store: its main login changes;
+    - a super admin's login, or - in a store inside an organization - the
+      organization's main admin login (sync_group_admins puts it in every
+      store): that login is NOT changed; the store gets its own new login
+      (new email + password) instead - _give_store_own_login."""
     if email is None and password is None:
         raise OrganizationAdminError("Provide email and/or password to update")
     if password is not None and len(password) < 8:
@@ -402,9 +436,23 @@ def update_member_credentials(user_id, *, email=None, password=None):
         if not email:
             raise OrganizationAdminError("Email cannot be empty")
 
-    membership = Membership.objects.select_related("organization").filter(user_id=user_id).first()
+    memberships = Membership.objects.select_related("organization").filter(user_id=user_id)
+    if organization_id:
+        memberships = memberships.filter(organization_id=organization_id)
+    membership = memberships.first()
     if not membership:
-        raise OrganizationAdminError("User is not linked to any organization", 404)
+        raise OrganizationAdminError("User is not linked to this organization", 404)
+
+    try:
+        current = supabase_admin.get_user(str(user_id))
+    except SupabaseAdminError as exc:
+        raise OrganizationAdminError(exc.message, exc.status_code) from exc
+    scope = login_scope(membership, current)
+    if scope != LOGIN_OWN:
+        return _give_store_own_login(
+            membership, scope=scope, email=email, password=password,
+            actor_user_id=actor_user_id, actor_email=actor_email,
+        )
 
     try:
         user = supabase_admin.update_user(
@@ -415,6 +463,16 @@ def update_member_credentials(user_id, *, email=None, password=None):
     except SupabaseAdminError as exc:
         raise OrganizationAdminError(exc.message, exc.status_code) from exc
 
+    write_audit_log(
+        organization_id=membership.organization_id,
+        action="organization.member_credentials",
+        summary=f"Login {user.get('email') or email} changed by super admin"
+        + (" (email)" if email is not None else "") + (" (password)" if password is not None else ""),
+        actor_user_id=actor_user_id,
+        actor_email=actor_email,
+        metadata={"user_id": str(user_id), "email_changed": email is not None,
+                  "password_reset": password is not None},
+    )
     return {
         "user_id": str(user_id),
         "email": user.get("email") or email,
@@ -425,6 +483,97 @@ def update_member_credentials(user_id, *, email=None, password=None):
             "email": email is not None,
             "password": password is not None,
         },
+    }
+
+
+# Whose login a store's member row is (login_scope) - the members list
+# sends it so the edit form can say what saving will do.
+LOGIN_OWN = "own"                # the store's own login (or a role login)
+LOGIN_SUPER_ADMIN = "super_admin"  # a super admin's - never changed from OMS
+LOGIN_MAIN_ADMIN = "main_admin"    # the organization's main admin, in a store inside it
+
+
+def _is_main_admin_here(membership):
+    """`membership` is the organization's main admin login in one of its
+    other stores (put there by org_group.sync_group_admins)."""
+    org = membership.organization
+    return bool(
+        membership.role == "org_admin"
+        and org.parent_id
+        and Membership.objects.filter(
+            organization_id=org.parent_id, user_id=membership.user_id, role="org_admin"
+        ).exists()
+    )
+
+
+def login_scope(membership, auth_user):
+    if supabase_admin.is_super_admin_user(auth_user):
+        return LOGIN_SUPER_ADMIN
+    if _is_main_admin_here(membership):
+        return LOGIN_MAIN_ADMIN
+    return LOGIN_OWN
+
+
+def _give_store_own_login(membership, *, scope, email, password, actor_user_id=None, actor_email=""):
+    """Gives the store its own login made from `email` + `password`, leaving
+    the login of `membership` untouched:
+    - a super admin's: the store's membership moves to the new login (the
+      super admin is no longer a member of the store);
+    - the organization's main admin's: the new login is added as this
+      store's admin, and the main admin keeps opening the store as before
+      (it's in every store of the organization)."""
+    from .rbac import build_org_app_metadata
+
+    whose = "the super admin's own login" if scope == LOGIN_SUPER_ADMIN else "the organization's main login"
+    if not email or not password:
+        raise OrganizationAdminError(
+            f"This row is {whose}, which isn't changed from here. "
+            "Enter a NEW email and a password to give this store its own login."
+        )
+    try:
+        if supabase_admin.find_user_by_email(email):
+            raise OrganizationAdminError("This email already has a login - use another email.", 409)
+        organization = membership.organization
+        user = supabase_admin.create_user(
+            email=email,
+            password=password,
+            app_metadata=build_org_app_metadata(
+                organization, role=membership.role, modules=membership.allowed_modules or []
+            ),
+        )
+    except SupabaseAdminError as exc:
+        raise OrganizationAdminError(exc.message, exc.status_code) from exc
+    new_user_id = user.get("id")
+    if not new_user_id:
+        raise OrganizationAdminError("Supabase did not return a user id", 500)
+
+    old_user_id = str(membership.user_id)
+    if scope == LOGIN_SUPER_ADMIN:
+        membership.user_id = new_user_id
+        membership.save(update_fields=["user_id"])
+    else:
+        Membership.objects.create(
+            organization_id=membership.organization_id,
+            user_id=new_user_id,
+            role=membership.role,
+            allowed_modules=list(membership.allowed_modules or []),
+        )
+    write_audit_log(
+        organization_id=membership.organization_id,
+        action="organization.member_credentials",
+        summary=f"Store given its own login {email} (the row edited was {whose}, left unchanged)",
+        actor_user_id=actor_user_id,
+        actor_email=actor_email,
+        metadata={"old_user_id": old_user_id, "new_user_id": str(new_user_id),
+                  "own_login_created": True, "scope": scope},
+    )
+    return {
+        "user_id": str(new_user_id),
+        "email": user.get("email") or email,
+        "organization_id": str(membership.organization_id),
+        "organization_name": membership.organization.name,
+        "role": membership.role,
+        "updated": {"email": True, "password": True, "own_login_created": True},
     }
 
 

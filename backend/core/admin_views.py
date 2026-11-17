@@ -130,6 +130,11 @@ def update_member(request, user_id):
             user_id,
             email=body.get("email"),
             password=body.get("password"),
+            # The store whose member this is - a login can belong to more
+            # than one, and only this store's is changed.
+            organization_id=body.get("organization_id"),
+            actor_user_id=request.user_id,
+            actor_email=getattr(request, "auth_email", "") or "",
         )
     except OrganizationAdminError as exc:
         return Response(
