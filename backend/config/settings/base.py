@@ -327,6 +327,13 @@ LEOPARDS_API_BASE_URL = env(
 )
 LEOPARDS_AUTO_POLL = env("LEOPARDS_AUTO_POLL", default="false").lower() == "true"
 LEOPARDS_AUTO_POLL_INTERVAL_SECONDS = int(env("LEOPARDS_AUTO_POLL_INTERVAL_SECONDS", default="900"))
+# OMS's own order webhooks on the "Keep updating orders from Shopify" stores
+# (integrations/shopify_webhook_check.py). On wherever the courier pollers
+# are (the real server) unless set; off locally.
+SHOPIFY_WEBHOOK_CHECK = (
+    env("SHOPIFY_WEBHOOK_CHECK", default="true" if SMARTLANE_AUTO_POLL else "false").lower() == "true"
+)
+SHOPIFY_WEBHOOK_CHECK_INTERVAL_SECONDS = int(env("SHOPIFY_WEBHOOK_CHECK_INTERVAL_SECONDS", default="300"))
 # createShipper (a store's OMS Courier request, on approval) wants a bank id
 # from getBankList. FynkTech's account is the one paid, so any valid id does -
 # the one the Postman collection used is the default.

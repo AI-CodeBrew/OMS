@@ -293,6 +293,17 @@ def set_shopify_resync(organization_id, *, enabled, actor_user_id=None, actor_em
         from integrations.services import start_full_order_sync
 
         job = start_full_order_sync(org.id)
+        # Shopify's edits reach OMS by OMS's own order webhooks
+        # (integrations.shopify_webhook_check) - registered now if the
+        # store's token works, else by the background check later.
+        from integrations.models import ShopifyConnection
+        from integrations.shopify_webhook_check import ensure_oms_order_webhooks
+
+        for connection in ShopifyConnection.all_objects.filter(organization_id=org.id, is_connected=True):
+            try:
+                ensure_oms_order_webhooks(connection)
+            except Exception:  # an expired token - the background check retries
+                logger.info("shopify webhooks for %s not registered yet", connection.shop_domain)
     write_audit_log(
         organization_id=org.id,
         action="org.shopify_resync",

@@ -48,3 +48,10 @@ class IntegrationsConfig(AppConfig):
             from .leopards import poller as leopards_poller
 
             leopards_poller.start_background_poller()
+
+        # OMS's own order webhooks on the "Keep updating orders from
+        # Shopify" stores (integrations/shopify_webhook_check.py).
+        if settings.SHOPIFY_WEBHOOK_CHECK:
+            from . import shopify_webhook_check
+
+            shopify_webhook_check.start_background_check()
