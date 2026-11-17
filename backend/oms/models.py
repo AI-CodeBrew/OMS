@@ -366,6 +366,13 @@ class Order(TenantScopedModel):
         "self", on_delete=models.SET_NULL, null=True, blank=True, related_name="recreations"
     )
 
+    # "Keep updating orders from Shopify" stores only: what Shopify last sent
+    # for this order ({"fields": {...}, "items": [...]}), so a later Shopify
+    # edit changes only what changed ON SHOPIFY - anything else, including
+    # what OMS's team edited here, is left as it is
+    # (integrations.services.upsert_order_from_shopify).
+    shopify_synced = models.JSONField(null=True, blank=True)
+
     class Meta:
         db_table = '"oms"."orders"'
         constraints = [

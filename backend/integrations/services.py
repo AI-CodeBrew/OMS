@@ -359,6 +359,47 @@ def shopify_resync_available(organization):
     return (organization.name or "").strip() in SHOPIFY_RESYNC_STORES
 
 
+def _current_shopify_order(shopify_order):
+    """The order as it is NOW on Shopify. An edit on Shopify (an item
+    removed, a fee taken off) keeps the original quantity / total_price /
+    subtotal_price and reports the result in the current_* fields - read
+    as-is, #1002 (FynkTech App, 2026-11-17) showed 906 and "paid 724"
+    where Shopify said 182 and nothing paid. Returns a copy with the
+    original fields replaced by the current ones; items whose current
+    quantity is 0 (removed) are left out. A payload without current_* is
+    returned unchanged."""
+    order = dict(shopify_order)
+    for field in ("total_price", "subtotal_price", "total_tax", "total_discounts"):
+        if shopify_order.get(f"current_{field}") is not None:
+            order[field] = shopify_order[f"current_{field}"]
+    lines = []
+    for line in shopify_order.get("line_items") or []:
+        quantity = line.get("current_quantity")
+        if quantity is None:
+            lines.append(line)
+            continue
+        if int(quantity) <= 0:
+            continue
+        lines.append({**line, "quantity": int(quantity)})
+    if any(line.get("current_quantity") is not None for line in shopify_order.get("line_items") or []):
+        order["line_items"] = lines
+        order["total_line_items_price"] = str(
+            sum((_to_decimal(line.get("price")) * int(line.get("quantity") or 0) for line in lines), Decimal("0"))
+        )
+    return order
+
+
+def _snap(value):
+    """A field value as stored in Order.shopify_synced (JSON)."""
+    if isinstance(value, Decimal):
+        return str(value)
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    if value is not None and not isinstance(value, (str, int, float, bool)):
+        return str(value)
+    return value
+
+
 def _shopify_resync_on(organization_id):
     from core.models import Organization
 
@@ -407,7 +448,11 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
     booked with a courier (Awaiting Confirmation / Approved) takes Shopify's
     update - customer, address, products, amounts, payment, note, a
     cancellation. Its status otherwise, its tags and its OMS order number
-    are still never touched; once booked it's left alone."""
+    are still never touched; once booked it's left alone. There Shopify's
+    CURRENT values are read (_current_shopify_order), and an update changes
+    only what changed on Shopify since its last sync (Order.shopify_synced)
+    - a field or the products OMS's team edited and Shopify didn't touch
+    stay as OMS has them (user, 2026-11-17)."""
     from oms.services import WORKFLOW_CARD_STATUSES
 
     shopify_order_id = shopify_order["id"]
@@ -418,6 +463,9 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
         before_booking = WORKFLOW_CARD_STATUSES["awaiting_confirmation"] | WORKFLOW_CARD_STATUSES["approved"]
         if existing.status not in before_booking or not _shopify_resync_on(organization_id):
             return existing, False
+    resync = _shopify_resync_on(organization_id)
+    if resync:
+        shopify_order = _current_shopify_order(shopify_order)
     # A Shopify store renamed since its last order keeps its Store ID.
     from oms.services import follow_shopify_store_rename
 
@@ -542,12 +590,38 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
     if current_number and re.fullmatch(re.escape(update_fields["order_number"]) + r"-\d+", current_number):
         del update_fields["order_number"]
 
+    # What Shopify sent this time, kept on the order (resync stores) so the
+    # next update can tell what changed ON SHOPIFY.
+    synced_fields = {k: _snap(v) for k, v in shopify_fields.items()}
+    synced_items = sorted(
+        [
+            _truncate(line.get("title") or "Item", 255) + (
+                f" - {(line.get('variant_title') or '').strip()}"
+                if (line.get("variant_title") or "").strip() not in ("", "Default Title") else ""
+            ),
+            int(line.get("quantity") or 1),
+            _snap(_to_decimal(line.get("price"))),
+            line.get("sku") or "",
+        ]
+        for line in shopify_order.get("line_items", [])
+    )
+    previous = (existing.shopify_synced or {}) if (resync and existing is not None) else {}
+    if previous.get("fields") is not None:
+        update_fields = {
+            k: v for k, v in update_fields.items() if synced_fields.get(k) != previous["fields"].get(k)
+        }
+    replace_items = previous.get("items") is None or previous["items"] != synced_items
+
     order, created = Order.all_objects.update_or_create(
         organization_id=organization_id,
         shopify_order_id=shopify_order_id,
         defaults=update_fields,
         create_defaults={**shopify_fields, "status": pipeline_status},
     )
+    if resync:
+        Order.all_objects.filter(pk=order.pk).update(
+            shopify_synced={"fields": synced_fields, "items": synced_items}
+        )
 
     previous_status = order.status
 
@@ -602,39 +676,42 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
     # and inserts, leaving a line item stored twice.
     # Weights Shopify doesn't send back (an order made in OMS has them from
     # its form) are carried over to the replacement rows, by SKU + name.
+    # Resync stores: only when the products changed on Shopify, so products
+    # OMS's team edited stay unless Shopify changed them too.
     with transaction.atomic():
         Order.all_objects.select_for_update().filter(pk=order.pk).first()
-        old_items = OrderItem.all_objects.filter(order=order)
-        weights = {
-            (item.barcode, item.product_name): item.weight_grams
-            for item in old_items
-            if item.weight_grams
-        }
-        old_items.delete()
-        new_items = []
-        for line_item in shopify_order.get("line_items", []):
-            title = line_item.get("title") or "Item"
-            # The variant is part of what was bought - "Pack of 2" x1 is two
-            # units in the parcel - so it goes into the name every screen,
-            # waybill and courier booking prints. Same "Title - Variant"
-            # shape as WMS stock items (sync_stock_items_from_shopify_product_payload).
-            variant = (line_item.get("variant_title") or "").strip()
-            product_name = _truncate(
-                f"{title} - {variant}" if variant and variant != "Default Title" else title, 255
-            )
-            barcode = _truncate(line_item.get("sku"), 100)
-            new_items.append(OrderItem(
-                organization_id=organization_id,
-                order=order,
-                product_name=product_name,
-                quantity=line_item.get("quantity") or 1,
-                unit_price=_to_decimal(line_item.get("price")),
-                barcode=barcode,
-                # Rows saved before variants were in the name are keyed
-                # by the bare title.
-                weight_grams=weights.get((barcode, product_name)) or weights.get((barcode, title[:255])),
-            ))
-        OrderItem.all_objects.bulk_create(new_items)
+        if created or replace_items:
+            old_items = OrderItem.all_objects.filter(order=order)
+            weights = {
+                (item.barcode, item.product_name): item.weight_grams
+                for item in old_items
+                if item.weight_grams
+            }
+            old_items.delete()
+            new_items = []
+            for line_item in shopify_order.get("line_items", []):
+                title = line_item.get("title") or "Item"
+                # The variant is part of what was bought - "Pack of 2" x1 is two
+                # units in the parcel - so it goes into the name every screen,
+                # waybill and courier booking prints. Same "Title - Variant"
+                # shape as WMS stock items (sync_stock_items_from_shopify_product_payload).
+                variant = (line_item.get("variant_title") or "").strip()
+                product_name = _truncate(
+                    f"{title} - {variant}" if variant and variant != "Default Title" else title, 255
+                )
+                barcode = _truncate(line_item.get("sku"), 100)
+                new_items.append(OrderItem(
+                    organization_id=organization_id,
+                    order=order,
+                    product_name=product_name,
+                    quantity=line_item.get("quantity") or 1,
+                    unit_price=_to_decimal(line_item.get("price")),
+                    barcode=barcode,
+                    # Rows saved before variants were in the name are keyed
+                    # by the bare title.
+                    weight_grams=weights.get((barcode, product_name)) or weights.get((barcode, title[:255])),
+                ))
+            OrderItem.all_objects.bulk_create(new_items)
 
     publish_event(
         "order.created" if created else "order.updated",
