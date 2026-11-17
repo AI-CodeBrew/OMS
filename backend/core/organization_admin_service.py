@@ -284,7 +284,7 @@ def set_shopify_resync(organization_id, *, enabled, actor_user_id=None, actor_em
     if not org:
         raise OrganizationAdminError("Organization not found", 404)
     if not _resync_available(org):
-        raise OrganizationAdminError("This switch is only available for the test organizations (OMS Testing, testing).")
+        raise OrganizationAdminError("This switch is only available for the test organizations (OMS Testing, testing, FynkTech App).")
     enabled = bool(enabled)
     org.shopify_resync_orders = enabled
     org.save(update_fields=["shopify_resync_orders", "updated_at"])

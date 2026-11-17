@@ -349,10 +349,10 @@ def _shopify_payment(shopify_order, money):
 
 # The stores whose super admin switch "Keep updating orders from Shopify"
 # exists (Organization.shopify_resync_orders) - the test organizations
-# only (OMS Testing, and "testing" added 2026-11-17), so Shopify-side
-# testing of the app is never blocked; every other store keeps "taken from
-# Shopify once". Matched on the organization's exact name.
-SHOPIFY_RESYNC_STORES = {"OMS Testing", "testing"}
+# only (OMS Testing; "testing" and "FynkTech App" added 2026-11-17), so
+# Shopify-side testing of the app is never blocked; every other store keeps
+# "taken from Shopify once". Matched on the organization's exact name.
+SHOPIFY_RESYNC_STORES = {"OMS Testing", "testing", "FynkTech App"}
 
 
 def shopify_resync_available(organization):
