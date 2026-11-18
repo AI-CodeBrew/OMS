@@ -50,6 +50,12 @@ def get_default_warehouse(organization_id):
     )
 
 
+def _units(item):
+    """Stock units one order line takes: its quantity x its pack units
+    (oms.OrderItem.pack_units - a "Pack of 2" bought twice is 4)."""
+    return item.quantity * max(getattr(item, "pack_units", 1) or 1, 1)
+
+
 def _order_line_requirements(order):
     """Collapses an order's line items to {sku: {qty, name}}.
 
@@ -65,7 +71,7 @@ def _order_line_requirements(order):
             unmatched.append(item.product_name)
             continue
         entry = required.setdefault(sku, {"quantity": 0, "product_name": item.product_name})
-        entry["quantity"] += item.quantity
+        entry["quantity"] += _units(item)
     return required, unmatched
 
 
@@ -81,7 +87,7 @@ def _named_requirements(order):
         if not name:
             continue
         entry = named.setdefault(name, {"quantity": 0, "product_name": name})
-        entry["quantity"] += item.quantity
+        entry["quantity"] += _units(item)
     return named
 
 
@@ -111,7 +117,7 @@ def return_line_summary(order):
     for item in order.items.all():
         if not (item.barcode or "").strip():
             name = (item.product_name or "").strip()
-            by_name[name] = by_name.get(name, 0) + item.quantity
+            by_name[name] = by_name.get(name, 0) + _units(item)
     for name, quantity in by_name.items():
         lines.append(
             {"key": f"name:{name}", "sku": "", "product_name": name or "(unnamed item)", "quantity": quantity}
@@ -221,7 +227,7 @@ def check_order_stock(order, warehouse=None, reserved=None, strict=False):
     if warehouse is None:
         if not strict:
             return []
-        units = sum(item.quantity for item in order.items.all())
+        units = sum(_units(item) for item in order.items.all())
         return [_unverifiable("All items", units, "no warehouse set up for this store in WMS")]
 
     required, unmatched = _order_line_requirements(order)
@@ -240,7 +246,7 @@ def check_order_stock(order, warehouse=None, reserved=None, strict=False):
         for item in order.items.all():
             if not (item.barcode or "").strip() and (item.product_name or "").strip() not in by_name:
                 problems.append(
-                    _unverifiable(item.product_name or "(unnamed item)", item.quantity, "no SKU - can't check stock")
+                    _unverifiable(item.product_name or "(unnamed item)", _units(item), "no SKU - can't check stock")
                 )
     if not required and not by_name:
         return problems
@@ -879,7 +885,7 @@ def _empty_metrics():
 def _order_metrics(organization_id):
     """{match key: metrics} from every order that isn't cancelled, plus
     the damaged / lost units its returns desk counted."""
-    from django.db.models import BooleanField, Count, ExpressionWrapper, Q, Sum
+    from django.db.models import BooleanField, Count, ExpressionWrapper, IntegerField, Q, Sum
 
     from core import org_group
     from oms.models import Order, OrderItem
@@ -895,7 +901,11 @@ def _order_metrics(organization_id):
             )
         )
         .values("barcode", "product_name", "order__status", "_returning")
-        .annotate(qty=Sum("quantity"), orders=Count("order", distinct=True))
+        # Units: a "Pack of 2" line counts 2 per piece bought.
+        .annotate(
+            qty=Sum(ExpressionWrapper(F("quantity") * F("pack_units"), output_field=IntegerField())),
+            orders=Count("order", distinct=True),
+        )
         .order_by()
     )
     for row in rows:
@@ -1051,7 +1061,8 @@ def inventory_item_report(item):
             "status": line.order.status,
             "status_label": line.order.get_status_display(),
             "returning": bool(line.order.return_in_progress_at),
-            "quantity": line.quantity,
+            # Stock units (quantity x pack units) - what the inventory counts.
+            "quantity": _units(line),
             "total": str(line.order.grand_total),
             "courier": line.order.courier.name if line.order.courier_id else "",
             "tracking_number": line.order.tracking_number,

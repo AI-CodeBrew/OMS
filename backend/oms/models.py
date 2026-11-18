@@ -470,6 +470,11 @@ class OrderItem(TenantScopedModel):
     unit_price = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     vendor = models.CharField(max_length=150, blank=True, default="")
     barcode = models.CharField(max_length=100, blank=True, default="")
+    # Stock units of `barcode` in ONE of this line (user, 2026-11-19): a
+    # "Pack of 2" is 2 - stock moves by quantity x pack_units. Set when the
+    # order comes in, from the organization's product list
+    # (oms.product_skus); price is never affected.
+    pack_units = models.PositiveIntegerField(default=1, db_default=1)
     compare_at_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     discount_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     weight_grams = models.PositiveIntegerField(null=True, blank=True)
@@ -913,6 +918,8 @@ class ProductSku(TenantScopedModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     product_name = models.CharField(max_length=255)
     sku = models.CharField(max_length=100)
+    # Stock units of `sku` in one of this product - "Pack of 2" = 2.
+    units = models.PositiveIntegerField(default=1, db_default=1)
 
     class Meta:
         db_table = '"oms"."product_skus"'

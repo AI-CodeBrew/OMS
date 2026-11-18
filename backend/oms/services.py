@@ -56,6 +56,7 @@ def create_order(*, organization_id, order_number, customer_name, customer_phone
             quantity=item["quantity"],
             unit_price=item["unit_price"],
             barcode=item.get("barcode") or "",
+            pack_units=item.get("pack_units") or 1,
             weight_grams=item.get("weight_grams"),
         )
         total += order_item.quantity * order_item.unit_price
@@ -3055,6 +3056,7 @@ def split_order(order, *, item_splits, actor_user_id=None):
             unit_price=source_item.unit_price,
             vendor=source_item.vendor,
             barcode=source_item.barcode,
+            pack_units=source_item.pack_units,
         )
         total += quantity * source_item.unit_price
 
