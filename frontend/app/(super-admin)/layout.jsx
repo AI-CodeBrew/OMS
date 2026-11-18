@@ -22,7 +22,6 @@ import {
   GridIcon,
   GearIcon,
   AlertIcon,
-  CameraIcon,
 } from "../../components/layout/navIcons";
 import adminTeamService from "../../services/adminTeamService";
 
@@ -111,14 +110,6 @@ const NAV = [
     label: "Cities",
     icon: GridIcon,
     match: (path) => path.startsWith("/admin/cities"),
-  },
-  {
-    // Load sheet / return / inventory receiving pictures (kept in Bunny).
-    href: "/admin/receivings",
-    page: "receivings",
-    label: "Receivings",
-    icon: CameraIcon,
-    match: (path) => path.startsWith("/admin/receivings"),
   },
 ];
 

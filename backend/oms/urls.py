@@ -2,6 +2,7 @@ from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from . import export_api
+from .receivings_api import ReceivingViewSet
 
 from .views import (
     CityNamesView,
@@ -20,6 +21,7 @@ router.register("couriers", CourierViewSet, basename="courier")
 router.register("print-batches", PrintBatchViewSet, basename="print-batch")
 router.register("dispatch-batches", DispatchBatchViewSet, basename="dispatch-batch")
 router.register("tickets", TicketViewSet, basename="ticket")
+router.register("receivings", ReceivingViewSet, basename="receiving")
 
 urlpatterns = router.urls + [
     path("cities/", CityNamesView.as_view(), name="city-names"),

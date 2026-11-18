@@ -838,21 +838,24 @@ class Store(TenantScopedModel):
 
 
 def _receiving_image_upload_path(instance, filename):
-    # receivings/<kind>/<yyyy/mm/dd>/<receiving id>/<image id>_<name> - one
-    # folder per receiving, grouped by kind and day, in the same Bunny zone
-    # as the print batches (oms.storage).
+    # receivings/<store id>/<kind>/<yyyy/mm/dd>/<receiving id>/<image id>_<name>
+    # - in the same Bunny zone as the print batches (oms.storage).
     from django.utils import timezone
 
     stamp = timezone.now().strftime("%Y/%m/%d")
-    return f"receivings/{instance.receiving.kind}/{stamp}/{instance.receiving_id}/{instance.id}_{filename}"
+    return (
+        f"receivings/{instance.organization_id}/{instance.receiving.kind}/{stamp}/"
+        f"{instance.receiving_id}/{instance.id}_{filename}"
+    )
 
 
-class Receiving(models.Model):
-    """Photos the super admin side takes when goods come in (user,
-    2026-11-18): a courier's load sheet handed back at pickup, returned
-    parcels, or new inventory. Platform-wide (FynkTech's warehouse), not a
-    store's - so not TenantScopedModel. The pictures are ReceivingImage
-    rows, kept in Bunny like the print batches."""
+class Receiving(TenantScopedModel):
+    """Photos a store takes when goods come in (user, 2026-11-18): a
+    courier's load sheet handed back at pickup, returned parcels, or new
+    inventory. Belongs to the store it was added in; every store of an
+    organization sees the organization's receivings (oms.receivings_api).
+    The pictures are ReceivingImage rows, kept in Bunny like the print
+    batches."""
 
     KIND_LOADSHEET = "loadsheet"
     KIND_RETURN = "return"
@@ -865,8 +868,8 @@ class Receiving(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     kind = models.CharField(max_length=20, choices=KIND_CHOICES)
-    # The courier's name as the couriers lists have it; blank allowed for
-    # Inventory Receiving (goods from a supplier, not a courier).
+    # The courier's name as the store's couriers list has it; blank allowed
+    # for Inventory Receiving (goods from a supplier, not a courier).
     courier = models.CharField(max_length=150, blank=True, default="")
     # The day the goods came in - the uploader's own date (today in their
     # browser), changeable in the popup for pictures added later.
@@ -874,25 +877,22 @@ class Receiving(models.Model):
     note = models.TextField(blank=True, default="")
     created_by_user_id = models.UUIDField(null=True, blank=True)
     created_by_email = models.CharField(max_length=255, blank=True, default="")
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = '"oms"."receivings"'
         ordering = ["-received_on", "-created_at"]
 
     def __str__(self):
-        return f"{self.get_kind_display()} {self.courier} {self.created_at:%Y-%m-%d}"
+        return f"{self.get_kind_display()} {self.courier} {self.received_on}"
 
 
-class ReceivingImage(models.Model):
+class ReceivingImage(TenantScopedModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     receiving = models.ForeignKey(Receiving, on_delete=models.CASCADE, related_name="images")
     file = models.FileField(upload_to=_receiving_image_upload_path, storage=print_batch_storage, max_length=500)
     original_name = models.CharField(max_length=255, blank=True, default="")
     content_type = models.CharField(max_length=100, default="image/jpeg")
     size = models.PositiveIntegerField(default=0)
-    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = '"oms"."receiving_images"'

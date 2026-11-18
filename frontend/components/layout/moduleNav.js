@@ -20,6 +20,7 @@ import {
   LayersIcon,
   TicketIcon,
   AlertIcon,
+  CameraIcon,
 } from "./navIcons";
 
 // Top header tabs only — Integrations / Logs / Settings live in the sidebar.
@@ -49,6 +50,7 @@ const PATH_PAGES = [
   ["/dashboard", "oms.dashboard"],
   ["/orders", "oms.orders"],
   ["/critical-orders", "oms.critical_orders"],
+  ["/receivings", "oms.receivings"],
   ["/ims/inventory", "ims.inventory"],
   ["/ims/purchase-orders", "ims.purchase_orders"],
   ["/wms/packing", "wms.packing"],
@@ -164,7 +166,7 @@ export const TICKETS_ITEM = {
 };
 
 const MODULE_PATH_PREFIXES = {
-  oms: ["/orders", "/dashboard", "/critical-orders"],
+  oms: ["/orders", "/dashboard", "/critical-orders", "/receivings"],
   ims: ["/ims"],
   // Returns Desk lives under WMS — keep the WMS sidebar when on /returns.
   wms: ["/wms", "/returns"],
@@ -295,6 +297,7 @@ export const SIDEBAR_ITEMS = {
     { label: "Dashboard", href: "/dashboard", icon: DashboardIcon, page: "oms.dashboard" },
     { label: "All Orders", href: "/orders", icon: GridIcon, page: "oms.orders" },
     { label: "Critical Orders", href: "/critical-orders", icon: AlertIcon, page: "oms.critical_orders" },
+    { label: "Receivings", href: "/receivings", icon: CameraIcon, page: "oms.receivings" },
   ],
   // IMS - Inventory Management (moved out of WMS).
   ims: [

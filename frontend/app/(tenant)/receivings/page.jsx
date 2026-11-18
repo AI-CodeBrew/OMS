@@ -1,10 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import Button from "../../../../components/shared/Button";
-import DateInput, { formatDmy } from "../../../../components/shared/DateInput";
-import Modal from "../../../../components/shared/Modal";
-import receivingsAdminService from "../../../../services/receivingsAdminService";
+import Button from "../../../components/shared/Button";
+import DateInput, { formatDmy } from "../../../components/shared/DateInput";
+import Modal from "../../../components/shared/Modal";
+import usePageAccess from "../../../lib/usePageAccess";
+import receivingsService from "../../../services/receivingsService";
 
 // The three kinds (backend oms.models.Receiving.KIND_CHOICES).
 const KINDS = [
@@ -68,7 +69,7 @@ function Thumb({ image, onOpen }) {
   useEffect(() => {
     let alive = true;
     let made = "";
-    receivingsAdminService
+    receivingsService
       .imageUrl(image.id)
       .then((u) => {
         made = u;
@@ -161,7 +162,7 @@ function ReceivingModal({ kind, couriers, onClose, onSaved }) {
     setSaving(true);
     setError("");
     try {
-      const data = await receivingsAdminService.create({
+      const data = await receivingsService.create({
         kind,
         courier,
         receivedOn,
@@ -285,7 +286,10 @@ function ReceivingModal({ kind, couriers, onClose, onSaved }) {
   );
 }
 
-export default function ReceivingsAdminPage() {
+export default function ReceivingsPage() {
+  const { canWrite } = usePageAccess("oms.receivings");
+  // An organization with several stores sees all of them - with the store's name.
+  const [grouped, setGrouped] = useState(false);
   const [receivings, setReceivings] = useState([]);
   const [counts, setCounts] = useState({});
   const [couriers, setCouriers] = useState([]);
@@ -300,10 +304,11 @@ export default function ReceivingsAdminPage() {
     setLoading(true);
     setError("");
     try {
-      const data = await receivingsAdminService.list(kind);
+      const data = await receivingsService.list(kind);
       setReceivings(data.receivings || []);
       setCounts(data.counts || {});
       setCouriers(data.couriers || []);
+      setGrouped(Boolean(data.grouped));
     } catch (err) {
       setError(err.message || "Failed to load receivings");
     } finally {
@@ -327,7 +332,7 @@ export default function ReceivingsAdminPage() {
     if (!window.confirm(`Delete this ${receiving.kind_label} and its ${n} picture${n === 1 ? "" : "s"}?`)) return;
     setError("");
     try {
-      await receivingsAdminService.remove(receiving.id);
+      await receivingsService.remove(receiving.id);
       setReceivings((list) => list.filter((r) => r.id !== receiving.id));
       setCounts((c) => ({ ...c, [receiving.kind]: Math.max(0, (c[receiving.kind] || 1) - 1) }));
     } catch (err) {
@@ -354,11 +359,12 @@ export default function ReceivingsAdminPage() {
           <button
             key={kind.key}
             type="button"
+            disabled={!canWrite}
             onClick={() => {
               setNotice("");
               setOpenKind(kind.key);
             }}
-            className="group flex flex-col items-start rounded-lg border border-surface-border bg-white p-4 text-left transition hover:border-brand-500 hover:shadow-sm"
+            className="group flex flex-col items-start rounded-lg border border-surface-border bg-white p-4 text-left transition enabled:hover:border-brand-500 enabled:hover:shadow-sm disabled:cursor-default"
           >
             <span className="flex h-9 w-9 items-center justify-center rounded-md bg-brand-50 text-brand-800">
               <KindIcon kind={kind.key} />
@@ -367,7 +373,7 @@ export default function ReceivingsAdminPage() {
             <span className="mt-0.5 text-xs text-slate-500">{kind.hint}</span>
             <span className="mt-3 flex w-full items-center justify-between text-xs">
               <span className="text-slate-400">{counts[kind.key] || 0} saved</span>
-              <span className="font-medium text-brand-700 group-hover:underline">Add pictures →</span>
+              {canWrite ? <span className="font-medium text-brand-700 group-hover:underline">Add pictures →</span> : null}
             </span>
           </button>
         ))}
@@ -394,7 +400,7 @@ export default function ReceivingsAdminPage() {
           <p className="px-4 py-8 text-center text-sm text-slate-500">Loading…</p>
         ) : !receivings.length ? (
           <p className="px-4 py-8 text-center text-sm text-slate-500">
-            No receivings yet - pick one of the options above to add pictures.
+            {canWrite ? "No receivings yet - pick one of the options above to add pictures." : "No receivings yet."}
           </p>
         ) : (
           <ul className="divide-y divide-surface-border">
@@ -405,6 +411,11 @@ export default function ReceivingsAdminPage() {
                     <p className="text-sm font-medium text-slate-900">
                       {KIND_LABEL[r.kind] || r.kind_label}
                       {r.courier ? <span className="text-slate-500"> · {r.courier}</span> : null}
+                      {grouped && r.store ? (
+                        <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600">
+                          {r.store}
+                        </span>
+                      ) : null}
                     </p>
                     <p className="text-xs text-slate-500">
                       Received {formatDmy(r.received_on)} · uploaded {formatDate(r.created_at)}
@@ -413,13 +424,15 @@ export default function ReceivingsAdminPage() {
                     </p>
                     {r.note ? <p className="mt-1 text-sm text-slate-700">{r.note}</p> : null}
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => onRemove(r)}
-                    className="text-xs font-medium text-red-600 hover:underline"
-                  >
-                    Delete
-                  </button>
+                  {canWrite ? (
+                    <button
+                      type="button"
+                      onClick={() => onRemove(r)}
+                      className="text-xs font-medium text-red-600 hover:underline"
+                    >
+                      Delete
+                    </button>
+                  ) : null}
                 </div>
                 <div className="mt-2 flex flex-wrap gap-2">
                   {r.images.map((image) => (

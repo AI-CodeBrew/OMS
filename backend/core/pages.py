@@ -29,6 +29,7 @@ PAGES = [
     {"key": "oms.dashboard", "module": "oms", "label": "Dashboard"},
     {"key": "oms.orders", "module": "oms", "label": "All Orders"},
     {"key": "oms.critical_orders", "module": "oms", "label": "Critical Orders"},
+    {"key": "oms.receivings", "module": "oms", "label": "Receivings"},
     {"key": "ims.inventory", "module": "ims", "label": "Inventory"},
     {"key": "ims.purchase_orders", "module": "ims", "label": "Purchase Orders"},
     {"key": "wms.packing", "module": "wms", "label": "Packing"},
@@ -53,7 +54,7 @@ _GENERAL_NEEDS = {
 # Old-style staff logins (Membership.allowed_modules, before roles) and the
 # pages each module meant - every one with write, as before.
 LEGACY_MODULE_PAGES = {
-    "oms": ["oms.dashboard", "oms.orders", "oms.critical_orders", "reports", "batch", "tickets"],
+    "oms": ["oms.dashboard", "oms.orders", "oms.critical_orders", "oms.receivings", "reports", "batch", "tickets"],
     "ims": ["ims.inventory", "ims.purchase_orders", "reports", "tickets"],
     "wms": ["wms.packing", "wms.returns_desk", "reports", "batch", "tickets"],
     "finance": ["finance.home", "tickets"],

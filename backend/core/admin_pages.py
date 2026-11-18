@@ -41,7 +41,6 @@ PAGES = [
     {"key": "logs", "label": "Logs", "hint": "Activity and order logs"},
     {"key": "tickets", "label": "Tickets", "hint": "Store tickets"},
     {"key": "cities", "label": "Cities", "hint": "The city list"},
-    {"key": "receivings", "label": "Receivings", "hint": "Load sheet, return and inventory receiving pictures"},
 ]
 PAGE_KEYS = [p["key"] for p in PAGES]
 
@@ -83,7 +82,6 @@ _ADMIN_PATHS = [
     ("integrations/", ("integrations",)),
     ("tickets/", ("tickets",)),
     ("cities/", ("cities",)),
-    ("receivings/", ("receivings",)),
     ("inventory/", ("inventory",)),
     ("invoices/", ("invoices",)),
 ]

@@ -55,9 +55,6 @@ export const API_ENDPOINTS = {
     cities: "/api/core/admin/cities/",
     citiesImport: "/api/core/admin/cities/import/",
     city: (id) => `/api/core/admin/cities/${id}/`,
-    receivings: "/api/core/admin/receivings/",
-    receiving: (id) => `/api/core/admin/receivings/${id}/`,
-    receivingImage: (id) => `/api/core/admin/receivings/images/${id}/`,
     inventory: "/api/core/admin/inventory/",
     inventoryReport: (id) => `/api/core/admin/inventory/${id}/report/`,
     ticket: (id) => `/api/core/admin/tickets/${id}/`,
@@ -75,6 +72,10 @@ export const API_ENDPOINTS = {
   notificationsRead: "/api/core/notifications/read/",
   storesSwitch: "/api/core/stores/switch/",
   oms: {
+    // Receivings page (backend oms/receivings_api.py).
+    receivings: "/api/oms/receivings/",
+    receiving: (id) => `/api/oms/receivings/${id}/`,
+    receivingImage: (id) => `/api/oms/receivings/images/${id}/`,
     orders: "/api/oms/orders/",
     orderCounts: "/api/oms/orders/counts/",
     orderDashboardBreakdown: "/api/oms/orders/dashboard-breakdown/",
