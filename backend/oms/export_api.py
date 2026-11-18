@@ -12,6 +12,8 @@ live database on every call; nothing is stored.
     ?updated_since=2026-11-18T10:00:00Z   only orders changed since then
     ?cursor=<next_cursor>                 the next page (from the last reply)
     ?limit=500                            orders per page (max 2000)
+    ?limit=all                            EVERY order in one reply, streamed -
+                                          for curl / Excel, which can't page
 
 Orders come oldest-change first (updated_at, then id). A script keeps
 calling with `cursor` while has_more is true, then saves next_cursor and
@@ -30,7 +32,7 @@ import logging
 
 from django.conf import settings
 from django.db.models import Q
-from django.http import HttpResponse, JsonResponse
+from django.http import HttpResponse, JsonResponse, StreamingHttpResponse
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.views.decorators.http import require_GET
@@ -68,6 +70,57 @@ def _error(message, status):
     return JsonResponse({"detail": message}, status=status)
 
 
+class _Echo:
+    def write(self, value):
+        return value
+
+
+def _stream_all(ordered, fmt):
+    """limit=all: every order of `ordered` in one streamed reply (built as
+    it is sent, like Export CSV, so a big pull never sits in memory).
+    next_cursor is worked out first - the newest change in the reply - so a
+    script can carry on from it with ?cursor= next time."""
+    import json
+
+    last = ordered.values_list("id", "updated_at").last()
+    next_cursor = f"{last[1].isoformat()}|{last[0]}" if last else ""
+    logger.info("data API: all orders (%s)", fmt)
+
+    if fmt == "csv":
+        header, rows = all_orders_report(ordered, {})
+        writer = csv.writer(_Echo())
+
+        def lines():
+            yield writer.writerow(header)
+            for row in rows:
+                yield writer.writerow(row)
+
+        response = StreamingHttpResponse(lines(), content_type="text/csv")
+        response["Content-Disposition"] = 'attachment; filename="orders_report_all.csv"'
+        response["X-Has-More"] = "false"
+        response["X-Next-Cursor"] = next_cursor
+        return response
+
+    header, rows = all_orders_report(ordered, {}, text=_plain)
+
+    def chunks():
+        yield (
+            '{"generated_at": ' + json.dumps(timezone.now().isoformat())
+            + ', "has_more": false, "next_cursor": ' + json.dumps(next_cursor)
+            + ', "columns": ' + json.dumps(header) + ', "rows": ['
+        )
+        first = True
+        for row in rows:
+            yield ("" if first else ",") + json.dumps(dict(zip(header, row)), default=str)
+            first = False
+        yield "]}"
+
+    response = StreamingHttpResponse(chunks(), content_type="application/json")
+    response["X-Has-More"] = "false"
+    response["X-Next-Cursor"] = next_cursor
+    return response
+
+
 @require_GET
 def orders_report(request):
     if not getattr(settings, "EXPORT_API_KEY", ""):
@@ -79,10 +132,11 @@ def orders_report(request):
     fmt = (params.get("format") or "json").lower()
     if fmt not in ("json", "csv"):
         return _error("format must be json or csv.", 400)
+    everything = (params.get("limit") or "").strip().lower() == "all"
     try:
-        limit = min(max(int(params.get("limit") or DEFAULT_LIMIT), 1), MAX_LIMIT)
+        limit = DEFAULT_LIMIT if everything else min(max(int(params.get("limit") or DEFAULT_LIMIT), 1), MAX_LIMIT)
     except ValueError:
-        return _error("limit must be a number.", 400)
+        return _error("limit must be a number, or all.", 400)
 
     qs = Order.all_objects.filter(organization_id__in=all_store_organization_ids())
     if params.get("updated_since"):
@@ -96,6 +150,9 @@ def orders_report(request):
             return _error("Invalid cursor - use next_cursor from the last reply.", 400)
         when, order_id = cursor
         qs = qs.filter(Q(updated_at__gt=when) | Q(updated_at=when, id__gt=order_id))
+
+    if everything:
+        return _stream_all(qs.order_by("updated_at", "id"), fmt)
 
     page = list(qs.order_by("updated_at", "id").values_list("id", "updated_at")[: limit + 1])
     has_more = len(page) > limit
