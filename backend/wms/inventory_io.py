@@ -19,6 +19,7 @@ import csv
 import io
 
 from django.db import transaction
+from django.db.models import F
 
 from . import services
 from .models import StockItem, Warehouse
@@ -105,7 +106,11 @@ def run_import(organization_id, upload, *, apply=False, actor_user_id=None):
     warehouses = list(Warehouse.all_objects.filter(organization_id=stock_org, is_active=True))
     by_name = {w.name.strip().lower(): w for w in warehouses}
     default = services.get_default_warehouse(organization_id)
-    items = list(StockItem.all_objects.filter(organization_id=stock_org))
+    # Several rows can share a SKU (Shopify variants): a SKU row sets the one
+    # booking takes from - Shopify-linked first, then the oldest (services._sku_items).
+    items = list(StockItem.all_objects.filter(organization_id=stock_org).order_by(
+        F("shopify_inventory_item_id").asc(nulls_last=True), "created_at"
+    ))
     by_sku, by_title = {}, {}
     for item in items:
         if item.sku:
