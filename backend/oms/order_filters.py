@@ -174,7 +174,7 @@ def _tag_choices():
     [(value, label, Q, also-accepted values)]."""
     from oms.services import (
         AIRWAYBILL_PRINTED_TAGS, TAG_AIRWAYBILL_PRINTED, TAG_LOADSHEET_PRINTED, TAG_PACKED,
-        TAG_TO_BE_PACKED, TAG_TO_BE_PRINTED,
+        TAG_RETURN_RECEIVED_DAMAGED, TAG_RETURN_RECEIVED_GOOD, TAG_TO_BE_PACKED, TAG_TO_BE_PRINTED,
     )
 
     return [
@@ -188,7 +188,19 @@ def _tag_choices():
         # Update Tag's stock tags - set by hand while an order waits for stock.
         ("Awaiting Stock/China", "Awaiting Stock/China", Q(tag="Awaiting Stock/China"), set()),
         ("Awaiting Stock/Local", "Awaiting Stock/Local", Q(tag="Awaiting Stock/Local"), set()),
+        # Returns the Returns Desk has received (oms.services.return_received_tag).
+        (TAG_RETURN_RECEIVED_GOOD, TAG_RETURN_RECEIVED_GOOD, _return_received_q("good"), set()),
+        (TAG_RETURN_RECEIVED_DAMAGED, TAG_RETURN_RECEIVED_DAMAGED, _return_received_q("bad"), set()),
     ]
+
+
+def _return_received_q(condition):
+    """Returned orders the Returns Desk received: "good" = every unit good,
+    "bad" = some damaged or lost (wms.services.restock_from_return)."""
+    received = Q(status="returned", return_received_at__isnull=False)
+    if condition == "bad":
+        return received & Q(return_condition="bad")
+    return received & ~Q(return_condition="bad")
 
 
 def _courier_tags():

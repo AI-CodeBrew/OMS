@@ -55,6 +55,9 @@ const TAG_TONE = {
   "Moving back to Warehouse": "amber",
   "Awaiting Scan": "amber",
   "Return Received": "green",
+  // A received return, by its Returns Desk count (backend oms.services.return_received_tag).
+  "Return Received - Good": "green",
+  "Return Received - Damaged": "red",
   // PostEx's sheet tags (backend integrations/postex/status_map.py).
   Voided: "red",
   "Moving from Courier Hub": "indigo",

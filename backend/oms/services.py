@@ -2155,6 +2155,9 @@ def latest_tag(order):
         "assigning_courier", "dispatched", "undelivered", "return_in_transit", "returned", "delivered",
     ):
         return card_tag
+    # A received return always shows Return Received - Good / Damaged.
+    if card == "returned" and order.return_received_at:
+        return card_tag
     # Scan-pack sets packed_at → show Packed over the print tags / To be packed.
     if order.tag and (
         card == "awaiting_confirmation"
@@ -2183,6 +2186,16 @@ def card_queryset(qs, card):
     if statuses & RETURNABLE_STATUSES:
         qs = qs.exclude(in_return)
     return qs
+
+
+TAG_RETURN_RECEIVED_GOOD = "Return Received - Good"
+TAG_RETURN_RECEIVED_DAMAGED = "Return Received - Damaged"
+
+
+def return_received_tag(order):
+    """A received return's tag: Good when the Returns Desk counted every
+    unit good, Damaged when any unit was damaged or lost."""
+    return TAG_RETURN_RECEIVED_DAMAGED if order.return_condition == "bad" else TAG_RETURN_RECEIVED_GOOD
 
 
 def workflow_tag(order):
@@ -2223,13 +2236,15 @@ def workflow_tag(order):
         # (Airwaybill Printed / Loadsheet Printed / To be packed - see
         # mark_orders_printed) shows instead (latest_tag).
         return TAG_PACKED if order.packed_at else TAG_TO_BE_PRINTED
+    # Once the Returns Desk has received the parcel, Returned says so - and
+    # how it came back (user, 2026-11-18): Good when every unit was good,
+    # else Damaged (wms.services.restock_from_return's return_condition).
+    if card == "returned" and order.return_received_at:
+        return return_received_tag(order)
     # A courier with FynkTech's status sheet (Leopards) gives its own tag
-    # on the cards it drives (Order.courier_tag); once the Returns Desk has
-    # received the parcel, Returned says so.
+    # on the cards it drives (Order.courier_tag).
     courier_tag = (getattr(order, "courier_tag", "") or "").strip()
     if courier_tag and card in ("dispatched", "undelivered", "return_in_transit", "returned"):
-        if card == "returned" and order.return_received_at:
-            return "Return Received"
         return courier_tag
     if card == "dispatched":
         return "Out for Delivery" if status == "out_for_delivery" else "In Transit"

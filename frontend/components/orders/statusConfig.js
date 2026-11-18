@@ -199,6 +199,11 @@ export function latestTag(order) {
   if (order.courier_tag && COURIER_TAG_CARDS.has(order.workflow_card) && order.workflow_tag) {
     return { text: order.workflow_tag, own: false };
   }
+  // A received return: Return Received - Good / Damaged (backend
+  // oms.services.return_received_tag) over any older own tag.
+  if (order.workflow_card === "returned" && order.return_received_at && order.workflow_tag) {
+    return { text: order.workflow_tag, own: false };
+  }
   // Scan-pack sets packed_at → workflow "Packed" wins over Printed Airwaybill.
   if (
     order.tag &&
