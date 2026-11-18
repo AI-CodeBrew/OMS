@@ -334,6 +334,9 @@ SHOPIFY_WEBHOOK_CHECK = (
     env("SHOPIFY_WEBHOOK_CHECK", default="true" if SMARTLANE_AUTO_POLL else "false").lower() == "true"
 )
 SHOPIFY_WEBHOOK_CHECK_INTERVAL_SECONDS = int(env("SHOPIFY_WEBHOOK_CHECK_INTERVAL_SECONDS", default="300"))
+# The read-only live data API's key (oms/export_api.py) - sent as the
+# X-API-Key header. Empty = the API is switched off. Set as a Fly secret.
+EXPORT_API_KEY = env("EXPORT_API_KEY", default="")
 # createShipper (a store's OMS Courier request, on approval) wants a bank id
 # from getBankList. FynkTech's account is the one paid, so any valid id does -
 # the one the Postman collection used is the default.
