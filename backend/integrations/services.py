@@ -711,6 +711,11 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
                     # by the bare title.
                     weight_grams=weights.get((barcode, product_name)) or weights.get((barcode, title[:255])),
                 ))
+            # The organization's product name -> SKU list wins over the
+            # SKU Shopify sent (oms.product_skus).
+            from oms.product_skus import apply_skus
+
+            apply_skus(organization_id, new_items)
             OrderItem.all_objects.bulk_create(new_items)
 
     publish_event(

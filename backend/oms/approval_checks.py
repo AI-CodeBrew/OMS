@@ -97,4 +97,39 @@ def approval_problems(order, *, include_city=True):
     receivable = order.amount_receivable
     if prepaid and receivable > Decimal("0"):
         problems.append(f"Prepaid order still shows PKR {receivable} receivable")
+    problems += stock_problems(order)
+    return problems
+
+
+def uses_sku_list(organization_id):
+    """True for an organization that keeps a product name -> SKU list
+    (oms.product_skus) - only its orders are held back for stock, so stores
+    that don't keep stock by SKU approve as before."""
+    from core import org_group
+
+    from .models import ProductSku
+
+    stores = org_group.group_ids(organization_id) or [organization_id]
+    return ProductSku.all_objects.filter(organization_id__in=stores).exists()
+
+
+def stock_problems(order):
+    """(user, 2026-11-19) An order is only Approved when every product has a
+    SKU and the organization's inventory has the quantity for it - checked
+    against the stock on hand (wms.services.check_order_stock, strict: a
+    product with no SKU, or no warehouse, counts as not in stock). Stock is
+    still only taken at booking. Organizations without a SKU list aren't
+    checked (uses_sku_list)."""
+    if not uses_sku_list(order.organization_id):
+        return []
+    from wms.services import check_order_stock
+
+    problems = []
+    for short in check_order_stock(order, strict=True):
+        name = short.get("product_name") or short.get("sku") or "A product"
+        if short.get("reason"):
+            problems.append(f"{name}: {short['reason']}")
+        else:
+            label = f"{name} ({short['sku']})" if short.get("sku") else name
+            problems.append(f"{label}: need {short['required']}, only {max(short['available'], 0)} in stock")
     return problems

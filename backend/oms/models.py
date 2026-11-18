@@ -900,3 +900,26 @@ class ReceivingImage(TenantScopedModel):
 
     def __str__(self):
         return self.original_name or str(self.id)
+
+
+class ProductSku(TenantScopedModel):
+    """A product name -> SKU (user, 2026-11-19): an order line whose name is
+    exactly `product_name` gets `sku` when the order comes in, whichever way
+    it comes (Shopify, manual, edit, CSV import - oms.product_skus). One
+    row per store's name; an organization's stores share them (the lookup
+    covers every store of the organization), as inventory is organization
+    level. Many names can share one SKU ("Pack of 2", other stores' names)."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    product_name = models.CharField(max_length=255)
+    sku = models.CharField(max_length=100)
+
+    class Meta:
+        db_table = '"oms"."product_skus"'
+        ordering = ["product_name"]
+        constraints = [
+            models.UniqueConstraint(fields=["organization", "product_name"], name="oms_product_sku_name_per_org"),
+        ]
+
+    def __str__(self):
+        return f"{self.product_name} -> {self.sku}"

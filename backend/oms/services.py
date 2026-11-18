@@ -43,6 +43,11 @@ def create_order(*, organization_id, order_number, customer_name, customer_phone
         **fields,
     )
 
+    from .product_skus import apply_skus
+
+    # The organization's product name -> SKU list (oms.product_skus).
+    items = [dict(item) for item in items]
+    apply_skus(organization_id, items)
     total = 0
     for item in items:
         order_item = order.items.create(
@@ -2935,6 +2940,11 @@ def update_order_detail(order, *, fields, items=None):
     order.save()
 
     if items is not None:
+        from .product_skus import apply_skus
+
+        # The organization's product name -> SKU list (oms.product_skus).
+        items = [dict(item) for item in items]
+        apply_skus(order.organization_id, items)
         order.items.all().delete()
         total = 0
         for item in items:

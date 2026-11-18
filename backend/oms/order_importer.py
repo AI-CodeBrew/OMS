@@ -334,12 +334,16 @@ def apply_import(organization_id, file_obj, *, shop_label=""):
             placed_at=_parse_order_date(group["order_date"]),
         )
         total = Decimal("0")
+        # The organization's product name -> SKU list (oms.product_skus).
+        from .product_skus import sku_map
+
+        listed = sku_map(organization_id, [item["product_name"][:255] for item in group["items"]])
         for item in group["items"]:
             OrderItem.all_objects.create(
                 organization_id=organization_id,
                 order=order,
                 product_name=item["product_name"][:255],
-                barcode=item["sku"][:100],
+                barcode=listed.get(item["product_name"][:255]) or item["sku"][:100],
                 quantity=item["quantity"],
                 unit_price=item["unit_price"],
                 weight_grams=item["weight_grams"],
@@ -540,6 +544,10 @@ def apply_import_multi(organization_ids, file_obj):
                 organization_id=org_id, order=order, kind="note",
                 body="Imported: " + " | ".join(group["notes"]),
             ))
+    # The organization's product name -> SKU list (oms.product_skus).
+    from .product_skus import apply_skus_by_store
+
+    apply_skus_by_store(new_items)
     Order.all_objects.bulk_create(new_orders, batch_size=_BATCH)
     OrderItem.all_objects.bulk_create(new_items, batch_size=_BATCH)
     OrderNote.all_objects.bulk_create(new_notes, batch_size=_BATCH)
