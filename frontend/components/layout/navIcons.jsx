@@ -297,3 +297,16 @@ export const LayersIcon = ({ className }) => (
     />
   </Base>
 );
+
+// Receivings (super admin): a camera - pictures of what came in.
+export const CameraIcon = ({ className }) => (
+  <Base className={className}>
+    <path
+      d="M3 7a1.5 1.5 0 0 1 1.5-1.5h2l1.2-2h4.6l1.2 2h2A1.5 1.5 0 0 1 17 7v7.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 3 14.5V7Z"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinejoin="round"
+    />
+    <circle cx="10" cy="10.5" r="2.75" stroke="currentColor" strokeWidth="1.5" />
+  </Base>
+);

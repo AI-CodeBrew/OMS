@@ -167,6 +167,30 @@ class WmsService {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.stockOverview}${buildQuery(params)}`);
   }
 
+  // The Inventory table as a CSV - params: search, activity (the page's
+  // search box and card).
+  async exportInventory(params = {}) {
+    const day = new Date().toISOString().slice(0, 10);
+    return this._downloadCsv(
+      `${apiConfig.baseUrl}${API_ENDPOINTS.wms.stockExport}${buildQuery(params)}`,
+      `inventory_${day}.csv`
+    );
+  }
+
+  // Sets each row's stock to its Available - a dry run unless apply.
+  // Returns {rows, update, create, unchanged, error, applied, results}.
+  async importInventory(file, { apply = false } = {}) {
+    const body = new FormData();
+    body.append("file", file);
+    body.append("apply", apply ? "true" : "false");
+    const { "Content-Type": _json, ...headers } = authService.getAuthHeaders();
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.stockImport}`, {
+      method: "POST",
+      headers,
+      body,
+    });
+  }
+
   // One item's details: {item, orders, purchases, movements}.
   async inventoryReport(id) {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.stockReport(id)}`);

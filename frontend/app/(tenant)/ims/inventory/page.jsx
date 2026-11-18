@@ -10,6 +10,7 @@ import StockAdjustModal from "../../../../components/wms/StockAdjustModal";
 import WarehouseSetupCard from "../../../../components/wms/WarehouseSetupCard";
 import ShopifyPushModal from "../../../../components/wms/ShopifyPushModal";
 import InventoryItemDetailModal from "../../../../components/wms/InventoryItemDetailModal";
+import InventoryImportModal from "../../../../components/wms/InventoryImportModal";
 
 // The cards (backend: wms.services.inventory_activity) - each also filters
 // the table. Active: in stock and ordered. Inactive: in stock, never
@@ -91,6 +92,21 @@ export default function WmsPage() {
   const [syncing, setSyncing] = useState(false);
   const [notice, setNotice] = useState("");
   const [pushOpen, setPushOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
+
+  // The table as a CSV - with the search and card picked here.
+  async function onExport() {
+    setExporting(true);
+    setError("");
+    try {
+      await wmsService.exportInventory({ search: appliedSearch || undefined, activity: activity || undefined });
+    } catch (err) {
+      setError(err.message || "Export failed");
+    } finally {
+      setExporting(false);
+    }
+  }
 
   const loadWarehouses = useCallback(async () => {
     try {
@@ -196,8 +212,16 @@ export default function WmsPage() {
             </Button>
           </form>
         ) : null}
-        {hasWarehouse && canWrite ? (
-          <div className="ml-auto flex gap-2">
+        {hasWarehouse ? (
+          <div className="ml-auto flex flex-wrap gap-2">
+            <Button variant="secondary" onClick={onExport} loading={exporting}>
+              Export
+            </Button>
+            {canWrite ? (
+              <>
+            <Button variant="secondary" onClick={() => setImportOpen(true)}>
+              Import
+            </Button>
             <Button variant="secondary" onClick={onSyncShopify} loading={syncing}>
               Sync from Shopify
             </Button>
@@ -220,6 +244,8 @@ export default function WmsPage() {
                 </span>
               ) : null}
             </Button>
+              </>
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -390,6 +416,14 @@ export default function WmsPage() {
         onPushed={load}
       />
       <InventoryItemDetailModal item={viewing} onClose={() => setViewing(null)} />
+      <InventoryImportModal
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        onImported={(result) => {
+          setNotice(`Import done - ${result.update} updated, ${result.create} added.`);
+          load();
+        }}
+      />
     </div>
   );
 }

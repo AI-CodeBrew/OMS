@@ -37,6 +37,7 @@ export const ADMIN_PAGE_HREFS = [
   ["logs", "/admin/logs"],
   ["tickets", "/admin/tickets"],
   ["cities", "/admin/cities"],
+  ["receivings", "/admin/receivings"],
 ];
 
 // Where a staff login goes when it leaves a view that opens straight in

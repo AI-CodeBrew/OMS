@@ -89,6 +89,7 @@ urlpatterns = [
     # here for the IP allowlist.
     path("admin/tickets/", include("oms.admin_urls")),
     path("admin/cities/", include("oms.city_admin_urls")),
+    path("admin/receivings/", include("oms.receivings_admin_urls")),
     path("admin/inventory/", include("wms.inventory_admin_urls")),
     # Same reason - lives in the finance app but is mounted here for the
     # IP allowlist.

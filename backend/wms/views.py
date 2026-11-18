@@ -440,6 +440,43 @@ class StockItemViewSet(viewsets.ModelViewSet):
         start = (page - 1) * page_size
         return Response({"count": len(rows), "results": rows[start : start + page_size], "summary": summary})
 
+    @action(detail=False, methods=["get"], url_path="export")
+    def export_inventory(self, request):
+        """The Inventory table as a CSV, with the page's search / card
+        filter (wms.inventory_io)."""
+        from . import inventory_io
+
+        params = request.query_params
+
+        class Echo:
+            def write(self, value):
+                return value
+
+        writer = csv.writer(Echo())
+        rows = inventory_io.export_rows(
+            request.organization_id, search=params.get("search") or "", activity=params.get("activity") or ""
+        )
+        response = StreamingHttpResponse((writer.writerow(r) for r in rows), content_type="text/csv")
+        response["Content-Disposition"] = 'attachment; filename="inventory.csv"'
+        return response
+
+    @action(detail=False, methods=["post"], url_path="import", parser_classes=[MultiPartParser, FormParser])
+    def import_inventory(self, request):
+        """Sets each row's stock to its Available (wms.inventory_io) - a dry
+        run unless apply=true."""
+        from . import inventory_io
+
+        upload = request.FILES.get("file")
+        if not upload:
+            return Response({"detail": "Attach a CSV file as 'file'"}, status=status.HTTP_400_BAD_REQUEST)
+        apply = str(request.data.get("apply", "")).lower() in ("1", "true", "yes")
+        result = inventory_io.run_import(
+            request.organization_id, upload, apply=apply, actor_user_id=request.user_id
+        )
+        if result.get("error"):
+            return Response({"detail": result["error"]}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(result)
+
     @action(detail=True, methods=["get"])
     def report(self, request, pk=None):
         """One item's details - the eye icon - or, with export=csv, the
