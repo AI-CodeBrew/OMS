@@ -119,6 +119,29 @@ def return_line_summary(order):
     return lines
 
 
+def _sku_items(organization_id, warehouse, skus):
+    """Stock rows with these SKUs in the warehouse, the one an order's units
+    come from first: Shopify-linked first, then the oldest. Several rows may
+    share a SKU (e.g. one per Shopify variant - only Shopify-linked rows are
+    allowed to); the first is the one booking, returns and the stock check
+    all use, as purchase-order receiving already did (_add_purchase_stock)."""
+    return StockItem.all_objects.filter(
+        organization_id=organization_id, warehouse=warehouse, sku__in=list(skus)
+    ).order_by(F("shopify_inventory_item_id").asc(nulls_last=True), "created_at")
+
+
+def _sku_item(organization_id, warehouse, sku, product_name=""):
+    """The stock row for `sku` (_sku_items' first), created if the
+    warehouse has none - never two picked, never a MultipleObjectsReturned
+    when variants share a SKU."""
+    item = _sku_items(organization_id, warehouse, [sku]).first()
+    if item is None:
+        item = StockItem.all_objects.create(
+            organization_id=organization_id, warehouse=warehouse, sku=sku, product_name=product_name or "",
+        )
+    return item
+
+
 def _return_stock_item(order, warehouse, line):
     """The stock item one return line (return_line_summary) goes back on,
     or None.
@@ -131,13 +154,7 @@ def _return_stock_item(order, warehouse, line):
     name-matched shortages there would start warning on/blocking bookings.
     """
     if line["sku"]:
-        item, _ = StockItem.all_objects.get_or_create(
-            organization_id=stock_org_id(order.organization_id),
-            warehouse=warehouse,
-            sku=line["sku"],
-            defaults={"product_name": line["product_name"]},
-        )
-        return item
+        return _sku_item(stock_org_id(order.organization_id), warehouse, line["sku"], line["product_name"])
     name = line["key"][len("name:"):]
     if not name:
         return None
@@ -228,12 +245,10 @@ def check_order_stock(order, warehouse=None, reserved=None, strict=False):
     if not required and not by_name:
         return problems
 
-    on_hand = {
-        item.sku: item
-        for item in StockItem.all_objects.filter(
-            organization_id=stock_org_id(order.organization_id), warehouse=warehouse, sku__in=required.keys()
-        )
-    }
+    # One row per SKU - the same one consume_for_order takes from.
+    on_hand = {}
+    for item in _sku_items(stock_org_id(order.organization_id), warehouse, required.keys()):
+        on_hand.setdefault(item.sku, item)
     # (reserve key, stock item or None, need, sku) - the reserve key is the
     # SKU, or "name:<name>" for a name-matched line.
     checks = [(sku, on_hand.get(sku), need, sku) for sku, need in required.items()]
@@ -281,12 +296,7 @@ def consume_for_order(order, *, force=False, actor_user_id=None, warehouse=None)
     stock_org = stock_org_id(order.organization_id)
     takes = []
     for sku, need in required.items():
-        item, _ = StockItem.all_objects.get_or_create(
-            organization_id=stock_org,
-            warehouse=warehouse,
-            sku=sku,
-            defaults={"product_name": need["product_name"]},
-        )
+        item = _sku_item(stock_org, warehouse, sku, need["product_name"])
         takes.append((item, need["quantity"]))
     if _grouped(order.organization_id):
         for name, need in _named_requirements(order).items():
