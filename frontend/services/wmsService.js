@@ -136,6 +136,29 @@ class WmsService {
   }
 
   // { sku, product_name, image_url } for an exact SKU, or null if there's none.
+  // PO Import (backend wms/po_import.py): the file to fill in.
+  async downloadPurchaseOrderTemplate() {
+    return this._downloadCsv(
+      `${apiConfig.baseUrl}${API_ENDPOINTS.wms.purchaseOrderImportTemplate}`,
+      "po_import_template.csv"
+    );
+  }
+
+  // Creates many POs from one CSV - a dry run unless apply. Returns
+  // {pos, po_count, rows, new_suppliers, units_ordered, units_good,
+  // problems, applied, created}.
+  async importPurchaseOrders(file, { apply = false } = {}) {
+    const body = new FormData();
+    body.append("file", file);
+    body.append("apply", apply ? "true" : "false");
+    const { "Content-Type": _json, ...headers } = authService.getAuthHeaders();
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.purchaseOrderImport}`, {
+      method: "POST",
+      headers,
+      body,
+    });
+  }
+
   async purchaseOrderProduct(sku) {
     const response = await fetch(
       `${apiConfig.baseUrl}${API_ENDPOINTS.wms.purchaseOrderProduct}${buildQuery({ sku })}`,

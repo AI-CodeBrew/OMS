@@ -167,6 +167,44 @@ class PurchaseOrderViewSet(viewsets.ReadOnlyModelViewSet):
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(self.get_serializer(self.get_queryset().get(id=po.id)).data, status=status.HTTP_201_CREATED)
 
+    @action(detail=False, methods=["get"], url_path="import-template")
+    def import_template(self, request):
+        """The PO Import file to fill in - the columns and two example POs
+        (wms.po_import)."""
+        from . import po_import
+
+        class Echo:
+            def write(self, value):
+                return value
+
+        writer = csv.writer(Echo())
+        response = StreamingHttpResponse(
+            ("﻿" if i == 0 else "") + writer.writerow(row) for i, row in enumerate(po_import.template_rows())
+        )
+        response["Content-Type"] = "text/csv; charset=utf-8"
+        response["Content-Disposition"] = 'attachment; filename="po_import_template.csv"'
+        return response
+
+    @action(detail=False, methods=["post"], url_path="import", parser_classes=[MultiPartParser, FormParser])
+    def import_pos(self, request):
+        """Creates many POs from one CSV (wms.po_import) - good units go
+        into stock. A dry run unless apply=true."""
+        from . import po_import
+
+        upload = request.FILES.get("file")
+        if not upload:
+            return Response({"detail": "Attach a CSV file as 'file'"}, status=status.HTTP_400_BAD_REQUEST)
+        apply = str(request.data.get("apply", "")).lower() in ("1", "true", "yes")
+        try:
+            result = po_import.run_import(
+                request.organization_id, upload, apply=apply, actor_user_id=request.user_id
+            )
+        except po_import.PoImportError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        if result.get("error"):
+            return Response({"detail": result["error"]}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(result)
+
     @action(detail=True, methods=["post"])
     def receive(self, request, pk=None):
         """Another delivery: {receipts: [{line, good, damaged}]}, added to

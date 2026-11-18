@@ -9,6 +9,7 @@ import SimpleFormModal from "../../../../components/wms/purchase-orders/SimpleFo
 import AddPurchaseOrderModal from "../../../../components/wms/purchase-orders/AddPurchaseOrderModal";
 import PurchaseOrderDetailModal from "../../../../components/wms/purchase-orders/PurchaseOrderDetailModal";
 import ReceivePurchaseOrderModal from "../../../../components/wms/purchase-orders/ReceivePurchaseOrderModal";
+import ImportPurchaseOrdersModal from "../../../../components/wms/purchase-orders/ImportPurchaseOrdersModal";
 
 import { formatDateTime } from "../../../../lib/formatDate";
 const SUPPLIER_FIELDS = [
@@ -72,7 +73,7 @@ export default function PurchaseOrdersPage() {
   const [suppliers, setSuppliers] = useState([]);
   const [warehouses, setWarehouses] = useState([]);
   const [syncing, setSyncing] = useState(false);
-  const [openForm, setOpenForm] = useState(null); // "po" | "supplier" | "warehouse"
+  const [openForm, setOpenForm] = useState(null); // "po" | "supplier" | "warehouse" | "import"
   const [receiving, setReceiving] = useState(null);
   // The PO open in its popup.
   const [viewing, setViewing] = useState(null);
@@ -158,6 +159,9 @@ export default function PurchaseOrdersPage() {
               </Button>
               <Button variant="secondary" onClick={() => setOpenForm("warehouse")}>
                 Add Warehouse
+              </Button>
+              <Button variant="secondary" onClick={() => setOpenForm("import")}>
+                Import POs
               </Button>
               <Button onClick={() => setOpenForm("po")}>Create PO</Button>
             </>
@@ -332,6 +336,15 @@ export default function PurchaseOrdersPage() {
         }
       />
 
+      <ImportPurchaseOrdersModal
+        open={openForm === "import"}
+        onClose={() => setOpenForm(null)}
+        onImported={(result) => {
+          setNotice(`Imported ${result.created.length} PO${result.created.length === 1 ? "" : "s"} - ${result.units_good} good units added to stock.`);
+          load();
+          loadLists();
+        }}
+      />
       <AddPurchaseOrderModal
         open={openForm === "po"}
         suppliers={suppliers}

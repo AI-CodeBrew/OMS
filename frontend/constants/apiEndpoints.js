@@ -151,6 +151,8 @@ export const API_ENDPOINTS = {
     purchaseOrders: "/api/wms/purchase-orders/",
     purchaseOrderSummary: "/api/wms/purchase-orders/summary/",
     purchaseOrderProduct: "/api/wms/purchase-orders/product/",
+    purchaseOrderImport: "/api/wms/purchase-orders/import/",
+    purchaseOrderImportTemplate: "/api/wms/purchase-orders/import-template/",
     purchaseOrderSyncShopify: "/api/wms/purchase-orders/sync-shopify/",
     purchaseOrderReceive: (id) => `/api/wms/purchase-orders/${id}/receive/`,
     purchaseOrderPdf: (id) => `/api/wms/purchase-orders/${id}/pdf/`,
