@@ -5,6 +5,25 @@ import { invalidateViewCache } from "../lib/viewCache";
 const STORAGE_KEY = "oms_auth";
 // sessionStorage, so each browser tab can act as a different store.
 const ACTING_STORE_KEY = "oms_acting_store";
+// An organization login's "All stores" view (StoreSwitcher) - per tab too.
+const ORG_ALL_STORES_KEY = "oms_org_all_stores";
+
+function loadOrgAllStores() {
+  try {
+    return window.sessionStorage.getItem(ORG_ALL_STORES_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function persistOrgAllStores(on) {
+  try {
+    if (on) window.sessionStorage.setItem(ORG_ALL_STORES_KEY, "1");
+    else window.sessionStorage.removeItem(ORG_ALL_STORES_KEY);
+  } catch {
+    // storage unavailable - lasts only until reload
+  }
+}
 
 function loadActingStore() {
   try {
@@ -65,6 +84,10 @@ export const useAuthStore = create((set, get) => ({
   // or { platform: true, id, name } while managing FynkTech's own courier
   // accounts on the OMS Courier tab (see enterPlatform).
   actingStore: null,
+  // An organization's own login (never the super admin) viewing every store
+  // of its organization together - read-only (backend middleware
+  // ORG_ALL_STORES_HEADER). Set from the header's store switcher.
+  orgAllStores: false,
 
   hydrateFromStorage: () => {
     if (typeof window === "undefined" || get().hydrated) return;
@@ -75,6 +98,7 @@ export const useAuthStore = create((set, get) => ({
       refreshToken: persisted?.refreshToken || null,
       user,
       actingStore: user?.role === "super_admin" ? loadActingStore() : null,
+      orgAllStores: Boolean(user) && user.role !== "super_admin" && loadOrgAllStores(),
       hydrated: true,
     });
   },
@@ -92,6 +116,11 @@ export const useAuthStore = create((set, get) => ({
     set({ actingStore: { ...org, platform: true } });
   },
 
+  setOrgAllStores: (on) => {
+    persistOrgAllStores(Boolean(on));
+    set({ orgAllStores: Boolean(on) });
+  },
+
   exitStore: () => {
     persistActingStore(null);
     set({ actingStore: null });
@@ -106,7 +135,8 @@ export const useAuthStore = create((set, get) => ({
   clearSession: () => {
     persist({ accessToken: null });
     persistActingStore(null);
-    set({ accessToken: null, refreshToken: null, user: null, actingStore: null, hydrated: true });
+    persistOrgAllStores(false);
+    set({ accessToken: null, refreshToken: null, user: null, actingStore: null, orgAllStores: false, hydrated: true });
   },
 
   isAuthenticated: () => Boolean(get().accessToken),
@@ -129,10 +159,10 @@ export const useAuthStore = create((set, get) => ({
  * the store a super admin is operating. Changes on login, logout, and
  * entering/leaving a store. */
 export function accountKey(state) {
-  const { user, actingStore } = state;
+  const { user, actingStore, orgAllStores } = state;
   if (!user) return "";
   const acting = actingStore ? `${actingStore.hub ? "hub" : actingStore.platform ? "platform" : ""}:${actingStore.id || ""}` : "";
-  return `${user.id}|${user.organization_id || ""}|${acting}`;
+  return `${user.id}|${user.organization_id || ""}|${acting}|${orgAllStores ? "all" : ""}`;
 }
 
 // Orders/Dashboard payloads are cached in memory per tab (lib/viewCache),
@@ -149,7 +179,20 @@ useAuthStore.subscribe((state, prev) => {
 export function useEffectiveUser() {
   const user = useAuthStore((s) => s.user);
   const actingStore = useAuthStore((s) => s.actingStore);
+  const orgAllStores = useAuthStore((s) => s.orgAllStores);
   return useMemo(() => {
+    // An organization login's "All stores": the multi-store screens (store
+    // column, store filter - same as the super admin's All Orders), and
+    // view-only (moduleNav.canWritePage; the backend refuses changes too).
+    if (user && user.role !== "super_admin" && orgAllStores) {
+      return {
+        ...user,
+        organization_name: "All stores",
+        isDispatchHub: true,
+        isAllOrders: true,
+        isOrgAllStores: true,
+      };
+    }
     if (!user || user.role !== "super_admin" || !actingStore) return user;
     return {
       ...user,
@@ -166,7 +209,7 @@ export function useEffectiveUser() {
       // The super admin's Critical Orders tab - every store's critical orders.
       isCriticalOrders: Boolean(actingStore.hub && actingStore.allStores && actingStore.critical),
     };
-  }, [user, actingStore]);
+  }, [user, actingStore, orgAllStores]);
 }
 
 export default useAuthStore;

@@ -41,6 +41,8 @@ class StoresService {
   // Resolves with the refreshed user, same shape authService.login()
   // returns.
   async switchTo(organizationId) {
+    // Picking one store leaves the "All stores" view.
+    useAuthStore.getState().setOrgAllStores(false);
     await request(`${apiConfig.baseUrl}${API_ENDPOINTS.storesSwitch}`, {
       method: "POST",
       body: JSON.stringify({ organization_id: organizationId }),

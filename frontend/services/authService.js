@@ -63,7 +63,7 @@ export function buildUser(session) {
 
 class AuthService {
   getAuthHeaders() {
-    const { accessToken: token, user, actingStore } = useAuthStore.getState();
+    const { accessToken: token, user, actingStore, orgAllStores } = useAuthStore.getState();
     const headers = {
       "Content-Type": "application/json",
       Accept: "application/json",
@@ -76,6 +76,10 @@ class AuthService {
       headers["X-Dispatch-Hub"] = actingStore.allStores ? "all" : "1";
     } else if (user?.role === "super_admin" && actingStore?.id) {
       headers["X-Act-As-Organization"] = actingStore.id;
+    } else if (user && user.role !== "super_admin" && orgAllStores) {
+      // An organization login's "All stores" (read-only, every store of its
+      // organization it can open - backend middleware ORG_ALL_STORES_HEADER).
+      headers["X-Org-All-Stores"] = "1";
     }
     return headers;
   }

@@ -21,6 +21,7 @@ import { warmupViewsInBackground } from "../../../lib/warmupViews";
 import couriersService from "../../../services/couriersService";
 import integrationsService from "../../../services/integrationsService";
 import dispatchHubAdminService from "../../../services/dispatchHubAdminService";
+import storesService from "../../../services/storesService";
 import useAuthStore from "../../../store/authStore";
 import useLoadingStore from "../../../store/loadingStore";
 import { useEffectiveUser } from "../../../store/authStore";
@@ -534,6 +535,22 @@ export default function OrdersPage() {
 
   useEffect(() => {
     if (!user?.isDispatchHub) return;
+    if (user?.isOrgAllStores) {
+      // An organization's "All stores": the stores of its organization this
+      // login can open (the backend lists exactly these).
+      storesService
+        .list()
+        .then((stores) => {
+          const current = stores.find((s) => s.is_current);
+          setHubStoreOptions(
+            stores
+              .filter((s) => !current || s.organization_id === current.organization_id)
+              .map((s) => ({ id: s.id, name: s.name }))
+          );
+        })
+        .catch(() => {});
+      return;
+    }
     dispatchHubAdminService
       .listStores({ allStores: Boolean(useAuthStore.getState().actingStore?.allStores) })
       .then((stores) =>
@@ -541,7 +558,7 @@ export default function OrdersPage() {
       )
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.isDispatchHub]);
+  }, [user?.isDispatchHub, user?.isOrgAllStores]);
 
   useEffect(() => {
     if (user?.isDispatchHub) return;

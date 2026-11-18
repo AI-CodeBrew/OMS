@@ -84,6 +84,9 @@ export function canReadPage(user, pageKey) {
 }
 
 export function canWritePage(user, pageKey) {
+  // An organization login's "All stores" is view-only - changes are made
+  // inside the order's own store (the backend refuses them here too).
+  if (user?.isOrgAllStores) return false;
   if (!hasPageLimits(user)) return true;
   return user.pages[pageKey] === "write";
 }

@@ -14,6 +14,10 @@ live database on every call; nothing is stored.
     ?limit=500                            orders per page (max 2000)
     ?limit=all                            EVERY order in one reply, streamed -
                                           for curl / Excel, which can't page
+    ?plain=1                              CSV cells as plain values (no ="..."
+                                          Excel wrapping) - for Excel's
+                                          Get Data > From Web, which shows
+                                          ="0300..." as text otherwise
 
 Orders come oldest-change first (updated_at, then id). A script keeps
 calling with `cursor` while has_more is true, then saves next_cursor and
@@ -75,7 +79,7 @@ class _Echo:
         return value
 
 
-def _stream_all(ordered, fmt):
+def _stream_all(ordered, fmt, plain=False):
     """limit=all: every order of `ordered` in one streamed reply (built as
     it is sent, like Export CSV, so a big pull never sits in memory).
     next_cursor is worked out first - the newest change in the reply - so a
@@ -87,7 +91,9 @@ def _stream_all(ordered, fmt):
     logger.info("data API: all orders (%s)", fmt)
 
     if fmt == "csv":
-        header, rows = all_orders_report(ordered, {})
+        header, rows = (
+            all_orders_report(ordered, {}, text=_plain) if plain else all_orders_report(ordered, {})
+        )
         writer = csv.writer(_Echo())
 
         def lines():
@@ -133,6 +139,7 @@ def orders_report(request):
     if fmt not in ("json", "csv"):
         return _error("format must be json or csv.", 400)
     everything = (params.get("limit") or "").strip().lower() == "all"
+    plain = (params.get("plain") or "").strip().lower() in ("1", "true", "yes")
     try:
         limit = DEFAULT_LIMIT if everything else min(max(int(params.get("limit") or DEFAULT_LIMIT), 1), MAX_LIMIT)
     except ValueError:
@@ -152,7 +159,7 @@ def orders_report(request):
         qs = qs.filter(Q(updated_at__gt=when) | Q(updated_at=when, id__gt=order_id))
 
     if everything:
-        return _stream_all(qs.order_by("updated_at", "id"), fmt)
+        return _stream_all(qs.order_by("updated_at", "id"), fmt, plain=plain)
 
     page = list(qs.order_by("updated_at", "id").values_list("id", "updated_at")[: limit + 1])
     has_more = len(page) > limit
@@ -160,7 +167,7 @@ def orders_report(request):
     next_cursor = f"{page[-1][1].isoformat()}|{page[-1][0]}" if page else (params.get("cursor") or "")
 
     page_qs = Order.all_objects.filter(id__in=[order_id for order_id, _ in page]).order_by("updated_at", "id")
-    if fmt == "csv":
+    if fmt == "csv" and not plain:
         header, rows = all_orders_report(page_qs, {})
     else:
         header, rows = all_orders_report(page_qs, {}, text=_plain)

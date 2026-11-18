@@ -25,6 +25,8 @@ export default function StoreSwitcher() {
   const router = useRouter();
   const rawUser = useAuthStore((s) => s.user);
   const actingStore = useAuthStore((s) => s.actingStore);
+  const orgAllStores = useAuthStore((s) => s.orgAllStores);
+  const setOrgAllStores = useAuthStore((s) => s.setOrgAllStores);
   const effectiveUser = useEffectiveUser();
   const [stores, setStores] = useState(null);
   const [switching, setSwitching] = useState(false);
@@ -53,8 +55,30 @@ export default function StoreSwitcher() {
 
   if (!effectiveUser) return null;
 
+  // "All stores": every store of the current store's organization this
+  // login can open, together and view-only (authStore.orgAllStores).
+  const current = (stores || []).find((s) => s.is_current);
+  const orgStores = current ? (stores || []).filter((s) => s.organization_id === current.organization_id) : [];
+  const canAllStores = orgStores.length > 1;
+
+  function openAllStores() {
+    if (orgAllStores) return;
+    setOrgAllStores(true);
+    invalidateViewCache();
+    router.push("/orders");
+  }
+
   async function handleSwitch(store) {
-    if (store.is_current || switching) return;
+    if (switching) return;
+    if (store.is_current) {
+      // Back from "All stores" to the store already signed into.
+      if (orgAllStores) {
+        setOrgAllStores(false);
+        invalidateViewCache();
+        router.push("/dashboard");
+      }
+      return;
+    }
     setSwitching(true);
     try {
       await storesService.switchTo(store.id);
@@ -84,7 +108,7 @@ export default function StoreSwitcher() {
     key: store.id,
     label: (
       <span className="flex items-center gap-2">
-        {store.is_current ? <GreenTick /> : <span className="h-4 w-4 shrink-0" />}
+        {store.is_current && !orgAllStores ? <GreenTick /> : <span className="h-4 w-4 shrink-0" />}
         <span className="truncate">{store.name}</span>
       </span>
     ),
@@ -97,6 +121,21 @@ export default function StoreSwitcher() {
       disabled={switching}
       trigger={label}
       items={[
+        ...(canAllStores
+          ? [
+              {
+                key: "all-stores",
+                label: (
+                  <span className="flex items-center gap-2">
+                    {orgAllStores ? <GreenTick /> : <span className="h-4 w-4 shrink-0" />}
+                    <span className="truncate font-medium">All stores</span>
+                  </span>
+                ),
+                onClick: openAllStores,
+              },
+              { key: "divider-all", divider: true },
+            ]
+          : []),
         ...(items.length
           ? items
           : [{ key: "loading", label: "Loading stores…", disabled: true }]),

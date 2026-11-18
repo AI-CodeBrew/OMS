@@ -28,6 +28,13 @@ ACT_AS_HEADER = "HTTP_X_ACT_AS_ORGANIZATION"
 # "act as" store - mutually exclusive with ACT_AS_HEADER (the frontend
 # only ever sends one or the other).
 HUB_HEADER = "HTTP_X_DISPATCH_HUB"
+# An organization's own login (admin or staff - never the super admin)
+# viewing every store of its organization it can open, together: the
+# Orders page's "All stores" (user, 2026-11-18). Read-only - see below.
+ORG_ALL_STORES_HEADER = "HTTP_X_ORG_ALL_STORES"
+ORG_ALL_STORES_READ_ONLY = (
+    "All stores is view-only. Switch to the order's store to make changes."
+)
 MUTATING_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 
 # The login is valid but its Membership in this store is gone (removed from
@@ -118,6 +125,7 @@ class TenantMiddleware:
         # a staff login only its pages - {page: "read"|"write"} here.
         request.is_admin_owner = False
         request.admin_permissions = None
+        request.org_all_stores = False
 
         auth_header = request.META.get("HTTP_AUTHORIZATION", "")
         if auth_header.startswith("Bearer "):
@@ -241,6 +249,37 @@ class TenantMiddleware:
                 request.page_permissions = pages.effective_permissions(granted, enabled)
                 if own or membership.role_ref_id:
                     request.modules = pages.modules_for(request.page_permissions)
+
+        # "All stores": every store of this organization the login has a
+        # Membership in. Read-only - every change is refused here, so no
+        # write path (bookings above all) ever runs on several stores at
+        # once outside FynkTech's own Dispatch Hub. Only a GET may carry it.
+        if (
+            request.META.get(ORG_ALL_STORES_HEADER)
+            and request.organization_id
+            and request.user_id
+            and not request.is_super_admin
+            and not request.path.startswith(STORE_SWITCH_PREFIXES)
+        ):
+            from . import org_group
+            from .models import Membership
+
+            group = org_group.group_ids(request.organization_id)
+            mine = {
+                str(i) for i in Membership.objects.filter(
+                    user_id=request.user_id, organization_id__in=group
+                ).values_list("organization_id", flat=True)
+            }
+            org_ids = [i for i in group if i in mine]
+            if len(org_ids) > 1:
+                if request.method in MUTATING_METHODS:
+                    return JsonResponse(
+                        {"success": False, "detail": ORG_ALL_STORES_READ_ONLY,
+                         "error": ORG_ALL_STORES_READ_ONLY, "code": "all_stores_read_only"},
+                        status=403,
+                    )
+                request.organization_ids = org_ids
+                request.org_all_stores = True
 
         act_as = request.META.get(ACT_AS_HEADER)
         hub = request.META.get(HUB_HEADER)
