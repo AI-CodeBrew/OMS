@@ -423,6 +423,23 @@ class Order(TenantScopedModel):
             update_fields = kwargs.get("update_fields")
             if update_fields is not None:
                 kwargs["update_fields"] = {*update_fields, *stamped}
+        # Fulfillment is OMS's own (user, 2026-11-19): Fulfilled once booked
+        # and the courier's tracking number is in, Unfulfilled again when the
+        # booking is undone (oms.services.fulfillment_for). Here for the same
+        # reason as booked_at - status and tracking change through many paths.
+        update_fields = kwargs.get("update_fields")
+        if update_fields is None or {"status", "tracking_number"} & set(update_fields):
+            from .services import UNFULFILLED_STATUSES, fulfillment_for
+
+            wanted = None
+            if fulfillment_for(self.status, self.tracking_number) == "fulfilled":
+                wanted = "fulfilled"
+            elif self.status in UNFULFILLED_STATUSES:
+                wanted = "unfulfilled"
+            if wanted and wanted != self.fulfillment_status:
+                self.fulfillment_status = wanted
+                if update_fields is not None:
+                    kwargs["update_fields"] = {*update_fields, "fulfillment_status"}
         super().save(*args, **kwargs)
 
     @property

@@ -579,6 +579,9 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
     update_fields = dict(shopify_fields)
     if not update_fields["tracking_number"]:
         del update_fields["tracking_number"]
+    # Fulfillment is OMS's own (oms.services.fulfillment_for - Fulfilled once
+    # booked), never taken from Shopify on an update (user, 2026-11-19).
+    del update_fields["fulfillment_status"]
     # A cancelled booking gives the order a new store order ID here (#1001 ->
     # #1001-1, oms.services._next_cancel_number) - kept, not put back to
     # Shopify's #1001 on the next sync.
@@ -612,11 +615,14 @@ def upsert_order_from_shopify(organization_id, shopify_order, shop_label=""):
         }
     replace_items = previous.get("items") is None or previous["items"] != synced_items
 
+    from oms.services import fulfillment_for
+
     order, created = Order.all_objects.update_or_create(
         organization_id=organization_id,
         shopify_order_id=shopify_order_id,
         defaults=update_fields,
-        create_defaults={**shopify_fields, "status": pipeline_status},
+        # A new order is Fulfilled only if it arrives already shipped.
+        create_defaults={**shopify_fields, "status": pipeline_status, "fulfillment_status": fulfillment_for(pipeline_status, shopify_fields["tracking_number"])},
     )
     if resync:
         Order.all_objects.filter(pk=order.pk).update(

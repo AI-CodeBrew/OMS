@@ -92,7 +92,9 @@ function serializeItem(item) {
     quantity: Number(item.quantity) || 1,
     unit_price: toAmount(item.unit_price),
     vendor: item.vendor ?? "",
-    barcode: item.barcode ?? "",
+    barcode: (item.barcode ?? "").trim(),
+    // Kept as it is - saving products must never reset "Pack of 2" to 1.
+    pack_units: item.pack_units || 1,
     compare_at_price: item.compare_at_price ?? null,
     discount_amount: toAmount(item.discount_amount),
     weight_grams: item.weight_grams ?? null,

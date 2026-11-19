@@ -88,11 +88,15 @@ class OrderItemSerializer(serializers.ModelSerializer):
             "unit_price",
             "vendor",
             "barcode",
+            # Stock units in one of this line ("Pack of 2" = 2) - sent back
+            # by the Edit form so saving products never resets it.
+            "pack_units",
             "compare_at_price",
             "discount_amount",
             "weight_grams",
         ]
         read_only_fields = ["id"]
+        extra_kwargs = {"pack_units": {"required": False, "min_value": 1}}
 
 
 class CourierSerializer(serializers.ModelSerializer):

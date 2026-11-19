@@ -352,6 +352,26 @@ WORKFLOW_CARD_STATUSES = {
 # Out with the courier - where a return can be under way before the order
 # is Returned.
 RETURNABLE_STATUSES = {"dispatched", "out_for_delivery", "attempt"}
+# Booked with a courier, or past that, AND the courier has given its
+# tracking number: the order is Fulfilled in OMS - set by OMS itself (Dispatch
+# Hub or the store), not read from Shopify (user, 2026-11-19). Booking
+# Pending (no tracking number yet) stays Unfulfilled. Cancelling the booking
+# (back to Awaiting Confirmation / Approved, or Cancelled) makes it Unfulfilled.
+FULFILLED_STATUSES = (
+    WORKFLOW_CARD_STATUSES["assigning_courier"]
+    | WORKFLOW_CARD_STATUSES["dispatched"]
+    | {"attempt", "delivered", "returned"}
+)
+UNFULFILLED_STATUSES = (
+    WORKFLOW_CARD_STATUSES["awaiting_confirmation"] | WORKFLOW_CARD_STATUSES["approved"] | {"cancelled"}
+)
+
+
+def fulfillment_for(status, tracking_number):
+    """OMS's Fulfillment for an order in `status` with `tracking_number`:
+    "fulfilled" once booked and the courier's tracking number is in."""
+    booked = status in FULFILLED_STATUSES and bool((tracking_number or "").strip())
+    return "fulfilled" if booked else "unfulfilled"
 WORKFLOW_CARDS = [
     "awaiting_confirmation", "approved", "assigning_courier", "dispatched", "undelivered",
     "delivered", "return_in_transit", "returned", "cancelled",
@@ -417,6 +437,7 @@ def _apply_transition(order, to_status, *, actor_user_id=None, note="", extra_fi
     # Change Failed" only describe an order still sitting there.
     if order.workflow_flag and to_status not in WORKFLOW_CARD_STATUSES["approved"]:
         extra_fields.setdefault("workflow_flag", "")
+    # Fulfillment follows in Order.save (fulfillment_for).
     order.status = to_status
     update_fields = ["status", "updated_at"]
     for field, value in extra_fields.items():
@@ -2941,11 +2962,12 @@ def update_order_detail(order, *, fields, items=None):
     order.save()
 
     if items is not None:
-        from .product_skus import apply_skus
+        from .product_skus import apply_skus_on_edit
 
-        # The organization's product name -> SKU list (oms.product_skus).
+        # The SKU typed in Edit wins; a blank one comes from the
+        # organization's product name -> SKU list (oms.product_skus).
         items = [dict(item) for item in items]
-        apply_skus(order.organization_id, items)
+        apply_skus_on_edit(order.organization_id, items)
         order.items.all().delete()
         total = 0
         for item in items:

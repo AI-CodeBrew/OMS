@@ -60,6 +60,21 @@ def apply_skus(organization_id, items):
     return changed
 
 
+def apply_skus_on_edit(organization_id, items):
+    """An order's products saved from Edit (item dicts): the SKU typed there
+    wins - a blank one is filled from the list; pack units follow the
+    product name on the list, else the line keeps the units it had."""
+    found = sku_map(organization_id, [(i.get("product_name") or "") for i in items])
+    for item in items:
+        hit = found.get(item.get("product_name") or "")
+        if not hit:
+            continue
+        sku, units = hit
+        if not (item.get("barcode") or "").strip():
+            item["barcode"] = sku
+        item["pack_units"] = units
+
+
 def apply_skus_by_store(items):
     """apply_skus for OrderItem objects of several stores at once (the CSV
     import's bulk insert)."""

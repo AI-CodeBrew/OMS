@@ -7,8 +7,11 @@ import { ReplacementMark, TicketMark } from "../OrdersTable";
 
 // The order's discount is edited once, in the money summary below the
 // items - not per item.
+// SKU is the product's code (OrderItem.barcode) - from Shopify, or the
+// organization's product list; what's typed here is kept on Save.
 const ITEM_FIELDS = [
   ["product_name", "Product", "text"],
+  ["barcode", "SKU", "text"],
   ["unit_price", "Price", "number"],
   ["quantity", "Qty", "number"],
 ];
@@ -89,7 +92,7 @@ export default function LineItemsTab({ order, draft, editing, onChange }) {
           <div key={item.id || index} className="rounded-md border border-surface-border bg-white p-3">
             {editing ? (
               <div className="flex items-start gap-3">
-                <div className="grid flex-1 grid-cols-2 gap-3 sm:grid-cols-3">
+                <div className="grid flex-1 grid-cols-2 gap-3 sm:grid-cols-4">
                   {ITEM_FIELDS.map(([field, label, type]) => (
                     <EditableField
                       key={field}
@@ -125,6 +128,10 @@ export default function LineItemsTab({ order, draft, editing, onChange }) {
                   <div className="text-xs text-slate-400">Name</div>
                   <p className="truncate text-sm font-medium text-slate-900" title={item.product_name}>
                     {item.product_name}
+                  </p>
+                  <p className="mt-0.5 truncate text-xs text-slate-500" title={item.barcode || "No SKU"}>
+                    SKU: {item.barcode ? <span className="font-medium text-slate-700">{item.barcode}</span> : <span className="text-amber-600">No SKU</span>}
+                    {item.pack_units > 1 ? <span className="ml-2 text-slate-400">· {item.pack_units} units each</span> : null}
                   </p>
                 </div>
                 {/* Fixed column widths so Price/QTY/Total line up across
