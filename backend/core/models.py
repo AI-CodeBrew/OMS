@@ -268,3 +268,36 @@ class Notification(TenantScopedModel):
 
     def __str__(self):
         return f"{self.kind} ({self.organization_id})"
+
+
+class ScanSession(models.Model):
+    """A phone paired as a laptop's scanner (core/scan_sessions.py): the login
+    and store the laptop had when Scan was pressed, so the phone keeps scanning
+    under them after the laptop sleeps or closes, and when its cross ended it.
+    The phone's token only names this row - nothing it carries grants access.
+
+    The identity is a snapshot of the laptop's sign-in (its JWT claims and, for
+    a super admin, the store or Hub it was operating). A store member's role
+    and modules are still re-read from Membership on every scan, as for any
+    login (core/middleware.py). Platform plumbing, not tenant business data -
+    plain Manager, same reasoning as Organization/Membership above."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user_id = models.UUIDField()
+    email = models.CharField(max_length=255, blank=True, default="")
+    # From the JWT's app_metadata at the time - see TenantMiddleware.
+    role = models.CharField(max_length=32, blank=True, default="")
+    organization_id = models.UUIDField(null=True, blank=True)
+    modules = models.JSONField(null=True, blank=True)
+    # A super admin's X-Act-As-Organization / X-Dispatch-Hub at the time.
+    act_as_organization_id = models.CharField(max_length=64, blank=True, default="")
+    hub = models.CharField(max_length=16, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    # Set by the phone's cross. An ended session's tokens are refused everywhere.
+    ended_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = '"core"."scan_sessions"'
+
+    def __str__(self):
+        return f"Scan session {self.id} ({self.user_id})"

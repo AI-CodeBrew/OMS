@@ -105,6 +105,22 @@ def _return_stock_item(order, warehouse, line):
     return candidates[0] if len(candidates) == 1 else None
 
 
+def _stock_items_by_sku(order, warehouse, lines):
+    """{sku: stock item} for the SKU lines among `lines`, in one query - only
+    SKUs with exactly one row. Any other SKU (no row yet, or several
+    Shopify-linked rows sharing it) is left to _return_stock_item, so it's
+    created or refused exactly as a line on its own would be."""
+    skus = {line["sku"] for line in lines if line["sku"]}
+    if not skus:
+        return {}
+    rows = {}
+    for item in StockItem.objects.filter(
+        organization_id=order.organization_id, warehouse=warehouse, sku__in=skus
+    ):
+        rows.setdefault(item.sku, []).append(item)
+    return {sku: found[0] for sku, found in rows.items() if len(found) == 1}
+
+
 class InvalidReturnBreakdown(Exception):
     pass
 
@@ -300,22 +316,33 @@ def restock_from_return(
         "updated_at",
     ]
 
+    # Kept to as few round trips as the result allows - the database is a
+    # region away, so every query here is felt at the returns desk: the SKU
+    # lines' stock rows come in one query, each row's quantity and Shopify
+    # delta in one UPDATE, and the ledger rows in one INSERT.
     movements = []
     warehouse = warehouse or get_default_warehouse(order.organization_id)
     if warehouse is not None:
-        for line in breakdown:
-            if not line["good"]:
-                continue
-            item = _return_stock_item(order, warehouse, line)
+        good_lines = [line for line in breakdown if line["good"]]
+        by_sku = _stock_items_by_sku(order, warehouse, good_lines)
+        for line in good_lines:
+            item = by_sku.get(line["sku"]) if line["sku"] else None
+            if item is None:
+                # A name line, or a SKU with no single row yet - one at a
+                # time, exactly as before.
+                item = _return_stock_item(order, warehouse, line)
             if item is None:
                 if unmatched is not None:
                     unmatched.append(line["product_name"])
                 continue
             item.quantity += line["good"]
-            item.save(update_fields=["quantity", "updated_at"])
-            _queue_shopify_delta(item, line["good"])
+            changes = {"quantity": item.quantity, "updated_at": timezone.now()}
+            if item.shopify_inventory_item_id:
+                # What _queue_shopify_delta does, in the same UPDATE.
+                changes["pending_shopify_delta"] = F("pending_shopify_delta") + line["good"]
+            StockItem.all_objects.filter(pk=item.pk).update(**changes)
             movements.append(
-                StockMovement.objects.create(
+                StockMovement(
                     organization_id=order.organization_id,
                     stock_item=item,
                     delta=line["good"],
@@ -326,6 +353,8 @@ def restock_from_return(
                     actor_user_id=actor_user_id,
                 )
             )
+        if movements:
+            StockMovement.all_objects.bulk_create(movements)
 
     order.save(update_fields=update_fields)
     return movements
