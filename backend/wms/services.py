@@ -848,8 +848,16 @@ def _match_key(sku, name):
     return sku if sku else "name:" + (name or "").strip().lower()
 
 
+# Booked with a courier, not picked up yet (the Assigning Courier card):
+# stock already left Available at booking (consume_for_order) - shown as
+# Reserved for Dispatch (user, 2026-11-19).
+RESERVED_STATUSES = ("booking_pending", "ready_to_print", "ready_to_pick", "awaiting_dispatched", "dispatch_issue")
+
+
 def _order_bucket(status, returning):
     """Which Inventory column an order's units count under, or None."""
+    if status in RESERVED_STATUSES:
+        return "reserved"
     if status in ("dispatched", "out_for_delivery", "attempt") and returning:
         return "return_in_transit"
     if status in ("dispatched", "out_for_delivery"):
@@ -866,6 +874,7 @@ def _empty_metrics():
         # On purchase orders for this warehouse, not arrived yet.
         "order_placed": 0,
         "total_inbound": 0,
+        "reserved": 0,
         "delivered": 0,
         "dispatched": 0,
         "failed_delivery": 0,
@@ -875,6 +884,7 @@ def _empty_metrics():
         "po_damaged": 0,
         "ordered": 0,
         # How many orders (not units) are in each column.
+        "reserved_orders": 0,
         "delivered_orders": 0,
         "dispatched_orders": 0,
         "failed_delivery_orders": 0,

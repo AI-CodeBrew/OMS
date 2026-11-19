@@ -536,6 +536,7 @@ class StockItemViewSet(viewsets.ModelViewSet):
                 ("Order placed (PO, not received)", "order_placed"),
                 ("Total inbound (PO good)", "total_inbound"),
                 ("Available stock", "available"),
+                ("Reserved for dispatch (booked, not picked up)", "reserved"),
                 ("Delivered", "delivered"),
                 ("Dispatched", "dispatched"),
                 ("Failed delivery", "failed_delivery"),

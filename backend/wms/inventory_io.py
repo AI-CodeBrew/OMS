@@ -26,7 +26,7 @@ from .models import StockItem, Warehouse
 
 EXPORT_HEADER = [
     "SKU", "Product Name", "Warehouse", "Available", "Reorder Level", "Order Placed", "Total Inbound",
-    "Delivered", "Dispatched", "Failed Delivery", "Return in Transit", "Damaged/Lost",
+    "Reserved for Dispatch", "Delivered", "Dispatched", "Failed Delivery", "Return in Transit", "Damaged/Lost",
 ]
 MAX_ROWS = 5000
 PREVIEW_ROWS = 1000
@@ -47,7 +47,8 @@ def export_rows(organization_id, *, search="", activity=""):
     for r in rows:
         yield [
             r["sku"], r["product_name"], r["warehouse_name"], r["available"], r["reorder_level"],
-            r.get("order_placed", 0), r.get("total_inbound", 0), r.get("delivered", 0), r.get("dispatched", 0),
+            r.get("order_placed", 0), r.get("total_inbound", 0), r.get("reserved", 0), r.get("delivered", 0),
+            r.get("dispatched", 0),
             r.get("failed_delivery", 0), r.get("return_in_transit", 0), r.get("damaged_lost", 0),
         ]
 

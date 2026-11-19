@@ -47,9 +47,9 @@ _STOCK_FIELDS = ("available", "order_placed", "total_inbound", "po_damaged")
 # Per store (from its orders - every warehouse row of one store carries the
 # same figures): added up once per store, never once per warehouse.
 _ORDER_FIELDS = (
-    "delivered", "dispatched", "failed_delivery", "return_in_transit",
+    "reserved", "delivered", "dispatched", "failed_delivery", "return_in_transit",
     "returns_damaged", "returns_lost", "ordered",
-    "delivered_orders", "dispatched_orders", "failed_delivery_orders", "return_in_transit_orders",
+    "reserved_orders", "delivered_orders", "dispatched_orders", "failed_delivery_orders", "return_in_transit_orders",
 )
 
 

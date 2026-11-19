@@ -58,6 +58,7 @@ function NumberCells({ row }) {
       <td className="px-3 py-1.5 text-right tabular-nums">{row.order_placed ?? 0}</td>
       <td className="px-3 py-1.5 text-right tabular-nums">{row.total_inbound}</td>
       <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-900">{row.available}</td>
+      <UnitsAndOrders units={row.reserved} orders={row.reserved_orders} />
       <UnitsAndOrders units={row.delivered} orders={row.delivered_orders} />
       <UnitsAndOrders units={row.dispatched} orders={row.dispatched_orders} />
       <UnitsAndOrders units={row.failed_delivery} orders={row.failed_delivery_orders} />
@@ -188,6 +189,9 @@ export default function AdminInventoryPage() {
               <th className={TH_NUM} title="On the shelf - not yet booked with a courier">
                 Available
               </th>
+              <th className={TH_NUM} title="Booked with a courier, not picked up yet (Assigning Courier) - already taken out of Available at booking">
+                    Reserved for Dispatch
+                  </th>
               <th className={TH_NUM}>Delivered</th>
               <th className={TH_NUM}>Dispatched</th>
               <th className={TH_NUM}>Failed Delivery</th>
@@ -199,13 +203,13 @@ export default function AdminInventoryPage() {
           <tbody>
             {loading && rows.length === 0 ? (
               <tr>
-                <td colSpan={12} className="px-3 py-6 text-center text-slate-500">
+                <td colSpan={13} className="px-3 py-6 text-center text-slate-500">
                   Loading…
                 </td>
               </tr>
             ) : rows.length === 0 ? (
               <tr>
-                <td colSpan={12} className="px-3 py-6 text-center text-slate-500">
+                <td colSpan={13} className="px-3 py-6 text-center text-slate-500">
                   {activity || appliedSearch ? "No items here." : "No store has stock items yet."}
                 </td>
               </tr>
@@ -281,6 +285,7 @@ export default function AdminInventoryPage() {
                   <th className={TH_NUM}>Order Placed</th>
                   <th className={TH_NUM}>Total Inbound</th>
                   <th className={TH_NUM}>Available</th>
+                  <th className={TH_NUM}>Reserved for Dispatch</th>
                   <th className={TH_NUM}>Delivered</th>
                   <th className={TH_NUM}>Dispatched</th>
                   <th className={TH_NUM}>Failed Delivery</th>

@@ -294,6 +294,9 @@ export default function WmsPage() {
                   <th className={TH_NUM} title="On the shelf - not yet booked with a courier">
                     Available
                   </th>
+                  <th className={TH_NUM} title="Booked with a courier, not picked up yet (Assigning Courier) - already taken out of Available at booking">
+                    Reserved for Dispatch
+                  </th>
                   <th className={TH_NUM}>Delivered</th>
                   <th className={TH_NUM}>Dispatched</th>
                   <th className={TH_NUM}>Failed Delivery</th>
@@ -305,13 +308,13 @@ export default function WmsPage() {
               <tbody>
                 {loading && stock.length === 0 ? (
                   <tr>
-                    <td colSpan={12} className="px-3 py-6 text-center text-slate-500">
+                    <td colSpan={13} className="px-3 py-6 text-center text-slate-500">
                       Loading…
                     </td>
                   </tr>
                 ) : stock.length === 0 ? (
                   <tr>
-                    <td colSpan={12} className="px-3 py-6 text-center text-slate-500">
+                    <td colSpan={13} className="px-3 py-6 text-center text-slate-500">
                       {activity || appliedSearch
                         ? "No items here."
                         : "No stock items yet - Sync from Shopify, or receive a purchase order."}
@@ -361,6 +364,7 @@ export default function WmsPage() {
                       >
                         {item.available}
                       </td>
+                      <UnitsAndOrders units={item.reserved} orders={item.reserved_orders} />
                       <UnitsAndOrders units={item.delivered} orders={item.delivered_orders} />
                       <UnitsAndOrders units={item.dispatched} orders={item.dispatched_orders} />
                       <UnitsAndOrders units={item.failed_delivery} orders={item.failed_delivery_orders} />
