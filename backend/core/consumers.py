@@ -7,6 +7,7 @@ file only knows how to authenticate, join/leave the right group, and relay
 whatever it's given.
 """
 
+import json
 import logging
 import secrets
 from urllib.parse import parse_qs, unquote
@@ -135,23 +136,45 @@ def _rows(value):
     return [r for r in value if isinstance(r, dict)][:_MAX_RETURN_LINES] if isinstance(value, list) else []
 
 
+# A scan API's whole response, passed on for the laptop's log to word the same
+# way as its own scans. Only ever shown as text there.
+_MAX_ENTRY_BYTES = 20000
+
+
+def _entry(value):
+    """`value` if it's an object of reasonable size, else None."""
+    if not isinstance(value, dict):
+        return None
+    try:
+        size = len(json.dumps(value))
+    except (TypeError, ValueError):
+        return None
+    return value if size <= _MAX_ENTRY_BYTES else None
+
+
 class ScanSessionConsumer(AsyncJsonWebsocketConsumer):
     """wss://<host>/ws/scan-session/?token=<token from core.scan_sessions>
 
     Passes frames between a laptop's browser tab ("host") and the phone it
-    paired with, in both directions and nothing more: the phone reports a
-    code, the laptop runs its normal scan and reports the outcome. Nothing
-    here touches an order - that all happens on the laptop's own API calls.
+    paired with, in both directions. Nothing here touches an order: the phone
+    makes its own scan API calls (core/scan_sessions.py) and reports each
+    outcome here for the laptop's log, so scanning doesn't depend on the
+    laptop being awake. The only thing done here besides relaying is ending
+    the session when the phone's cross is pressed.
 
-    Phone -> laptop: {"type": "scan", "id", "code"}, {"type": "here"},
-    {"type": "end"} (forwarded as phone_ended - the operator pressed the cross,
-    as opposed to phone_left, which may only be a dropped connection)
-    {"type": "count", "id", "order_number", "breakdown"} (a return counted on
-    the phone, recorded by the laptop like its own popup's count)
-    Laptop -> phone: {"type": "result", "id", "status", "order_number",
-    "message", "lines"} ("lines" when status is "count": the return to count),
-    {"type": "hello", "title", "field"}, {"type": "ended"} (a cross pressed on
-    any phone of this session has ended it)
+    Phone -> laptop: {"type": "done", "desk", "entry"} (a scan the phone
+    made, with the API's response), {"type": "here"}, {"type": "end"}
+    (forwarded as phone_ended - the operator pressed the cross, as opposed to
+    phone_left, which may only be a dropped connection).
+    Laptop -> phone: {"type": "hello", "desk", "title", "field"} (the desk to
+    scan for), {"type": "ended"} (a cross pressed on any phone of this
+    session has ended it).
+
+    Still relayed for phone pages loaded before phones made their own calls,
+    where the laptop ran each scan: phone -> laptop {"type": "scan", "id",
+    "code"} and {"type": "count", "id", "order_number", "breakdown"};
+    laptop -> phone {"type": "result", "id", "status", "order_number",
+    "message", "lines"}.
     Sent on joining/leaving: phone_joined / phone_left to the laptop,
     host_joined / host_left to the phone.
 
@@ -173,6 +196,11 @@ class ScanSessionConsumer(AsyncJsonWebsocketConsumer):
             return
 
         self.session_id, self.role, from_qr = session
+        if await sync_to_async(scan_sessions.is_ended)(self.session_id):
+            # Its cross was pressed - same refusal as a bad token.
+            await self.accept()
+            await self.close(code=4401)
+            return
         self.is_phone = self.role == scan_sessions.ROLE_PHONE
         # Only ever shown to the laptop, to tell its phones apart.
         self.peer_id = secrets.token_hex(4)
@@ -230,7 +258,14 @@ class ScanSessionConsumer(AsyncJsonWebsocketConsumer):
         elif self.is_phone and kind == "here":
             frame = {"type": "phone_joined", "peer": self.peer_id}
         elif self.is_phone and kind == "end":
+            # Ended for good before anyone hears of it - from here on this
+            # session's tokens open no socket and call no API.
+            await sync_to_async(scan_sessions.end_session)(self.session_id)
             frame = {"type": "phone_ended", "peer": self.peer_id}
+        elif self.is_phone and kind == "done":
+            entry = _entry(content.get("entry"))
+            if entry is not None:
+                frame = {"type": "done", "desk": _text(content.get("desk"), 32), "entry": entry}
         elif self.is_phone and kind == "count":
             frame = {
                 "type": "count",
@@ -268,6 +303,7 @@ class ScanSessionConsumer(AsyncJsonWebsocketConsumer):
         elif not self.is_phone and kind == "hello":
             frame = {
                 "type": "hello",
+                "desk": _text(content.get("desk"), 32),
                 "title": _text(content.get("title"), 120),
                 "field": _text(content.get("field"), 120),
             }

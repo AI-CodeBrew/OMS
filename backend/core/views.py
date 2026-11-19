@@ -25,7 +25,7 @@ def _db_ok():
 def scan_session(request):
     """A laptop's Scan panel asking to pair a phone as its scanner - see
     core/scan_sessions.py."""
-    return Response(scan_sessions.create_session())
+    return Response(scan_sessions.create_session(request))
 
 
 @api_view(["GET"])

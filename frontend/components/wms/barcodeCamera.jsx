@@ -86,17 +86,33 @@ export function useBeeper(muted) {
   );
 }
 
+// A fixed {width, height} qrbox is a fixed PIXEL size, not a fraction of the
+// video - on a real phone camera feed (often 720p+) a flat 260x160 box reads
+// as a tiny square lost in a huge dark frame, which is exactly what looked
+// wrong. Sizing it off the actual viewfinder dimensions (html5-qrcode calls
+// this back with them) makes the box fill most of the screen on any device.
+function wideQrbox(viewfinderWidth, viewfinderHeight) {
+  const width = Math.floor(viewfinderWidth * 0.85);
+  const height = Math.floor(Math.min(viewfinderHeight * 0.45, width * 0.6));
+  return { width, height };
+}
+
 /**
  * Runs the camera inside <CameraViewport id={elementId} /> while `open`,
  * decoding barcodes continuously and handing each to onDecode(text). Stops
  * the moment `open` goes false or the caller unmounts, so the camera light
  * doesn't stay on in the background.
  *
+ * Optional: `qrbox(viewfinderWidth, viewfinderHeight) -> {width, height}`
+ * shapes the scan box (default: the wide box above), and `highResolution`
+ * asks the camera for a sharper feed, which thin 1D barcode bars need to be
+ * read from arm's length. Both are read once, when the camera opens.
+ *
  * status: "idle" before opening, "loading" while the camera library loads
  * and permission is requested, "active" once frames are being decoded,
  * "error" on a denied/unavailable camera. retry() re-runs after a failure.
  */
-export function useBarcodeCamera({ open, elementId, onDecode }) {
+export function useBarcodeCamera({ open, elementId, onDecode, qrbox = wideQrbox, highResolution = false }) {
   const [status, setStatus] = useState("idle");
   const [error, setError] = useState("");
   // Bumped by retry() - included in the effect's dependencies purely to force
@@ -106,6 +122,8 @@ export function useBarcodeCamera({ open, elementId, onDecode }) {
   const retry = useCallback(() => setRetryCount((n) => n + 1), []);
   const onDecodeRef = useRef(onDecode); // always the latest - the camera outlives renders
   onDecodeRef.current = onDecode;
+  const optionsRef = useRef({ qrbox, highResolution });
+  optionsRef.current = { qrbox, highResolution };
 
   useEffect(() => {
     if (!open) return undefined;
@@ -164,23 +182,21 @@ export function useBarcodeCamera({ open, elementId, onDecode }) {
         if (cancelled) return;
 
         scanner = starting;
+        const { qrbox: shapeBox, highResolution: sharp } = optionsRef.current;
+        const startConfig = { fps: 10, qrbox: shapeBox };
+        if (sharp) {
+          // Same camera as chosen above, only asking for more pixels. "ideal"
+          // is a preference, never a failure - a camera that can't do it
+          // just opens at its own best.
+          startConfig.videoConstraints = {
+            ...(typeof cameraTarget === "string" ? { deviceId: { exact: cameraTarget } } : cameraTarget),
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          };
+        }
         return starting.start(
           cameraTarget,
-          {
-            fps: 10,
-            // A fixed {width, height} here is a fixed PIXEL size, not a
-            // fraction of the video - on a real phone camera feed
-            // (often 720p+) a flat 260x160 box reads as a tiny square
-            // lost in a huge dark frame, which is exactly what looked
-            // wrong. Sizing it off the actual viewfinder dimensions
-            // (html5-qrcode calls this back with them) makes the box
-            // fill most of the screen on any device instead.
-            qrbox: (viewfinderWidth, viewfinderHeight) => {
-              const width = Math.floor(viewfinderWidth * 0.85);
-              const height = Math.floor(Math.min(viewfinderHeight * 0.45, width * 0.6));
-              return { width, height };
-            },
-          },
+          startConfig,
           (decodedText) => onDecodeRef.current?.(decodedText),
           () => {} // fires on every frame with no code in view - not an error
         );
@@ -210,7 +226,7 @@ export function useBarcodeCamera({ open, elementId, onDecode }) {
   return { status, error, retry };
 }
 
-export function CameraViewport({ id }) {
+export function CameraViewport({ id, className = "relative w-full flex-1 overflow-hidden bg-slate-900" }) {
   return (
     <>
       <style>{`
@@ -220,7 +236,7 @@ export function CameraViewport({ id }) {
           object-fit: cover !important;
         }
       `}</style>
-      <div id={id} className="relative w-full flex-1 overflow-hidden bg-slate-900" />
+      <div id={id} className={className} />
     </>
   );
 }

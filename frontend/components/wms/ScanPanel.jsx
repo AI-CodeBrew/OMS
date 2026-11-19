@@ -255,11 +255,13 @@ export default function ScanPanel({
   }
 
   // A result the phone got without going through submit() - see claimPhoneDesk.
+  // Refreshes the page's lists on a success, as a scan made here does.
   function notePhoneEntry(response) {
     const entry = { ...response, scanned: true, at: new Date() };
     setResult(entry);
     setLog((prev) => [entry, ...prev].slice(0, 12));
     beep(entry.success ? "success" : "error");
+    if (entry.success) onAfterSuccess?.();
   }
 
   async function resolveDecision(choice) {

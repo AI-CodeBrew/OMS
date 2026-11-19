@@ -1,7 +1,7 @@
 import csv
 
 from django.db import transaction
-from django.db.models import Count, F, Q, Sum
+from django.db.models import Count, F, Q, Sum, prefetch_related_objects
 from django.db.models.functions import Coalesce, TruncDate
 from django.utils.dateparse import parse_datetime
 from django.utils.text import slugify
@@ -821,6 +821,14 @@ def _find_order(org_kwargs, request_data):
     return order, order_number
 
 
+def _with_items(*orders):
+    """Loads the orders' items once, up front - the returns desk reads them
+    twice per order (services.return_line_summary), a query each otherwise."""
+    found = [order for order in orders if order is not None]
+    if found:
+        prefetch_related_objects(found, "items")
+
+
 def _lookup_return(order, raw_identifier):
     """Read-only validation - the scan panel's first phase. Finds out
     whether a parcel is receivable at all, without recording anything, so
@@ -975,6 +983,8 @@ class ReturnRestockView(viewsets.ViewSet):
                 {"detail": "tracking_number is required"}, status=status.HTTP_400_BAD_REQUEST
             )
         order, raw_identifier = _find_order(org_filter(request), request.data)
+        if order is not None and order.status == "returned" and not order.return_received_at:
+            _with_items(order)  # only a receivable parcel's lines are read
         return Response(_lookup_return(order, raw_identifier))
 
     @action(detail=False, methods=["post"], url_path="scan")
@@ -1003,6 +1013,8 @@ class ReturnRestockView(viewsets.ViewSet):
             )
 
         order, raw_identifier = _find_order(org_filter(request), request.data)
+        if order is not None and order.status == "returned":
+            _with_items(order)
         return Response(
             _receive_return(
                 order,
@@ -1038,6 +1050,7 @@ class ReturnRestockView(viewsets.ViewSet):
             )
 
         found = _orders_by_number(org_filter(request), order_numbers)
+        _with_items(*(order for order in found.values() if order.status == "returned"))
         note = (request.data.get("note") or "")[:255]
         actor_email = getattr(request, "auth_email", "") or ""
         results = [

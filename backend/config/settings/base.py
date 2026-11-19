@@ -239,7 +239,14 @@ REST_FRAMEWORK = {
 
 _cors_origins = env("CORS_ORIGINS", default="http://localhost:3001")
 CORS_ALLOWED_ORIGINS = [o.strip() for o in _cors_origins.split(",") if o.strip()]
-CORS_ALLOW_HEADERS = (*default_cors_headers, "x-act-as-organization", "x-dispatch-hub", "x-org-all-stores")
+# x-scan-session: a paired phone's scanner token (core/scan_sessions.py).
+CORS_ALLOW_HEADERS = (
+    *default_cors_headers,
+    "x-act-as-organization",
+    "x-dispatch-hub",
+    "x-org-all-stores",
+    "x-scan-session",
+)
 # Print-by-courier names a courier that failed; the browser hides any
 # response header not listed here.
 CORS_EXPOSE_HEADERS = ["X-Print-Failed"]

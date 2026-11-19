@@ -6,11 +6,14 @@ import useAuthStore from "../store/authStore";
 
 // The laptop's side of phone scanning. Lives at module level rather than in
 // ScanPanel because a paired phone only stops at its own cross: the laptop can
-// close the panel, change page or refresh and the phone's scans keep running,
-// through the same calls the panel makes, under the laptop's login and store.
+// close the panel, change page or refresh and the phone keeps scanning.
 //
-// While the desk's panel is open the scan goes through it, so it shows in its
-// log and refreshes its page; otherwise straight through lib/scanDesks.js.
+// The phone makes the scan calls itself, under the login and store this
+// laptop had when Scan was pressed (backend core/scan_sessions.py), so it
+// carries on with this laptop asleep or shut. While it's open, this laptop
+// picks the desk the phone scans for and hears of every scan ("done"), for the
+// open panel's log and lists. handleScan/handleCount below still serve phone
+// pages loaded before that, which left the calls to the laptop.
 
 // While no phone is connected and the QR code is on screen, it's replaced this
 // often. The backend's token outlives this slightly - see core/scan_sessions.py.
@@ -74,7 +77,12 @@ function requestQr() {
 
 function sayHello() {
   const desk = SCAN_DESKS[getState().deskId];
-  session?.send({ type: "hello", title: desk?.title || "", field: desk?.fieldLabel || "" });
+  session?.send({
+    type: "hello",
+    desk: desk?.deskId || "",
+    title: desk?.title || "",
+    field: desk?.fieldLabel || "",
+  });
 }
 
 function idleStatus() {
@@ -151,6 +159,15 @@ async function handleCount(frame) {
   if (session === sentFrom) session?.send({ type: "result", id: frame.id, ...outcome });
 }
 
+// A scan the phone made itself: into the open panel's log, as if scanned here.
+function handleDone(frame) {
+  const desk = SCAN_DESKS[frame.desk];
+  const entry = frame.entry;
+  if (!desk || !entry) return;
+  noteOnPanel(desk.deskId, entry);
+  if (desk.phoneCount && entry.success) update({ returnRecordedAt: Date.now() });
+}
+
 function handleFrame(frame) {
   if (frame.type === "qr") {
     // The token sits after the # so it never reaches a server log.
@@ -182,6 +199,8 @@ function handleFrame(frame) {
     handleScan(frame);
   } else if (frame.type === "count") {
     handleCount(frame);
+  } else if (frame.type === "done") {
+    handleDone(frame);
   }
 }
 

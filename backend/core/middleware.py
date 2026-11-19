@@ -35,6 +35,13 @@ ORG_ALL_STORES_HEADER = "HTTP_X_ORG_ALL_STORES"
 ORG_ALL_STORES_READ_ONLY = (
     "All stores is view-only. Switch to the order's store to make changes."
 )
+# A paired phone's scan-session token, in place of a login - accepted on the
+# scan endpoints only (core/scan_sessions.py).
+SCAN_SESSION_HEADER = "HTTP_X_SCAN_SESSION"
+SCAN_SESSION_ENDED_CODE = "scan_session_ended"
+SCAN_SESSION_ENDED_MESSAGE = (
+    "This phone's scan session has ended. Press Scan on the laptop and scan its QR code again."
+)
 MUTATING_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 
 # The login is valid but its Membership in this store is gone (removed from
@@ -48,6 +55,12 @@ ORG_SUSPENDED_CODE = "organization_suspended"
 ORG_SUSPENDED_MESSAGE = (
     "Your organization's account has been suspended. Please contact the FynkTech team."
 )
+
+
+def _scan_session_paths():
+    from .scan_sessions import PHONE_API_PATHS
+
+    return PHONE_API_PATHS
 
 
 def resolve_active_org_id(raw):
@@ -128,6 +141,12 @@ class TenantMiddleware:
         request.org_all_stores = False
 
         auth_header = request.META.get("HTTP_AUTHORIZATION", "")
+        # A paired phone has no login of its own: on the scan endpoints its
+        # token stands in for the laptop's, as that laptop was signed in when
+        # Scan was pressed. Everything below - suspended store, live
+        # Membership, modules - applies to it exactly as to a login.
+        scan_session = None
+        claims = None
         if auth_header.startswith("Bearer "):
             token = auth_header[len("Bearer "):].strip()
             try:
@@ -148,26 +167,44 @@ class TenantMiddleware:
                     },
                     status=401,
                 )
-            if claims:
-                # app_metadata only: user_metadata is writable by the user
-                # themselves (supabase.auth.updateUser), so nothing that
-                # decides access may ever be read from it.
-                app_meta = claims.get("app_metadata") or {}
-                request.user_id = claims.get("sub")
-                request.auth_email = claims.get("email") or ""
-                role = app_meta.get("role") or ""
-                request.is_super_admin = role == "super_admin"
-                request.is_org_admin = role == "org_admin"
-                request.organization_id = app_meta.get("organization_id")
-                modules = app_meta.get("modules")
-                if isinstance(modules, list):
-                    request.modules = [str(m) for m in modules if m]
-                elif request.is_org_admin and request.organization_id:
-                    # Legacy org_admin JWTs without modules claim → full enabled set
-                    from .rbac import enabled_modules_for_org
+        elif request.META.get(SCAN_SESSION_HEADER) and request.path in _scan_session_paths():
+            # Not under the 12-hour rule above: a paired phone runs until its
+            # cross is pressed, whatever the laptop's login does (the user's
+            # choice, 2026-11-19 - core/scan_sessions.py).
+            from . import scan_sessions
 
-                    request.modules = enabled_modules_for_org(request.organization_id)
-                request.auth_claims = claims
+            scan_session = scan_sessions.phone_session(request.META[SCAN_SESSION_HEADER])
+            if scan_session is None:
+                return JsonResponse(
+                    {
+                        "success": False,
+                        "detail": SCAN_SESSION_ENDED_MESSAGE,
+                        "error": SCAN_SESSION_ENDED_MESSAGE,
+                        "code": SCAN_SESSION_ENDED_CODE,
+                    },
+                    status=401,
+                )
+            claims = scan_sessions.claims_for(scan_session)
+        if claims:
+            # app_metadata only: user_metadata is writable by the user
+            # themselves (supabase.auth.updateUser), so nothing that
+            # decides access may ever be read from it.
+            app_meta = claims.get("app_metadata") or {}
+            request.user_id = claims.get("sub")
+            request.auth_email = claims.get("email") or ""
+            role = app_meta.get("role") or ""
+            request.is_super_admin = role == "super_admin"
+            request.is_org_admin = role == "org_admin"
+            request.organization_id = app_meta.get("organization_id")
+            modules = app_meta.get("modules")
+            if isinstance(modules, list):
+                request.modules = [str(m) for m in modules if m]
+            elif request.is_org_admin and request.organization_id:
+                # Legacy org_admin JWTs without modules claim → full enabled set
+                from .rbac import enabled_modules_for_org
+
+                request.modules = enabled_modules_for_org(request.organization_id)
+            request.auth_claims = claims
 
         # A suspended org (Organization.is_active=False, set from the super
         # admin's Organizations page) - or one that has been removed - turns
@@ -281,8 +318,14 @@ class TenantMiddleware:
                 request.organization_ids = org_ids
                 request.org_all_stores = True
 
-        act_as = request.META.get(ACT_AS_HEADER)
-        hub = request.META.get(HUB_HEADER)
+        if scan_session is not None:
+            # The store (or Hub) the laptop was operating when Scan was
+            # pressed - never whatever the phone's request says.
+            act_as = scan_session.act_as_organization_id or None
+            hub = scan_session.hub or None
+        else:
+            act_as = request.META.get(ACT_AS_HEADER)
+            hub = request.META.get(HUB_HEADER)
         is_admin_api = request.path.startswith(ADMIN_API_PREFIXES)
         if act_as and request.is_super_admin and not is_admin_api:
             org_id = resolve_active_org_id(act_as)
