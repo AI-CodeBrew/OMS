@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import { useRouter, useSearchParams } from "next/navigation";
 import Pagination from "../../../components/shared/Pagination";
+import Button from "../../../components/shared/Button";
 import OrdersTable from "../../../components/orders/OrdersTable";
 import CsvExportButton from "../../../components/orders/CsvExportButton";
 import ordersService from "../../../services/ordersService";
@@ -47,6 +48,10 @@ export default function CriticalOrdersPage() {
   // The details panel's previous / next arrows step through this list.
   const orderNav = useOrderNav(orders, detailOrderId, setDetailOrderId);
   const [couriers, setCouriers] = useState([]);
+  // The same search as All Orders (order no., customer, phone, product,
+  // SKU, tracking, city; commas for several) - within the picked card.
+  const [search, setSearch] = useState("");
+  const [appliedSearch, setAppliedSearch] = useState("");
 
   const loadSummary = useCallback(async () => {
     try {
@@ -69,7 +74,13 @@ export default function CriticalOrdersPage() {
     setLoading(true);
     setError("");
     try {
-      const data = await ordersService.list({ critical_reason: active, page, page_size: pageSize });
+      const data = await ordersService.list({
+        critical_reason: active,
+        page,
+        page_size: pageSize,
+        search: appliedSearch || undefined,
+        search_field: appliedSearch ? "all" : undefined,
+      });
       setOrders(data.results || []);
       setCount(data.count || 0);
     } catch (err) {
@@ -77,7 +88,7 @@ export default function CriticalOrdersPage() {
     } finally {
       setLoading(false);
     }
-  }, [active, page, pageSize]);
+  }, [active, page, pageSize, appliedSearch]);
 
   useEffect(() => {
     loadSummary();
@@ -94,6 +105,12 @@ export default function CriticalOrdersPage() {
     router.replace(`/critical-orders?reason=${key}`);
   }
 
+  function onSubmitSearch(e) {
+    e.preventDefault();
+    setAppliedSearch(search.trim());
+    setPage(1);
+  }
+
   const activeReason = (reasons || []).find((r) => r.key === active);
 
   return (
@@ -103,7 +120,10 @@ export default function CriticalOrdersPage() {
         {/* Export the picked card's orders - all of them, or one courier's. */}
         {active ? (
           <CsvExportButton
-            filterParams={{ critical_reason: active }}
+            filterParams={{
+              critical_reason: active,
+              ...(appliedSearch ? { search: appliedSearch, search_field: "all" } : {}),
+            }}
             allAndCourierOnly
             filePrefix={`critical_${active}`}
           />
@@ -154,11 +174,42 @@ export default function CriticalOrdersPage() {
       {error ? <p className="mt-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
 
       <div className="mt-3">
-        {activeReason ? (
-          <div className="mb-3">
-            <h2 className="text-base font-semibold text-slate-900">{activeReason.label}</h2>
-            <p className="text-sm text-slate-500">{activeReason.description}</p>
-          </div>
+        <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+          {activeReason ? (
+            <div className="min-w-0">
+              <h2 className="text-base font-semibold text-slate-900">{activeReason.label}</h2>
+              <p className="text-sm text-slate-500">{activeReason.description}</p>
+            </div>
+          ) : (
+            <div />
+          )}
+          {active ? (
+            <form onSubmit={onSubmitSearch} className="flex w-full items-center sm:w-auto">
+              <input
+                type="search"
+                value={search}
+                onChange={(e) => {
+                  setSearch(e.target.value);
+                  // Emptying the box brings the card's orders back without another click.
+                  if (!e.target.value.trim() && appliedSearch) {
+                    setAppliedSearch("");
+                    setPage(1);
+                  }
+                }}
+                placeholder="Search order, customer, phone, product…"
+                title="Searches this card's orders by order no., customer, phone, product, SKU, tracking and city. Separate multiple values with commas, e.g. 87364,7386473,8343"
+                className="w-full min-w-0 flex-1 rounded-l-md border border-surface-border px-3 py-1.5 text-sm outline-none focus:border-brand-500 sm:w-72 sm:flex-none"
+              />
+              <Button type="submit" variant="secondary" className="-ml-px shrink-0 rounded-l-none">
+                Search
+              </Button>
+            </form>
+          ) : null}
+        </div>
+        {appliedSearch && !loading && orders.length === 0 && active ? (
+          <p className="mb-3 rounded-md bg-surface px-3 py-2 text-sm text-slate-600">
+            No orders in this card match &quot;{appliedSearch}&quot;.
+          </p>
         ) : null}
 
         {active ? (

@@ -919,6 +919,49 @@ def _courier_refused(courier, exc):
     return InvalidTransition(f"{courier} didn't accept the shipper advice: {exc}")
 
 
+# BarqRaftar status codes (integrations/barqraftar/status_map.py) a refused
+# shipper advice is explained by.
+_BARQ_REATTEMPT_CODES = {6, 14}
+_BARQ_RETURNING_CODES = {8, 10, 11, 13}
+_BARQ_FINISHED_CODES = {9, 98, 99}
+_BARQ_WAITING_ADVICE = 12
+
+
+def _barqraftar_advice_refused(connection, shipment, exc):
+    """BarqRaftar refused a shipper advice (user, 2026-11-19 - its raw
+    "Invalid status" told staff nothing). Explains it from the parcel's live
+    BarqRaftar status - asked right now, else the last synced one - keeping
+    BarqRaftar's own message at the end. BarqRaftar stays the judge: OMS
+    never blocks the advice itself, it only explains a refusal."""
+    from integrations.barqraftar import client as barq_client
+    from integrations.barqraftar import services as barq_services
+
+    code, label = shipment.status_code, shipment.status_label or ""
+    try:
+        row = barq_client.get_order(connection.api_key, connection.api_secret, tracking_number=shipment.tracking_number)
+        _tn, _ref, live_code, live_label, _logs = barq_services._extract_order_fields(row)
+        if live_code is not None:
+            code, label = live_code, live_label
+    except Exception:  # noqa: BLE001 - the explanation is best-effort
+        logger.warning("barqraftar: couldn't read %s's status for a refused advice", shipment.tracking_number,
+                       exc_info=True)
+    label = label or barq_services._CODE_TO_LABEL.get(code, "") or "unknown"
+    if code in _BARQ_REATTEMPT_CODES:
+        why = f"a re-attempt is already requested on BarqRaftar (status: {label}) - no shipper advice is needed"
+    elif code in _BARQ_RETURNING_CODES:
+        why = f"BarqRaftar is already returning this parcel (status: {label})"
+    elif code in _BARQ_FINISHED_CODES:
+        why = f"this parcel is already finished on BarqRaftar (status: {label})"
+    elif code == _BARQ_WAITING_ADVICE:
+        why = f"BarqRaftar is waiting for shipper advice (status: {label}) but refused this one"
+    else:
+        why = (
+            f"BarqRaftar doesn't take shipper advice at its current status ({label}). It asks for advice "
+            "once it moves the parcel to Return Confirmation (Waiting for Shipper Advice) - try again then"
+        )
+    return InvalidTransition(f"BarqRaftar didn't accept the shipper advice - {why}. (BarqRaftar said: {exc})")
+
+
 def send_shipper_advice_to_courier(order, *, advice, remarks):
     """Sends Reattempt / Return to the courier the order is booked with,
     through the account it was booked on (the store's own, or FynkTech's for
@@ -979,10 +1022,12 @@ def send_shipper_advice_to_courier(order, *, advice, remarks):
                 re_attempt_reason_text=remarks[:255] if reattempt else None,
             )
         except BarqRaftarAPIError as exc:
-            raise _courier_refused("BarqRaftar", exc) from exc
+            raise _barqraftar_advice_refused(connection, shipment, exc) from exc
         # Refusals can come back as HTTP 200 with success: false.
         if isinstance(result, dict) and result.get("success") is False:
-            raise _courier_refused("BarqRaftar", result.get("message") or result.get("error") or "refused")
+            raise _barqraftar_advice_refused(
+                connection, shipment, result.get("message") or result.get("error") or "refused"
+            )
         return "BarqRaftar"
 
     if key == "leopards":
@@ -3249,12 +3294,22 @@ def _returning_over_15d(qs):
     )
 
 
+# The tag PostEx, Leopards and BarqRaftar all put on an order while they wait
+# for our Shipper Advice (their status_map.SUB_WAITING_ADVICE).
+WAITING_FOR_ADVICE_TAG = "Waiting for Shipper Advice"
+
+
 def _shipper_advice_needed(qs):
-    # In Undelivered and nobody has given Shipper Advice since it got there
-    # (any courier - for Leopards that's "Waiting for Shipper Advice"). An
-    # advice given for an earlier failed attempt doesn't count: counted from
-    # when the order last came into Undelivered. Once advice is given it
+    # In Undelivered and nobody has given Shipper Advice since it got there.
+    # An advice given for an earlier failed attempt doesn't count: counted
+    # from when the order last came into Undelivered. Once advice is given it
     # leaves this card - it stays in Undelivered either way.
+    # A courier that tags its orders (PostEx, Leopards, BarqRaftar): only
+    # while its tag says it's waiting for our advice - when the tag moves on
+    # (Re-Attempt, Delivery Attempt Failed, Hold, ...) the courier isn't
+    # asking, so it leaves this card and just stays in Undelivered (user,
+    # 2026-11-19). Orders with no courier tag (manual couriers, Smartlane,
+    # imports) can't say - they stay as before.
     entered = (
         OrderStatusEvent.all_objects.filter(order_id=OuterRef("pk"), to_status="attempt")
         .exclude(from_status="attempt")
@@ -3268,6 +3323,7 @@ def _shipper_advice_needed(qs):
         # advice itself changes.
         .annotate(_undelivered_since=Coalesce(Subquery(entered), "created_at", output_field=DateTimeField()))
         .filter(Q(shipper_advice_at__isnull=True) | Q(shipper_advice_at__lt=F("_undelivered_since")))
+        .filter(Q(courier_tag="") | Q(courier_tag=WAITING_FOR_ADVICE_TAG))
     )
 
 
@@ -3299,7 +3355,7 @@ CRITICAL_REASONS = [
     (
         "shipper_advice",
         "Shipper Advice Needed",
-        "In Undelivered and no Shipper Advice (Re-attempt / Return) given yet.",
+        "In Undelivered, the courier is waiting for Shipper Advice (Re-attempt / Return) and none given yet.",
         lambda qs: _shipper_advice_needed(qs).order_by("_undelivered_since"),
     ),
     (
