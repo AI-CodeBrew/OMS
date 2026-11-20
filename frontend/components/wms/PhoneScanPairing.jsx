@@ -96,7 +96,7 @@ export default function PhoneScanPairing({ session, onRetry, onClose, onUseThisC
   } else {
     body = (
       <p className="text-sm text-slate-500">
-        {status === "reconnecting" ? "Can't reach the scan service - retrying…" : "Preparing QR code…"}
+        {status === "reconnecting" ? "Reconnecting - a new QR code will show in a moment…" : "Preparing QR code…"}
       </p>
     );
   }

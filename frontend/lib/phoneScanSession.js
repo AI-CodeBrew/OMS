@@ -18,6 +18,10 @@ import useAuthStore from "../store/authStore";
 // While no phone is connected and the QR code is on screen, it's replaced this
 // often. The backend's token outlives this slightly - see core/scan_sessions.py.
 const QR_REFRESH_MS = 60000;
+// A code still on screen this long is taken off (and a new one asked for) -
+// the backend refuses one older than 2 minutes, and a code that stopped being
+// refreshed (connection down, tab asleep) must never be scanned. 2026-11-20.
+const QR_SHOW_MAX_MS = 110000;
 
 // status: "idle", "starting", "waiting" (show the QR code), "paired" (a phone
 // is connected), "away" (the paired phone dropped off and should come back),
@@ -35,6 +39,7 @@ let run = 0; // bumped on every start/stop, so a stale connection's events are d
 let pairingDeskId = null; // the panel showing the QR code, if any
 let claim = null; // { deskId, handler } for the open panel
 let refreshTimer = null;
+let qrExpiryTimer = null;
 const phones = new Set();
 
 // Remembered so a page refresh can pick the phone back up. sessionStorage, so
@@ -75,6 +80,14 @@ function requestQr() {
   session?.send({ type: "new_qr" });
 }
 
+// Takes the QR code off the screen until a fresh one arrives ("Preparing QR
+// code…" shows meanwhile) - so the code shown is always one the backend
+// still accepts.
+function clearQr() {
+  clearTimeout(qrExpiryTimer);
+  if (getState().phoneUrl) update({ phoneUrl: "" });
+}
+
 function sayHello() {
   const desk = SCAN_DESKS[getState().deskId];
   session?.send({
@@ -98,7 +111,10 @@ function qrOnScreen() {
 // A hidden tab's timers can run late, so the code could already be stale when
 // someone comes back to it.
 function onVisibilityChange() {
-  if (document.visibilityState === "visible" && qrOnScreen() && phones.size === 0) requestQr();
+  if (document.visibilityState === "visible" && qrOnScreen() && phones.size === 0) {
+    clearQr();
+    requestQr();
+  }
 }
 
 function noteOnPanel(deskId, entry) {
@@ -172,12 +188,20 @@ function handleFrame(frame) {
   if (frame.type === "qr") {
     // The token sits after the # so it never reaches a server log.
     update({ phoneUrl: `${window.location.origin}/scan#${frame.token}` });
+    clearTimeout(qrExpiryTimer);
+    qrExpiryTimer = setTimeout(() => {
+      clearQr();
+      if (qrOnScreen() && phones.size === 0) requestQr();
+    }, QR_SHOW_MAX_MS);
     stopRefresh();
     if (qrOnScreen() && phones.size === 0) refreshTimer = setTimeout(requestQr, QR_REFRESH_MS);
   } else if (frame.type === "phone_joined") {
     phones.add(frame.peer);
     writeSaved({ token: hostToken, deskId: getState().deskId });
     stopRefresh();
+    // The code shown before pairing goes stale while the phone is connected -
+    // a new one is asked for if the QR is ever shown again.
+    clearQr();
     update({ status: "paired" });
     sayHello();
   } else if (frame.type === "phone_left") {
@@ -229,10 +253,14 @@ function start(savedToken) {
           onFrame: whileCurrent(handleFrame),
           onDown: whileCurrent(() => {
             stopRefresh();
+            // Can't be refreshed while the connection is down - never leave
+            // it on screen to go stale. The reconnect brings a fresh one.
+            clearQr();
             update({ status: "reconnecting" });
           }),
           onRejected: whileCurrent(() => {
             stopRefresh();
+            clearQr();
             writeSaved(null); // Try again starts a fresh session.
             update({ status: "error", error: "This scan session has expired." });
           }),
@@ -249,6 +277,7 @@ function start(savedToken) {
 function stop() {
   run += 1;
   stopRefresh();
+  clearTimeout(qrExpiryTimer);
   document.removeEventListener("visibilitychange", onVisibilityChange);
   session?.close();
   session = null;
@@ -269,6 +298,8 @@ export function openPhoneScanner(deskId) {
   if (status === "idle" || status === "error") {
     start(readSaved()?.token);
   } else if (phones.size === 0) {
+    // Scan pressed again: a fresh code, never the one left from before.
+    clearQr();
     requestQr();
   } else {
     sayHello();

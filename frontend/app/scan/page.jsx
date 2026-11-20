@@ -26,6 +26,11 @@ const HISTORY_LIMIT = 500;
 // The desk the laptop last pointed this phone at, kept for this tab so a
 // reload with the laptop shut still knows what it's scanning for.
 const DESK_STORAGE_KEY = "oms.phoneScan.desk";
+// How long the connection must stay open before its token counts as accepted.
+// A refused token (an old QR code, an ended session) is closed by the backend
+// within milliseconds of opening; a QR code's token is confirmed at once by the
+// "session" frame that swaps it for the lasting one.
+const LINK_CONFIRM_MS = 1500;
 const NO_DESK = { id: "", title: "", field: "" };
 
 // A square scan box, as large as the camera area allows. Square suits QR codes
@@ -81,6 +86,12 @@ export default function PhoneScanPage() {
   // "ready", "expired" (an old QR code) or "ended" (the session was ended).
   // Only the last two stop scanning - a laptop asleep or shut doesn't.
   const [link, setLink] = useState("connecting");
+  // The token in hand has been accepted by the backend - scans wait for this,
+  // so a scan never goes out on an old QR code (user, 2026-11-20: the first
+  // scan after opening an old code came back "session ended").
+  const [linked, setLinked] = useState(false);
+  const linkedRef = useRef(false);
+  const linkTimerRef = useRef(null);
   const [desk, setDesk] = useState(NO_DESK);
   const [card, setCard] = useState(null);
   // The returned parcel being counted here: { orderNumber, lines }. Scanning
@@ -143,12 +154,19 @@ export default function PhoneScanPage() {
       saveDesk(NO_DESK);
       setLink("connecting");
       setClosed(false);
+      clearTimeout(linkTimerRef.current);
+      markLinked(false);
       tokenRef.current = next;
       setToken(next);
     }
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
+
+  function markLinked(value) {
+    linkedRef.current = value;
+    setLinked(value);
+  }
 
   function vibrate(pattern) {
     try {
@@ -198,10 +216,19 @@ export default function PhoneScanPage() {
     if (!token || closed) return undefined;
 
     const session = connectScanSession(token, {
-      onOpen: () => setLink("waiting"),
+      onOpen: () => {
+        setLink("waiting");
+        // Still open a moment later = the backend accepted this token.
+        clearTimeout(linkTimerRef.current);
+        linkTimerRef.current = setTimeout(() => markLinked(true), LINK_CONFIRM_MS);
+      },
       onFrame: (frame) => {
+        if (frame.type === "session" || frame.type === "hello" || frame.type === "host_joined") {
+          clearTimeout(linkTimerRef.current);
+          markLinked(true);
+        }
         if (frame.type === "session") {
-          // The QR code's token only lasts a minute or so. Reconnects, API
+          // The QR code's token only lasts 2 minutes. Reconnects, API
           // calls and a reload of this page need the lasting one from here on.
           tokenRef.current = frame.token;
           sessionRef.current?.setToken(frame.token);
@@ -224,12 +251,21 @@ export default function PhoneScanPage() {
           handlersRef.current.finish();
         }
       },
-      onDown: () => setLink("connecting"),
-      onRejected: () => setLink("expired"),
+      onDown: () => {
+        clearTimeout(linkTimerRef.current);
+        setLink("connecting");
+      },
+      // Refused: a token that was working belongs to a session that has
+      // ended; one never accepted is an old QR code.
+      onRejected: () => {
+        clearTimeout(linkTimerRef.current);
+        setLink(linkedRef.current ? "ended" : "expired");
+      },
     });
     sessionRef.current = session;
 
     return () => {
+      clearTimeout(linkTimerRef.current);
       sessionRef.current = null;
       session.close();
     };
@@ -428,7 +464,7 @@ export default function PhoneScanPage() {
       last.at = now;
       if (stillInView) return;
     }
-    if (pendingRef.current || countingRef.current || !deskRef.current.id) return;
+    if (pendingRef.current || countingRef.current || !deskRef.current.id || !linkedRef.current) return;
 
     runScan(code);
   }
@@ -445,6 +481,14 @@ export default function PhoneScanPage() {
       return;
     }
     if (countingRef.current) return; // the count popup is open over this
+    if (!linkedRef.current) {
+      setCard({
+        tone: "info",
+        title: code,
+        message: "Still connecting to the laptop's scan session - submit again in a moment.",
+      });
+      return;
+    }
     if (!deskRef.current.id) {
       setCard({
         tone: "error",
@@ -515,11 +559,10 @@ export default function PhoneScanPage() {
     return (
       <PhoneMessage>
         {token === ""
-          ? "This link is incomplete."
+          ? "This link is incomplete. Press Scan on the laptop and scan the code showing there now."
           : link === "ended"
-            ? "This scan session has ended."
-            : "This QR code has expired."}{" "}
-        Press Scan on the laptop and scan the code showing there now.
+            ? "This scan session has ended (its ✕ was pressed). Press Scan on the laptop and scan the code showing there now."
+            : "This QR code is old. Press Scan on the laptop and scan the new code showing there."}
       </PhoneMessage>
     );
   }
@@ -554,7 +597,9 @@ export default function PhoneScanPage() {
 
   // Scanning only waits on the laptop until it has said what to scan for -
   // after that it carries on whether the laptop is there or not.
-  const linkMessage = desk.id
+  const linkMessage = !linked
+    ? "Connecting to the laptop's scan session…"
+    : desk.id
     ? null
     : link === "connecting"
       ? "Connecting…"

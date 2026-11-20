@@ -33,9 +33,11 @@ ROLE_PHONE = "phone"
 
 _SESSION_SALT = "core.scan_session"
 _QR_SALT = "core.scan_session.qr"
-# The laptop shows a new code every minute (lib/phoneScanSession.js); the extra
-# half minute is for a phone that read the code just before it changed.
-_QR_MAX_AGE_SECONDS = 90
+# The laptop shows a new code every minute (lib/phoneScanSession.js) and never
+# shows one older than 110 seconds; the extra minute is for a phone that read
+# the code just before it changed (2 minutes - the user's choice, 2026-11-20;
+# it was 90 seconds).
+_QR_MAX_AGE_SECONDS = 120
 
 # The only endpoints a phone's token may call - one per scan desk (frontend
 # lib/scanDesks.js), plus receiving a return counted on the phone.
