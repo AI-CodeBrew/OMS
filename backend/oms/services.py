@@ -1,11 +1,13 @@
 import logging
 import re
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 from decimal import Decimal
 
 from django.db import transaction
-from django.db.models import BooleanField, Count, DateTimeField, ExpressionWrapper, F, OuterRef, Q, Subquery
+from django.db.models import (
+    BooleanField, Count, DateTimeField, Exists, ExpressionWrapper, F, OuterRef, Q, Subquery,
+)
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
@@ -2155,15 +2157,24 @@ def _courier_status_in(words):
     return condition
 
 
+def _booking_pending_q():
+    return Q(status="booking_pending") | (
+        Q(status__in=ON_SHELF_STATUSES) & _courier_status_in(QUEUE_COURIER_STATUSES)
+    )
+
+
+def _awaiting_dispatch_q():
+    return Q(status="awaiting_dispatched") | (
+        Q(status__in=ON_SHELF_STATUSES) & _courier_status_in(AWAITING_PICKUP_COURIER_STATUSES)
+    )
+
+
 def booking_pending_orders(qs):
     """The Booking Pending tab: every order still waiting on its booking
     (status booking_pending), plus those on the shelf that the courier
     still calls queue / Unbooked / Pending - which stay in Ready to Print
     too, until their load sheet is made."""
-    return qs.filter(
-        Q(status="booking_pending")
-        | (Q(status__in=ON_SHELF_STATUSES) & _courier_status_in(QUEUE_COURIER_STATUSES))
-    )
+    return qs.filter(_booking_pending_q())
 
 
 def awaiting_dispatch_orders(qs):
@@ -2171,10 +2182,7 @@ def awaiting_dispatch_orders(qs):
     (status awaiting_dispatched), plus those still on the shelf that the
     courier already calls Awaiting Pickup / Booked / ready - which stay in
     Ready to Print too, until their load sheet is made."""
-    return qs.filter(
-        Q(status="awaiting_dispatched")
-        | (Q(status__in=ON_SHELF_STATUSES) & _courier_status_in(AWAITING_PICKUP_COURIER_STATUSES))
-    )
+    return qs.filter(_awaiting_dispatch_q())
 
 
 # The New tab lists these together - there's no separate Awaiting
@@ -2474,6 +2482,12 @@ def with_card_counts(counts, qs):
         .values_list("status")
         .annotate(n=Count("id"))
     )
+    return _add_card_counts(counts, returning)
+
+
+def _add_card_counts(counts, returning):
+    """with_card_counts' sums, from the per-status `counts` and `returning`
+    ({status: orders of it with a return in progress})."""
     for card, statuses in WORKFLOW_CARD_STATUSES.items():
         counts[f"card:{card}"] = sum(counts.get(s, 0) - returning.get(s, 0) for s in statuses)
     counts["card:return_in_transit"] = sum(returning.values())
@@ -2905,7 +2919,18 @@ def get_duplicate_map(rows):
     # Same store, same day, same total - the customer and products are
     # compared below (a phone can be written several ways: 0300-..., +92 ...).
     days = {timezone.localtime(o.placed_at or o.created_at).date() for o in rows if (o.placed_at or o.created_at)}
-    same_day = Q(placed_at__date__in=days) | Q(placed_at__isnull=True, created_at__date__in=days)
+    # Each day as a start..end range rather than placed_at__date: the same
+    # orders (the day in the current time zone, as __date reads it), but
+    # Postgres can use the (organization, placed_at) index instead of
+    # reading every order of the store (1.6 s -> a few ms, 2026-11-20).
+    tz = timezone.get_current_timezone()
+    same_day = Q(pk__in=[])
+    for day in days:
+        start = timezone.make_aware(datetime.combine(day, time.min), tz)
+        end = timezone.make_aware(datetime.combine(day + timedelta(days=1), time.min), tz)
+        same_day |= Q(placed_at__gte=start, placed_at__lt=end) | Q(
+            placed_at__isnull=True, created_at__gte=start, created_at__lt=end
+        )
     totals = {o.total_amount for o in rows}
     candidates = list(
         Order.all_objects.filter(same_day, organization_id__in={o.organization_id for o in rows}, total_amount__in=totals)
@@ -3205,28 +3230,63 @@ def critical_transit_orders(qs):
     )
 
 
-def compute_order_counts(organization_id):
-    """The per-status counts behind the Orders tabs, straight from Postgres.
+def _critical_transit_q():
+    """critical_transit_orders as one condition, to count inside another
+    query (order_counts). Its first Dispatched event is before the cutoff
+    exactly when any Dispatched event is, so EXISTS gives the same orders
+    as its Coalesce(dispatched_at, first event) <= cutoff."""
+    cutoff = timezone.now() - timedelta(days=CRITICAL_TRANSIT_DAYS)
+    dispatched_by_cutoff = OrderStatusEvent.objects.filter(
+        order=OuterRef("pk"), to_status="dispatched", created_at__lte=cutoff
+    )
+    return Q(status__in=IN_TRANSIT_STATUSES) & (
+        Q(dispatched_at__lte=cutoff) | (Q(dispatched_at__isnull=True) & Exists(dispatched_by_cutoff))
+    )
+
+
+def order_counts(qs, *, critical=False):
+    """Every number on the Orders tabs for `qs`, in ONE query (conditional
+    counts) instead of five - the round trip to the database, not the
+    counting, was the cost (2026-11-20). The same numbers as before: the
+    per-status counts and "all", then the cards (with_card_counts), then
+    the courier tabs and New (with_courier_tab_counts), and with
+    critical=True the Critical Orders tab (critical_transit_orders)."""
+    statuses = [value for value, _label in Order.STATUS_CHOICES]
+    returnable = sorted(RETURNABLE_STATUSES)
+    aggregates = {"n_all": Count("id")}
+    for i, value in enumerate(statuses):
+        aggregates[f"st_{i}"] = Count("id", filter=Q(status=value))
+    for i, value in enumerate(returnable):
+        aggregates[f"rt_{i}"] = Count("id", filter=Q(status=value, return_in_progress_at__isnull=False))
+    aggregates["n_booking_pending"] = Count("id", filter=_booking_pending_q())
+    aggregates["n_awaiting_dispatched"] = Count("id", filter=_awaiting_dispatch_q())
+    if critical:
+        aggregates["n_critical"] = Count("id", filter=_critical_transit_q())
+    row = qs.order_by().aggregate(**aggregates)
+
+    counts = {value: row[f"st_{i}"] or 0 for i, value in enumerate(statuses)}
+    counts["all"] = row["n_all"] or 0
+    # Cards first - they add up the plain status counts, which the courier
+    # tabs below then overwrite.
+    _add_card_counts(counts, {value: row[f"rt_{i}"] or 0 for i, value in enumerate(returnable)})
+    counts["booking_pending"] = row["n_booking_pending"] or 0
+    counts["awaiting_dispatched"] = row["n_awaiting_dispatched"] or 0
+    counts["new"] = sum(counts.get(s, 0) for s in NEW_TAB_STATUSES)
+    if critical:
+        counts["critical"] = row["n_critical"] or 0
+    return counts
+
+
+def compute_order_counts(organization_id, *, critical=False):
+    """The per-status counts behind the Orders tabs, straight from Postgres
+    (one query - order_counts).
 
     Extracted from OrderViewSet._counts_payload so core/realtime.py can
     rebuild the cached value on a write instead of only deleting it - see
     core/redis_client.set_cached_counts. Takes an organization_id rather
     than a request because the realtime path has no request.
     """
-    rows = (
-        Order.objects.filter(organization_id=organization_id)
-        .values("status")
-        .annotate(count=Count("id"))
-    )
-    counts = {value: 0 for value, _label in Order.STATUS_CHOICES}
-    for row in rows:
-        counts[row["status"]] = row["count"]
-    counts["all"] = sum(counts.values())
-    qs = Order.objects.filter(organization_id=organization_id)
-    # Cards first - they add up the plain status counts, which the courier
-    # tabs below then overwrite.
-    with_card_counts(counts, qs)
-    return with_courier_tab_counts(counts, qs)
+    return order_counts(Order.objects.filter(organization_id=organization_id), critical=critical)
 
 
 # --------------------------------------------------- Critical Orders page --

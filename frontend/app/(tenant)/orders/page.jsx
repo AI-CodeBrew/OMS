@@ -17,7 +17,7 @@ import {
   setCachedOrdersList,
   unfilteredListsAreWarm,
 } from "../../../lib/viewCache";
-import { warmupViewsInBackground } from "../../../lib/warmupViews";
+import { scheduleWarmupInBackground, warmupViewsInBackground } from "../../../lib/warmupViews";
 import couriersService from "../../../services/couriersService";
 import integrationsService from "../../../services/integrationsService";
 import dispatchHubAdminService from "../../../services/dispatchHubAdminService";
@@ -119,6 +119,13 @@ const EMPTY_FILTERS = {
 // out of the "is every tab warm" check, and out of the list cache below.
 const CRITICAL_TAB = "critical";
 const TAB_STATUSES = STATUS_TABS.map((tab) => tab.value).filter((v) => v !== CRITICAL_TAB);
+
+// Which couriers this store has connected - asked again at most every
+// COURIER_STATUS_TTL_MS per store, not on every visit to Orders (five
+// requests each time). They only change on the Integrations pages, which
+// update the BarqRaftar/PostEx/Leopards stores themselves.
+const COURIER_STATUS_TTL_MS = 2 * 60 * 1000;
+const courierStatusMemo = { store: null, at: 0, smartlane: false, omsCourier: false };
 const IN_TRANSIT_STATUSES = new Set(["dispatched"]);
 // Assigning Courier's two prints, the same for the Hub and a store (see
 // availableActions). Each one covers every courier - the Hub's courier by
@@ -353,6 +360,11 @@ export default function OrdersPage() {
   // filter re-fetches its own counts instead of taking it.
   const pushedCountsFitRef = useRef(true);
   const queryParamsRef = useRef(queryParams);
+  // The Dispatch Hub caches nothing (backend warmup is a no-op there).
+  const isHubRef = useRef(Boolean(user?.isDispatchHub));
+  useEffect(() => {
+    isHubRef.current = Boolean(user?.isDispatchHub);
+  }, [user?.isDispatchHub]);
   useEffect(() => {
     queryParamsRef.current = queryParams;
     pushedCountsFitRef.current = !user?.isDispatchHub && isPlainTabQuery(queryParams);
@@ -450,8 +462,10 @@ export default function OrdersPage() {
       // to look at rather than before. Started even when this generation is
       // stale: the payload is keyed by pageSize, not by which tab asked, so
       // the work is still the work everyone needs.
-      if (force || !alreadyWarm) {
-        warmupViewsInBackground({ pageSize, dashKeys: dashboardPresetKeys() });
+      // After a change (force): one warmup once the clicking settles.
+      if (!isHubRef.current) {
+        if (force) scheduleWarmupInBackground({ pageSize, dashKeys: dashboardPresetKeys() });
+        else if (!alreadyWarm) warmupViewsInBackground({ pageSize, dashKeys: dashboardPresetKeys() });
       }
       return;
     }
@@ -480,7 +494,12 @@ export default function OrdersPage() {
       if (cacheable) {
         setCachedOrdersList(key, { orders: orderData.results || [], orderCount: orderData.count || 0 });
       }
-      warmupViewsInBackground({ pageSize, dashKeys: dashboardPresetKeys() });
+      // A search or filter used to start a full warmup every time; only when
+      // the plain tabs aren't warm yet now (and never in the Hub).
+      if (!isHubRef.current && !unfilteredListsAreWarm(pageSize, TAB_STATUSES)) {
+        if (force) scheduleWarmupInBackground({ pageSize, dashKeys: dashboardPresetKeys() });
+        else warmupViewsInBackground({ pageSize, dashKeys: dashboardPresetKeys() });
+      }
     } catch (err) {
       if (gen !== loadGen.current) return;
       setError(err.message || "Failed to load orders");
@@ -567,14 +586,38 @@ export default function OrdersPage() {
 
   useEffect(() => {
     couriersService.list().then(setCouriers).catch(() => {});
+    const store = `${user?.organization_id || ""}|${user?.isDispatchHub ? "hub" : ""}`;
+    if (
+      courierStatusMemo.store === store &&
+      Date.now() - courierStatusMemo.at < COURIER_STATUS_TTL_MS &&
+      useBarqRaftarStatusStore.getState().loaded &&
+      usePostExStatusStore.getState().loaded &&
+      useLeopardsStatusStore.getState().loaded
+    ) {
+      setSmartlaneConnected(courierStatusMemo.smartlane);
+      setOmsCourierConnected(courierStatusMemo.omsCourier);
+      return;
+    }
+    courierStatusMemo.store = store;
+    courierStatusMemo.at = Date.now();
     integrationsService
       .getSmartlaneStatus()
-      .then((d) => setSmartlaneConnected(Boolean(d.connected)))
-      .catch(() => {});
+      .then((d) => {
+        courierStatusMemo.smartlane = Boolean(d.connected);
+        setSmartlaneConnected(Boolean(d.connected));
+      })
+      .catch(() => {
+        courierStatusMemo.at = 0;
+      });
     integrationsService
       .getOmsCourierOnboarding()
-      .then((d) => setOmsCourierConnected(Boolean(d.live)))
-      .catch(() => {});
+      .then((d) => {
+        courierStatusMemo.omsCourier = Boolean(d.live);
+        setOmsCourierConnected(Boolean(d.live));
+      })
+      .catch(() => {
+        courierStatusMemo.at = 0;
+      });
     barqraftarService
       .getStatus()
       .then((d) => useBarqRaftarStatusStore.getState().setStatus(d))

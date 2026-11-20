@@ -411,9 +411,14 @@ class OrderViewSet(viewsets.ModelViewSet):
             .prefetch_related("items")
         )
 
-    def _counts_payload(self, organization_id):
+    def _counts_payload(self, organization_id, *, critical=False):
+        """The store's tab counts - from the cache, else one query. With
+        critical=True plus the Critical Orders count, which is never cached
+        (it changes with the clock): on a miss it comes in the same query."""
         cached = get_cached_counts(organization_id)
         if cached is not None:
+            if critical:
+                return self._with_critical_count(cached, Order.objects.filter(organization_id=organization_id))
             return cached
         # Same query as core/realtime.py rebuilds on a write - shared so the
         # two can never drift into reporting different numbers. Versioned
@@ -422,8 +427,10 @@ class OrderViewSet(viewsets.ModelViewSet):
         # concurrent order event (or vice versa) - see
         # redis_client.next_counts_version.
         version = next_counts_version(organization_id)
-        counts = services.compute_order_counts(organization_id)
-        set_cached_counts(organization_id, counts, version=version)
+        counts = services.compute_order_counts(organization_id, critical=critical)
+        set_cached_counts(
+            organization_id, {k: v for k, v in counts.items() if k != "critical"}, version=version
+        )
         return counts
 
     @staticmethod
@@ -432,7 +439,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         every call rather than stored in the (cached) per-status counts,
         since it changes with time, not only when an order does. Returns a
         copy so the cached dict is never touched."""
-        return {**counts, "critical": services.critical_transit_orders(qs).count()}
+        return {**counts, "critical": qs.filter(services._critical_transit_q()).count()}
 
     def _tab_list_payload(self, request, tab_status, page_size):
         organization_id = request.organization_id
@@ -1183,24 +1190,13 @@ class OrderViewSet(viewsets.ModelViewSet):
             request
         )
         if cacheable:
-            return Response(
-                self._with_critical_count(
-                    self._counts_payload(request.organization_id),
-                    Order.objects.filter(organization_id=request.organization_id),
-                )
-            )
+            return Response(self._counts_payload(request.organization_id, critical=True))
 
         qs = self._apply_filters(
             Order.objects.filter(**org_filter(request)), params_without_status
         )
-        rows = qs.values("status").annotate(count=Count("id"))
-        counts = {value: 0 for value, _label in Order.STATUS_CHOICES}
-        for row in rows:
-            counts[row["status"]] = row["count"]
-        counts["all"] = sum(counts.values())
-        services.with_card_counts(counts, qs)
-        services.with_courier_tab_counts(counts, qs)
-        return Response(self._with_critical_count(counts, qs))
+        # Every tab's number in one query (services.order_counts).
+        return Response(services.order_counts(qs, critical=True))
 
     @action(detail=False, methods=["get"])
     def warmup(self, request):
@@ -1222,10 +1218,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         page_size = min(max(page_size, 1), OrderPagination.max_page_size)
         organization_id = request.organization_id
 
-        counts = self._with_critical_count(
-            self._counts_payload(organization_id),
-            Order.objects.filter(organization_id=organization_id),
-        )
+        counts = self._counts_payload(organization_id, critical=True)
         lists = {"all": self._tab_list_payload(request, "all", page_size)}
         # The Orders page's cards - the tabs it actually shows.
         for card in services.WORKFLOW_CARDS:
@@ -1858,12 +1851,20 @@ class OrderViewSet(viewsets.ModelViewSet):
     def _run_per_order(self, request, action_name, handler, order_ids, params):
         """Runs `handler` on each order, collecting per-order results -
         every failure is reported for its own order, never a 500."""
-        actor = request.user_id
-        results = []
+        from . import approval_checks
+
         orders_by_id = {
             str(order.id): order
             for order in Order.objects.filter(id__in=order_ids, **org_filter(request))
         }
+        # The approval checks' city list / SKU-list lookups once for the
+        # whole action, not once per order (approval_checks.batch).
+        with approval_checks.batch(cities=[o.city for o in orders_by_id.values()]):
+            return self._run_each(request, action_name, handler, order_ids, params, orders_by_id)
+
+    def _run_each(self, request, action_name, handler, order_ids, params, orders_by_id):
+        actor = request.user_id
+        results = []
         for order_id in order_ids:
             order = orders_by_id.get(str(order_id))
             if not order:

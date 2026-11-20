@@ -19,10 +19,18 @@ def org_module_for(staff_module):
 
 
 def enabled_modules_for_org(organization_id):
-    return list(
-        OrganizationModule.objects.filter(
-            organization_id=organization_id, is_enabled=True
-        ).values_list("module", flat=True)
+    """The modules the store has switched on. Asked on every request
+    (middleware, RequireModule), so memoised - core.access_cache, cleared
+    the moment a module is switched on or off."""
+    from . import access_cache
+
+    return access_cache.cached(
+        ("modules", str(organization_id)),
+        lambda: list(
+            OrganizationModule.objects.filter(
+                organization_id=organization_id, is_enabled=True
+            ).values_list("module", flat=True)
+        ),
     )
 
 

@@ -41,8 +41,10 @@ COLUMNS = {
 }
 
 
-def export_rows(organization_id, *, search="", activity=""):
-    rows, _summary = services.inventory_overview(organization_id, search=search, activity=activity)
+def export_rows(organization_id, *, search="", activity="", sku_filter=""):
+    rows, _summary = services.inventory_overview(
+        organization_id, search=search, activity=activity, sku_filter=sku_filter
+    )
     yield EXPORT_HEADER
     for r in rows:
         yield [

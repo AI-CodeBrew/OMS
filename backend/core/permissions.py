@@ -1,8 +1,7 @@
 from rest_framework.permissions import SAFE_METHODS, BasePermission
 
 from . import pages
-from .models import OrganizationModule
-from .rbac import org_module_for
+from .rbac import enabled_modules_for_org, org_module_for
 
 
 def view_pages(view, need, modules):
@@ -84,12 +83,8 @@ class RequireModule(BasePermission):
         organization_id = getattr(request, "organization_id", None)
         if not organization_id:
             return False
-        org_ok = OrganizationModule.objects.filter(
-            organization_id=organization_id,
-            module=required_module,
-            is_enabled=True,
-        ).exists()
-        if not org_ok:
+        # The store has the module switched on (memoised - rbac).
+        if required_module not in enabled_modules_for_org(organization_id):
             return False
         if getattr(request, "is_org_admin", False):
             return True
@@ -127,13 +122,9 @@ class RequireAnyModule(BasePermission):
         is_org_admin = getattr(request, "is_org_admin", False)
         user_modules = getattr(request, "modules", None) or []
         by_pages = getattr(request, "page_permissions", None) is not None
+        enabled = enabled_modules_for_org(organization_id)
         for module in required_modules:
-            org_ok = OrganizationModule.objects.filter(
-                organization_id=organization_id,
-                module=org_module_for(module),
-                is_enabled=True,
-            ).exists()
-            if not org_ok:
+            if org_module_for(module) not in enabled:
                 continue
             if is_org_admin:
                 return True

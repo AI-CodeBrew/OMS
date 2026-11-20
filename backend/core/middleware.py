@@ -67,13 +67,59 @@ def resolve_active_org_id(raw):
     """Returns the org id as a string if `raw` names an active organization, else None."""
     from .models import Organization
 
+    from . import access_cache
+
     try:
         org_id = uuid.UUID(str(raw).strip())
     except (ValueError, TypeError):
         return None
-    if not Organization.objects.filter(id=org_id, is_active=True).exists():
+    # Memoised (core.access_cache): suspending a store clears it at once.
+    active = access_cache.cached(
+        ("org_active", str(org_id)),
+        lambda: Organization.objects.filter(id=org_id, is_active=True).exists(),
+    )
+    if not active:
         return None
     return str(org_id)
+
+
+def _live_membership(organization_id, user_id):
+    """The login's Membership in the store, as plain values (None: no row) -
+    memoised (core.access_cache), cleared the moment a member is removed or
+    changed, or their role is. The access decision is still made on every
+    request, from these."""
+    from types import SimpleNamespace
+
+    from . import access_cache
+    from .models import Membership
+
+    def read():
+        row = (
+            Membership.objects.filter(organization_id=organization_id, user_id=user_id)
+            .select_related("role_ref")
+            .only("role", "allowed_modules", "page_permissions", "role_ref__permissions")
+            .first()
+        )
+        if row is None:
+            return None
+        return {
+            "role": row.role,
+            "allowed_modules": row.allowed_modules,
+            "page_permissions": row.page_permissions,
+            "role_ref_id": row.role_ref_id,
+            "role_permissions": row.role_ref.permissions if row.role_ref_id else None,
+        }
+
+    values = access_cache.cached(("membership", str(organization_id), str(user_id)), read)
+    if values is None:
+        return None
+    return SimpleNamespace(
+        role=values["role"],
+        allowed_modules=values["allowed_modules"],
+        page_permissions=values["page_permissions"],
+        role_ref_id=values["role_ref_id"],
+        role_ref=SimpleNamespace(permissions=values["role_permissions"]),
+    )
 
 
 def get_client_ip(request):
@@ -239,17 +285,9 @@ class TenantMiddleware:
             and not request.is_super_admin
             and not request.path.startswith(STORE_SWITCH_PREFIXES)
         ):
-            from .models import Membership
             from .rbac import resolve_modules_for_membership
 
-            membership = (
-                Membership.objects.filter(
-                    organization_id=request.organization_id, user_id=request.user_id
-                )
-                .select_related("role_ref")
-                .only("role", "allowed_modules", "page_permissions", "role_ref__permissions")
-                .first()
-            )
+            membership = _live_membership(request.organization_id, request.user_id)
             if membership is None:
                 return JsonResponse(
                     {
@@ -342,9 +380,14 @@ class TenantMiddleware:
         elif hub and request.is_super_admin and not is_admin_api:
             from .dispatch_hub_service import hub_scope_organization_ids
 
+            from . import access_cache
+
             # "all": the super admin's All Orders - every store, same Hub
             # mode; anything else is the Dispatch Hub's own stores.
-            org_ids = [str(i) for i in hub_scope_organization_ids(hub)]
+            # Memoised: a store joining/leaving the Hub or suspended clears it.
+            org_ids = access_cache.cached(
+                ("hub_scope", str(hub)), lambda: [str(i) for i in hub_scope_organization_ids(hub)]
+            )
             if not org_ids:
                 return JsonResponse(
                     {"detail": "No stores in the Dispatch Hub."}, status=403
@@ -401,27 +444,36 @@ class TenantMiddleware:
         """Limits a super admin STAFF login (core.models.AdminStaff) to the
         pages it was given; an owner (no row) passes. Returns a 403 response
         or None."""
-        from . import admin_pages
+        from . import access_cache, admin_pages
         from .models import AdminStaff, Organization
 
         app_meta = (request.auth_claims or {}).get("app_metadata") or {}
-        staff = AdminStaff.objects.select_related("role").filter(user_id=request.user_id).first()
-        if staff is None and not app_meta.get("admin_staff"):
+
+        def staff_permissions():
+            staff = AdminStaff.objects.select_related("role").filter(user_id=request.user_id).first()
+            return None if staff is None else staff.permissions()
+
+        # The staff row's pages (None: no row) - memoised, cleared the
+        # moment a staff login or an admin role is changed or removed.
+        permissions = access_cache.cached(("admin_staff", str(request.user_id)), staff_permissions)
+        if permissions is None and not app_meta.get("admin_staff"):
             request.is_admin_owner = True
             return None
 
         def deny(message, code="admin_page_denied"):
             return JsonResponse({"success": False, "detail": message, "error": message, "code": code}, status=403)
 
-        if staff is None:
+        if permissions is None:
             # The login was a staff login and its access was removed.
             return deny(ACCESS_REVOKED_MESSAGE, ACCESS_REVOKED_CODE)
-        permissions = staff.permissions()
         request.admin_permissions = permissions
 
         platform = None
         if act_as and request.acting_as_org and not request.organization_ids:
-            platform = Organization.objects.filter(id=request.organization_id, is_platform=True).exists()
+            platform = access_cache.cached(
+                ("org_platform", str(request.organization_id)),
+                lambda: Organization.objects.filter(id=request.organization_id, is_platform=True).exists(),
+            )
         hub_scope = None
         if hub and request.organization_ids:
             hub_scope = "all" if hub == "all" else "hub"

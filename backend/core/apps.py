@@ -6,6 +6,7 @@ class CoreConfig(AppConfig):
     name = "core"
 
     def ready(self):
-        from . import realtime
+        from . import access_cache, realtime
 
         realtime.register()
+        access_cache.connect_signals()

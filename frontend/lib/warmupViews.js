@@ -44,3 +44,17 @@ export async function warmupViews({ pageSize = 10, dashKeys } = {}) {
 export function warmupViewsInBackground(opts) {
   warmupViews(opts).catch(() => {});
 }
+
+// After a change (Approve, Cancel, Book, ...): one warmup once the clicking
+// settles, not one per click. Each change drops the server's cached tabs,
+// so every warmup rebuilds all of them (~60 queries); five quick Approves
+// used to start five of those, competing with the user's own requests. A
+// tab opened before it runs simply loads itself, as it would have anyway.
+let scheduledWarmup = null;
+export function scheduleWarmupInBackground(opts, delayMs = 4000) {
+  clearTimeout(scheduledWarmup);
+  scheduledWarmup = setTimeout(() => {
+    scheduledWarmup = null;
+    warmupViewsInBackground(opts);
+  }, delayMs);
+}

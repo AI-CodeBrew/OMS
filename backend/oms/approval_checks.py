@@ -5,7 +5,9 @@ of reaching a courier. services.approve_order runs these; any problem keeps
 the order where it is, with the problems as the error.
 """
 
+import contextvars
 import re
+from contextlib import contextmanager
 from decimal import Decimal
 
 PHONE_DIGITS = 11
@@ -44,6 +46,27 @@ def normalize_phone(raw):
     return local
 
 
+# One bulk action's lookups that stay the same across its orders - the
+# couriers' city list and whether a store keeps a SKU list - read once for
+# the whole action instead of once per order (speed plan, 2026-11-20).
+# Only set inside batch(); everywhere else every check reads the database.
+_batch = contextvars.ContextVar("approval_checks_batch", default=None)
+
+
+@contextmanager
+def batch(cities=()):
+    """Around one bulk action (OrderViewSet._run_per_order): city_problem
+    looks up `cities` (the action's orders' cities) together, in one query,
+    the first time it is asked, and uses_sku_list answers once per store.
+    The same answers as without it - nothing these read changes during an
+    action (cities are only added from the super admin's Cities page)."""
+    token = _batch.set({"cities": list(cities), "city_ok": None, "sku_list": {}})
+    try:
+        yield
+    finally:
+        _batch.reset(token)
+
+
 def city_key(name):
     """How cities are compared - case, extra spaces and dots don't matter
     ("  lahore " == "Lahore"), spelling does ("LHR" != "Lahore")."""
@@ -61,11 +84,31 @@ def city_problem(city):
     city = (city or "").strip()
     if not city:
         return "City is missing"
-    if not City.objects.exists():
+    memo = _batch.get()
+    if memo is None:
+        if not City.objects.exists():
+            return "The city list is empty - add the couriers' cities first"
+        if not City.objects.filter(name_key=city_key(city)).exists():
+            return f"City {city!r} isn't in the couriers' city list"
+        return None
+
+    key = city_key(city)
+    known = memo["city_ok"]
+    if known is None or key not in known:
+        keys = {key}
+        if known is None:
+            keys |= {city_key(c) for c in memo["cities"] if (c or "").strip()}
+        found = set(City.objects.filter(name_key__in=keys).values_list("name_key", flat=True))
+        known = memo["city_ok"] = {**(known or {}), **{k: k in found for k in keys}}
+        if found:
+            memo["any_city"] = True
+    if known[key]:
+        return None
+    if "any_city" not in memo:
+        memo["any_city"] = City.objects.exists()
+    if not memo["any_city"]:
         return "The city list is empty - add the couriers' cities first"
-    if not City.objects.filter(name_key=city_key(city)).exists():
-        return f"City {city!r} isn't in the couriers' city list"
-    return None
+    return f"City {city!r} isn't in the couriers' city list"
 
 
 def approval_problems(order, *, include_city=True):
@@ -109,8 +152,15 @@ def uses_sku_list(organization_id):
 
     from .models import ProductSku
 
+    memo = _batch.get()
+    key = str(organization_id)
+    if memo is not None and key in memo["sku_list"]:
+        return memo["sku_list"][key]
     stores = org_group.group_ids(organization_id) or [organization_id]
-    return ProductSku.all_objects.filter(organization_id__in=stores).exists()
+    answer = ProductSku.all_objects.filter(organization_id__in=stores).exists()
+    if memo is not None:
+        memo["sku_list"][key] = answer
+    return answer
 
 
 def stock_problems(order):

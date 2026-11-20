@@ -468,7 +468,9 @@ class StockItemViewSet(viewsets.ModelViewSet):
         paginated here since its numbers are worked out per item."""
         params = request.query_params
         rows, summary = services.inventory_overview(
-            request.organization_id, search=params.get("search") or "", activity=params.get("activity") or ""
+            request.organization_id, search=params.get("search") or "", activity=params.get("activity") or "",
+            # The Inventory tab (with) / the No SKUs tab (missing).
+            sku_filter=params.get("sku") or "",
         )
         try:
             page_size = min(max(int(params.get("page_size") or 25), 1), 500)
@@ -492,7 +494,8 @@ class StockItemViewSet(viewsets.ModelViewSet):
 
         writer = csv.writer(Echo())
         rows = inventory_io.export_rows(
-            request.organization_id, search=params.get("search") or "", activity=params.get("activity") or ""
+            request.organization_id, search=params.get("search") or "", activity=params.get("activity") or "",
+            sku_filter=params.get("sku") or "",
         )
         response = StreamingHttpResponse((writer.writerow(r) for r in rows), content_type="text/csv")
         response["Content-Disposition"] = 'attachment; filename="inventory.csv"'

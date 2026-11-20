@@ -38,7 +38,10 @@ _CACHE_SECONDS = 30
 
 
 def clear_cache():
+    from . import access_cache
+
     _ROOT_CACHE.clear()
+    access_cache.clear()
 
 
 def root_id(organization_id):
@@ -60,11 +63,19 @@ def root_id(organization_id):
 def group_ids(organization_id):
     """Every store of the organization `organization_id` belongs to - the
     main store first. Just [it] for a store on its own."""
+    from . import access_cache
+
     root = root_id(organization_id)
     if not root:
         return []
-    children = Organization.objects.filter(parent_id=root).order_by("name").values_list("id", flat=True)
-    return [root, *(str(c) for c in children)]
+    # Memoised (core.access_cache) - asked by every stock query and every
+    # order Approved; cleared whenever a store is saved, so linking or
+    # unlinking one shows at once.
+    children = access_cache.cached(
+        ("group_children", root),
+        lambda: [str(c) for c in Organization.objects.filter(parent_id=root).order_by("name").values_list("id", flat=True)],
+    )
+    return [root, *children]
 
 
 def is_grouped(organization_id):

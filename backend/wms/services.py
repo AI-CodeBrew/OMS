@@ -2,6 +2,8 @@
 oms/services.py) so OMS can call straight into it - the stock check that
 gates Ready to Print lives here, not in an HTTP handler."""
 
+import re
+
 from django.db import transaction
 from django.db.models import F, Q
 from django.utils import timezone
@@ -668,15 +670,136 @@ def purchase_order_state(total_quantity, received_quantity):
     return "partial"
 
 
+def _name_key(name):
+    """Product names compared without case, spaces or symbols - "Sink Flow(TM)
+    Draining Rack" and "Sink Flow Draining Rack" are one product."""
+    return re.sub(r"[^a-z0-9]", "", (name or "").lower())
+
+
+def _merge_stock_row(row, target, *, note):
+    """Folds stock row `row` into `target` (same product): its stock and its
+    Shopify product(s) move over, then the row is removed - so the product
+    is one row, and Sync from Shopify finds `target` through the link."""
+    if row.quantity:
+        target.quantity += row.quantity
+        target.save(update_fields=["quantity", "updated_at"])
+        StockMovement.all_objects.create(
+            organization_id=target.organization_id, stock_item=target, delta=row.quantity,
+            balance_after=target.quantity, reason="manual_adjustment", note=note[:255],
+        )
+    StockShopifyLink.all_objects.filter(stock_item=row).update(stock_item=target)
+    if row.shopify_inventory_item_id and not StockShopifyLink.all_objects.filter(
+        shopify_inventory_item_id=row.shopify_inventory_item_id
+    ).exists():
+        StockShopifyLink.all_objects.create(
+            organization_id=row.organization_id, store_id=row.organization_id, stock_item=target,
+            shopify_inventory_item_id=row.shopify_inventory_item_id,
+        )
+    row.delete()
+
+
+def adopt_no_sku_product(po, line):
+    """(user, 2026-11-20) A PO line naming a product of the No SKUs tab
+    gives it the line's SKU: it joins that SKU's row (or becomes the SKU's
+    row when there is none yet), and its orders with no SKU get the SKU too,
+    so their counts move with it. Names match without case/spaces/symbols.
+    Returns the SKU row, or None when no No-SKUs product matched."""
+    from core import org_group
+    from oms.models import OrderItem
+
+    sku, key = (line.sku or "").strip(), _name_key(line.product_name)
+    if not sku or not key:
+        return None
+    rows = [
+        r for r in StockItem.all_objects.select_for_update().filter(
+            organization_id=po.organization_id, warehouse=po.warehouse, sku=""
+        ).order_by("created_at")
+        if _name_key(r.product_name) == key
+    ]
+    if not rows:
+        return None
+    target = _sku_items(po.organization_id, po.warehouse, [sku]).first()
+    if target is None:
+        target = rows.pop(0)
+        target.sku = sku[:100]
+        target.save(update_fields=["sku", "updated_at"])
+    for row in rows:
+        _merge_stock_row(row, target, note=f"Merged from {row.product_name} ({po.po_number})")
+    stores = org_group.group_ids(po.organization_id) or [str(po.organization_id)]
+    blank = [
+        pk for pk, name in OrderItem.all_objects.filter(organization_id__in=stores, barcode="").values_list(
+            "pk", "product_name"
+        )
+        if _name_key(name) == key
+    ]
+    OrderItem.all_objects.filter(pk__in=blank).update(barcode=sku[:100])
+    return target
+
+
+def balance_sku_against_orders(organization_id, warehouse, sku, *, note):
+    """Available = good inbound on POs - units out (booked, with the
+    courier, delivered, returning, returned but not back or damaged/lost);
+    returns received good are back on the shelf. The rule the inventory was
+    balanced with on 2026-11-19, for one SKU - used when a No SKUs product
+    joins it (adopt_no_sku_product). OMS only: nothing is queued for
+    Shopify. Returns the new Available, or None with no row for the SKU."""
+    from django.db.models import Sum
+
+    from core import org_group
+    from oms.models import OrderItem
+
+    from .models import PurchaseOrderLine
+
+    target = _sku_items(organization_id, warehouse, [sku]).first()
+    if target is None:
+        return None
+    target = StockItem.all_objects.select_for_update().get(pk=target.pk)
+    inbound = PurchaseOrderLine.all_objects.filter(
+        purchase_order__organization_id=organization_id, purchase_order__warehouse=warehouse, sku__iexact=sku
+    ).aggregate(n=Sum("good_received"))["n"] or 0
+    stores = org_group.group_ids(organization_id) or [str(organization_id)]
+    out_statuses = set(RESERVED_STATUSES) | {"dispatched", "out_for_delivery", "attempt", "delivered"}
+    out = 0
+    for qty, pack, status, received, condition in OrderItem.all_objects.filter(
+        organization_id__in=stores, barcode__iexact=sku
+    ).values_list(
+        "quantity", "pack_units", "order__status", "order__return_received_at", "order__return_condition"
+    ):
+        units = qty * max(pack or 1, 1)
+        if status in out_statuses or (status == "returned" and (not received or condition == "bad")):
+            out += units
+    available = inbound - out
+    if available != target.quantity:
+        delta = available - target.quantity
+        target.quantity = available
+        target.save(update_fields=["quantity", "updated_at"])
+        StockMovement.all_objects.create(
+            organization_id=target.organization_id, stock_item=target, delta=delta,
+            balance_after=available, reason="manual_adjustment", note=note[:255],
+        )
+    return available
+
+
+def _name_from_po(po, line):
+    """The PO line's product name becomes the inventory row's name for its
+    SKU (user, 2026-11-19 - the PO is how the business names its stock).
+    OMS only: the Shopify product is never renamed (no pending_shopify_name),
+    and Shopify sync never overwrites a name once set. Returns the row, or
+    None when the warehouse has no row for the SKU yet."""
+    item = _sku_items(po.organization_id, po.warehouse, [line.sku]).first() if line.sku else None
+    name = (line.product_name or "").strip()[:255]
+    if item is not None and name and item.product_name != name:
+        StockItem.all_objects.filter(pk=item.pk).update(product_name=name)
+        item.product_name = name
+    return item
+
+
 def _add_purchase_stock(po, line, good, *, actor_user_id=None):
     """Puts `good` received units of `line` into the PO's warehouse - the
-    stock row with that SKU there (a Shopify-linked one first), created if
-    the warehouse has none - and logs the movement."""
-    item = (
-        StockItem.all_objects.filter(organization_id=po.organization_id, warehouse=po.warehouse, sku=line.sku)
-        .order_by(F("shopify_inventory_item_id").asc(nulls_last=True))
-        .first()
-    )
+    stock row with that SKU there (the one booking takes from, see
+    _sku_items), created if the warehouse has none - and logs the movement.
+    The row takes the PO line's product name (_name_from_po)."""
+    item = _name_from_po(po, line)
     if item is None:
         item = StockItem.all_objects.create(
             organization_id=po.organization_id,
@@ -771,6 +894,7 @@ def create_purchase_order(
         created_by_user_id=actor_user_id,
     )
     po.refresh_from_db(fields=["number"])
+    adopted = set()
     for row in lines:
         line = PurchaseOrderLine.objects.create(
             organization_id=organization_id,
@@ -781,7 +905,16 @@ def create_purchase_order(
             quantity_ordered=int(row["quantity_ordered"]),
             unit_price=row.get("unit_price") or 0,
         )
+        # A No SKUs product named on the line joins this SKU's inventory.
+        if adopt_no_sku_product(po, line) is not None:
+            adopted.add(line.sku)
+        # The PO's product name is the inventory's name for this SKU.
+        _name_from_po(po, line)
         _apply_receipt(po, line, row.get("good"), row.get("damaged"), actor_user_id=actor_user_id)
+    for sku in adopted:
+        balance_sku_against_orders(
+            organization_id, warehouse, sku, note=f"Balanced against orders after {po.po_number} gave it a SKU"
+        )
     return po
 
 
@@ -980,8 +1113,30 @@ def inventory_activity(quantity, ordered):
     return "out_of_stock"
 
 
-def _inventory_row(item, order_metrics, purchase_metrics):
-    m = dict(order_metrics.get(_match_key(item.sku, item.product_name)) or _empty_metrics())
+def _name_metrics(order_metrics):
+    """The order lines with no SKU, added up per product name compared
+    without case, spaces or symbols (_name_key) - what a No SKUs row counts,
+    so "Sink Flow(TM) Draining Rack" also counts orders named "Sink Flow
+    Draining Rack"."""
+    out = {}
+    for key, metrics in order_metrics.items():
+        if not key.startswith("name:"):
+            continue
+        total = out.setdefault(_name_key(key[len("name:"):]), _empty_metrics())
+        for field, value in metrics.items():
+            if isinstance(value, int):
+                total[field] = total.get(field, 0) + value
+    return out
+
+
+def _inventory_row(item, order_metrics, purchase_metrics, name_metrics=None):
+    if item.sku:
+        m = dict(order_metrics.get(_match_key(item.sku, item.product_name)) or _empty_metrics())
+    else:
+        # No SKU: its orders by name (no SKU on them either), loosely matched.
+        if name_metrics is None:
+            name_metrics = _name_metrics(order_metrics)
+        m = dict(name_metrics.get(_name_key(item.product_name)) or _empty_metrics())
     if item.sku:
         good, damaged, pending = purchase_metrics.get((str(item.warehouse_id), item.sku.strip().lower()), (0, 0, 0))
         m["order_placed"] = pending
@@ -1006,15 +1161,27 @@ def _inventory_row(item, order_metrics, purchase_metrics):
     }
 
 
-def inventory_overview(organization_id, *, search="", activity=""):
+def inventory_overview(organization_id, *, search="", activity="", sku_filter=""):
     """(rows, summary) for the Inventory page - every stock item, filtered
     by `search` (SKU / name) and `activity` (INVENTORY_ACTIVITY); the
-    summary counts cover every item, whatever the filter."""
+    summary counts cover every item of the tab, whatever the filter.
+
+    sku_filter (user, 2026-11-20): "with" - the Inventory tab, items with a
+    SKU; "missing" - the No SKUs tab, items without one (their order counts
+    come by product name, as their order lines carry no SKU either); "" -
+    every item. summary["with_sku"] / ["no_sku"] count both tabs."""
     order_metrics = _order_metrics(organization_id)
     purchase_metrics = _purchase_metrics(organization_id)
     stock_org = stock_org_id(organization_id)
-    items = StockItem.all_objects.filter(organization_id=stock_org).select_related("warehouse")
-    rows = [_inventory_row(item, order_metrics, purchase_metrics) for item in items]
+    all_items = StockItem.all_objects.filter(organization_id=stock_org)
+    tab_counts = {"with_sku": all_items.exclude(sku="").count(), "no_sku": all_items.filter(sku="").count()}
+    items = all_items.select_related("warehouse")
+    if sku_filter == "with":
+        items = items.exclude(sku="")
+    elif sku_filter == "missing":
+        items = items.filter(sku="")
+    name_metrics = _name_metrics(order_metrics)
+    rows = [_inventory_row(item, order_metrics, purchase_metrics, name_metrics) for item in items]
     if _grouped(organization_id):
         # The push state lives on each store's link, not the item.
         pending, errors = set(), {}
@@ -1029,7 +1196,7 @@ def inventory_overview(organization_id, *, search="", activity=""):
             row["has_pending_shopify_push"] = row["id"] in pending
             row["shopify_push_error"] = errors.get(row["id"], "")
 
-    summary = {"total": len(rows), **{a: 0 for a in INVENTORY_ACTIVITY}}
+    summary = {"total": len(rows), **{a: 0 for a in INVENTORY_ACTIVITY}, **tab_counts}
     for row in rows:
         if row["activity"]:
             summary[row["activity"]] += 1

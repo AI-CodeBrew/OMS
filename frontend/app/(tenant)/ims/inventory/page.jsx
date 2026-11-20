@@ -85,6 +85,10 @@ export default function WmsPage() {
   const [search, setSearch] = useState("");
   const [appliedSearch, setAppliedSearch] = useState("");
   const [activity, setActivity] = useState("");
+  // "with": products that have a SKU (the inventory); "missing": the No SKUs
+  // tab - products with no SKU yet, counted by their orders' product name.
+  // A PO line naming one moves it over (backend wms.services.adopt_no_sku_product).
+  const [skuTab, setSkuTab] = useState("with");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [adjusting, setAdjusting] = useState(null);
@@ -100,7 +104,11 @@ export default function WmsPage() {
     setExporting(true);
     setError("");
     try {
-      await wmsService.exportInventory({ search: appliedSearch || undefined, activity: activity || undefined });
+      await wmsService.exportInventory({
+        search: appliedSearch || undefined,
+        activity: activity || undefined,
+        sku: skuTab,
+      });
     } catch (err) {
       setError(err.message || "Export failed");
     } finally {
@@ -126,6 +134,7 @@ export default function WmsPage() {
           page_size: pageSize,
           search: appliedSearch || undefined,
           activity: activity || undefined,
+          sku: skuTab,
         }),
         // Still read for Push to Shopify's pending count.
         wmsService.stockSummary(),
@@ -139,7 +148,7 @@ export default function WmsPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, pageSize, appliedSearch, activity]);
+  }, [page, pageSize, appliedSearch, activity, skuTab]);
 
   async function onSyncShopify() {
     if (!window.confirm("Click to confirm")) {
@@ -261,6 +270,42 @@ export default function WmsPage() {
         <WarehouseSetupCard onCreated={loadWarehouses} />
       ) : (
         <>
+          <div className="mt-3 flex gap-1 border-b border-surface-border">
+            {[
+              { key: "with", label: "Inventory", count: activityCounts.with_sku, hint: "Products with a SKU" },
+              {
+                key: "missing",
+                label: "No SKUs",
+                count: activityCounts.no_sku,
+                hint: "Products with no SKU yet - counted by their orders' product name. A PO with the product's name and a SKU moves it to Inventory.",
+              },
+            ].map((tab) => (
+              <button
+                key={tab.key}
+                type="button"
+                title={tab.hint}
+                onClick={() => {
+                  setSkuTab(tab.key);
+                  setActivity("");
+                  setPage(1);
+                }}
+                className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium ${
+                  skuTab === tab.key
+                    ? "border-brand-800 text-brand-800"
+                    : "border-transparent text-slate-500 hover:text-slate-700"
+                }`}
+              >
+                {tab.label}
+                <span
+                  className={`ml-1.5 rounded-full px-1.5 text-[11px] font-semibold ${
+                    tab.key === "missing" && tab.count ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-600"
+                  }`}
+                >
+                  {tab.count ?? 0}
+                </span>
+              </button>
+            ))}
+          </div>
           <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
             {ACTIVITY_CARDS.map((card) => (
               <SummaryCard
@@ -317,7 +362,9 @@ export default function WmsPage() {
                     <td colSpan={13} className="px-3 py-6 text-center text-slate-500">
                       {activity || appliedSearch
                         ? "No items here."
-                        : "No stock items yet - Sync from Shopify, or receive a purchase order."}
+                        : skuTab === "missing"
+                          ? "Every product has a SKU."
+                          : "No stock items yet - Sync from Shopify, or receive a purchase order."}
                     </td>
                   </tr>
                 ) : (
