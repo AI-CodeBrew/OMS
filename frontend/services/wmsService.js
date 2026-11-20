@@ -34,6 +34,15 @@ class WmsService {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.scanSessions}`, { method: "POST" });
   }
 
+  // Ends this laptop's phone-scanning session (its own token) - its phone
+  // stops at once (backend core/scan_sessions.end_host_session).
+  async endScanSession(token) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.scanSessionsEnd}`, {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    });
+  }
+
   // --- Warehouses ---
   async listWarehouses() {
     const data = await request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.warehouses}`);

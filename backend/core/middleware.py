@@ -219,7 +219,7 @@ class TenantMiddleware:
             # choice, 2026-11-19 - core/scan_sessions.py).
             from . import scan_sessions
 
-            scan_session = scan_sessions.phone_session(request.META[SCAN_SESSION_HEADER])
+            scan_session, reason = scan_sessions.phone_session_check(request.META[SCAN_SESSION_HEADER])
             if scan_session is None:
                 return JsonResponse(
                     {
@@ -227,6 +227,8 @@ class TenantMiddleware:
                         "detail": SCAN_SESSION_ENDED_MESSAGE,
                         "error": SCAN_SESSION_ENDED_MESSAGE,
                         "code": SCAN_SESSION_ENDED_CODE,
+                        # Why (scan_sessions.refusal_reason) - the phone shows it.
+                        "reason": reason,
                     },
                     status=401,
                 )

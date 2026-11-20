@@ -2,6 +2,7 @@ export const API_ENDPOINTS = {
   health: "/api/core/health/",
   healthProtected: "/api/core/health/protected/",
   scanSessions: "/api/core/scan-sessions/",
+  scanSessionsEnd: "/api/core/scan-sessions/end/",
   admin: {
     organizations: "/api/core/admin/organizations/",
     organization: (id) => `/api/core/admin/organizations/${id}/`,

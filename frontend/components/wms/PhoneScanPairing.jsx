@@ -52,8 +52,11 @@ function PhoneIcon() {
 
 // What the laptop shows after Scan: the QR code until a phone connects, then
 // a status line. `session` is the state from lib/phoneScanSession.js.
-export default function PhoneScanPairing({ session, onRetry, onClose, onUseThisCamera }) {
-  const { status, phoneUrl, error } = session;
+// A phone on the session carries on until its own ✕ or this laptop's "End
+// phone scanning" (onEnd) - user, 2026-11-20.
+export default function PhoneScanPairing({ session, onRetry, onClose, onEnd, onUseThisCamera }) {
+  const { status, phoneUrl, error, hadPhone } = session;
+  const phoneIsPaired = status === "paired" || status === "away" || (status === "reconnecting" && hadPhone);
 
   let body;
   if (status === "error") {
@@ -73,23 +76,29 @@ export default function PhoneScanPairing({ session, onRetry, onClose, onUseThisC
           Phone connected - scan parcels with the phone.
         </div>
         <p className="mt-1 text-xs text-slate-500">
-          It keeps working if you close this or move to another page. To stop, press the ✕ on the phone.
+          It keeps working if you close this or move to another page. To stop, press End below or the ✕ on the phone.
         </p>
       </div>
     );
-  } else if ((status === "waiting" || status === "away") && phoneUrl) {
+  } else if (phoneIsPaired) {
+    body = (
+      <div>
+        <div className="flex items-center gap-2 text-sm font-medium text-amber-700">
+          <PhoneIcon />
+          {status === "reconnecting" ? "Reconnecting to the scan service…" : "Phone not connected right now."}
+        </div>
+        <p className="mt-1 text-xs text-slate-500">
+          It reconnects by itself when the phone&apos;s screen is on - no new QR code needed. To use a different
+          phone, press End, then Scan again.
+        </p>
+      </div>
+    );
+  } else if (status === "waiting" && phoneUrl) {
     body = (
       <div className="flex flex-col items-center gap-2">
-        {status === "away" ? (
-          <div className="flex w-full items-center gap-2 text-sm font-medium text-amber-700">
-            <PhoneIcon />
-            Waiting for your phone to reconnect.
-          </div>
-        ) : null}
         <QrCode text={phoneUrl} />
         <p className="text-center text-xs text-slate-500">
-          {status === "away" ? "Using a different phone? Scan" : "Scan"} this code with your
-          phone&apos;s camera to open the scanner there. A new code appears every minute.
+          Scan this code with your phone&apos;s camera to open the scanner there. A new code appears every minute.
         </p>
       </div>
     );
@@ -101,13 +110,20 @@ export default function PhoneScanPairing({ session, onRetry, onClose, onUseThisC
     );
   }
 
-  // A paired phone only ends at its own cross, so there's nothing to cancel.
-  const phoneIsPaired = status === "paired" || status === "away";
-
   return (
     <div className="mt-3 rounded-md border border-surface-border bg-surface p-3">
       {body}
-      {phoneIsPaired ? null : (
+      {phoneIsPaired ? (
+        <div className="mt-3 flex justify-end">
+          <button
+            type="button"
+            onClick={onEnd}
+            className="inline-flex items-center gap-1 rounded-md border border-red-200 px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-50"
+          >
+            ✕ End phone scanning
+          </button>
+        </div>
+      ) : (
         <div className="mt-3 flex items-center justify-between gap-2 text-xs">
           <button
             type="button"

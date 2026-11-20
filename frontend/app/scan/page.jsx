@@ -92,6 +92,9 @@ export default function PhoneScanPage() {
   const [linked, setLinked] = useState(false);
   const linkedRef = useRef(false);
   const linkTimerRef = useRef(null);
+  // Why this phone stopped (shown small under the message, so a screenshot
+  // says what went wrong): "scan:<backend reason>" or "connection".
+  const [stopReason, setStopReason] = useState("");
   const [desk, setDesk] = useState(NO_DESK);
   const [card, setCard] = useState(null);
   // The returned parcel being counted here: { orderNumber, lines }. Scanning
@@ -154,6 +157,7 @@ export default function PhoneScanPage() {
       saveDesk(NO_DESK);
       setLink("connecting");
       setClosed(false);
+      setStopReason("");
       clearTimeout(linkTimerRef.current);
       markLinked(false);
       tokenRef.current = next;
@@ -204,9 +208,11 @@ export default function PhoneScanPage() {
 
   // The backend refused the token: the session was ended, or it predates
   // phones making their own calls. Either way only a new QR code helps.
-  function sessionEnded() {
+  function sessionEnded(reason = "") {
     stopRunning();
-    setLink("ended");
+    setStopReason(`scan:${reason || "unknown"}`);
+    // An old QR code is told apart from a session whose cross was pressed.
+    setLink(reason === "qr_expired" ? "expired" : "ended");
   }
 
   const handlersRef = useRef(null);
@@ -259,6 +265,7 @@ export default function PhoneScanPage() {
       // ended; one never accepted is an old QR code.
       onRejected: () => {
         clearTimeout(linkTimerRef.current);
+        setStopReason(linkedRef.current ? "connection:after-link" : "connection");
         setLink(linkedRef.current ? "ended" : "expired");
       },
     });
@@ -359,7 +366,7 @@ export default function PhoneScanPage() {
       })
       .catch((err) => {
         if (run !== runRef.current) return;
-        if (err instanceof ScanSessionEndedError) sessionEnded();
+        if (err instanceof ScanSessionEndedError) sessionEnded(err.reason);
         else
           showOutcome(entryId, false, code, err.message || "Scan failed", {
             retry: { kind: "scan", deskId, code },
@@ -404,7 +411,7 @@ export default function PhoneScanPage() {
       .catch((err) => {
         if (run !== runRef.current) return;
         if (err instanceof ScanSessionEndedError) {
-          sessionEnded();
+          sessionEnded(err.reason);
           return;
         }
         showOutcome(entryId, false, orderNumber, `Not received - ${err.message || "could not record this count."}`, {
@@ -561,8 +568,9 @@ export default function PhoneScanPage() {
         {token === ""
           ? "This link is incomplete. Press Scan on the laptop and scan the code showing there now."
           : link === "ended"
-            ? "This scan session has ended (its ✕ was pressed). Press Scan on the laptop and scan the code showing there now."
+            ? "This scan session has ended (✕ was pressed on the phone or the laptop). Press Scan on the laptop and scan the code showing there now."
             : "This QR code is old. Press Scan on the laptop and scan the new code showing there."}
+        {stopReason ? <p className="mt-3 text-xs text-slate-500">Reason: {stopReason}</p> : null}
       </PhoneMessage>
     );
   }

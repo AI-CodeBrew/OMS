@@ -13,6 +13,7 @@ urlpatterns = [
     path("order-logs/", team_views.order_logs, name="order-logs"),
     path("stores/", views.stores, name="stores"),
     path("scan-sessions/", views.scan_session, name="scan-session"),
+    path("scan-sessions/end/", views.scan_session_end, name="scan-session-end"),
     path("notifications/", notification_views.notifications, name="notifications"),
     path("notifications/read/", notification_views.notifications_read, name="notifications-read"),
     path("stores/switch/", views.switch_store, name="stores-switch"),

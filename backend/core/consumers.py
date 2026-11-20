@@ -186,8 +186,11 @@ class ScanSessionConsumer(AsyncJsonWebsocketConsumer):
 
     async def connect(self):
         params = parse_qs(self.scope.get("query_string", b"").decode())
-        session = scan_sessions.read_token((params.get("token") or [""])[0])
+        raw_token = (params.get("token") or [""])[0]
+        session = scan_sessions.read_token(raw_token)
         if session is None:
+            # Logged with its reason (old QR code, altered token, ...).
+            await sync_to_async(scan_sessions.phone_session_check)(raw_token)
             # Accept first: a handshake refused outright reaches the browser
             # as a generic 1006, which looks like a network drop and gets
             # retried forever. The client needs to see 4401 to know to stop.
@@ -198,6 +201,8 @@ class ScanSessionConsumer(AsyncJsonWebsocketConsumer):
         self.session_id, self.role, from_qr = session
         if await sync_to_async(scan_sessions.is_ended)(self.session_id):
             # Its cross was pressed - same refusal as a bad token.
+            logger.warning("scan session socket refused: reason=ended session=%s role=%s",
+                           str(self.session_id)[:8], self.role)
             await self.accept()
             await self.close(code=4401)
             return
@@ -221,6 +226,8 @@ class ScanSessionConsumer(AsyncJsonWebsocketConsumer):
                 {"type": "session", "token": scan_sessions.phone_token(self.session_id)}
             )
         await self._announce("joined")
+        logger.info("scan session socket open: session=%s role=%s from_qr=%s",
+                    str(self.session_id)[:8], self.role, from_qr)
 
     async def _send_qr(self):
         await self.send_json({"type": "qr", "token": scan_sessions.qr_token(self.session_id)})

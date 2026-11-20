@@ -8,6 +8,7 @@ import { describeScanOutcome, SCAN_DESKS } from "../../lib/scanDesks";
 import {
   claimPhoneDesk,
   closePhoneScanner,
+  endPhoneScanner,
   openPhoneScanner,
   retryPhoneScanner,
   usePhoneScanStore,
@@ -375,6 +376,10 @@ export default function ScanPanel({
           session={phone}
           onRetry={retryPhoneScanner}
           onClose={closePairing}
+          onEnd={() => {
+            setPairingOpen(false);
+            endPhoneScanner();
+          }}
           onUseThisCamera={() => {
             closePairing();
             setScannerOpen(true);

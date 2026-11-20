@@ -23,10 +23,15 @@ socket still pairs them, but they can't call the APIs - their phone is asked to
 scan a new QR code.
 """
 
+import base64
+import json
+import logging
 import uuid
 
 from django.core import signing
 from django.utils import timezone
+
+logger = logging.getLogger(__name__)
 
 ROLE_HOST = "host"
 ROLE_PHONE = "phone"
@@ -125,18 +130,97 @@ def end_session(session_id):
         ScanSession.objects.filter(id=row.id, ended_at__isnull=True).update(ended_at=timezone.now())
 
 
-def phone_session(token):
-    """The live ScanSession a phone's token belongs to, or None."""
+def end_host_session(token, user_id):
+    """The laptop's own end of its session (user, 2026-11-20): its ✕, or a
+    fresh Scan replacing a session no phone joined. Only the login that made
+    the session can end it, with the laptop's own token. Every phone on it is
+    told at once ({"type": "ended"} - its "Scanner closed" screen); from then
+    on none of the session's tokens opens a socket or calls an API. Returns
+    whether it ended a session."""
     session = read_token(token)
     if session is None:
-        return None
+        return False
+    session_id, role, _from_qr = session
+    if role != ROLE_HOST:
+        return False
+    row = _session_row(session_id)
+    if row is None or str(row.user_id) != str(user_id):
+        return False
+    end_session(session_id)
+    try:
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+
+        layer = get_channel_layer()
+        if layer is not None:
+            async_to_sync(layer.group_send)(
+                f"scan_{session_id}_{ROLE_PHONE}", {"type": "relay.frame", "frame": {"type": "ended"}}
+            )
+    except Exception:  # noqa: BLE001 - ended either way; a phone finds out on its next call
+        logger.exception("scan session %s ended, but its phones couldn't be told", str(session_id)[:8])
+    return True
+
+
+def phone_session(token):
+    """The live ScanSession a phone's token belongs to, or None."""
+    return phone_session_check(token)[0]
+
+
+def _unverified_session_id(token):
+    """The session id a token names, read WITHOUT checking its signature -
+    only for the refusal log, never to grant anything."""
+    try:
+        payload = (token or "").split(":", 1)[0]
+        payload += "=" * (-len(payload) % 4)
+        return str(json.loads(base64.urlsafe_b64decode(payload)).get("s") or "")[:8]
+    except Exception:  # noqa: BLE001 - garbage in, nothing out
+        return ""
+
+
+def refusal_reason(token):
+    """Why `token` opens nothing (None when it would): "missing", "invalid"
+    (not a token of ours, or altered on the way), "qr_expired" (a QR code's
+    token past _QR_MAX_AGE_SECONDS), "not_phone", "unknown_session" or
+    "ended". Diagnostics for the phone and the log (2026-11-20)."""
+    if not token:
+        return "missing"
+    session = read_token(token)
+    if session is None:
+        try:
+            signing.loads(token, salt=_QR_SALT)
+            return "qr_expired"
+        except signing.BadSignature:
+            return "invalid"
     session_id, role, _from_qr = session
     if role != ROLE_PHONE:
-        return None
+        return "not_phone"
     row = _session_row(session_id)
-    if row is None or row.ended_at:
-        return None
-    return row
+    if row is None:
+        return "unknown_session"
+    if row.ended_at:
+        return "ended"
+    return None
+
+
+def phone_session_check(token):
+    """(row, None) for a live phone token, else (None, reason) - see
+    refusal_reason. Every refusal is logged with its reason and the session
+    the token names, so "session ended" on a phone can be traced."""
+    session = read_token(token)
+    if session is not None:
+        session_id, role, _from_qr = session
+        if role == ROLE_PHONE:
+            row = _session_row(session_id)
+            if row is not None and not row.ended_at:
+                return row, None
+    reason = refusal_reason(token)
+    token = token or ""
+    logger.warning(
+        "scan session refused: reason=%s session=%s token_len=%s odd_chars=%s",
+        reason, _unverified_session_id(token), len(token),
+        "".join(sorted({c for c in token if not (c.isalnum() or c in "-_:")}))[:10] or "-",
+    )
+    return None, reason
 
 
 def claims_for(session):

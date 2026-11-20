@@ -28,7 +28,16 @@ const QR_SHOW_MAX_MS = 110000;
 // "reconnecting", or "error". deskId: what the phone is scanning for.
 // returnRecordedAt: when the phone last received a return, for the Returns page
 // to refresh on.
-const INITIAL_STATE = { status: "idle", phoneUrl: "", error: "", deskId: null, returnRecordedAt: 0 };
+// hadPhone: a phone has joined this session (it carries on until the phone's
+// or this laptop's ✕ - user, 2026-11-20).
+const INITIAL_STATE = {
+  status: "idle",
+  phoneUrl: "",
+  error: "",
+  deskId: null,
+  returnRecordedAt: 0,
+  hadPhone: false,
+};
 export const usePhoneScanStore = create(() => INITIAL_STATE);
 const getState = usePhoneScanStore.getState;
 const update = usePhoneScanStore.setState;
@@ -74,6 +83,12 @@ function writeSaved(value) {
 
 function stopRefresh() {
   clearTimeout(refreshTimer);
+}
+
+// Ends a session on the server so none of its QR codes or phone tokens works
+// any more. Best-effort: a session nobody can reach is harmless anyway.
+function endOnServer(token) {
+  if (token) wmsService.endScanSession(token).catch(() => {});
 }
 
 function requestQr() {
@@ -202,7 +217,7 @@ function handleFrame(frame) {
     // The code shown before pairing goes stale while the phone is connected -
     // a new one is asked for if the QR is ever shown again.
     clearQr();
-    update({ status: "paired" });
+    update({ status: "paired", hadPhone: true });
     sayHello();
   } else if (frame.type === "phone_left") {
     phones.delete(frame.peer);
@@ -237,7 +252,8 @@ function start(savedToken) {
       if (thisRun === run) fn(...args);
     };
 
-  update({ status: "starting", phoneUrl: "", error: "" });
+  // A saved token means a phone joined this session before (a refresh).
+  update({ status: "starting", phoneUrl: "", error: "", hadPhone: Boolean(savedToken) });
   document.addEventListener("visibilitychange", onVisibilityChange);
 
   (savedToken ? Promise.resolve({ host_token: savedToken }) : wmsService.createScanSession())
@@ -262,7 +278,7 @@ function start(savedToken) {
             stopRefresh();
             clearQr();
             writeSaved(null); // Try again starts a fresh session.
-            update({ status: "error", error: "This scan session has expired." });
+            update({ status: "error", error: "This scan session has ended.", hadPhone: false });
           }),
         });
       })
@@ -287,23 +303,34 @@ function stop() {
   update(INITIAL_STATE);
 }
 
-// Scan pressed on a panel: show its QR code or, with a phone already paired,
-// point that phone at this desk.
+// Scan pressed on a panel. With a phone already on this session it carries
+// on, pointed at this desk. Otherwise it's always a brand-new session and QR
+// code - the one from before is ended, never shown again (user, 2026-11-20:
+// a fresh Scan brought back an older code).
 export function openPhoneScanner(deskId) {
+  const saved = readSaved();
+  if (saved) {
+    pairingDeskId = deskId;
+    update({ deskId });
+    writeSaved({ ...saved, deskId });
+    const { status } = getState();
+    if (status === "idle" || status === "error") start(saved.token);
+    else if (phones.size > 0) sayHello();
+    return;
+  }
+  endOnServer(hostToken);
+  stop();
   pairingDeskId = deskId;
   update({ deskId });
-  if (readSaved()) writeSaved({ ...readSaved(), deskId });
+  start();
+}
 
-  const { status } = getState();
-  if (status === "idle" || status === "error") {
-    start(readSaved()?.token);
-  } else if (phones.size === 0) {
-    // Scan pressed again: a fresh code, never the one left from before.
-    clearQr();
-    requestQr();
-  } else {
-    sayHello();
-  }
+// This laptop's ✕: ends the session - its phone shows "Scanner closed" at
+// once, and the next Scan starts a new one.
+export function endPhoneScanner() {
+  endOnServer(hostToken || readSaved()?.token);
+  writeSaved(null);
+  stop();
 }
 
 // The panel's QR code is going away. With no phone ever paired there's nothing
@@ -312,7 +339,11 @@ export function closePhoneScanner(deskId) {
   if (pairingDeskId !== deskId) return;
   pairingDeskId = null;
   stopRefresh();
-  if (phones.size === 0 && !readSaved()) stop();
+  if (phones.size === 0 && !readSaved()) {
+    // No phone joined: its QR code goes with the panel (Cancel).
+    endOnServer(hostToken);
+    stop();
+  }
 }
 
 export function retryPhoneScanner() {

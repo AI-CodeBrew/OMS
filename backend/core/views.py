@@ -28,6 +28,15 @@ def scan_session(request):
     return Response(scan_sessions.create_session(request))
 
 
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def scan_session_end(request):
+    """{token: the laptop's own token} - ends that laptop's phone-scanning
+    session (its ✕, or a fresh Scan): its phone stops at once."""
+    ended = scan_sessions.end_host_session((request.data or {}).get("token") or "", request.user_id)
+    return Response({"ended": ended})
+
+
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def health_plain(request):

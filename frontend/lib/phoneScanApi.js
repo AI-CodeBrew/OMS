@@ -8,7 +8,14 @@ import { API_ENDPOINTS } from "../constants/apiEndpoints";
 
 // The session was ended (a cross pressed on any of its phones), or it's one
 // made before phones could call the APIs - either way, a new QR code is needed.
-export class ScanSessionEndedError extends Error {}
+// `reason`: why the backend refused the token (core/scan_sessions.refusal_reason)
+// - "qr_expired", "ended", "invalid", "unknown_session", ...
+export class ScanSessionEndedError extends Error {
+  constructor(message, reason = "") {
+    super(message);
+    this.reason = reason || "";
+  }
+}
 
 const SCAN_SESSION_ENDED_CODE = "scan_session_ended"; // core/middleware.py
 // Longer than any scan takes; past this the phone says so instead of spinning.
@@ -40,7 +47,7 @@ async function post(token, path, body) {
   }
   const data = await response.json().catch(() => ({}));
   if (response.status === 401 && data.code === SCAN_SESSION_ENDED_CODE) {
-    throw new ScanSessionEndedError(data.detail || "This scan session has ended.");
+    throw new ScanSessionEndedError(data.detail || "This scan session has ended.", data.reason);
   }
   if (!response.ok) throw new Error(data.detail || "Scan failed");
   return data;
