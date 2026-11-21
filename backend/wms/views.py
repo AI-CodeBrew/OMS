@@ -1,7 +1,7 @@
 import csv
 
 from django.db import transaction
-from django.db.models import Count, F, Q, Sum, prefetch_related_objects
+from django.db.models import Count, F, Max, Q, Sum, prefetch_related_objects
 from django.db.models.functions import Coalesce, TruncDate
 from django.utils.dateparse import parse_datetime
 from django.utils.text import slugify
@@ -22,7 +22,7 @@ from oms import services as oms_services
 from oms.models import Order
 
 from . import services
-from .models import PurchaseOrder, StockItem, StockMovement, Supplier, Warehouse
+from .models import PurchaseOrder, PurchaseOrderLine, StockItem, StockMovement, Supplier, Warehouse
 from .serializers import (
     PurchaseOrderSerializer,
     StockItemSerializer,
@@ -69,6 +69,47 @@ class WarehouseViewSet(viewsets.ModelViewSet):
             code = str(max(numbers, default=0) + 1)
         extra = {} if existing.exists() else {"is_default": True}
         serializer.save(organization_id=_stock_org(self.request), code=code, **extra)
+
+    @action(detail=False, methods=["get"])
+    def summary(self, request):
+        """The Warehouses page (IMS): every warehouse with its stock and
+        purchase-order totals. Three grouped queries (stock rows, POs, PO
+        lines) - kept apart so one join can't multiply another's sums."""
+        org = _stock_org(request)
+        stock = {
+            r["warehouse_id"]: r
+            for r in StockItem.objects.filter(organization_id=org).values("warehouse_id").annotate(
+                products=Count("id"),
+                units=Coalesce(Sum("quantity", filter=Q(quantity__gt=0)), 0),
+                below_zero=Count("id", filter=Q(quantity__lt=0)),
+            )
+        }
+        pos = {
+            r["warehouse_id"]: r
+            for r in PurchaseOrder.objects.filter(organization_id=org).values("warehouse_id").annotate(
+                count=Count("id"), last=Max("ordered_at")
+            )
+        }
+        received = {
+            r["purchase_order__warehouse_id"]: r
+            for r in PurchaseOrderLine.objects.filter(organization_id=org)
+            .values("purchase_order__warehouse_id")
+            .annotate(good=Coalesce(Sum("good_received"), 0), damaged=Coalesce(Sum("damaged_received"), 0))
+        }
+        rows = []
+        for warehouse in self.get_queryset().order_by("-is_default", "name"):
+            s, p, r = stock.get(warehouse.id, {}), pos.get(warehouse.id, {}), received.get(warehouse.id, {})
+            rows.append({
+                **WarehouseSerializer(warehouse).data,
+                "products": s.get("products", 0),
+                "units_on_hand": s.get("units", 0),
+                "products_below_zero": s.get("below_zero", 0),
+                "purchase_orders": p.get("count", 0),
+                "last_purchase_order_at": p.get("last"),
+                "good_received": r.get("good", 0),
+                "damaged_received": r.get("damaged", 0),
+            })
+        return Response(rows)
 
 
 class SupplierViewSet(viewsets.ModelViewSet):

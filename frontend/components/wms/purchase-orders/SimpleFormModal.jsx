@@ -6,18 +6,22 @@ import Button from "../../shared/Button";
 
 // Add Supplier / Add Warehouse: a few text fields, `required` ones must be
 // filled. `fields` is [{key, label, required, multiline}]; onSubmit gets
-// {key: value} and throws to show its message.
-export default function SimpleFormModal({ open, title, fields, submitLabel = "Save", onSubmit, onClose }) {
+// {key: value} and throws to show its message. `initial` fills the fields
+// when it opens (Edit Warehouse); left out, they start empty.
+export default function SimpleFormModal({ open, title, fields, initial, submitLabel = "Save", onSubmit, onClose }) {
   const [values, setValues] = useState({});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
     if (open) {
-      setValues({});
+      setValues(
+        Object.fromEntries(fields.map((f) => [f.key, initial?.[f.key] == null ? "" : String(initial[f.key])]))
+      );
       setError("");
       setSaving(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   if (!open) return null;

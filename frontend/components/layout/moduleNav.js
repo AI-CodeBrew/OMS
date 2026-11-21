@@ -21,6 +21,7 @@ import {
   TicketIcon,
   AlertIcon,
   CameraIcon,
+  WarehouseIcon,
 } from "./navIcons";
 
 // Top header tabs only — Integrations / Logs / Settings live in the sidebar.
@@ -53,6 +54,8 @@ const PATH_PAGES = [
   ["/receivings", "oms.receivings"],
   ["/ims/inventory", "ims.inventory"],
   ["/ims/purchase-orders", "ims.purchase_orders"],
+  // Warehouses: no page key of its own - whoever sees Inventory sees it.
+  ["/ims/warehouses", "ims.inventory"],
   ["/wms/packing", "wms.packing"],
   ["/returns", "wms.returns_desk"],
   ["/finance", "finance.home"],
@@ -303,6 +306,7 @@ export const SIDEBAR_ITEMS = {
   ims: [
     { label: "Inventory", href: "/ims/inventory", icon: PackageIcon, page: "ims.inventory" },
     { label: "Purchase Orders", href: "/ims/purchase-orders", icon: DocumentIcon, page: "ims.purchase_orders" },
+    { label: "Warehouses", href: "/ims/warehouses", icon: WarehouseIcon, page: "ims.inventory" },
   ],
   wms: [
     { label: "Packing", href: "/wms/packing", icon: PackageIcon, page: "wms.packing" },

@@ -64,6 +64,20 @@ class WmsService {
     });
   }
 
+  // The Warehouses page (IMS): each warehouse with its stock and PO totals.
+  async warehousesSummary() {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.warehousesSummary}`);
+  }
+
+  // Edit a warehouse's details (Warehouses page). Its code, default and
+  // active flags are left as they are.
+  async updateWarehouse(id, { name, city, address, poc_name, poc_phone, remark }) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.warehouse(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name, city, address, poc_name, poc_phone, remark }),
+    });
+  }
+
   // --- Suppliers / Purchase orders ---
   async listSuppliers() {
     const data = await request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.suppliers}`);

@@ -40,6 +40,10 @@ def queue_order_push(order):
     that didn't come from Shopify are skipped here already."""
     if not order.shopify_order_id:
         return
+    # Marked never to be pushed (Order.shopify_push_off). Checked again when
+    # the push runs (sync_order_to_shopify), in case it was marked meanwhile.
+    if getattr(order, "shopify_push_off", False):
+        return
     if not getattr(settings, "SHOPIFY_PUSH_ASYNC", True):
         push_now(order.pk)
         return

@@ -98,6 +98,9 @@ def sync_order_to_shopify(order, *, with_events=True):
     """
     if not order.shopify_order_id:
         return []
+    # Marked never to be pushed (Order.shopify_push_off) - nothing at all.
+    if getattr(order, "shopify_push_off", False):
+        return []
     try:
         connection = ShopifyConnection.all_objects.get(
             organization_id=order.organization_id, is_connected=True, push_status_to_shopify=True
@@ -182,6 +185,7 @@ def push_statuses_to_shopify(organization_id, *, after="", limit=10):
             organization_id=organization_id,
             shopify_order_id__isnull=False,
             status__in=_PUSHABLE_STATUSES,
+            shopify_push_off=False,  # marked never to be pushed
         )
         .select_related("courier")
         .order_by("id")

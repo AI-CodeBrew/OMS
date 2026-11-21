@@ -373,6 +373,13 @@ class Order(TenantScopedModel):
     # (integrations.services.upsert_order_from_shopify).
     shopify_synced = models.JSONField(null=True, blank=True)
 
+    # Never send anything about this order to Shopify - no status tag, no
+    # fulfillment, not even from "Push all statuses now" (user, 2026-11-20:
+    # One Stations' 821 old orders from its 22 Oct import, which OMS never
+    # dispatched). Checked in integrations.services.sync_order_to_shopify,
+    # shopify_push_queue.queue_order_push and push_statuses_to_shopify.
+    shopify_push_off = models.BooleanField(default=False, db_default=False)
+
     class Meta:
         db_table = '"oms"."orders"'
         constraints = [

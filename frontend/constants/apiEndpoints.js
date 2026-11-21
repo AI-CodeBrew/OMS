@@ -127,6 +127,8 @@ export const API_ENDPOINTS = {
   },
   wms: {
     warehouses: "/api/wms/warehouses/",
+    warehousesSummary: "/api/wms/warehouses/summary/",
+    warehouse: (id) => `/api/wms/warehouses/${id}/`,
     stock: "/api/wms/stock/",
     stockSummary: "/api/wms/stock/summary/",
     stockOverview: "/api/wms/stock/overview/",
