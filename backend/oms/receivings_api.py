@@ -44,7 +44,19 @@ KINDS = {key for key, _label in Receiving.KIND_CHOICES}
 # Load sheets and returns come from a courier; inventory may come from a
 # supplier, so its courier is optional.
 COURIER_REQUIRED = {Receiving.KIND_LOADSHEET, Receiving.KIND_RETURN}
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".gif"}
+# Any picture type (user, 2026-11-23: "jpeg, jpg, webp, png or whatever") -
+# a file the browser calls image/*, or one of these by name when it can't
+# tell (iPhone HEIC on Windows comes as application/octet-stream).
+IMAGE_TYPES = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".jfif": "image/jpeg", ".png": "image/png",
+    ".webp": "image/webp", ".gif": "image/gif", ".bmp": "image/bmp", ".tif": "image/tiff",
+    ".tiff": "image/tiff", ".avif": "image/avif", ".heic": "image/heic", ".heif": "image/heif",
+}
+IMAGE_EXTENSIONS = set(IMAGE_TYPES)
+# SVG is a picture that can carry script - opened from the page it could
+# act as the logged-in user - so it's refused.
+BLOCKED_IMAGE_TYPES = {"image/svg+xml"}
+BLOCKED_EXTENSIONS = {".svg", ".svgz"}
 
 
 def _error(message, code=status.HTTP_400_BAD_REQUEST):
@@ -58,9 +70,21 @@ def _safe_name(name):
 
 
 def _is_image(upload):
-    content_type = (getattr(upload, "content_type", "") or "").lower()
+    content_type = (getattr(upload, "content_type", "") or "").split(";")[0].strip().lower()
     ext = os.path.splitext(upload.name or "")[1].lower()
+    if content_type in BLOCKED_IMAGE_TYPES or ext in BLOCKED_EXTENSIONS:
+        return False
     return content_type.startswith("image/") or ext in IMAGE_EXTENSIONS
+
+
+def _image_type(upload):
+    """The picture's type as served back: the browser's own when it named
+    an image type, else the one its file name says (HEIC from Windows)."""
+    content_type = (getattr(upload, "content_type", "") or "").split(";")[0].strip().lower()
+    if content_type.startswith("image/"):
+        return content_type[:100]
+    ext = os.path.splitext(upload.name or "")[1].lower()
+    return IMAGE_TYPES.get(ext, "image/jpeg")
 
 
 class ReceivingViewSet(viewsets.ViewSet):
@@ -156,6 +180,9 @@ class ReceivingViewSet(viewsets.ViewSet):
         if len(uploads) > MAX_IMAGES:
             return _error(f"At most {MAX_IMAGES} pictures at a time.")
         for upload in uploads:
+            ext = os.path.splitext(upload.name or "")[1].lower()
+            if ext in BLOCKED_EXTENSIONS or "svg" in (getattr(upload, "content_type", "") or "").lower():
+                return _error(f"{upload.name}: SVG files aren't allowed - use a photo (JPG, PNG, WEBP...).")
             if not _is_image(upload):
                 return _error(f"{upload.name} isn't a picture.")
             if upload.size > MAX_IMAGE_BYTES:
@@ -180,7 +207,7 @@ class ReceivingViewSet(viewsets.ViewSet):
                         organization_id=store_id,
                         receiving=receiving,
                         original_name=(upload.name or "")[:255],
-                        content_type=(getattr(upload, "content_type", "") or "image/jpeg")[:100],
+                        content_type=_image_type(upload),
                         size=upload.size or 0,
                     )
                     # Uploads to Bunny here; a failure rolls the rows back.
@@ -220,7 +247,12 @@ class ReceivingViewSet(viewsets.ViewSet):
                 data = handle.read()
         except FileNotFoundError:
             return _error("Picture not found in storage.", status.HTTP_404_NOT_FOUND)
-        response = HttpResponse(data, content_type=image.content_type or "image/jpeg")
+        content_type = image.content_type or "image/jpeg"
+        if content_type.lower() in BLOCKED_IMAGE_TYPES:
+            # One saved before SVG was refused - never rendered, only downloaded.
+            content_type = "application/octet-stream"
+        response = HttpResponse(data, content_type=content_type)
         response["Content-Disposition"] = f'inline; filename="{_safe_name(image.original_name)}"'
+        response["X-Content-Type-Options"] = "nosniff"
         response["Cache-Control"] = "private, max-age=86400"
         return response

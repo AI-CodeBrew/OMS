@@ -6,7 +6,6 @@ import dispatchHubAdminService from "../../../../services/dispatchHubAdminServic
 import adminTeamService, { ADMIN_PAGE_HREFS } from "../../../../services/adminTeamService";
 import tenantsService from "../../../../services/tenantsService";
 import useAuthStore from "../../../../store/authStore";
-import { invalidateViewCache } from "../../../../lib/viewCache";
 import Button from "../../../../components/shared/Button";
 import { useRememberedData } from "../../../../lib/pageMemory";
 
@@ -39,7 +38,8 @@ export default function DispatchHubPage() {
 
   // This login's access: a staff login with Hub pages but not "Hub stores
   // & rates" never sees this page - it goes straight into the Hub.
-  const [me, setMe] = useState(null);
+  // The last answer at once on the way back - asked again below.
+  const [me, setMe] = useState(() => adminTeamService.cachedMe());
   const direct = Boolean(me?.hub_direct);
   const canManage = !me || me.is_owner || me.permissions?.dispatch_hub === "write";
 
@@ -138,9 +138,13 @@ export default function DispatchHubPage() {
       exitTo = other ? other[1] : null;
     }
     enterStore({ hub: true, name: "Dispatch Hub", modules: ["oms", "wms"], storeCount: hubStores.length, pages, exitTo });
-    invalidateViewCache();
     const first = pages ? HUB_LANDING.find(([key]) => pages[key]) : null;
-    router.replace(first ? first[1] : "/dashboard");
+    // A new step in the browser's history (user, 2026-11-24): Back from the
+    // Hub's first page comes back here, not to the page before (Stores).
+    // A login that skips this page (hub_direct) replaces it instead - Back
+    // to it would only open the Hub again.
+    if (access?.hub_direct) router.replace(first ? first[1] : "/dashboard");
+    else router.push(first ? first[1] : "/dashboard");
   }
 
   function openHub() {

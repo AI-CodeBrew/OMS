@@ -159,3 +159,34 @@ def import_from_couriers():
 
     logger.info("city import: added %s, errors %s", added, errors)
     return {"added": added, "errors": errors}
+
+
+# -- Saved spellings (Fix Cities - oms.city_fixer) -------------------------
+
+def list_spellings(q=""):
+    """The misspellings people fixed by hand, most used first. Fix Cities
+    fixes one by itself once it has been fixed the same way
+    city_fixer.LEARNED_AFTER times."""
+    from .city_fixer import LEARNED_AFTER
+    from .models import CitySpelling
+
+    qs = CitySpelling.objects.order_by("-times", "typed_key")
+    q = (q or "").strip().lower()
+    if q:
+        qs = qs.filter(Q(typed_key__icontains=q) | Q(city_name__icontains=q))
+    return {
+        "learned_after": LEARNED_AFTER,
+        "spellings": [
+            {"id": s.id, "typed": s.typed_key, "city": s.city_name, "times": s.times,
+             "automatic": s.times >= LEARNED_AFTER, "last_used_at": s.last_used_at}
+            for s in qs[:MAX_LIST]
+        ],
+    }
+
+
+def delete_spelling(spelling_id):
+    from .models import CitySpelling
+
+    deleted, _ = CitySpelling.objects.filter(id=spelling_id).delete()
+    if not deleted:
+        raise CityAdminError("Spelling not found.", 404)

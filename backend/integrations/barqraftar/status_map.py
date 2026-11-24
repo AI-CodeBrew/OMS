@@ -15,9 +15,10 @@ Rules on top of the sheet (user, 2026-11-16):
 
 Return by Consignee's reason: BarqRaftar's API (GET /order and
 get_multiple_orders) carries none - `remarks` comes back empty and the
-status logs hold only codes (checked live, 2026-11-16). When `remarks` does
-carry one it's mapped below; otherwise the sheet's last Return by Consignee
-row applies (Undelivered / Undelivered).
+status logs hold only codes (checked live, 2026-11-16; again 2026-11-23,
+webhook included). When `remarks` does carry one it's mapped below. The
+Sub Status is "Return by Consignee" either way (user, 2026-11-23); the tag
+is the reason's, or "Delivery Attempt Failed" without one.
 
 The card itself is moved by services.apply_barqraftar_status; this module
 only says which words go with it. To change a wording, change it here.
@@ -49,8 +50,11 @@ SUB_BOOKING_CANCELLED = "Booking Cancelled"
 TAG_BOOKING_CANCELLED = "Cancelled from Assigning Courier"
 TAG_REATTEMPT_REQUESTED = "Reattempt Requested"
 TAG_RETURN_REQUESTED = "Return Requested"
+# Return by Consignee (5) keeps BarqRaftar's own words as the Sub Status
+# (user, 2026-11-23); the tag says why, when BarqRaftar gives a reason.
+SUB_RETURN_BY_CONSIGNEE = "Return by Consignee"
 # Return by Consignee with no reason we can read.
-SUB_UNDELIVERED = ("Undelivered", "Delivery Attempt Failed")
+SUB_UNDELIVERED = (SUB_RETURN_BY_CONSIGNEE, "Delivery Attempt Failed")
 
 # Return by Consignee (5): reason -> (Sub Status, Tag). Keys are matched
 # case-insensitively against the start of BarqRaftar's remark; the rider's
@@ -100,16 +104,17 @@ def clean_remark(remark):
 
 def attempt_words(remark):
     """(Sub Status, Tag) for Return by Consignee, from BarqRaftar's remark.
-    A reason the sheet doesn't have: "Undelivered", with the reason as the
-    tag; no reason at all: "Undelivered" / "Delivery Attempt Failed"."""
+    The Sub Status is always "Return by Consignee" (user, 2026-11-23); the
+    tag is the sheet's for a reason it has, else the reason itself, else
+    "Delivery Attempt Failed" when BarqRaftar gives none."""
     text = clean_remark(remark)
     if not text:
         return SUB_UNDELIVERED
     lowered = text.lower()
-    for reason, words in ATTEMPT_REASONS.items():
+    for reason, (_sheet_sub_status, tag) in ATTEMPT_REASONS.items():
         if lowered.startswith(reason):
-            return words
-    return SUB_UNDELIVERED[0], text[:100]
+            return SUB_RETURN_BY_CONSIGNEE, tag
+    return SUB_RETURN_BY_CONSIGNEE, text[:100]
 
 
 def sheet_words(code, remark=""):

@@ -1,4 +1,5 @@
 import csv
+import uuid
 
 from django.db import transaction
 from django.db.models import Count, F, Max, Q, Sum, prefetch_related_objects
@@ -822,11 +823,40 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
         return qs
 
 
-def _orders_by_number(org_kwargs, order_numbers):
-    """One query for a whole batch, keyed by order number - a bulk action
-    over a page of selected rows shouldn't be a query per row. Used by the
-    table's own bulk-select actions, which already know exactly which
-    orders they mean - unlike a scan, there's no barcode to resolve.
+def _returnable(order):
+    """A parcel the returns desk can receive."""
+    return order.status == "returned" and not order.return_received_at
+
+
+def _packable(order):
+    """An order the packing bench can pack."""
+    return order.status == "ready_to_pick"
+
+
+def _pick_one(hits, label, prefer=None):
+    """(order_or_None, problem) out of every order matching one number.
+
+    Order numbers are only unique within a store, so a Dispatch Hub / All
+    Orders request (several stores) can match more than one - e.g. Fynktech's
+    returned #3367 and One Stations' cancelled #3367 (2026-11-23). Taking
+    whichever came first answered "Order is Cancelled, not Returned" for a
+    parcel that was in fact returned, and could have received the wrong
+    store's order. Now the one order the desk can act on (`prefer`) wins;
+    when that's still not exactly one, nothing is guessed."""
+    if len(hits) <= 1:
+        return (hits[0] if hits else None), ""
+    preferred = [order for order in hits if prefer(order)] if prefer else []
+    if len(preferred) == 1:
+        return preferred[0], ""
+    return None, f"{label} is on orders in more than one store - scan its tracking number instead"
+
+
+def _orders_by_number(org_kwargs, order_numbers, prefer=None):
+    """One query for a whole batch - a bulk action over a page of selected
+    rows shouldn't be a query per row. Used by the table's own bulk-select
+    actions, which already know exactly which orders they mean - unlike a
+    scan, there's no barcode to resolve. Returns {order_number: (order,
+    problem)} - see _pick_one for a number found in several stores.
 
     `org_kwargs` is core.scoping.org_filter(request)'s dict - one store
     normally, every Dispatch Hub store when a super admin is operating
@@ -834,35 +864,53 @@ def _orders_by_number(org_kwargs, order_numbers):
     below derives its own org from the Order row, never from request/
     ambient context, so an order from any matched store works unmodified).
     """
-    orders = Order.objects.filter(order_number__in=order_numbers, **org_kwargs)
-    return {order.order_number: order for order in orders}
+    hits = {}
+    for order in Order.objects.filter(order_number__in=order_numbers, **org_kwargs):
+        hits.setdefault(order.order_number, []).append(order)
+    return {number: _pick_one(orders, number, prefer) for number, orders in hits.items()}
 
 
-def _find_order(org_kwargs, request_data):
+def _find_order(org_kwargs, request_data, prefer=None):
     """Resolves the order a scan/manual-entry or a table action refers to.
 
     The physical label on a parcel carries the courier's tracking number
     (that's literally what its barcode encodes), so the scan panel sends
-    tracking_number. The orders table already displays order_number and
-    knows exactly which row a button belongs to, so its buttons send that
-    instead - no barcode involved, nothing to resolve by scanning.
+    tracking_number. A table row's button knows its exact order and sends
+    order_id (with order_number for display). order_number alone is the
+    last resort, and may match one order per store (see _pick_one).
 
-    Returns (order_or_None, raw_identifier) - raw_identifier is whatever
-    string was searched by, used only to label a not_found result (there's
-    no order to pull a real order_number from in that case).
+    Returns (order_or_None, raw_identifier, problem) - raw_identifier is
+    whatever string was searched by, used only to label a not_found result
+    (there's no order to pull a real order_number from in that case);
+    problem is set when the code matched orders in several stores.
     """
     # A scanner's QR text ("CN,code,COD" on Leopards' slip) is cut down to
     # the code itself - see oms/scan_codes.py.
     from oms.scan_codes import scanned_code
 
+    order_id = str(request_data.get("order_id") or "").strip()
+    if order_id:
+        label = scanned_code(request_data.get("order_number")) or order_id
+        try:
+            uuid.UUID(order_id)
+        except ValueError:
+            return None, label, ""
+        return Order.objects.filter(id=order_id, **org_kwargs).first(), label, ""
+
     tracking_number = scanned_code(request_data.get("tracking_number"))
     if tracking_number:
-        order = Order.objects.filter(tracking_number=tracking_number, **org_kwargs).first()
-        return order, tracking_number
+        hits = list(Order.objects.filter(tracking_number=tracking_number, **org_kwargs)[:10])
+        order, problem = _pick_one(hits, tracking_number, prefer)
+        return order, tracking_number, problem
 
     order_number = scanned_code(request_data.get("order_number"))
-    order = Order.objects.filter(order_number=order_number, **org_kwargs).first()
-    return order, order_number
+    hits = list(Order.objects.filter(order_number=order_number, **org_kwargs)[:10])
+    order, problem = _pick_one(hits, order_number, prefer)
+    return order, order_number, problem
+
+
+def _ambiguous(raw_identifier, problem):
+    return {"success": False, "reason": problem, "order_number": raw_identifier}
 
 
 def _with_items(*orders):
@@ -890,6 +938,9 @@ def _lookup_return(order, raw_identifier):
         return {"success": False, "reason": "Already received", "order_number": order.order_number}
     return {
         "success": True,
+        # The receive that follows names this exact order - an order
+        # number alone can be on orders in several stores (_pick_one).
+        "order_id": str(order.id),
         "order_number": order.order_number,
         "tracking_number": order.tracking_number,
         # The popup's rows - each line's units start as Good.
@@ -1022,11 +1073,14 @@ class ReturnRestockView(viewsets.ViewSet):
         """Read-only - the scan panel's first phase. Confirms a parcel is
         receivable (green tick) before the operator is asked whether it
         arrived in good or bad condition; nothing is written here."""
-        if not (request.data.get("tracking_number") or request.data.get("order_number")):
+        if not (request.data.get("tracking_number") or request.data.get("order_number")
+                or request.data.get("order_id")):
             return Response(
                 {"detail": "tracking_number is required"}, status=status.HTTP_400_BAD_REQUEST
             )
-        order, raw_identifier = _find_order(org_filter(request), request.data)
+        order, raw_identifier, problem = _find_order(org_filter(request), request.data, prefer=_returnable)
+        if problem:
+            return Response(_ambiguous(raw_identifier, problem))
         if order is not None and order.status == "returned" and not order.return_received_at:
             _with_items(order)  # only a receivable parcel's lines are read
         return Response(_lookup_return(order, raw_identifier))
@@ -1038,7 +1092,8 @@ class ReturnRestockView(viewsets.ViewSet):
         Without it, `condition` ("good"/"bad") applies to every unit."""
         condition = (request.data.get("condition") or "good").strip()
         raw_breakdown = request.data.get("breakdown")
-        if not (request.data.get("tracking_number") or request.data.get("order_number")):
+        if not (request.data.get("tracking_number") or request.data.get("order_number")
+                or request.data.get("order_id")):
             return Response(
                 {"detail": "tracking_number is required"}, status=status.HTTP_400_BAD_REQUEST
             )
@@ -1056,7 +1111,9 @@ class ReturnRestockView(viewsets.ViewSet):
                 {"detail": "condition must be 'good' or 'bad'"}, status=status.HTTP_400_BAD_REQUEST
             )
 
-        order, raw_identifier = _find_order(org_filter(request), request.data)
+        order, raw_identifier, problem = _find_order(org_filter(request), request.data, prefer=_returnable)
+        if problem:
+            return Response(_ambiguous(raw_identifier, problem))
         if order is not None and order.status == "returned":
             _with_items(order)
         return Response(
@@ -1093,21 +1150,26 @@ class ReturnRestockView(viewsets.ViewSet):
                 {"detail": "condition must be 'good' or 'bad'"}, status=status.HTTP_400_BAD_REQUEST
             )
 
-        found = _orders_by_number(org_filter(request), order_numbers)
-        _with_items(*(order for order in found.values() if order.status == "returned"))
+        found = _orders_by_number(org_filter(request), order_numbers, prefer=_returnable)
+        _with_items(*(order for order, _ in found.values() if order is not None and order.status == "returned"))
         note = (request.data.get("note") or "")[:255]
         actor_email = getattr(request, "auth_email", "") or ""
-        results = [
-            _receive_return(
-                found.get(number),
-                number,
-                condition=condition,
-                actor_user_id=request.user_id,
-                actor_email=actor_email,
-                note=note,
+        results = []
+        for number in order_numbers:
+            order, problem = found.get(number, (None, ""))
+            if problem:
+                results.append(_ambiguous(number, problem))
+                continue
+            results.append(
+                _receive_return(
+                    order,
+                    number,
+                    condition=condition,
+                    actor_user_id=request.user_id,
+                    actor_email=actor_email,
+                    note=note,
+                )
             )
-            for number in order_numbers
-        ]
         return Response({"results": results})
 
 
@@ -1149,12 +1211,15 @@ class PackingView(viewsets.ViewSet):
 
     @action(detail=False, methods=["post"], url_path="scan")
     def scan(self, request):
-        if not (request.data.get("tracking_number") or request.data.get("order_number")):
+        if not (request.data.get("tracking_number") or request.data.get("order_number")
+                or request.data.get("order_id")):
             return Response(
                 {"detail": "tracking_number is required"}, status=status.HTTP_400_BAD_REQUEST
             )
 
-        order, raw_identifier = _find_order(org_filter(request), request.data)
+        order, raw_identifier, problem = _find_order(org_filter(request), request.data, prefer=_packable)
+        if problem:
+            return Response(_ambiguous(raw_identifier, problem))
         return Response(
             _pack_order(
                 order,
@@ -1174,15 +1239,15 @@ class PackingView(viewsets.ViewSet):
                 {"detail": "order_numbers is required"}, status=status.HTTP_400_BAD_REQUEST
             )
 
-        found = _orders_by_number(org_filter(request), order_numbers)
+        found = _orders_by_number(org_filter(request), order_numbers, prefer=_packable)
         actor_email = getattr(request, "auth_email", "") or ""
-        results = [
-            _pack_order(
-                found.get(number),
-                number,
-                actor_user_id=request.user_id,
-                actor_email=actor_email,
+        results = []
+        for number in order_numbers:
+            order, problem = found.get(number, (None, ""))
+            if problem:
+                results.append(_ambiguous(number, problem))
+                continue
+            results.append(
+                _pack_order(order, number, actor_user_id=request.user_id, actor_email=actor_email)
             )
-            for number in order_numbers
-        ]
         return Response({"results": results})

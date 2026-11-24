@@ -3,7 +3,6 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import useAuthStore from "../../../../store/authStore";
-import { invalidateViewCache } from "../../../../lib/viewCache";
 import adminTeamService, { exitTargetFor } from "../../../../services/adminTeamService";
 
 // The super admin's Critical Orders tab: every store's critical orders (the
@@ -37,7 +36,6 @@ export default function CriticalOrdersAdminPage() {
             pages,
             exitTo: exitTargetFor(access, ["critical_orders", "all_orders"], "/admin/organizations"),
           });
-          invalidateViewCache();
           router.replace("/critical-orders");
         }, 0);
       });

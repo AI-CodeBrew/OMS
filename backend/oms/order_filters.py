@@ -1,7 +1,7 @@
 """The Orders page's field filters (frontend OrderFieldFilters): OMS Order
 ID, Store Order ID, Customer Name, Phone, Tracking (typed values) and Store,
-City, Province, Courier, Tag (picked from a list - filter_options below gives
-the choices). Organization is the existing `store` param (organization ids).
+City, Province, Courier, Tag, City Fix (picked from a list - filter_options
+below gives the choices). Organization is the existing `store` param (organization ids).
 
 Each filter is a query param holding a JSON array. Several values in one
 filter match any of them; several filters together must all match. Read by
@@ -17,13 +17,19 @@ from django.db.models.functions import Lower, Trim
 # Filters typed in (one or more values each).
 TEXT_FILTERS = ("f_oms_id", "f_store_order_id", "f_customer", "f_phone", "f_tracking")
 # Filters picked from filter_options' list.
-LIST_FILTERS = ("f_shop", "f_city", "f_province", "f_courier", "f_tag")
+LIST_FILTERS = ("f_shop", "f_city", "f_province", "f_courier", "f_tag", "f_city_fix")
 ALL_FILTERS = TEXT_FILTERS + LIST_FILTERS
 
 # Picked under Province for orders whose city has no province on the super
 # admin's City list; under Courier for orders with no courier yet.
 UNKNOWN_PROVINCE = "Unknown"
 NO_COURIER = "__none__"
+# City Fix's choices - Order.city_fix (oms.city_fixer).
+CITY_FIX_CHOICES = [
+    ("auto", "City fixed - automatically"),
+    ("manual", "City fixed - by hand"),
+    ("check", "City check needed"),
+]
 
 
 def _values(params, key):
@@ -131,10 +137,14 @@ def apply_field_filters(qs, params):
     if tags:
         qs = qs.filter(_tag_filter_q(tags))
 
+    fixes = [v for v in _values(params, "f_city_fix") if v in dict(CITY_FIX_CHOICES)]
+    if _values(params, "f_city_fix"):
+        qs = qs.filter(city_fix__in=fixes)
+
     return qs
 
 
-OPTION_FIELDS = ("f_shop", "f_city", "f_province", "f_courier", "f_tag")
+OPTION_FIELDS = ("f_shop", "f_city", "f_province", "f_courier", "f_tag", "f_city_fix")
 OPTION_LIMIT = 300
 
 
@@ -270,6 +280,12 @@ def filter_options(qs, field, q=""):
                 r for r in rows
                 if q in r["label"].lower() or q in r["value"].lower()
             ]
+        return rows, False
+    elif field == "f_city_fix":
+        in_use = dict(qs.order_by().exclude(city_fix="").values_list("city_fix").annotate(n=Count("id")))
+        rows = [{"value": v, "label": label, "count": in_use.get(v, 0)} for v, label in CITY_FIX_CHOICES]
+        if q:
+            rows = [r for r in rows if q in r["label"].lower()]
         return rows, False
     elif field in ("f_city", "f_province"):
         city_rows = _city_norm(qs).order_by().values("_city_norm").annotate(n=Count("id"))

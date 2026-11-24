@@ -546,12 +546,18 @@ def resolve_city_issue(order, *, new_city, actor_user_id=None):
         raise InvalidTransition("Can't approve - " + "; ".join(problems))
     # Saved as the list spells it ("lahore" -> "Lahore").
     listed = City.objects.filter(name_key=city_key(new_city)).values_list("name", flat=True).first()
-    return _transition(
+    old_city = order.city
+    order = _transition(
         order,
         "awaiting_assigning",
         actor_user_id=actor_user_id,
         extra_fields={"city": listed or new_city},
     )
+    if order.city != old_city:
+        from .city_fixer import after_city_edit
+
+        after_city_edit(order, old_city, actor_user_id=actor_user_id)
+    return order
 
 
 def assign_courier(order, *, courier_id, actor_user_id=None):
@@ -3027,9 +3033,16 @@ def update_order_detail(order, *, fields, items=None):
         # Removing products (the bin in Edit) can't remove the last one -
         # cancel the order instead.
         raise InvalidTransition("An order needs at least one product - cancel the order instead.")
+    old_city = order.city
     for field, value in fields.items():
         setattr(order, field, value)
     order.save()
+    if "city" in fields and order.city != old_city:
+        # A misspelt city corrected by hand: the City Fixed badge, and Fix
+        # Cities learns the spelling (oms.city_fixer).
+        from .city_fixer import after_city_edit
+
+        after_city_edit(order, old_city)
 
     if items is not None:
         from .product_skus import apply_skus_on_edit

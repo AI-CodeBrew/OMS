@@ -3,7 +3,6 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import useAuthStore from "../../../../store/authStore";
-import { invalidateViewCache } from "../../../../lib/viewCache";
 import adminTeamService, { exitTargetFor } from "../../../../services/adminTeamService";
 
 // The super admin's All Orders tab: the Dispatch Hub's own Orders view
@@ -30,7 +29,6 @@ export default function AllOrdersPage() {
             modules: ["oms", "wms"],
             exitTo: exitTargetFor(access, ["all_orders", "critical_orders"], "/admin/organizations"),
           });
-          invalidateViewCache();
           router.replace("/orders");
         }, 0);
       });

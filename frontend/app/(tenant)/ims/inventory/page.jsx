@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import wmsService from "../../../../services/wmsService";
 import useLoadingStore from "../../../../store/loadingStore";
 import Button from "../../../../components/shared/Button";
+import SearchBox from "../../../../components/shared/SearchBox";
 import Pagination from "../../../../components/shared/Pagination";
 import StockAdjustModal from "../../../../components/wms/StockAdjustModal";
 import WarehouseSetupCard from "../../../../components/wms/WarehouseSetupCard";
@@ -193,33 +194,20 @@ export default function WmsPage() {
           Inventory
         </h1>
         {hasWarehouse ? (
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              setAppliedSearch(search);
+          // Searches as you type; the dropdown lists this tab's names / SKUs
+          // containing the text.
+          <SearchBox
+            value={search}
+            onChange={setSearch}
+            onSearch={(term) => {
+              setAppliedSearch(term);
               setPage(1);
             }}
-            className="flex min-w-0 flex-1 items-center gap-2 sm:flex-none"
-          >
-            <input
-              type="search"
-              value={search}
-              onChange={(e) => {
-                setSearch(e.target.value);
-                // Emptying the box (typing it away or the ✕) brings the
-                // full list back without another Search click.
-                if (!e.target.value.trim() && appliedSearch) {
-                  setAppliedSearch("");
-                  setPage(1);
-                }
-              }}
-              placeholder="Search SKU or product"
-              className="w-full min-w-0 rounded-md border border-surface-border px-3 py-1.5 text-sm outline-none focus:border-brand-500 sm:w-60"
-            />
-            <Button type="submit" variant="secondary">
-              Search
-            </Button>
-          </form>
+            suggestions={stock.flatMap((item) => [item.product_name, item.sku])}
+            placeholder="Search SKU or product"
+            className="flex-1 sm:flex-none"
+            inputClassName="w-full sm:w-60"
+          />
         ) : null}
         {hasWarehouse ? (
           <div className="ml-auto flex flex-wrap gap-2">

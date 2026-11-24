@@ -9,6 +9,12 @@ export default function OrdersToolbar({
   search,
   onSearchChange,
   onSubmitSearch,
+  // Called with the box's text once typing pauses - the search runs
+  // without a Search click (user, 2026-11-23).
+  onAutoSearch,
+  // What this tab already shows that may match - order numbers, customer
+  // names… - suggested alongside the product names.
+  rowSuggestions = [],
   selectedCount,
   availableActions,
   noActionsReason = "",
@@ -28,29 +34,92 @@ export default function OrdersToolbar({
 }) {
   // Product-name autocomplete for the last comma-separated term (matches
   // the multi-term search convention the input already supports).
-  const [suggestions, setSuggestions] = useState([]);
+  const [productNames, setProductNames] = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
   const debounceRef = useRef(null);
+  const autoRef = useRef(null);
+  const lastTerm = search.split(",").pop().trim();
 
   useEffect(() => {
-    const term = search.split(",").pop().trim();
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    if (!term) {
-      setSuggestions([]);
+    if (!lastTerm) {
+      setProductNames([]);
       return undefined;
     }
     debounceRef.current = setTimeout(async () => {
-      const results = await ordersService.suggestProductNames(term);
-      setSuggestions(results);
+      const results = await ordersService.suggestProductNames(lastTerm);
+      setProductNames(results);
     }, 300);
     return () => clearTimeout(debounceRef.current);
-  }, [search]);
+  }, [lastTerm]);
+
+  useEffect(() => () => clearTimeout(autoRef.current), []);
+
+  // Product names, then this tab's own matches - each containing the last
+  // comma-separated term, no repeats, at most 8.
+  const lower = lastTerm.toLowerCase();
+  const suggestions = [];
+  if (lower) {
+    const seen = new Set();
+    for (const raw of [...productNames, ...rowSuggestions]) {
+      const text = String(raw ?? "").trim();
+      const key = text.toLowerCase();
+      if (!text || seen.has(key) || key === lower || !key.includes(lower)) continue;
+      seen.add(key);
+      suggestions.push(text);
+      if (suggestions.length >= 8) break;
+    }
+  }
+
+  function changeSearch(value) {
+    onSearchChange(value);
+    setShowSuggestions(true);
+    setActiveIndex(-1);
+    if (!onAutoSearch) return;
+    clearTimeout(autoRef.current);
+    // Emptied: the full list straight away (onSearchChange handles it).
+    if (!value.trim()) return;
+    autoRef.current = setTimeout(() => onAutoSearch(value), 500);
+  }
 
   function pickSuggestion(name) {
     const terms = search.split(",");
     terms[terms.length - 1] = ` ${name}`;
-    onSearchChange(terms.join(",").replace(/^ /, ""));
+    const next = terms.join(",").replace(/^ /, "");
+    onSearchChange(next);
     setShowSuggestions(false);
+    setActiveIndex(-1);
+    clearTimeout(autoRef.current);
+    onAutoSearch?.(next);
+  }
+
+  function onKeyDown(e) {
+    if (!showSuggestions || suggestions.length === 0) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActiveIndex((i) => (i + 1) % suggestions.length);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIndex((i) => (i <= 0 ? suggestions.length - 1 : i - 1));
+    } else if (e.key === "Enter" && activeIndex >= 0) {
+      e.preventDefault();
+      pickSuggestion(suggestions[activeIndex]);
+    } else if (e.key === "Escape") {
+      setShowSuggestions(false);
+    }
+  }
+
+  function highlighted(text) {
+    const at = lower ? text.toLowerCase().indexOf(lower) : -1;
+    if (at < 0) return text;
+    return (
+      <>
+        {text.slice(0, at)}
+        <span className="font-semibold text-brand-800">{text.slice(at, at + lower.length)}</span>
+        {text.slice(at + lower.length)}
+      </>
+    );
   }
 
   return (
@@ -62,13 +131,19 @@ export default function OrdersToolbar({
           on one line. Full width below sm, back to the fixed desktop
           width above it. */}
       <form
-        onSubmit={onSubmitSearch}
+        onSubmit={(e) => {
+          clearTimeout(autoRef.current);
+          setShowSuggestions(false);
+          onSubmitSearch(e);
+        }}
         className="flex w-full items-center sm:w-auto"
       >
         <div className="relative min-w-0 flex-1 sm:w-72 sm:flex-none">
           <input
             value={search}
-            onChange={(e) => onSearchChange(e.target.value)}
+            onChange={(e) => changeSearch(e.target.value)}
+            onKeyDown={onKeyDown}
+            autoComplete="off"
             onFocus={() => setShowSuggestions(true)}
             onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
             placeholder="Search order, customer, phone, product…"
@@ -76,16 +151,19 @@ export default function OrdersToolbar({
             className="w-full rounded-l-md border border-surface-border px-3 py-1.5 text-sm outline-none focus:border-brand-500"
           />
           {showSuggestions && suggestions.length > 0 ? (
-            <ul className="absolute z-20 mt-1 w-full rounded-md border border-surface-border bg-white py-1 shadow-lg">
-              {suggestions.map((name) => (
+            <ul className="absolute z-20 mt-1 max-h-72 w-full overflow-y-auto rounded-md border border-surface-border bg-white py-1 shadow-lg">
+              {suggestions.map((name, i) => (
                 <li key={name}>
                   <button
                     type="button"
                     onMouseDown={(e) => e.preventDefault()}
                     onClick={() => pickSuggestion(name)}
-                    className="block w-full truncate px-3 py-1.5 text-left text-sm text-slate-700 hover:bg-surface"
+                    title={name}
+                    className={`block w-full truncate px-3 py-1.5 text-left text-sm text-slate-700 ${
+                      i === activeIndex ? "bg-surface" : "hover:bg-surface"
+                    }`}
                   >
-                    {name}
+                    {highlighted(name)}
                   </button>
                 </li>
               ))}

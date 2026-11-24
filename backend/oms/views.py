@@ -812,6 +812,120 @@ class OrderViewSet(viewsets.ModelViewSet):
         )
         return Response({"reasons": services.critical_summary(qs)})
 
+    # -- Fix Cities (user, 2026-11-23 - oms.city_fixer) ------------------------
+
+    @staticmethod
+    def _page_params(raw):
+        """The Orders page's filters, minus the tab and paging - Fix Cities
+        always works on the Awaiting Confirmation card."""
+        skip = {"status", "status_exact", "page", "page_size", "count_only"}
+        return {k: str(v) for k, v in (raw or {}).items() if k not in skip and v not in (None, "")}
+
+    def _card_orders(self, request, params, order_ids=None):
+        from .city_fixer import CARD_STATUSES
+
+        qs = Order.objects.filter(**org_filter(request), status__in=CARD_STATUSES)
+        if order_ids:
+            return qs.filter(id__in=_valid_uuids(order_ids))
+        return self._apply_filters(qs, params)
+
+    @action(detail=False, methods=["post"], url_path="fix-cities")
+    def fix_cities(self, request):
+        """POST {order_ids?, filters?} - the Fix Cities button: the ticked
+        orders, or else every order in Awaiting Confirmation the page shows
+        (its search / filters). Sure fixes are made straight away, the rest
+        marked for checking. Returns {summary, fixed, check}."""
+        from . import city_fixer
+
+        order_ids = request.data.get("order_ids") or []
+        qs = self._card_orders(request, self._page_params(request.data.get("filters")), order_ids)
+        cities = city_fixer.CityList()
+        # Read light first: only orders whose city is wrong, or that wait
+        # in Need checking, are loaded in full.
+        wanted = [
+            pk for pk, city, fix in qs.order_by().values_list("id", "city", "city_fix")
+            if fix == Order.CITY_FIX_CHECK or not cities.ok(city)
+        ]
+        orders = list(
+            Order.objects.filter(id__in=wanted[: city_fixer.MAX_ORDERS])
+            .select_related("organization")
+            .order_by("placed_at", "created_at")
+        )
+        result = city_fixer.run(orders, actor_user_id=request.user_id, cities=cities)
+        result["summary"]["too_many"] = max(0, len(wanted) - city_fixer.MAX_ORDERS)
+        return Response(result)
+
+    @action(detail=False, methods=["get"], url_path="fix-cities/review")
+    def fix_cities_review(self, request):
+        """GET ?<page filters> - the popup reopened: orders in Awaiting
+        Confirmation still waiting for a city check (with suggestions), and
+        the fixed ones (for Undo). count_only=1: just the two counts, for
+        the button."""
+        from . import city_fixer
+
+        qs = self._card_orders(request, self._page_params(request.query_params.dict()))
+        if request.query_params.get("count_only"):
+            counts = dict(qs.order_by().exclude(city_fix="").values_list("city_fix").annotate(n=Count("id")))
+            return Response({
+                "need_check": counts.get(Order.CITY_FIX_CHECK, 0),
+                "fixed": counts.get(Order.CITY_FIX_AUTO, 0) + counts.get(Order.CITY_FIX_MANUAL, 0),
+            })
+        orders = list(
+            qs.filter(city_fix__in=[Order.CITY_FIX_CHECK, Order.CITY_FIX_AUTO, Order.CITY_FIX_MANUAL])
+            .select_related("organization")
+            .order_by("placed_at", "created_at")[:1000]
+        )
+        return Response(city_fixer.review(orders))
+
+    @action(detail=False, methods=["post"], url_path="fix-city")
+    def fix_city(self, request):
+        """POST {fixes: [{order_id, city}]} - a person's picks in the popup
+        (one, or Use all suggested). The city must be on the list. Returns
+        {results: [{order_id, success, error?, order?}]}."""
+        from . import city_fixer
+
+        fixes = request.data.get("fixes") or []
+        if not isinstance(fixes, list) or not fixes:
+            return Response({"detail": "Nothing to fix."}, status=status.HTTP_400_BAD_REQUEST)
+        wanted = {str(f.get("order_id")): str(f.get("city") or "").strip() for f in fixes if isinstance(f, dict)}
+        orders = {
+            str(o.id): o
+            for o in Order.objects.filter(id__in=_valid_uuids(wanted), **org_filter(request)).select_related("organization")
+        }
+        cities = city_fixer.CityList()
+        learned = set()
+        results = []
+        for order_id, city in wanted.items():
+            order = orders.get(order_id)
+            if order is None:
+                results.append({"order_id": order_id, "success": False, "error": "Order not found"})
+                continue
+            try:
+                city_fixer.fix_by_hand(order, city, actor_user_id=request.user_id, cities=cities, learned=learned)
+                results.append({"order_id": order_id, "success": True, "order": city_fixer.row(order)})
+            except ValueError as exc:
+                results.append({"order_id": order_id, "order_number": order.order_number, "success": False,
+                                "error": str(exc)})
+        return Response({"results": results})
+
+    @action(detail=False, methods=["post"], url_path="undo-city-fix")
+    def undo_city_fix(self, request):
+        """POST {order_id} - puts a fixed city back; the order goes back to
+        Need checking."""
+        from . import city_fixer
+
+        ids = _valid_uuids([request.data.get("order_id")])
+        order = Order.objects.filter(id__in=ids, **org_filter(request)).select_related("organization").first()
+        if order is None:
+            return Response({"detail": "Order not found."}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            city_fixer.undo(order, actor_user_id=request.user_id)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        cities = city_fixer.CityList()
+        diagnosis = city_fixer.diagnose(order.city, city_fixer.order_address(order), cities)
+        return Response({"order": city_fixer.row(order, city_fixer.as_suggestion(diagnosis, cities))})
+
     @action(detail=False, methods=["get"], url_path="filter-options")
     def filter_options(self, request):
         """The choices of one list filter on the Orders page (`field`:
@@ -1540,14 +1654,21 @@ class OrderViewSet(viewsets.ModelViewSet):
         params = request.data.get("params") or {}
         # A Hub booking tags each order "by FynkTech" as soon as it's booked
         # (Order.save) - _record_hub_booking at the end stays as a backstop.
-        token = current_hub_booking.set(
-            is_hub_request(request)
-            and (action_name in _BOOKING_ACTIONS or action_name == "change_courier")
-        )
+        booking = action_name in _BOOKING_ACTIONS or action_name == "change_courier"
+        token = current_hub_booking.set(is_hub_request(request) and booking)
         try:
-            return self._bulk_action(request, action_name, order_ids, params)
+            response = self._bulk_action(request, action_name, order_ids, params)
         finally:
             current_hub_booking.reset(token)
+        # (user, 2026-11-23) Each booking click is a batch - one per store -
+        # of exactly the orders it booked; the skipped ones aren't in it.
+        results = getattr(response, "data", None)
+        if booking and isinstance(results, dict) and isinstance(results.get("results"), list):
+            from .batch_services import record_booking_batches
+
+            booked = _valid_uuids(r.get("order_id") for r in results["results"] if r.get("success"))
+            results["batches"] = record_booking_batches(booked, actor_user_id=request.user_id)
+        return response
 
     def _bulk_action(self, request, action_name, order_ids, params):
         # Booked in one batch (not per order through BULK_ACTIONS below) so
@@ -2758,7 +2879,7 @@ class DispatchBatchViewSet(viewsets.ReadOnlyModelViewSet):
             .select_related("organization")
             .prefetch_related(
                 # all_objects: the batches are already org-scoped above.
-                Prefetch("entries", queryset=DispatchBatchOrder.all_objects.all()),
+                Prefetch("entries", queryset=DispatchBatchOrder.all_objects.select_related("order__courier")),
                 Prefetch("documents", queryset=PrintBatch.all_objects.order_by("kind", "-updated_at")),
             )
         )
@@ -2771,7 +2892,15 @@ class DispatchBatchViewSet(viewsets.ReadOnlyModelViewSet):
             qs = qs.filter(created_at__date__lte=date_to)
         courier = (params.get("courier") or "").strip().lower()
         if courier:
-            qs = qs.filter(Q(courier=courier) | Q(documents__courier=courier))
+            from .batch_services import BOOKING_COURIER_KEYS
+
+            match = Q(courier=courier) | Q(documents__courier=courier)
+            # A booking batch of several couriers (Auto Book) names none -
+            # it matches through its orders' courier.
+            names = [name for name, key in BOOKING_COURIER_KEYS.items() if key == courier]
+            if names:
+                match |= Q(source=DispatchBatch.SOURCE_BOOKING, entries__order__courier__name__iexact=names[0])
+            qs = qs.filter(match)
         kind = params.get("kind")
         if kind:
             qs = qs.filter(documents__kind=kind)

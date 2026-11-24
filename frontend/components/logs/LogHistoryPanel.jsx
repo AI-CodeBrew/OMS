@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Portal from "../shared/Portal";
 import { formatWhen, isFailed, Who } from "./logFormat";
 
 const HISTORY_LIMIT = 200;
@@ -51,8 +52,10 @@ export default function LogHistoryPanel({ log, fetchLogs, onClose }) {
   if (!log) return null;
   const body = log.metadata?.body;
 
+  // In <body> above the top bar, starting below it (shared/Portal).
   return (
-    <div className="fixed inset-0 z-50 flex justify-end">
+    <Portal>
+    <div className="fixed inset-0 z-[100] flex justify-end pt-16">
       <button type="button" aria-label="Close" onClick={onClose} className="absolute inset-0 bg-slate-900/30" />
       <aside className="relative flex h-full w-full max-w-lg flex-col bg-white shadow-2xl">
         <header className="flex items-start justify-between gap-3 border-b border-surface-border px-5 py-4">
@@ -129,5 +132,6 @@ export default function LogHistoryPanel({ log, fetchLogs, onClose }) {
         </div>
       </aside>
     </div>
+    </Portal>
   );
 }

@@ -4,6 +4,7 @@ import usePageAccess from "../../../../lib/usePageAccess";
 import { useCallback, useEffect, useState } from "react";
 import wmsService from "../../../../services/wmsService";
 import Button from "../../../../components/shared/Button";
+import SearchBox from "../../../../components/shared/SearchBox";
 import Pagination from "../../../../components/shared/Pagination";
 import SimpleFormModal from "../../../../components/wms/purchase-orders/SimpleFormModal";
 import AddPurchaseOrderModal from "../../../../components/wms/purchase-orders/AddPurchaseOrderModal";
@@ -214,24 +215,22 @@ export default function PurchaseOrdersPage() {
         />
       </div>
 
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          setAppliedSearch(search.trim());
+      <SearchBox
+        value={search}
+        onChange={setSearch}
+        onSearch={(term) => {
+          setAppliedSearch(term);
           setPage(1);
         }}
-        className="mt-4 flex flex-wrap items-center gap-2"
-      >
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search PO number, supplier or SKU"
-          className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500 sm:w-72"
-        />
-        <Button type="submit" variant="secondary">
-          Search
-        </Button>
-      </form>
+        suggestions={orders.flatMap((po) => [
+          po.po_number,
+          po.supplier_name,
+          ...(po.lines || []).flatMap((line) => [line.sku, line.product_name]),
+        ])}
+        placeholder="Search PO number, supplier or SKU"
+        className="mt-4 flex-wrap"
+        inputClassName="w-full sm:w-72"
+      />
 
       <div className="mt-3 overflow-x-auto rounded-lg border border-surface-border bg-white">
         <table className="w-full text-sm">

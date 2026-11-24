@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Portal from "../shared/Portal";
 
 // Delivery rate colour (status, so always beside its number, never alone):
 // green from 70%, amber from 50%, red below.
@@ -60,8 +61,10 @@ function ProvincesPopup({ data, initialCourier, onClose }) {
   const courier = data.couriers.find((c) => c.name === picked);
   const subject = courier || { ...data.overall, provinces: data.provinces };
 
+  // In <body> above the top bar, and kept below it (shared/Portal).
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" onClick={onClose}>
+    <Portal>
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 px-4 pb-4 pt-20" onClick={onClose}>
       <div
         role="dialog"
         aria-modal="true"
@@ -122,6 +125,7 @@ function ProvincesPopup({ data, initialCourier, onClose }) {
         </div>
       </div>
     </div>
+    </Portal>
   );
 }
 

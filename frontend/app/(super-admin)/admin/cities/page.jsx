@@ -6,6 +6,109 @@ import citiesAdminService from "../../../../services/citiesAdminService";
 
 const SOURCE_LABEL = { manual: "Added by hand", postex: "PostEx", barqraftar: "BarqRaftar", leopards: "Leopards" };
 
+// Misspellings people fixed by hand in Fix Cities (Orders > Awaiting
+// Confirmation). Once one is fixed the same way `learnedAfter` times, Fix
+// Cities fixes it by itself; Forget removes a wrong one.
+function SavedSpellings() {
+  const [rows, setRows] = useState([]);
+  const [learnedAfter, setLearnedAfter] = useState(2);
+  const [q, setQ] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      setLoading(true);
+      try {
+        const data = await citiesAdminService.listSpellings(q.trim());
+        if (cancelled) return;
+        setRows(data.spellings || []);
+        if (data.learned_after) setLearnedAfter(data.learned_after);
+        setError("");
+      } catch (err) {
+        if (!cancelled) setError(err.message || "Failed to load spellings");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [q]);
+
+  async function onForget(row) {
+    if (!window.confirm(`Forget "${row.typed}" → ${row.city}? Fix Cities will stop using it.`)) return;
+    try {
+      await citiesAdminService.removeSpelling(row.id);
+      setRows((list) => list.filter((r) => r.id !== row.id));
+    } catch (err) {
+      setError(err.message || "Failed to forget the spelling");
+    }
+  }
+
+  return (
+    <div className="mt-5 rounded-lg border border-surface-border bg-white">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-surface-border p-3">
+        <div>
+          <h2 className="text-sm font-semibold text-slate-800">Saved spellings</h2>
+          <p className="mt-0.5 text-xs text-slate-500">
+            Learned from Fix Cities: a spelling fixed by hand {learnedAfter} times is then fixed automatically.
+          </p>
+        </div>
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Search spellings…"
+          className="w-56 rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500"
+        />
+      </div>
+      {error ? <div className="m-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div> : null}
+      {loading && !rows.length ? (
+        <p className="px-4 py-6 text-center text-sm text-slate-500">Loading…</p>
+      ) : !rows.length ? (
+        <p className="px-4 py-6 text-center text-sm text-slate-500">
+          {q ? "No spelling matches." : "Nothing learned yet - it fills up as cities are fixed by hand."}
+        </p>
+      ) : (
+        <table className="w-full text-sm">
+          <thead className="bg-surface text-left text-xs uppercase text-slate-500">
+            <tr>
+              <th className="px-4 py-2 font-medium">Typed</th>
+              <th className="px-4 py-2 font-medium">Fixed to</th>
+              <th className="px-4 py-2 font-medium">Times</th>
+              <th className="px-4 py-2 font-medium">Fixed automatically</th>
+              <th className="px-4 py-2" />
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-surface-border">
+            {rows.map((row) => (
+              <tr key={row.id}>
+                <td className="px-4 py-2 text-slate-800">{row.typed}</td>
+                <td className="px-4 py-2 font-medium text-slate-900">{row.city}</td>
+                <td className="px-4 py-2 tabular-nums text-slate-600">{row.times}</td>
+                <td className="px-4 py-2">
+                  {row.automatic ? (
+                    <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">Yes</span>
+                  ) : (
+                    <span className="text-xs text-slate-400">Suggested only</span>
+                  )}
+                </td>
+                <td className="px-4 py-2 text-right">
+                  <button type="button" onClick={() => onForget(row)} className="text-xs font-medium text-red-600 hover:underline">
+                    Forget
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
 // The one city list every store's orders are checked against: an order
 // whose city isn't on it (e.g. "LHR" for Lahore) can't move to Approved.
 // Filled from the couriers' own lists (Import) and by pasting names in.
@@ -223,6 +326,8 @@ export default function CitiesAdminPage() {
           )}
         </div>
       </div>
+
+      <SavedSpellings />
     </div>
   );
 }

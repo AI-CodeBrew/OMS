@@ -1163,8 +1163,10 @@ def _inventory_row(item, order_metrics, purchase_metrics, name_metrics=None):
 
 def inventory_overview(organization_id, *, search="", activity="", sku_filter=""):
     """(rows, summary) for the Inventory page - every stock item, filtered
-    by `search` (SKU / name) and `activity` (INVENTORY_ACTIVITY); the
-    summary counts cover every item of the tab, whatever the filter.
+    by `search` (SKU / name) and `activity` (INVENTORY_ACTIVITY). The
+    summary counts the searched items of the tab, whatever card is picked -
+    so with a search the tabs and cards count what the search finds (user,
+    2026-11-23: "No SKUs 29" beside an empty searched table looked wrong).
 
     sku_filter (user, 2026-11-20): "with" - the Inventory tab, items with a
     SKU; "missing" - the No SKUs tab, items without one (their order counts
@@ -1174,6 +1176,9 @@ def inventory_overview(organization_id, *, search="", activity="", sku_filter=""
     purchase_metrics = _purchase_metrics(organization_id)
     stock_org = stock_org_id(organization_id)
     all_items = StockItem.all_objects.filter(organization_id=stock_org)
+    term = (search or "").strip()
+    if term:
+        all_items = all_items.filter(Q(sku__icontains=term) | Q(product_name__icontains=term))
     tab_counts = {"with_sku": all_items.exclude(sku="").count(), "no_sku": all_items.filter(sku="").count()}
     items = all_items.select_related("warehouse")
     if sku_filter == "with":
@@ -1201,9 +1206,6 @@ def inventory_overview(organization_id, *, search="", activity="", sku_filter=""
         if row["activity"]:
             summary[row["activity"]] += 1
 
-    term = (search or "").strip().lower()
-    if term:
-        rows = [r for r in rows if term in (r["sku"] or "").lower() or term in (r["product_name"] or "").lower()]
     if activity in INVENTORY_ACTIVITY:
         rows = [r for r in rows if r["activity"] == activity]
     return rows, summary

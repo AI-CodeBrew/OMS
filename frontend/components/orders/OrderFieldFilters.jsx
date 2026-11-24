@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Checkbox from "../shared/Checkbox";
+import Portal from "../shared/Portal";
 import ordersService from "../../services/ordersService";
 
 // Typed filters - one or more values each, comma separated.
@@ -19,6 +20,8 @@ export const LIST_FILTERS = [
   { key: "f_province", label: "Province" },
   { key: "f_courier", label: "Courier" },
   { key: "f_tag", label: "Tag" },
+  // Fix Cities' badge: fixed automatically / by hand / check needed.
+  { key: "f_city_fix", label: "City Fix" },
 ];
 export const FIELD_FILTER_KEYS = [...TEXT_FILTERS, ...LIST_FILTERS].map((f) => f.key);
 // Dispatch Hub / All Orders: organizations (`store`, comma-separated ids)
@@ -244,8 +247,10 @@ export default function OrderFieldFilters({ applied, baseParams, hub = null, onA
     };
   }
 
+  // In <body> above the top bar, the panel below it (shared/Portal).
   return (
-    <div className="fixed inset-0 z-50">
+    <Portal>
+    <div className="fixed inset-0 z-[100]">
       <div className="absolute inset-0 bg-slate-900/30" onClick={onClose} aria-hidden="true" />
       <form
         onSubmit={(e) => {
@@ -253,7 +258,7 @@ export default function OrderFieldFilters({ applied, baseParams, hub = null, onA
           onApply(build());
           onClose();
         }}
-        className="absolute bottom-4 right-4 top-4 flex w-[calc(100%-2rem)] max-w-md flex-col rounded-2xl bg-white shadow-2xl"
+        className="absolute bottom-4 right-4 top-20 flex w-[calc(100%-2rem)] max-w-md flex-col rounded-2xl bg-white shadow-2xl"
       >
         <div className="flex items-start justify-between border-b border-slate-100 px-5 py-4">
           <div>
@@ -379,5 +384,6 @@ export default function OrderFieldFilters({ applied, baseParams, hub = null, onA
         </div>
       </form>
     </div>
+    </Portal>
   );
 }

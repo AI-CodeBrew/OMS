@@ -152,6 +152,20 @@ class Order(TenantScopedModel):
     )
 
     city = models.CharField(max_length=100, blank=True, default="")
+    # Fix Cities (user, 2026-11-23 - oms.city_fixer): "auto" = OMS corrected
+    # a misspelt city from the address, "manual" = a person picked it in the
+    # Fix Cities popup (or by Edit), "check" = Fix Cities couldn't be sure and
+    # the order waits in the popup's Need checking list. Shown as its own
+    # badge beside the city, never in `tag` (an order has one tag, and OMS
+    # replaces it as the order moves on).
+    CITY_FIX_AUTO = "auto"
+    CITY_FIX_MANUAL = "manual"
+    CITY_FIX_CHECK = "check"
+    city_fix = models.CharField(max_length=10, blank=True, default="", db_default="")
+    # The city as it came in before the first fix - what Undo puts back.
+    city_before_fix = models.CharField(max_length=100, blank=True, default="", db_default="")
+    # Why: "'Sargodha' is in the address", "Could be Mirpur (AJK) or Mirpur Khas", ...
+    city_fix_note = models.CharField(max_length=255, blank=True, default="", db_default="")
     # Denormalized label (ShopifyConnection.shop_domain for synced orders,
     # "Manual" for manually-created ones) - no multi-shop-per-org model yet.
     shop = models.CharField(max_length=150, blank=True, default="")
@@ -711,9 +725,20 @@ class DispatchBatch(TenantScopedModel):
         unique=True, editable=False, db_default=RawSQL("nextval('oms.dispatch_batches_number_seq')", [])
     )
     # Empty until a document names one - a Smartlane airway bill isn't
-    # scoped to a courier, its load sheet is.
+    # scoped to a courier, its load sheet is. A booking batch names the
+    # courier it booked with ("" when one click booked several - Auto Book).
     courier = models.CharField(max_length=50, blank=True, default="")
     created_by_user_id = models.UUIDField(null=True, blank=True)
+    # Where the batch came from (user, 2026-11-23): "booking" - one Assign
+    # Courier click, holding exactly the orders that click booked
+    # (batch_services.record_booking_batches); "print" - a set of orders
+    # printed together that no booking batch covers (save_print_batch).
+    SOURCE_BOOKING = "booking"
+    SOURCE_PRINT = "print"
+    SOURCE_CHOICES = [(SOURCE_BOOKING, "Booking"), (SOURCE_PRINT, "Print")]
+    source = models.CharField(
+        max_length=10, choices=SOURCE_CHOICES, default=SOURCE_PRINT, db_default=SOURCE_PRINT
+    )
 
     class Meta:
         db_table = '"oms"."dispatch_batches"'
@@ -840,6 +865,32 @@ class City(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class CitySpelling(models.Model):
+    """A misspelt city a person fixed by hand, and what they fixed it to
+    (oms.city_fixer) - "sargodah" -> Sargodha. Once the same fix has been
+    made LEARNED_AFTER times, Fix Cities makes it by itself. Platform-wide
+    like City: a spelling means the same in every store. Undo takes one
+    back off `times`."""
+
+    # city_fixer.spelling_key of the typed city ("sargodah").
+    typed_key = models.CharField(max_length=100)
+    # As the city list spells it.
+    city_name = models.CharField(max_length=100)
+    times = models.PositiveIntegerField(default=1)
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_used_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = '"oms"."city_spellings"'
+        ordering = ["typed_key"]
+        constraints = [
+            models.UniqueConstraint(fields=["typed_key", "city_name"], name="city_spelling_unique"),
+        ]
+
+    def __str__(self):
+        return f"{self.typed_key} -> {self.city_name} ({self.times})"
 
 
 class Store(TenantScopedModel):

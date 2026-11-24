@@ -5,7 +5,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import integrationsAdminService from "../../../../services/integrationsAdminService";
 import useAuthStore from "../../../../store/authStore";
-import { invalidateViewCache } from "../../../../lib/viewCache";
 import timeAgo from "../../../../lib/timeAgo";
 import {
   Badge,
@@ -237,7 +236,6 @@ export default function AdminIntegrationsPage() {
       modules: store.modules || [],
       is_manual_store: store.is_manual_store,
     });
-    invalidateViewCache();
     router.push(href);
   }
 

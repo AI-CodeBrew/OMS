@@ -16,6 +16,7 @@ import {
   setCachedCounts,
   setCachedOrdersList,
   unfilteredListsAreWarm,
+  viewCacheToken,
 } from "../../../lib/viewCache";
 import { scheduleWarmupInBackground, warmupViewsInBackground } from "../../../lib/warmupViews";
 import couriersService from "../../../services/couriersService";
@@ -43,6 +44,7 @@ import {
   withMoveToAssigning,
   ASSIGNING_COURIER_TAB,
   BOOKING_ACCOUNTS,
+  EDITABLE_STATUSES,
   SMARTLANE_LOAD_SHEET_COURIERS,
   STATUS_LABELS,
   STATUS_TABS,
@@ -104,6 +106,9 @@ const CreateTicketDialog = dynamic(() => import("../../../components/tickets/Cre
 const ScanPackModal = dynamic(() => import("../../../components/orders/ScanPackModal"), {
   ssr: false,
 });
+const FixCitiesModal = dynamic(() => import("../../../components/orders/FixCitiesModal"), {
+  ssr: false,
+});
 
 // store: comma-separated store ids; product: a JSON array of product names
 // (a name can contain a comma) - both Dispatch Hub only, set by
@@ -112,7 +117,7 @@ const ScanPackModal = dynamic(() => import("../../../components/orders/ScanPackM
 const EMPTY_FILTERS = {
   city: "", courier_id: "", gateway: "", date_from: "", date_to: "", store: "", product: "", dispatch_requested: "",
   f_oms_id: "", f_store_order_id: "", f_customer: "", f_phone: "", f_tracking: "",
-  f_shop: "", f_city: "", f_province: "", f_courier: "", f_tag: "",
+  f_shop: "", f_city: "", f_province: "", f_courier: "", f_tag: "", f_city_fix: "",
 };
 // "critical" is time-dependent rather than a status an order is moved into,
 // so the backend never caches it or includes it in the warmup - leave it
@@ -151,6 +156,17 @@ const SUB_STATUS_TABS = new Set([
   "booking_pending", "ready_to_print", "ready_to_pick", "awaiting_dispatched",
   "dispatched", "out_for_delivery", "attempt", "delivered", "cancelled", "returned",
 ]);
+
+// The list cache key for the page's state - the same key load() uses
+// (queryParams there is {status, search, search_field, ...filters}).
+function listKeyFor(activeStatus, appliedSearch, appliedFilters, page, pageSize) {
+  return ordersListKey({
+    status: activeStatus === "all" ? undefined : activeStatus,
+    page,
+    pageSize,
+    filters: { search: appliedSearch || undefined, ...appliedFilters },
+  });
+}
 
 function isPlainTabQuery(queryParams) {
   return (
@@ -222,6 +238,15 @@ function describeFailures(failed) {
   return `${failed.length} order${failed.length === 1 ? "" : "s"} could not be updated - ${shown}${rest}`;
 }
 
+// A booking's batches (one per store) - "" when it made none.
+function describeBatches(batches) {
+  if (!batches?.length) return "";
+  const parts = batches.map(
+    (b) => `${b.batch_number} (${b.order_count} order${b.order_count === 1 ? "" : "s"})`
+  );
+  return `Batch ${parts.join(", ")} created - print its airway bill and load sheet here or from Batch History.`;
+}
+
 export default function OrdersPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -261,16 +286,26 @@ export default function OrdersPage() {
   const fromDashboard = searchParams.get("from") === "dashboard";
   const dashboardGroup = searchParams.get("group") || "";
 
-  const [orders, setOrders] = useState([]);
-  const [orderCount, setOrderCount] = useState(0);
   const [page, setPage] = useRememberedState("page", 1, (p) => (openedFromCard ? 1 : p));
   const [pageSize, setPageSize] = useRememberedState("pageSize", 10);
+  // Back (or the sidebar) to a list already seen: its last rows are on the
+  // very first paint - no empty table, no spinner, no jump (user,
+  // 2026-11-24). load() then refreshes them quietly.
+  const [arrivalList] = useState(() =>
+    activeStatus === CRITICAL_TAB
+      ? null
+      : getCachedOrdersList(listKeyFor(activeStatus, appliedSearch, appliedFilters, page, pageSize))
+  );
+  const [orders, setOrders] = useState(() => arrivalList?.orders || []);
+  const [orderCount, setOrderCount] = useState(() => arrivalList?.orderCount || 0);
   const [counts, setCounts] = useState(() => getCachedCounts());
   const [couriers, setCouriers] = useState([]);
   const [smartlaneConnected, setSmartlaneConnected] = useState(false);
   const [omsCourierConnected, setOmsCourierConnected] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => !arrivalList);
   const [error, setError] = useState("");
+  // "Batch B-000123 created - 8 orders" after a courier booking.
+  const [notice, setNotice] = useState("");
   const [selectedIds, setSelectedIds] = useState(new Set());
 
   const [newOrderOpen, setNewOrderOpen] = useState(false);
@@ -301,6 +336,11 @@ export default function OrdersPage() {
   const [detailStartEditing, setDetailStartEditing] = useState(false);
   const [scanOpen, setScanOpen] = useState(false);
   const [ticketOrder, setTicketOrder] = useState(null);
+  // Fix Cities (Awaiting Confirmation): the popup's request, and the
+  // button's counts - {need_check, fixed}.
+  const [fixCitiesRequest, setFixCitiesRequest] = useState(null);
+  const [cityFixCounts, setCityFixCounts] = useState(null);
+  const [cityFixTick, setCityFixTick] = useState(0);
   const reloadTimer = useRef(null);
   const loadGen = useRef(0);
   // Read by the WebSocket patch callbacks below, which need the *current*
@@ -387,29 +427,16 @@ export default function OrdersPage() {
     setSelectedIds(new Set());
   }, [queryParams]);
 
-  const applyCachedTab = useCallback(
-    () => {
-      const key = ordersListKey({
-        status: queryParams.status,
-        page,
-        pageSize,
-        filters: queryParams,
-      });
-      const cachedList = getCachedOrdersList(key);
-      const cachedCounts = getCachedCounts();
-      if (cachedList) {
-        setOrders(cachedList.orders);
-        setOrderCount(cachedList.orderCount);
-      }
-      if (cachedCounts && isPlainTabQuery(queryParams)) setCounts(cachedCounts);
-      return Boolean(cachedList);
-    },
-    [queryParams, page, pageSize]
-  );
+  // The first load after the page opens (Back, the sidebar, a link): rows
+  // already cached are shown at once and then refreshed quietly, since
+  // orders may have changed while this page was closed.
+  const arrivingRef = useRef(true);
 
   const load = useCallback(async (opts = {}) => {
     const gen = ++loadGen.current;
     const force = opts.force === true;
+    const arriving = arrivingRef.current;
+    arrivingRef.current = false;
     const plain = isPlainTabQuery(queryParams);
     const cacheable = queryParams.status !== CRITICAL_TAB;
     const key = ordersListKey({
@@ -418,95 +445,66 @@ export default function OrdersPage() {
       pageSize,
       filters: queryParams,
     });
+    // This view's cache as it is now - a reply that comes back after
+    // switching store / Hub is never stored under the other one.
+    const token = viewCacheToken();
     setError("");
 
-    if (plain) {
-      const alreadyWarm = unfilteredListsAreWarm(pageSize, TAB_STATUSES);
-      if (!force && alreadyWarm && cacheable && getCachedOrdersList(key)) {
-        applyCachedTab();
-        setLoading(false);
-        return;
-      }
-      if (!force) {
-        setOrders([]);
-        setOrderCount(0);
-        if (!alreadyWarm) setCounts(null);
-        setLoading(true);
-      }
-      try {
-        // Fetch only the tab actually on screen, then paint. This used to
-        // await warmupViews() first, which loads all 17 status tabs in one
-        // backend request - fine once warm, but on a cold Redis it is ~51
-        // sequential queries and the user stared at a spinner for the whole
-        // thing before seeing a single row.
-        const [orderData, countData] = await Promise.all([
-          ordersService.list({ ...queryParams, page, page_size: pageSize }),
-          ordersService.counts(queryParams),
-        ]);
-        if (gen !== loadGen.current) return;
-        const nextOrders = orderData.results || [];
-        const nextCount = orderData.count || 0;
-        setOrders(nextOrders);
-        setOrderCount(nextCount);
-        setCounts(countData);
-        if (cacheable) setCachedOrdersList(key, { orders: nextOrders, orderCount: nextCount });
-        setCachedCounts(countData);
-      } catch (err) {
-        if (gen !== loadGen.current) return;
-        setError(err.message || "Failed to load orders");
-      } finally {
-        if (gen === loadGen.current) setLoading(false);
-      }
-
-      // The other tabs still get warmed - just after the user has something
-      // to look at rather than before. Started even when this generation is
-      // stale: the payload is keyed by pageSize, not by which tab asked, so
-      // the work is still the work everyone needs.
-      // After a change (force): one warmup once the clicking settles.
-      if (!isHubRef.current) {
-        if (force) scheduleWarmupInBackground({ pageSize, dashKeys: dashboardPresetKeys() });
-        else if (!alreadyWarm) warmupViewsInBackground({ pageSize, dashKeys: dashboardPresetKeys() });
-      }
-      return;
-    }
-
-    if (!force) {
-      const cachedList = cacheable ? getCachedOrdersList(key) : null;
-      if (cachedList) {
-        setOrders(cachedList.orders);
-        setOrderCount(cachedList.orderCount);
-        setLoading(false);
-        return;
-      }
+    const alreadyWarm = plain && unfilteredListsAreWarm(pageSize, TAB_STATUSES);
+    const cachedList = !force && cacheable ? getCachedOrdersList(key) : null;
+    if (cachedList) {
+      // Its last rows at once - the table never empties.
+      setOrders(cachedList.orders);
+      setOrderCount(cachedList.orderCount);
+      const cachedCounts = getCachedCounts();
+      if (cachedCounts && plain) setCounts(cachedCounts);
+      setLoading(false);
+      // Nothing to fetch: a store's warm tabs (live updates keep them
+      // current while this page is open) or a filtered view seen this
+      // visit. Arriving, or the Hub (no warmup): refreshed quietly below.
+      if (!arriving && !isHubRef.current && (alreadyWarm || !plain)) return;
+    } else if (!force) {
       setOrders([]);
       setOrderCount(0);
+      if (plain && !alreadyWarm) setCounts(null);
       setLoading(true);
     }
+
     try {
+      // Fetch only the tab actually on screen, then paint. This used to
+      // await warmupViews() first, which loads all 17 status tabs in one
+      // backend request - fine once warm, but on a cold Redis it is ~51
+      // sequential queries and the user stared at a spinner for the whole
+      // thing before seeing a single row.
       const [orderData, countData] = await Promise.all([
         ordersService.list({ ...queryParams, page, page_size: pageSize }),
         ordersService.counts(queryParams),
       ]);
       if (gen !== loadGen.current) return;
-      setOrders(orderData.results || []);
-      setOrderCount(orderData.count || 0);
+      const nextOrders = orderData.results || [];
+      const nextCount = orderData.count || 0;
+      setOrders(nextOrders);
+      setOrderCount(nextCount);
       setCounts(countData);
-      if (cacheable) {
-        setCachedOrdersList(key, { orders: orderData.results || [], orderCount: orderData.count || 0 });
-      }
-      // A search or filter used to start a full warmup every time; only when
-      // the plain tabs aren't warm yet now (and never in the Hub).
-      if (!isHubRef.current && !unfilteredListsAreWarm(pageSize, TAB_STATUSES)) {
-        if (force) scheduleWarmupInBackground({ pageSize, dashKeys: dashboardPresetKeys() });
-        else warmupViewsInBackground({ pageSize, dashKeys: dashboardPresetKeys() });
-      }
+      if (cacheable) setCachedOrdersList(key, { orders: nextOrders, orderCount: nextCount }, token);
+      if (plain) setCachedCounts(countData, token);
     } catch (err) {
       if (gen !== loadGen.current) return;
       setError(err.message || "Failed to load orders");
     } finally {
       if (gen === loadGen.current) setLoading(false);
     }
-  }, [applyCachedTab, queryParams, page, pageSize]);
+
+    // The other tabs still get warmed - just after the user has something
+    // to look at rather than before. After a change (force): one warmup
+    // once the clicking settles. Never in the Hub (the backend has none).
+    if (!isHubRef.current && !(plain ? alreadyWarm : unfilteredListsAreWarm(pageSize, TAB_STATUSES))) {
+      if (force) scheduleWarmupInBackground({ pageSize, dashKeys: dashboardPresetKeys() });
+      else warmupViewsInBackground({ pageSize, dashKeys: dashboardPresetKeys() });
+    } else if (!isHubRef.current && plain && force) {
+      scheduleWarmupInBackground({ pageSize, dashKeys: dashboardPresetKeys() });
+    }
+  }, [queryParams, page, pageSize]);
 
   const reloadAfterChange = useCallback(() => {
     invalidateViewCache();
@@ -743,6 +741,26 @@ export default function OrdersPage() {
   // A role with Read only on this page can't change anything anywhere here.
   const { canWrite: canEditOrders } = usePageAccess("oms.orders");
   const viewOnly = activeStatus === "all" || !canEditOrders;
+
+  // Fix Cities sits on the Awaiting Confirmation card (and its own
+  // statuses, e.g. City Issue opened from the Dashboard).
+  const onAwaitingConfirmation =
+    activeStatus === "card:awaiting_confirmation" ||
+    (activeStatus !== "all" &&
+      !activeStatus.startsWith("card:") &&
+      activeStatus.split(",").every((s) => EDITABLE_STATUSES.has(s.trim())));
+  const showFixCities = onAwaitingConfirmation && !viewOnly;
+  useEffect(() => {
+    if (!showFixCities) return undefined;
+    let cancelled = false;
+    ordersService
+      .fixCitiesReview(queryParams, { countOnly: true })
+      .then((c) => !cancelled && setCityFixCounts(c))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [showFixCities, queryParams, orderCount, cityFixTick]);
 
   const availableActions = useMemo(() => {
     if (selectedOrders.length === 0 || viewOnly) return [];
@@ -1077,6 +1095,7 @@ export default function OrdersPage() {
     }
 
     beginLoading(`Updating ${ordersLabel}`);
+    setNotice("");
     try {
       // "OMS Courier" / "Smartlane" are synthetic entries in the courier
       // picker (see BOOKING_ACCOUNTS), not real Courier rows - selecting one
@@ -1117,6 +1136,7 @@ export default function OrdersPage() {
       // After reloadAfterChange(), which clears the error banner on the way in.
       await reloadAfterChange();
       if (failed.length > 0) setError(describeFailures(failed));
+      setNotice(describeBatches(data?.batches));
     } catch (err) {
       setError(err.message || "Action failed");
     } finally {
@@ -1139,6 +1159,7 @@ export default function OrdersPage() {
       const failed = (data?.results || []).filter((r) => !r.success);
       await reloadAfterChange();
       if (failed.length > 0) setError(describeFailures(failed));
+      setNotice(describeBatches(data?.batches));
     } catch (err) {
       setError(err.message || "Action failed");
     } finally {
@@ -1254,6 +1275,14 @@ export default function OrdersPage() {
       {error ? (
         <p className="mt-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
       ) : null}
+      {notice ? (
+        <p className="mt-4 flex items-center justify-between gap-3 rounded-md bg-green-50 px-3 py-2 text-sm text-green-700">
+          <span>{notice}</span>
+          <button type="button" onClick={() => setNotice("")} className="text-green-700/70 hover:text-green-900" aria-label="Dismiss">
+            ✕
+          </button>
+        </p>
+      ) : null}
 
       <div className="mt-3">
         <OrderStatusTabs counts={counts} activeStatus={activeStatus} onChange={setActiveStatus} />
@@ -1266,6 +1295,8 @@ export default function OrdersPage() {
             if (!value.trim() && appliedSearch) setAppliedSearch("");
           }}
           onSubmitSearch={onSubmitSearch}
+          onAutoSearch={(value) => setAppliedSearch(value)}
+          rowSuggestions={orders.flatMap((o) => [o.order_number, o.customer_name, o.tracking_number])}
           selectedCount={selectedIds.size}
           availableActions={availableActions}
           noActionsReason={noActionsReason}
@@ -1324,6 +1355,38 @@ export default function OrdersPage() {
               Scan each parcel&apos;s barcode to mark it Packed - only orders with a tracking number (To be printed / printed / To be packed).
             </span>
             <Button onClick={() => setScanOpen(true)}>Scan</Button>
+          </div>
+        ) : null}
+
+        {showFixCities ? (
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-md border border-surface-border bg-white px-4 py-2">
+            <span className="text-sm text-slate-600">
+              City spelling mistakes? Fix Cities corrects them from the address -{" "}
+              {selectedIds.size ? `the ${selectedIds.size} selected order${selectedIds.size === 1 ? "" : "s"}` : "every order in this card"}.
+              Sure ones are fixed, the rest wait for you to check.
+            </span>
+            <div className="flex flex-wrap items-center gap-2">
+              {cityFixCounts?.need_check ? (
+                <Button
+                  variant="secondary"
+                  onClick={() => setFixCitiesRequest({ mode: "review", filters: queryParams })}
+                  className="!border-amber-300 !bg-amber-50 !text-amber-800 hover:!bg-amber-100"
+                >
+                  {cityFixCounts.need_check} need checking
+                </Button>
+              ) : cityFixCounts?.fixed ? (
+                <Button variant="secondary" onClick={() => setFixCitiesRequest({ mode: "review", filters: queryParams })}>
+                  {cityFixCounts.fixed} fixed
+                </Button>
+              ) : null}
+              <Button
+                onClick={() =>
+                  setFixCitiesRequest({ mode: "run", orderIds: Array.from(selectedIds), filters: queryParams })
+                }
+              >
+                Fix Cities{selectedIds.size ? ` (${selectedIds.size})` : ""}
+              </Button>
+            </div>
           </div>
         ) : null}
 
@@ -1488,6 +1551,23 @@ export default function OrdersPage() {
         onOrderChanged={reloadAfterChange}
       />
       <ScanPackModal open={scanOpen} onClose={() => setScanOpen(false)} onPacked={reloadAfterChange} />
+      <FixCitiesModal
+        request={fixCitiesRequest}
+        onClose={() => {
+          setFixCitiesRequest(null);
+          setCityFixTick((t) => t + 1);
+        }}
+        onChanged={() => {
+          setSelectedIds(new Set());
+          reloadAfterChange();
+        }}
+        onShowInList={(values) => {
+          const f_city_fix = JSON.stringify(values);
+          setFilters((f) => ({ ...f, f_city_fix }));
+          setAppliedFilters((f) => ({ ...f, f_city_fix }));
+          setPage(1);
+        }}
+      />
       <CreateTicketDialog
         open={Boolean(ticketOrder)}
         order={ticketOrder}

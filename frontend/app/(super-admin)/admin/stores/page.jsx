@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import tenantsService from "../../../../services/tenantsService";
 import dispatchHubAdminService from "../../../../services/dispatchHubAdminService";
 import useAuthStore from "../../../../store/authStore";
-import { invalidateViewCache } from "../../../../lib/viewCache";
 import { useRememberedData, useRememberedState } from "../../../../lib/pageMemory";
 import GreenTick from "../../../../components/shared/GreenTick";
 import Modal from "../../../../components/shared/Modal";
@@ -247,7 +246,6 @@ Orders not yet booked with a courier (Awaiting ` +
   function openStore(org) {
     const modules = enabledModules(org);
     enterStore({ id: org.id, name: org.name, modules, is_manual_store: org.is_manual_store });
-    invalidateViewCache();
     router.push(modules.includes("oms") || modules.length === 0 ? "/orders" : "/dashboard");
   }
 

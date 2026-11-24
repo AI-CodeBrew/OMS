@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { create } from "zustand";
-import { invalidateViewCache } from "../lib/viewCache";
+import { setViewCacheScope } from "../lib/viewCache";
 
 const STORAGE_KEY = "oms_auth";
 // sessionStorage, so each browser tab can act as a different store.
@@ -40,6 +40,30 @@ function persistActingStore(store) {
     else window.sessionStorage.removeItem(ACTING_STORE_KEY);
   } catch {
     // storage unavailable - acting store then lasts only until reload
+  }
+}
+
+// The store / Hub a super admin last left (Exit, or Back out to the admin
+// panel) - so Back (or Forward) onto one of its pages opens it again instead
+// of jumping to Stores (user, 2026-11-24). Per browser tab, like the store.
+const LAST_ACTING_STORE_KEY = "oms_last_acting_store";
+
+function rememberLastActingStore(store) {
+  try {
+    if (store) window.sessionStorage.setItem(LAST_ACTING_STORE_KEY, JSON.stringify(store));
+    else window.sessionStorage.removeItem(LAST_ACTING_STORE_KEY);
+  } catch {
+    // storage unavailable - Back then lands on Stores, as before
+  }
+}
+
+/** The store / Hub last left in this tab, or null. */
+export function lastActingStore() {
+  try {
+    const raw = window.sessionStorage.getItem(LAST_ACTING_STORE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
   }
 }
 
@@ -122,6 +146,9 @@ export const useAuthStore = create((set, get) => ({
   },
 
   exitStore: () => {
+    const leaving = get().actingStore;
+    // Not the OMS Courier tab's platform org - that one is never returned to by Back.
+    if (leaving && !leaving.platform) rememberLastActingStore(leaving);
     persistActingStore(null);
     set({ actingStore: null });
   },
@@ -135,6 +162,7 @@ export const useAuthStore = create((set, get) => ({
   clearSession: () => {
     persist({ accessToken: null });
     persistActingStore(null);
+    rememberLastActingStore(null);
     persistOrgAllStores(false);
     set({ accessToken: null, refreshToken: null, user: null, actingStore: null, orgAllStores: false, hydrated: true });
   },
@@ -161,15 +189,21 @@ export const useAuthStore = create((set, get) => ({
 export function accountKey(state) {
   const { user, actingStore, orgAllStores } = state;
   if (!user) return "";
-  const acting = actingStore ? `${actingStore.hub ? "hub" : actingStore.platform ? "platform" : ""}:${actingStore.id || ""}` : "";
+  // The Hub, All Orders and Critical Orders have no store id - their flags
+  // tell them apart.
+  const acting = actingStore
+    ? `${actingStore.hub ? "hub" : actingStore.platform ? "platform" : ""}:${actingStore.id || ""}` +
+      `${actingStore.allStores ? ":all" : ""}${actingStore.critical ? ":critical" : ""}`
+    : "";
   return `${user.id}|${user.organization_id || ""}|${acting}|${orgAllStores ? "all" : ""}`;
 }
 
 // Orders/Dashboard payloads are cached in memory per tab (lib/viewCache),
-// so without this, logging out and into another account showed the
-// previous account's orders until a page refresh.
+// kept apart per login and per store / Hub it operates - so another
+// account never sees this one's orders, and Back into the Hub or a store
+// shows its last data at once.
 useAuthStore.subscribe((state, prev) => {
-  if (accountKey(state) !== accountKey(prev)) invalidateViewCache();
+  if (accountKey(state) !== accountKey(prev)) setViewCacheScope(accountKey(state));
 });
 
 /** The user as tenant screens should see them: a super admin operating a

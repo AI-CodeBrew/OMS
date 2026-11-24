@@ -7,6 +7,7 @@ import wmsService from "../../../services/wmsService";
 import Button from "../../../components/shared/Button";
 import DateRangeFilter from "../../../components/orders/DateRangeFilter";
 import { useSessionDateRange } from "../../../store/dateFilterStore";
+import { useRememberedData } from "../../../lib/pageMemory";
 
 const EMPTY_ORDERS = {
   total_orders: 0,
@@ -137,11 +138,14 @@ function Section({
 // Shared shape for all three sections: own date range, own fetch, own
 // "not available to this user" (403) handling, own CSV download. Only the
 // data source and empty/tile config differ per section.
-function useReportSection({ fetchSummary, downloadCsv, emptyValue }) {
+function useReportSection({ name, fetchSummary, downloadCsv, emptyValue }) {
   // Shared across screens for the session (store/dateFilterStore).
   const { dateFrom, dateTo, setDateFrom, setDateTo } = useSessionDateRange();
-  const [summary, setSummary] = useState(emptyValue);
-  const [loading, setLoading] = useState(true);
+  // Back to Reports: the last numbers at once, refreshed quietly (user, 2026-11-24).
+  const { recall, remember } = useRememberedData(`report-${name}`);
+  const rangeKey = `${dateFrom}|${dateTo}`;
+  const [summary, setSummary] = useState(() => recall()?.[rangeKey] || emptyValue);
+  const [loading, setLoading] = useState(() => !recall()?.[rangeKey]);
   // 403s (user's role lacks this section's module - see moduleNav.js,
   // /reports itself only requires "oms" OR "wms") hide the section rather
   // than showing an error for something the user was never meant to see.
@@ -150,11 +154,14 @@ function useReportSection({ fetchSummary, downloadCsv, emptyValue }) {
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
-    setLoading(true);
+    const cached = recall()?.[rangeKey];
+    if (cached) setSummary(cached);
+    else setLoading(true);
     try {
       const data = await fetchSummary({ dateFrom, dateTo });
       setSummary(data);
       setAvailable(true);
+      remember({ ...(recall() || {}), [rangeKey]: data });
     } catch (err) {
       setAvailable(false);
     } finally {
@@ -201,17 +208,20 @@ function useReportSection({ fetchSummary, downloadCsv, emptyValue }) {
 
 export default function ReportsPage() {
   const orders = useReportSection({
+    name: "orders",
     fetchSummary: (range) => reportsService.getSummary(range),
     downloadCsv: (range) => reportsService.downloadCsv(range),
     emptyValue: EMPTY_ORDERS,
   });
   const wms = useReportSection({
+    name: "wms",
     fetchSummary: ({ dateFrom, dateTo }) =>
       wmsService.stockSummary({ date_from: dateFrom, date_to: dateTo }),
     downloadCsv: (range) => wmsService.downloadStockReportCsv(range),
     emptyValue: EMPTY_WMS,
   });
   const returns = useReportSection({
+    name: "returns",
     fetchSummary: ({ dateFrom, dateTo }) =>
       ordersService.returnsSummary({ date_from: dateFrom, date_to: dateTo }),
     downloadCsv: (range) => ordersService.downloadReturnsCsv(range),

@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import ordersService from "../../../../services/ordersService";
 import wmsService from "../../../../services/wmsService";
 import Button from "../../../../components/shared/Button";
+import SearchBox from "../../../../components/shared/SearchBox";
 import Pagination from "../../../../components/shared/Pagination";
 import DateRangeFilter from "../../../../components/orders/DateRangeFilter";
 import { useSessionDateRange } from "../../../../store/dateFilterStore";
@@ -93,12 +94,12 @@ export default function PackingPage() {
     });
   }
 
-  async function packOne(orderNumber) {
+  async function packOne(orderNumber, orderId) {
     if (!window.confirm("Click to confirm")) return;
     setError("");
     setNotice("");
     try {
-      const result = await wmsService.scanPacked({ orderNumber });
+      const result = await wmsService.scanPacked({ orderNumber, orderId });
       if (result.success) {
         setNotice(`${orderNumber} — packed, moved to Awaiting Dispatched`);
         await load();
@@ -192,23 +193,11 @@ export default function PackingPage() {
               ))}
             </div>
 
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                setAppliedSearch(search);
-                setPage(1);
-              }}
-              className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap"
-            >
-              <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search orders"
-                className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500 sm:w-52"
-              />
+            <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap">
               <select
                 value={searchField}
                 onChange={(e) => setSearchField(e.target.value)}
+                title="Search in"
                 className="rounded-md border border-surface-border px-2 py-2 text-sm outline-none focus:border-brand-500"
               >
                 {SEARCH_FIELDS.map((f) => (
@@ -217,9 +206,18 @@ export default function PackingPage() {
                   </option>
                 ))}
               </select>
-              <Button type="submit" variant="secondary">
-                Search
-              </Button>
+              <SearchBox
+                value={search}
+                onChange={setSearch}
+                onSearch={(term) => {
+                  setAppliedSearch(term);
+                  setPage(1);
+                }}
+                suggestions={orders.flatMap((o) => [o.order_number, o.customer_name, o.tracking_number])}
+                placeholder="Search orders"
+                className="w-full sm:w-auto"
+                inputClassName="w-full sm:w-52"
+              />
               {appliedSearch ? (
                 <button
                   type="button"
@@ -233,7 +231,7 @@ export default function PackingPage() {
                   Clear
                 </button>
               ) : null}
-            </form>
+            </div>
           </div>
 
           {packable && selectedRows.length > 0 ? (
@@ -329,7 +327,7 @@ export default function PackingPage() {
                           <button
                             type="button"
                             disabled={bulkBusy}
-                            onClick={() => packOne(order.order_number)}
+                            onClick={() => packOne(order.order_number, order.id)}
                             className="text-xs font-medium text-brand-700 hover:underline disabled:opacity-50"
                           >
                             Mark Packed

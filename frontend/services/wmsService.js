@@ -348,23 +348,26 @@ class WmsService {
   // Read-only - confirms a parcel is receivable before asking the
   // operator for its condition. Nothing is written until scanReturn.
   // trackingNumber is what the scan panel sends (the physical label's own
-  // barcode); orderNumber is what the table's row/bulk buttons send
-  // instead, since they already know exactly which order they mean.
-  async lookupReturn({ trackingNumber, orderNumber }) {
+  // barcode); a table row's button sends its exact orderId (orderNumber only
+  // labels the answer) - an order number alone can be on orders in several
+  // stores in the Dispatch Hub / All Orders.
+  async lookupReturn({ trackingNumber, orderNumber, orderId }) {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.returnLookup}`, {
       method: "POST",
-      body: JSON.stringify({ tracking_number: trackingNumber, order_number: orderNumber }),
+      body: JSON.stringify({ tracking_number: trackingNumber, order_number: orderNumber, order_id: orderId }),
     });
   }
 
   // breakdown: [{key, good, damaged, lost}] per line (the receive popup) -
   // only good units are restocked. Without it, condition applies to all.
-  async scanReturn({ trackingNumber, orderNumber, condition, breakdown, note = "" }) {
+  // orderId: the lookup's order_id, so the receive is that exact order.
+  async scanReturn({ trackingNumber, orderNumber, orderId, condition, breakdown, note = "" }) {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.returnScan}`, {
       method: "POST",
       body: JSON.stringify({
         tracking_number: trackingNumber,
         order_number: orderNumber,
+        order_id: orderId,
         condition,
         breakdown,
         note,
@@ -429,12 +432,12 @@ class WmsService {
   }
 
   // --- Packing station ---
-  // trackingNumber (scan panel) or orderNumber (table row/bulk button) -
-  // see lookupReturn above for why there are two.
-  async scanPacked({ trackingNumber, orderNumber }) {
+  // trackingNumber (scan panel) or orderId + orderNumber (table row button) -
+  // see lookupReturn above.
+  async scanPacked({ trackingNumber, orderNumber, orderId }) {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.wms.packingScan}`, {
       method: "POST",
-      body: JSON.stringify({ tracking_number: trackingNumber, order_number: orderNumber }),
+      body: JSON.stringify({ tracking_number: trackingNumber, order_number: orderNumber, order_id: orderId }),
     });
   }
 

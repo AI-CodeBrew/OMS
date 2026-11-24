@@ -1,12 +1,43 @@
 // In-memory copy of Redis-backed Orders/Dashboard payloads for the current
-// browser tab. Survives client-side navigations (Dashboard <-> Orders) so
-// switching back is instant. Cleared when the backend WebSocket says an
+// browser tab. Survives client-side navigations (Dashboard <-> Orders, and
+// Back) so going back is instant. Cleared when the backend WebSocket says an
 // order changed; the refetch then repopulates both this map and Redis.
+//
+// Kept apart per view (scope = authStore.accountKey: the login, the store it
+// operates, the Dispatch Hub, All Orders, ...) instead of wiped on every
+// switch, so Back into the Hub or a store shows its last data at once
+// (user, 2026-11-24) - the page then refreshes it quietly (see the Orders
+// page's and Dashboard's load). authStore sets the scope.
 
-const lists = new Map();
-let counts = null;
-const dashboards = new Map();
+const scopes = new Map();
+let scope = "";
 let warmupGeneration = 0;
+
+function current() {
+  let entry = scopes.get(scope);
+  if (!entry) {
+    entry = { lists: new Map(), counts: null, dashboards: new Map() };
+    scopes.set(scope, entry);
+  }
+  return entry;
+}
+
+/** Which view's cache reads and writes go to - authStore calls this when
+ * the login or the store/Hub it operates changes. */
+export function setViewCacheScope(key) {
+  scope = key || "";
+}
+
+/** The view and cache generation right now. A fetch started under one
+ * token must not be stored after the view changed or the cache was
+ * dropped - pass it to the setters (they ignore a stale one). */
+export function viewCacheToken() {
+  return `${scope}#${warmupGeneration}`;
+}
+
+function stale(token) {
+  return token !== undefined && token !== viewCacheToken();
+}
 
 export function ordersListKey({ status, page, pageSize, filters = {} }) {
   // Every filter the list honours belongs here - one left out makes a
@@ -15,7 +46,7 @@ export function ordersListKey({ status, page, pageSize, filters = {} }) {
     "search", "city", "courier_id", "gateway", "date_from", "date_to", "store", "product", "dispatch_requested",
     // The Filters popup's fields (OrderFieldFilters).
     "f_oms_id", "f_store_order_id", "f_customer", "f_phone", "f_tracking",
-    "f_shop", "f_city", "f_province", "f_courier", "f_tag",
+    "f_shop", "f_city", "f_province", "f_courier", "f_tag", "f_city_fix",
   ]
     .map((k) => filters[k] || "")
     .join("|");
@@ -64,31 +95,36 @@ export function dashboardPresetKeys() {
 }
 
 export function getCachedOrdersList(key) {
-  return lists.get(key) || null;
+  return current().lists.get(key) || null;
 }
 
-export function setCachedOrdersList(key, value) {
-  lists.set(key, value);
+export function setCachedOrdersList(key, value, token) {
+  if (stale(token)) return;
+  current().lists.set(key, value);
 }
 
 export function getCachedCounts() {
-  return counts;
+  return current().counts;
 }
 
-export function setCachedCounts(value) {
-  counts = value;
+export function setCachedCounts(value, token) {
+  if (stale(token)) return;
+  current().counts = value;
 }
 
 export function getCachedDashboard(key) {
-  return dashboards.get(key) || null;
+  return current().dashboards.get(key) || null;
 }
 
-export function setCachedDashboard(key, value) {
-  dashboards.set(key, value);
+export function setCachedDashboard(key, value, token) {
+  if (stale(token)) return;
+  current().dashboards.set(key, value);
 }
 
+// Changes with the view too, so a warmup started in one view is never
+// applied to another.
 export function getWarmupGeneration() {
-  return warmupGeneration;
+  return viewCacheToken();
 }
 
 export function applyWarmup(payload, pageSize) {
@@ -127,9 +163,9 @@ export function dashboardPresetsAreWarm() {
   return dashboardPresetKeys().every((key) => Boolean(getCachedDashboard(key)));
 }
 
+/** Drops every view's cached data - an order changed (it may show in the
+ * Hub and in its store alike), or the user logged out. */
 export function invalidateViewCache() {
-  lists.clear();
-  counts = null;
-  dashboards.clear();
+  scopes.clear();
   warmupGeneration += 1;
 }

@@ -6,10 +6,13 @@ import authService from "./authService";
 // oms/receivings_api.py): load sheet / return / inventory receiving
 // pictures, kept in Bunny. An organization's stores share them.
 async function request(url, options = {}) {
-  const response = await fetch(url, {
-    ...options,
-    headers: { ...authService.getAuthHeaders(), ...(options.headers || {}) },
-  });
+  const headers = { ...authService.getAuthHeaders(), ...(options.headers || {}) };
+  // A file upload (FormData) must go without Content-Type, so the browser
+  // sets multipart with its boundary. getAuthHeaders' "application/json"
+  // used to be put back here, and the server read the pictures as JSON:
+  // "JSON parse error - 'utf-8' codec can't decode byte 0xff" (2026-11-23).
+  if (options.body instanceof FormData) delete headers["Content-Type"];
+  const response = await fetch(url, { ...options, headers });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     throw new Error(data.error || data.detail || "Request failed");
@@ -32,10 +35,9 @@ const receivingsService = {
     form.append("received_on", receivedOn || "");
     form.append("note", note || "");
     files.forEach((file) => form.append("images", file, file.name));
-    // No Content-Type: the browser sets the multipart boundary itself.
-    const headers = { ...authService.getAuthHeaders() };
-    delete headers["Content-Type"];
-    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.oms.receivings}`, { method: "POST", body: form, headers });
+    // No Content-Type: the browser sets the multipart boundary itself
+    // (request() drops it for a FormData body).
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.oms.receivings}`, { method: "POST", body: form });
   },
 
   remove(id) {

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import Portal from "./Portal";
 
 // headerRight: optional content shown at the top right, just before the ✕.
 export default function Modal({ open, onClose, title, headerRight, children, footer, width = "max-w-lg" }) {
@@ -15,8 +16,11 @@ export default function Modal({ open, onClose, title, headerRight, children, foo
 
   if (!open) return null;
 
+  // In <body> (Portal), above the top bar; pt-20 keeps the popup itself
+  // below the bar (4rem), never behind or over it.
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4 py-4">
+    <Portal>
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 px-4 pb-4 pt-20">
       <div
         // Never taller than the screen: the body scrolls, so the header (and
         // its buttons) always stays in view.
@@ -46,5 +50,6 @@ export default function Modal({ open, onClose, title, headerRight, children, foo
         ) : null}
       </div>
     </div>
+    </Portal>
   );
 }

@@ -33,12 +33,98 @@ def _courier_fits(batch_courier, courier):
     return not batch_courier or not courier or batch_courier == courier
 
 
+# The booking integrations' Courier row names -> the key a batch stores.
+BOOKING_COURIER_KEYS = {
+    "barqraftar": "barqraftar",
+    "postex": "postex",
+    "leopards": "leopards",
+    "smartlane": "smartlane",
+    "oms courier": "oms_courier",
+}
+
+
+def record_booking_batches(order_ids, *, actor_user_id=None):
+    """(user, 2026-11-23) One Assign Courier click -> one batch per store,
+    holding exactly the orders that click booked - the skipped ones (city,
+    stock, courier refusal...) are not in it. An order booked again (a
+    retry, Change Courier) leaves the batch it was in for the new one.
+    Best-effort: a failure here never touches the bookings themselves.
+    Returns [{id, batch_number, order_count, organization_id}]."""
+    ids = [str(i) for i in order_ids if i]
+    if not ids:
+        return []
+    made = []
+    try:
+        orders = list(Order.all_objects.filter(id__in=ids).select_related("courier"))
+        by_org = {}
+        for order in orders:
+            by_org.setdefault(order.organization_id, []).append(order)
+        now = timezone.now()
+        for organization_id, store_orders in by_org.items():
+            with transaction.atomic():
+                DispatchBatchOrder.all_objects.filter(
+                    order_id__in=[o.id for o in store_orders], removed_at__isnull=True
+                ).update(removed_at=now, removed_by_user_id=actor_user_id, updated_at=now)
+                couriers = {
+                    BOOKING_COURIER_KEYS.get((o.courier.name if o.courier_id else "").strip().lower(), "")
+                    for o in store_orders
+                }
+                batch = DispatchBatch.all_objects.create(
+                    organization_id=organization_id,
+                    courier=couriers.pop() if len(couriers) == 1 else "",
+                    source=DispatchBatch.SOURCE_BOOKING,
+                    created_by_user_id=actor_user_id,
+                )
+                DispatchBatchOrder.all_objects.bulk_create([
+                    DispatchBatchOrder(
+                        organization_id=organization_id, batch=batch,
+                        order_id=o.id, order_number=o.order_number,
+                    )
+                    for o in sorted(store_orders, key=lambda o: o.order_number)
+                ])
+            if not isinstance(batch.number, int):
+                batch.refresh_from_db(fields=["number"])  # sequence-backed db_default
+            made.append({
+                "id": str(batch.id), "batch_number": batch.batch_number,
+                "order_count": len(store_orders), "organization_id": str(organization_id),
+            })
+    except Exception:
+        logger.exception("failed to record the booking batch for %s orders", len(ids))
+    return made
+
+
+def booking_batch_for(organization_id, order_numbers):
+    """The one booking batch every one of `order_numbers` is in (not
+    removed) - where a document printed for them is filed - or None when
+    they aren't all in the same one."""
+    numbers = {str(n) for n in order_numbers}
+    if not numbers:
+        return None
+    rows = list(
+        DispatchBatchOrder.all_objects.filter(
+            organization_id=organization_id,
+            order_number__in=numbers,
+            removed_at__isnull=True,
+            batch__source=DispatchBatch.SOURCE_BOOKING,
+        ).values_list("batch_id", "order_number")
+    )
+    batch_ids = {batch_id for batch_id, _ in rows}
+    if len(batch_ids) != 1 or {number for _, number in rows} != numbers:
+        return None
+    return DispatchBatch.all_objects.filter(pk=batch_ids.pop()).first()
+
+
 def find_or_create_batch(*, organization_id, courier, order_numbers, actor_user_id):
-    """The batch whose current orders are exactly `order_numbers` (the
-    load sheet printed after that set's airway bill lands next to it), or
-    a new one. No order numbers (a date-ranged Smartlane load sheet) has
-    nothing to match on, so it always gets a batch of its own."""
+    """Where a printed document is filed: the booking batch all of its
+    orders are in, else the batch whose current orders are exactly
+    `order_numbers` (the load sheet printed after that set's airway bill
+    lands next to it), else a new one. No order numbers (a date-ranged
+    Smartlane load sheet) has nothing to match on, so it always gets a
+    batch of its own."""
     sorted_numbers = sorted({str(n) for n in order_numbers})
+    booking = booking_batch_for(organization_id, sorted_numbers)
+    if booking is not None:
+        return booking
     if sorted_numbers:
         candidates = (
             DispatchBatch.all_objects.filter(
@@ -114,10 +200,19 @@ def save_print_batch(*, organization_id, kind, courier, order_numbers, content,
                 organization_id=organization_id, courier=courier,
                 order_numbers=sorted_numbers, actor_user_id=actor_user_id,
             )
-            document = (
-                PrintBatch.all_objects.filter(batch=batch, kind=kind, courier=courier).first()
-                if sorted_numbers else None
-            )
+            # A reprint of the same document replaces it; a booking batch
+            # can also hold one printed for only some of its orders (a few
+            # spoiled waybills), kept beside the full one.
+            document = None
+            if sorted_numbers:
+                document = next(
+                    (
+                        doc for doc in PrintBatch.all_objects.filter(batch=batch, kind=kind, courier=courier)
+                        if sorted(doc.order_numbers or []) == sorted_numbers
+                        or batch.source != DispatchBatch.SOURCE_BOOKING
+                    ),
+                    None,
+                )
             old_name = ""
             if document:
                 old_name = document.file.name or ""

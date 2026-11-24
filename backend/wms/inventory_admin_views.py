@@ -31,11 +31,13 @@ def _all_store_rows(search="", activity=""):
         items = StockItem.all_objects.filter(organization_id=org_id).select_related("warehouse")
         for item in items:
             row = services._inventory_row(item, order_metrics, purchase_metrics)
+            # The cards count what the search finds (as the store's own
+            # Inventory page does) - every card, whichever one is picked.
+            if term and term not in (row["sku"] or "").lower() and term not in (row["product_name"] or "").lower():
+                continue
             summary["total"] += 1
             if row["activity"]:
                 summary[row["activity"]] += 1
-            if term and term not in (row["sku"] or "").lower() and term not in (row["product_name"] or "").lower():
-                continue
             if activity in services.INVENTORY_ACTIVITY and row["activity"] != activity:
                 continue
             rows.append({**row, "store_id": str(org_id), "store_name": name})
@@ -108,12 +110,9 @@ def _group_by_sku(rows):
 
 def _grouped_rows(search="", activity=""):
     """(groups, summary) - the SKU view: one row per SKU over every store.
-    Cards count SKUs; search and the activity filter pick SKUs."""
+    Cards count the SKUs the search finds; the activity filter picks SKUs."""
     rows, _ = _all_store_rows()
     groups = _group_by_sku(rows)
-    summary = {"total": len(groups), **{a: 0 for a in services.INVENTORY_ACTIVITY}}
-    for g in groups:
-        summary[g["activity"]] += 1
     term = (search or "").strip().lower()
     if term:
         groups = [
@@ -122,6 +121,9 @@ def _grouped_rows(search="", activity=""):
             or any(term in (r.get("product_name") or "").lower() or term in (r.get("sku") or "").lower()
                    for r in g["stores"])
         ]
+    summary = {"total": len(groups), **{a: 0 for a in services.INVENTORY_ACTIVITY}}
+    for g in groups:
+        summary[g["activity"]] += 1
     if activity in services.INVENTORY_ACTIVITY:
         groups = [g for g in groups if g["activity"] == activity]
     return groups, summary

@@ -43,9 +43,25 @@ class PrintBatchSerializer(serializers.ModelSerializer):
 
 
 class DispatchBatchOrderSerializer(serializers.ModelSerializer):
+    # The order as it is now - the batch card prints only the ones still
+    # booked (a tracking number), with the courier that booked them.
+    courier_name = serializers.SerializerMethodField()
+    tracking_number = serializers.SerializerMethodField()
+    status = serializers.SerializerMethodField()
+
     class Meta:
         model = DispatchBatchOrder
-        fields = ["id", "order_id", "order_number", "removed_at"]
+        fields = ["id", "order_id", "order_number", "removed_at", "courier_name", "tracking_number", "status"]
+
+    def get_courier_name(self, entry):
+        order = entry.order
+        return order.courier.name if order is not None and order.courier_id else ""
+
+    def get_tracking_number(self, entry):
+        return entry.order.tracking_number if entry.order is not None else ""
+
+    def get_status(self, entry):
+        return entry.order.status if entry.order is not None else ""
 
 
 class DispatchBatchSerializer(serializers.ModelSerializer):
@@ -67,6 +83,7 @@ class DispatchBatchSerializer(serializers.ModelSerializer):
             "organization_id",
             "store_name",
             "courier",
+            "source",
             "order_count",
             "entries",
             "documents",
@@ -314,6 +331,9 @@ class OrderSerializer(serializers.ModelSerializer):
             "payment_status",
             "fulfillment_status",
             "city",
+            "city_fix",
+            "city_before_fix",
+            "city_fix_note",
             "shop",
             "courier",
             "courier_name",
@@ -379,6 +399,10 @@ class OrderSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "dispatch_requested_at",
+            # Fix Cities' own (oms.city_fixer) - never set through Edit.
+            "city_fix",
+            "city_before_fix",
+            "city_fix_note",
             "id",
             "supabase_order_no",
             "status",

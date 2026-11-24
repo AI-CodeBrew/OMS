@@ -6,7 +6,6 @@ import { usePathname, useRouter } from "next/navigation";
 import ProtectedRoute from "../../components/shared/ProtectedRoute";
 import authService from "../../services/authService";
 import useAuthStore from "../../store/authStore";
-import { invalidateViewCache } from "../../lib/viewCache";
 import { useScrollMemory } from "../../lib/pageMemory";
 import {
   LayersIcon,
@@ -143,7 +142,11 @@ function SuperAdminShell({ children }) {
   const [expanded, setExpanded] = useState(false);
   // This login's super admin access (backend core.admin_pages): an owner
   // has every page; a staff login only the pages its role gives.
-  const [access, setAccess] = useState(null);
+  // The last answer at once (Back from the Hub / a store) - asked again below.
+  const [access, setAccess] = useState(() => {
+    const data = adminTeamService.cachedMe();
+    return data ? { isOwner: data.is_owner, permissions: data.permissions || {} } : null;
+  });
   useEffect(() => {
     let alive = true;
     adminTeamService
@@ -190,11 +193,11 @@ function SuperAdminShell({ children }) {
 
   // Reaching the panel (e.g. via browser Back) means we're no longer operating a store.
   // Acting as the platform org is the OMS Courier tab's own business - its
-  // layout enters and leaves it.
+  // layout enters and leaves it. The store's cached orders stay (kept per
+  // store in lib/viewCache) for Back into it - shown at once, refreshed quietly.
   useEffect(() => {
     if (!actingStore || actingStore.platform) return;
     exitStore();
-    invalidateViewCache();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

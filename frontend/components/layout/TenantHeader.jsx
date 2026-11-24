@@ -7,7 +7,6 @@ import StoreSwitcher from "./StoreSwitcher";
 import NotificationBell from "./NotificationBell";
 import authService from "../../services/authService";
 import useAuthStore, { useEffectiveUser } from "../../store/authStore";
-import { invalidateViewCache } from "../../lib/viewCache";
 import useCriticalOrdersStore from "../../store/criticalOrdersStore";
 import { getVisibleModules } from "./moduleNav";
 
@@ -38,7 +37,6 @@ export default function TenantHeader({ activeModule }) {
   // A super admin inside a store or the Dispatch Hub: the back arrow is the
   // way back out to the admin panel.
   const actingStore = useAuthStore((s) => s.actingStore);
-  const exitStore = useAuthStore((s) => s.exitStore);
   const exitLabel = actingStore?.critical
     ? "Exit Critical Orders"
     : actingStore?.allStores
@@ -53,8 +51,9 @@ export default function TenantHeader({ activeModule }) {
     const target =
       actingStore?.exitTo ||
       (actingStore?.allStores ? "/admin/organizations" : actingStore?.hub ? "/admin/dispatch-hub" : "/admin/stores");
-    exitStore();
-    invalidateViewCache();
+    // Only navigates: the admin panel's layout leaves the store as it opens.
+    // Leaving it here first left this page with no store for a moment, and
+    // the page's own guard then raced off to Stores (user, 2026-11-24).
     router.push(target);
   }
 

@@ -1,5 +1,16 @@
 import apiConfig from "../config/apiConfig";
 import authService from "./authService";
+import useAuthStore from "../store/authStore";
+
+// The last /me/ answer for this login - the panel's sidebar and the Hub page
+// draw from it at once on the way back (Back from the Hub) instead of
+// blank until it is asked again; me() still asks and updates it.
+let lastMe = null;
+let lastMeFor = "";
+
+function currentUserId() {
+  return useAuthStore.getState().user?.id || "";
+}
 
 // Super admin side access: this login's own pages (me), and - owners only -
 // the Admin Team page's staff logins and roles (backend core.admin_views).
@@ -51,7 +62,14 @@ export function exitTargetFor(access, skip, fallback) {
 
 const adminTeamService = {
   // {is_owner, permissions: {page: "read"|"write"}, pages}
-  me: () => request("/me/"),
+  me: async () => {
+    const data = await request("/me/");
+    lastMe = data;
+    lastMeFor = currentUserId();
+    return data;
+  },
+  // The last me() answer for the login signed in now, or null.
+  cachedMe: () => (lastMe && lastMeFor && lastMeFor === currentUserId() ? lastMe : null),
   overview: () => request("/team/"),
   // {email, password, name, role_id} or {..., permissions}
   createStaff: (body) => request("/team/", { method: "POST", body: JSON.stringify(body) }),

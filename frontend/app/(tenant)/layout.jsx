@@ -13,7 +13,7 @@ import {
   getDefaultModuleHref,
   getVisibleModules,
 } from "../../components/layout/moduleNav";
-import useAuthStore, { useEffectiveUser } from "../../store/authStore";
+import useAuthStore, { lastActingStore, useEffectiveUser } from "../../store/authStore";
 import { useScrollMemory } from "../../lib/pageMemory";
 import authService, {
   ACCESS_REVOKED_CODE,
@@ -63,6 +63,7 @@ function TenantShell({ children }) {
   const router = useRouter();
   const user = useEffectiveUser();
   const actingStore = useAuthStore((s) => s.actingStore);
+  const enterStore = useAuthStore((s) => s.enterStore);
   const activeModule = getActiveModule(pathname);
   const [lastModule, setLastModule] = useState(null);
   // Back/Forward lands where the page was scrolled to (lib/pageMemory).
@@ -106,13 +107,17 @@ function TenantShell({ children }) {
   useEffect(() => {
     if (!user || !pathname) return;
     if (superAdminWithoutStore) {
-      router.replace("/admin/stores");
+      // Back (or Forward) onto a store / Hub page after leaving it: open it
+      // again, instead of jumping to Stores (user, 2026-11-24).
+      const last = lastActingStore();
+      if (last) enterStore(last);
+      else router.replace("/admin/stores");
       return;
     }
     if (!canAccessPath(user, pathname)) {
       router.replace(getDefaultModuleHref(user));
     }
-  }, [user, pathname, router, superAdminWithoutStore]);
+  }, [user, pathname, router, superAdminWithoutStore, enterStore]);
 
   // The backend refuses every request from a suspended (or removed)
   // organization; checked on each navigation so a user already signed in

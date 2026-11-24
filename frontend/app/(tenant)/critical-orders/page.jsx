@@ -6,12 +6,13 @@ import { useCallback, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import { useRouter, useSearchParams } from "next/navigation";
 import Pagination from "../../../components/shared/Pagination";
-import Button from "../../../components/shared/Button";
+import SearchBox from "../../../components/shared/SearchBox";
 import OrdersTable from "../../../components/orders/OrdersTable";
 import CsvExportButton from "../../../components/orders/CsvExportButton";
 import ordersService from "../../../services/ordersService";
 import couriersService from "../../../services/couriersService";
 import { useEffectiveUser } from "../../../store/authStore";
+import { useRememberedData, useRememberedState } from "../../../lib/pageMemory";
 
 const OrderDetailPanel = dynamic(() => import("../../../components/orders/OrderDetailPanel"), {
   ssr: false,
@@ -36,13 +37,14 @@ export default function CriticalOrdersPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const user = useEffectiveUser();
-  const [reasons, setReasons] = useState(null);
+  // Back to this page: the cards and the list as they were left, shown at
+  // once and refreshed quietly (user, 2026-11-24).
+  const { recall, remember } = useRememberedData("critical");
+  const [reasons, setReasons] = useState(() => recall()?.reasons || null);
   const [active, setActive] = useState(searchParams.get("reason") || "");
-  const [orders, setOrders] = useState([]);
-  const [count, setCount] = useState(0);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(10);
-  const [loading, setLoading] = useState(false);
+  const [page, setPage] = useRememberedState("page", 1);
+  const [pageSize, setPageSize] = useRememberedState("pageSize", 10);
+  const listKey = (reason, pg, size, q) => `${reason}|${pg}|${size}|${q}`;
   const [error, setError] = useState("");
   const [detailOrderId, setDetailOrderId] = useState(null);
   // The details panel's previous / next arrows step through this list.
@@ -50,13 +52,18 @@ export default function CriticalOrdersPage() {
   const [couriers, setCouriers] = useState([]);
   // The same search as All Orders (order no., customer, phone, product,
   // SKU, tracking, city; commas for several) - within the picked card.
-  const [search, setSearch] = useState("");
-  const [appliedSearch, setAppliedSearch] = useState("");
+  const [search, setSearch] = useRememberedState("search", "");
+  const [appliedSearch, setAppliedSearch] = useRememberedState("appliedSearch", "");
+  const [arrival] = useState(() => recall()?.lists?.[listKey(active, page, pageSize, appliedSearch)] || null);
+  const [orders, setOrders] = useState(() => arrival?.orders || []);
+  const [count, setCount] = useState(() => arrival?.count || 0);
+  const [loading, setLoading] = useState(false);
 
   const loadSummary = useCallback(async () => {
     try {
       const data = await ordersService.criticalSummary();
       setReasons(data.reasons || []);
+      remember({ ...(recall() || {}), reasons: data.reasons || [] });
       // Nothing picked yet: open on the first reason that has orders.
       setActive((current) => current || (data.reasons || []).find((r) => r.count > 0)?.key || "");
     } catch (err) {
@@ -71,7 +78,15 @@ export default function CriticalOrdersPage() {
       setCount(0);
       return;
     }
-    setLoading(true);
+    const key = listKey(active, page, pageSize, appliedSearch);
+    const cached = recall()?.lists?.[key];
+    if (cached) {
+      // Seen before: its rows at once, refreshed quietly below.
+      setOrders(cached.orders);
+      setCount(cached.count);
+    } else {
+      setLoading(true);
+    }
     setError("");
     try {
       const data = await ordersService.list({
@@ -83,11 +98,14 @@ export default function CriticalOrdersPage() {
       });
       setOrders(data.results || []);
       setCount(data.count || 0);
+      const memory = recall() || {};
+      remember({ ...memory, lists: { ...(memory.lists || {}), [key]: { orders: data.results || [], count: data.count || 0 } } });
     } catch (err) {
       setError(err.message || "Failed to load orders");
     } finally {
       setLoading(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, page, pageSize, appliedSearch]);
 
   useEffect(() => {
@@ -103,12 +121,6 @@ export default function CriticalOrdersPage() {
     setActive(key);
     setPage(1);
     router.replace(`/critical-orders?reason=${key}`);
-  }
-
-  function onSubmitSearch(e) {
-    e.preventDefault();
-    setAppliedSearch(search.trim());
-    setPage(1);
   }
 
   const activeReason = (reasons || []).find((r) => r.key === active);
@@ -184,26 +196,20 @@ export default function CriticalOrdersPage() {
             <div />
           )}
           {active ? (
-            <form onSubmit={onSubmitSearch} className="flex w-full items-center sm:w-auto">
-              <input
-                type="search"
-                value={search}
-                onChange={(e) => {
-                  setSearch(e.target.value);
-                  // Emptying the box brings the card's orders back without another click.
-                  if (!e.target.value.trim() && appliedSearch) {
-                    setAppliedSearch("");
-                    setPage(1);
-                  }
-                }}
-                placeholder="Search order, customer, phone, product…"
-                title="Searches this card's orders by order no., customer, phone, product, SKU, tracking and city. Separate multiple values with commas, e.g. 87364,7386473,8343"
-                className="w-full min-w-0 flex-1 rounded-l-md border border-surface-border px-3 py-1.5 text-sm outline-none focus:border-brand-500 sm:w-72 sm:flex-none"
-              />
-              <Button type="submit" variant="secondary" className="-ml-px shrink-0 rounded-l-none">
-                Search
-              </Button>
-            </form>
+            <SearchBox
+              value={search}
+              onChange={setSearch}
+              onSearch={(term) => {
+                setAppliedSearch(term);
+                setPage(1);
+              }}
+              suggestions={orders.flatMap((o) => [o.order_number, o.customer_name, o.tracking_number])}
+              getSuggestions={ordersService.suggestProductNames.bind(ordersService)}
+              placeholder="Search order, customer, phone, product…"
+              title="Searches this card's orders by order no., customer, phone, product, SKU, tracking and city. Separate multiple values with commas, e.g. 87364,7386473,8343"
+              className="w-full sm:w-auto"
+              inputClassName="w-full flex-1 sm:w-72 sm:flex-none"
+            />
           ) : null}
         </div>
         {appliedSearch && !loading && orders.length === 0 && active ? (

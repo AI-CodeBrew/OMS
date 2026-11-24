@@ -2,6 +2,7 @@ import { getSupabaseBrowserClient } from "../lib/supabaseClient";
 import useAuthStore from "../store/authStore";
 import useTenantStore from "../store/tenantStore";
 import { clearPageMemory } from "../lib/pageMemory";
+import { invalidateViewCache } from "../lib/viewCache";
 
 // Mirrors backend core/middleware.py: every API call from a user whose
 // organization is suspended (or removed) fails with this code and message.
@@ -148,6 +149,8 @@ class AuthService {
     useAuthStore.getState().clearSession();
     useTenantStore.getState().clear();
     clearPageMemory();
+    // Every view's cached orders (lib/viewCache keeps them per store/Hub).
+    invalidateViewCache();
   }
 }
 

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import inventoryAdminService from "../../../../services/inventoryAdminService";
 import { useRememberedData, useRememberedState } from "../../../../lib/pageMemory";
-import Button from "../../../../components/shared/Button";
+import SearchBox from "../../../../components/shared/SearchBox";
 import Pagination from "../../../../components/shared/Pagination";
 import Modal from "../../../../components/shared/Modal";
 import InventoryItemDetailModal from "../../../../components/wms/InventoryItemDetailModal";
@@ -127,32 +127,18 @@ export default function AdminInventoryPage() {
         <h1 className="mr-2 text-2xl font-semibold text-slate-900" title="One row per SKU over every store. Open a SKU to see each store's stock.">
           Inventory
         </h1>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            setAppliedSearch(search.trim());
+        <SearchBox
+          value={search}
+          onChange={setSearch}
+          onSearch={(term) => {
+            setAppliedSearch(term);
             setPage(1);
           }}
-          className="flex min-w-0 flex-1 items-center gap-2 sm:flex-none"
-        >
-          <input
-            type="search"
-            value={search}
-            onChange={(e) => {
-              setSearch(e.target.value);
-              // Emptying the box brings the full list back.
-              if (!e.target.value.trim() && appliedSearch) {
-                setAppliedSearch("");
-                setPage(1);
-              }
-            }}
-            placeholder="Search SKU or product"
-            className="w-full min-w-0 rounded-md border border-surface-border px-3 py-1.5 text-sm outline-none focus:border-brand-500 sm:w-60"
-          />
-          <Button type="submit" variant="secondary">
-            Search
-          </Button>
-        </form>
+          suggestions={rows.flatMap((g) => [g.product_name, g.sku])}
+          placeholder="Search SKU or product"
+          className="flex-1 sm:flex-none"
+          inputClassName="w-full sm:w-60"
+        />
       </div>
 
       {error ? <p className="mt-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}

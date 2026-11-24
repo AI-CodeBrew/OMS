@@ -15,6 +15,7 @@ import {
   getCachedDashboard,
   invalidateViewCache,
   setCachedDashboard,
+  viewCacheToken,
 } from "../../../lib/viewCache";
 import { warmupViewsInBackground } from "../../../lib/warmupViews";
 import Button from "../../../components/shared/Button";
@@ -277,12 +278,6 @@ function Dashboard() {
   const [detailOrderId, setDetailOrderId] = useState(null);
   const [couriers, setCouriers] = useState([]);
 
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const reloadTimer = useRef(null);
-  const loadGen = useRef(0);
-
   // Custom with nothing applied yet keeps showing the default range.
   const params = useMemo(() => {
     if (customRange) return customRange;
@@ -291,27 +286,37 @@ function Dashboard() {
 
   const isPreset = !customRange;
 
+  // Back (or the sidebar) to the Dashboard: the last numbers are on the
+  // first paint, then refreshed quietly (user, 2026-11-24).
+  const [data, setData] = useState(() => getCachedDashboard(dashboardKey(params)));
+  const [loading, setLoading] = useState(() => !getCachedDashboard(dashboardKey(params)));
+  const [error, setError] = useState("");
+  const reloadTimer = useRef(null);
+  const loadGen = useRef(0);
+  const arrivingRef = useRef(true);
+  // The Hub has no warmup - read inside the load effect without re-running it.
+  const hubRef = useRef(false);
+  hubRef.current = Boolean(user?.isDispatchHub);
+
   useEffect(() => {
     let cancelled = false;
     const gen = ++loadGen.current;
     const key = dashboardKey(params);
+    const arriving = arrivingRef.current;
+    arrivingRef.current = false;
 
     async function load(force) {
       setError("");
-      if (!force && isPreset && dashboardPresetsAreWarm()) {
-        setData(getCachedDashboard(key));
+      const token = viewCacheToken();
+      const cached = force ? null : getCachedDashboard(key);
+      if (cached) {
+        // The last numbers at once - nothing empties.
+        setData(cached);
         setLoading(false);
-        return;
-      }
-      if (!force && !isPreset) {
-        const cached = getCachedDashboard(key);
-        if (cached) {
-          setData(cached);
-          setLoading(false);
-          return;
-        }
-      }
-      if (!force) {
+        // Nothing to fetch: a range already seen this visit (presets warm,
+        // or this custom range). Arriving, or the Hub: refreshed quietly.
+        if (!arriving && !hubRef.current && (!isPreset || dashboardPresetsAreWarm())) return;
+      } else if (!force) {
         setLoading(true);
         setData(null);
       }
@@ -320,7 +325,7 @@ function Dashboard() {
         // tabs and the other ranges runs below, once this is on screen.
         const d = await ordersService.dashboard(params);
         if (cancelled || gen !== loadGen.current) return;
-        setCachedDashboard(key, d);
+        setCachedDashboard(key, d, token);
         setData(d);
       } catch (err) {
         if (!cancelled && gen === loadGen.current) setError(err.message || "Failed to load dashboard");

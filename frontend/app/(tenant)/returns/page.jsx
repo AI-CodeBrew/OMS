@@ -7,6 +7,7 @@ import dynamic from "next/dynamic";
 import ordersService from "../../../services/ordersService";
 import wmsService from "../../../services/wmsService";
 import Button from "../../../components/shared/Button";
+import SearchBox from "../../../components/shared/SearchBox";
 import Pagination from "../../../components/shared/Pagination";
 import DateRangeFilter from "../../../components/orders/DateRangeFilter";
 import { useSessionDateRange } from "../../../store/dateFilterStore";
@@ -19,6 +20,7 @@ import Modal from "../../../components/shared/Modal";
 import TrackingLink from "../../../components/shared/TrackingLink";
 
 import { formatDateTime } from "../../../lib/formatDate";
+import { useRememberedData, useRememberedState } from "../../../lib/pageMemory";
 // The order's details, read only - opened by clicking its number.
 const OrderDetailPanel = dynamic(() => import("../../../components/orders/OrderDetailPanel"), {
   ssr: false,
@@ -82,19 +84,23 @@ function SummaryCard({ label, value, tone = "default", hint, active = false, onC
  */
 export default function ReturnsPage() {
   const { canWrite } = usePageAccess("wms.returns_desk");
-  const [orders, setOrders] = useState([]);
-  const [count, setCount] = useState(0);
-  const [summary, setSummary] = useState({});
-  const [bucket, setBucket] = useState("");
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(25);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-
-  const [search, setSearch] = useState("");
-  const [appliedSearch, setAppliedSearch] = useState("");
+  // Back to this page: the card, page and search as they were left, the
+  // last rows at once - refreshed quietly (user, 2026-11-24).
+  const { recall, remember } = useRememberedData("returns");
+  const [bucket, setBucket] = useRememberedState("bucket", "");
+  const [page, setPage] = useRememberedState("page", 1);
+  const [pageSize, setPageSize] = useRememberedState("pageSize", 25);
+  const [search, setSearch] = useRememberedState("search", "");
+  const [appliedSearch, setAppliedSearch] = useRememberedState("appliedSearch", "");
   // Shared across screens for the session (store/dateFilterStore).
   const { dateFrom, dateTo, setDateFrom, setDateTo } = useSessionDateRange();
+  const viewKey = [bucket, page, pageSize, appliedSearch, dateFrom, dateTo].join("|");
+  const [arrival] = useState(() => recall()?.[viewKey] || null);
+  const [orders, setOrders] = useState(() => arrival?.orders || []);
+  const [count, setCount] = useState(() => arrival?.count || 0);
+  const [summary, setSummary] = useState(() => arrival?.summary || {});
+  const [loading, setLoading] = useState(() => !arrival);
+  const [error, setError] = useState("");
 
   const [rowBusyId, setRowBusyId] = useState(null);
   const [notice, setNotice] = useState("");
@@ -132,7 +138,15 @@ export default function ReturnsPage() {
   const orderNav = useOrderNav(orders, detailOrderId, setDetailOrderId);
 
   const load = useCallback(async () => {
-    setLoading(true);
+    const cached = recall()?.[viewKey];
+    if (cached) {
+      // Seen before: its rows at once, refreshed quietly below.
+      setOrders(cached.orders);
+      setCount(cached.count);
+      setSummary(cached.summary);
+    } else {
+      setLoading(true);
+    }
     setError("");
     const filters = {
       search: appliedSearch || undefined,
@@ -156,23 +170,14 @@ export default function ReturnsPage() {
       setOrders(data.results || []);
       setCount(data.count || 0);
       setSummary(summaryData);
+      remember({ ...(recall() || {}), [viewKey]: { orders: data.results || [], count: data.count || 0, summary: summaryData } });
     } catch (err) {
       setError(err.message || "Failed to load returns");
     } finally {
       setLoading(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page, pageSize, bucket, appliedSearch, dateFrom, dateTo]);
-
-  // Searches as you type, once typing pauses.
-  useEffect(() => {
-    const term = search.trim();
-    if (term === appliedSearch) return undefined;
-    const timer = setTimeout(() => {
-      setAppliedSearch(term);
-      setPage(1);
-    }, 400);
-    return () => clearTimeout(timer);
-  }, [search, appliedSearch]);
 
   useEffect(() => {
     load();
@@ -193,13 +198,16 @@ export default function ReturnsPage() {
   }
 
   // A row's Receive: looks the parcel up, then opens the count popup.
-  async function openReceive(orderNumber) {
+  // By the row's own order id - its number alone can be on another store's
+  // order too in the Dispatch Hub / All Orders (#3367, 2026-11-23).
+  async function openReceive(orderNumber, orderId) {
     setRowBusyId(orderNumber);
     setError("");
     setNotice("");
     try {
-      const result = await wmsService.lookupReturn({ orderNumber });
-      if (result.success) setReceiving({ orderNumber: result.order_number, lines: result.lines || [] });
+      const result = await wmsService.lookupReturn({ orderNumber, orderId });
+      if (result.success)
+        setReceiving({ orderNumber: result.order_number, orderId: result.order_id, lines: result.lines || [] });
       else setError(`${orderNumber} — ${result.reason}`);
     } catch (err) {
       setError(err.message || "Lookup failed");
@@ -210,11 +218,11 @@ export default function ReturnsPage() {
 
   // The popup's Confirm: records the count, restocks the good units.
   async function confirmReceive(breakdown) {
-    const { orderNumber } = receiving;
+    const { orderNumber, orderId } = receiving;
     setError("");
     setNotice("");
     try {
-      const result = await wmsService.scanReturn({ orderNumber, breakdown });
+      const result = await wmsService.scanReturn({ orderNumber, orderId, breakdown });
       if (result.success) {
         setReceiving(null);
         setNotice(`${orderNumber} — ${describeReturnOutcome(result)}`);
@@ -300,20 +308,20 @@ export default function ReturnsPage() {
 
         <div className="min-w-0">
           <div className="mb-3 flex flex-wrap items-center gap-2">
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                setAppliedSearch(search.trim());
-                setPage(1);
-              }}
-              className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap"
-            >
-              <input
-                type="search"
+            <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap">
+              <SearchBox
                 value={search}
-                onChange={(e) => setSearch(e.target.value)}
+                onChange={setSearch}
+                onSearch={(term) => {
+                  setAppliedSearch(term);
+                  setPage(1);
+                }}
+                suggestions={orders.flatMap((o) => [o.order_number, o.customer_name, o.tracking_number])}
+                getSuggestions={ordersService.suggestProductNames.bind(ordersService)}
+                button={false}
                 placeholder="Search order, customer, phone, tracking ID, product…"
-                className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500 sm:w-80"
+                className="w-full sm:w-auto"
+                inputClassName="w-full sm:w-80"
               />
               {appliedSearch ? (
                 <button
@@ -328,7 +336,7 @@ export default function ReturnsPage() {
                   Clear
                 </button>
               ) : null}
-            </form>
+            </div>
             {/* Awaiting Scan: Scan on the right, opening the scan box in a popup. */}
             {bucket === "awaiting" && canWrite ? (
               <Button onClick={() => setScanOpen(true)} className="ml-auto">
@@ -432,7 +440,7 @@ export default function ReturnsPage() {
                           <button
                             type="button"
                             disabled={rowBusyId === order.order_number}
-                            onClick={() => openReceive(order.order_number)}
+                            onClick={() => openReceive(order.order_number, order.id)}
                             className="text-xs font-medium text-brand-700 hover:underline disabled:opacity-50"
                           >
                             Receive
@@ -475,9 +483,9 @@ export default function ReturnsPage() {
             const result = await wmsService.lookupReturn({ trackingNumber });
             // Found and receivable: count it in the popup. The lookup
             // resolved the tracking number to the real order, so the
-            // receive goes against that exact order_number.
+            // receive goes against that exact order (its id).
             if (result.success) {
-              setReceiving({ orderNumber: result.order_number, lines: result.lines || [] });
+              setReceiving({ orderNumber: result.order_number, orderId: result.order_id, lines: result.lines || [] });
             }
             return result;
           }}

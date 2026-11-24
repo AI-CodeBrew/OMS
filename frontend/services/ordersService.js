@@ -216,6 +216,47 @@ class OrdersService {
     return data.cities || [];
   }
 
+  // Fix Cities (Awaiting Confirmation): the ticked orders, or - with none
+  // ticked - every order the card shows under `filters`. Sure fixes are made;
+  // answers {summary, fixed, check}.
+  async fixCities({ orderIds = [], filters = {} } = {}) {
+    return this._postJson(API_ENDPOINTS.oms.orderFixCities, { order_ids: orderIds, filters }, "Fix Cities failed");
+  }
+
+  // The popup reopened: {check, fixed}; countOnly - {need_check, fixed}.
+  async fixCitiesReview(filters = {}, { countOnly = false } = {}) {
+    const params = { ...filters, status: undefined, page: undefined, page_size: undefined };
+    if (countOnly) params.count_only = "1";
+    const response = await fetch(
+      `${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderFixCitiesReview}${buildQuery(params)}`,
+      { headers: authService.getAuthHeaders() }
+    );
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Failed to load the city checks");
+    return data;
+  }
+
+  // fixes: [{order_id, city}] - a person's picks. Answers {results}.
+  async fixCity(fixes) {
+    return this._postJson(API_ENDPOINTS.oms.orderFixCity, { fixes }, "Could not fix the city");
+  }
+
+  // Puts the city back as it was before the fix. Answers {order}.
+  async undoCityFix(orderId) {
+    return this._postJson(API_ENDPOINTS.oms.orderUndoCityFix, { order_id: orderId }, "Could not undo");
+  }
+
+  async _postJson(path, body, fallback) {
+    const response = await fetch(`${apiConfig.baseUrl}${path}`, {
+      method: "POST",
+      headers: authService.getAuthHeaders(),
+      body: JSON.stringify(body),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || `${fallback} (HTTP ${response.status})`);
+    return data;
+  }
+
   // The tags this store's orders already carry - Update Tag's dropdown.
   async getOrderTags() {
     const response = await fetch(`${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderTags}`, {

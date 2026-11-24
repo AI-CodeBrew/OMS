@@ -78,7 +78,8 @@ export default function Dropdown({ trigger, items, align = "left", disabled = fa
         right: pos?.right ?? undefined,
         visibility: pos ? "visible" : "hidden",
       }}
-      className="z-50 min-w-[10rem] rounded-md border border-surface-border bg-white py-1 shadow-md"
+      // Above popups (Modal, z-[100] in <body>) - a menu opened inside one.
+      className="z-[110] min-w-[10rem] rounded-md border border-surface-border bg-white py-1 shadow-md"
     >
       {items.map((item) =>
         item.divider ? (

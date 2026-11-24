@@ -4,11 +4,13 @@ import usePageAccess from "../../../lib/usePageAccess";
 import { useCallback, useEffect, useState } from "react";
 import ticketsService from "../../../services/ticketsService";
 import Button from "../../../components/shared/Button";
+import SearchBox from "../../../components/shared/SearchBox";
 import Pagination from "../../../components/shared/Pagination";
 import CreateTicketDialog from "../../../components/tickets/CreateTicketDialog";
 import TicketDetailDialog from "../../../components/tickets/TicketDetailDialog";
 import TicketsTable from "../../../components/tickets/TicketsTable";
 import { TICKET_STATUSES, TICKET_STATUS_LABEL } from "../../../components/tickets/ticketStatus";
+import { useRememberedData, useRememberedState } from "../../../lib/pageMemory";
 
 // Two views, picked from the dropdown: "My Tickets" (the default) -
 // deliberately every ticket *this user* raised, not every ticket in the
@@ -22,21 +24,32 @@ const VIEWS = [
 
 export default function TicketsPage() {
   const { canWrite } = usePageAccess("tickets");
-  const [tickets, setTickets] = useState([]);
-  const [count, setCount] = useState(0);
-  const [search, setSearch] = useState("");
-  const [appliedSearch, setAppliedSearch] = useState("");
-  const [view, setView] = useState("mine");
-  const [status, setStatus] = useState("");
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(10);
-  const [loading, setLoading] = useState(true);
+  // Back to this page: view, filters, page and the last tickets as they
+  // were left - shown at once, refreshed quietly (user, 2026-11-24).
+  const { recall, remember } = useRememberedData("tickets");
+  const [search, setSearch] = useRememberedState("search", "");
+  const [appliedSearch, setAppliedSearch] = useRememberedState("appliedSearch", "");
+  const [view, setView] = useRememberedState("view", "mine");
+  const [status, setStatus] = useRememberedState("status", "");
+  const [page, setPage] = useRememberedState("page", 1);
+  const [pageSize, setPageSize] = useRememberedState("pageSize", 10);
+  const viewKey = [view, appliedSearch, status, page, pageSize].join("|");
+  const [arrival] = useState(() => recall()?.[viewKey] || null);
+  const [tickets, setTickets] = useState(() => arrival?.tickets || []);
+  const [count, setCount] = useState(() => arrival?.count || 0);
+  const [loading, setLoading] = useState(() => !arrival);
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
   const [viewing, setViewing] = useState(null);
 
   const load = useCallback(async () => {
-    setLoading(true);
+    const cached = recall()?.[viewKey];
+    if (cached) {
+      setTickets(cached.tickets);
+      setCount(cached.count);
+    } else {
+      setLoading(true);
+    }
     setError("");
     try {
       const data = await ticketsService.list({
@@ -48,22 +61,18 @@ export default function TicketsPage() {
       });
       setTickets(data.results || []);
       setCount(data.count || 0);
+      remember({ ...(recall() || {}), [viewKey]: { tickets: data.results || [], count: data.count || 0 } });
     } catch (err) {
       setError(err.message || "Failed to load tickets");
     } finally {
       setLoading(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, appliedSearch, status, page, pageSize]);
 
   useEffect(() => {
     load();
   }, [load]);
-
-  function onSearchSubmit(e) {
-    e.preventDefault();
-    setPage(1);
-    setAppliedSearch(search.trim());
-  }
 
   const hasFilters = Boolean(appliedSearch || status);
 
@@ -92,20 +101,18 @@ export default function TicketsPage() {
           ))}
         </select>
 
-        <form onSubmit={onSearchSubmit} className="flex w-full items-center sm:w-auto">
-          <input
-            value={search}
-            onChange={(e) => {
-              setSearch(e.target.value);
-              if (!e.target.value.trim() && appliedSearch) setAppliedSearch("");
-            }}
-            placeholder="Search ticket no., category, order…"
-            className="w-full rounded-l-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500 sm:w-72"
-          />
-          <Button type="submit" variant="secondary" className="-ml-px shrink-0 rounded-l-none">
-            Search
-          </Button>
-        </form>
+        <SearchBox
+          value={search}
+          onChange={setSearch}
+          onSearch={(term) => {
+            setPage(1);
+            setAppliedSearch(term);
+          }}
+          suggestions={tickets.flatMap((t) => [t.ticket_number, t.order_number, t.category, t.sub_category])}
+          placeholder="Search ticket no., category, order…"
+          className="w-full sm:w-auto"
+          inputClassName="w-full sm:w-72"
+        />
 
         <select
           value={status}

@@ -8,13 +8,16 @@ import Pagination from "../../../components/shared/Pagination";
 import Modal from "../../../components/shared/Modal";
 import Button, { Spinner } from "../../../components/shared/Button";
 import Checkbox from "../../../components/shared/Checkbox";
+import SearchBox from "../../../components/shared/SearchBox";
 import DateRangeFilter from "../../../components/orders/DateRangeFilter";
 import { useSessionDateRange } from "../../../store/dateFilterStore";
+import { useRememberedData, useRememberedState } from "../../../lib/pageMemory";
 import { SMARTLANE_LOAD_SHEET_COURIERS } from "../../../components/orders/statusConfig";
 import { DownloadIcon, HistoryIcon, PrinterIcon } from "../../../components/layout/navIcons";
 import { orderBookingAccount } from "../../../components/orders/orderBookingAccount";
 import barqraftarService from "../integrations/barq-raftar/_lib/barqraftarService";
 import postexService from "../integrations/postex/_lib/postexService";
+import leopardsService from "../integrations/leopards/_lib/leopardsService";
 
 import { formatDate as fmtDate, formatDateTime as fmtDateTime, formatTime as fmtTime } from "../../../lib/formatDate";
 const AirwayBillFilterModal = dynamic(
@@ -149,14 +152,38 @@ function DocumentChip({ config, doc, batchNumber, busy, onDownload, onPrint }) {
   );
 }
 
+// A batch's still-booked orders (a tracking number) per courier - what its
+// Airway Bill / Load Sheet buttons print - plus how many can't be printed
+// (Smartlane still waiting for tracking, or the booking since cancelled).
+function batchPrintGroups(batch) {
+  const active = batch.entries.filter((e) => !e.removed_at && e.order_id);
+  const booked = active
+    .filter((e) => e.tracking_number)
+    .map((e) => ({ id: e.order_id, order_number: e.order_number, courier_name: e.courier_name }));
+  const { groups } = splitByCourier(booked);
+  return { groups, notPrintable: active.length - booked.length };
+}
+
+// The couriers a batch's orders were booked with - Auto Book can book one
+// click with several.
+function batchCouriers(batch) {
+  if (batch.courier) return courierLabel(batch.courier);
+  const names = new Set(
+    batch.entries.filter((e) => !e.removed_at && e.courier_name).map((e) => e.courier_name)
+  );
+  return [...names].join(" + ");
+}
+
 // One batch as one row of its day's list; the chevron opens its orders
-// (and removing some of them).
-function BatchRow({ batch, showStore, busy, onDownload, onPrint, onRemoveOrders }) {
+// (and removing some of them). `generate`: its Airway Bill / Load Sheet
+// buttons, per courier (HistorySection).
+function BatchRow({ batch, showStore, busy, onDownload, onPrint, onRemoveOrders, generate = null }) {
   const [expanded, setExpanded] = useState(false);
   const [selected, setSelected] = useState(() => new Set());
 
   const active = batch.entries.filter((e) => !e.removed_at);
   const removed = batch.entries.filter((e) => e.removed_at);
+  const couriers = batchCouriers(batch);
   const preview = active.slice(0, 4).map((e) => e.order_number);
   const allSelected = active.length > 0 && selected.size === active.length;
 
@@ -173,7 +200,24 @@ function BatchRow({ batch, showStore, busy, onDownload, onPrint, onRemoveOrders 
     <li className={`transition ${expanded ? "bg-brand-50/30" : "hover:bg-brand-50/40"}`}>
       <div className="grid grid-cols-1 gap-3 px-4 py-3 md:grid-cols-[8.5rem_7rem_minmax(0,1fr)_auto_2.25rem] md:items-center md:gap-4">
         <div>
-          <div className="font-mono text-base font-semibold text-slate-900">{batch.batch_number}</div>
+          <div className="flex items-center gap-1.5">
+            <span className="font-mono text-base font-semibold text-slate-900">{batch.batch_number}</span>
+            {batch.source === "booking" ? (
+              <span
+                className="rounded bg-emerald-50 px-1.5 text-[11px] font-medium text-emerald-700"
+                title="Made when these orders were booked with the courier - only the orders that got booked"
+              >
+                Booked
+              </span>
+            ) : (
+              <span
+                className="rounded bg-slate-100 px-1.5 text-[11px] font-medium text-slate-500"
+                title="Made when a load sheet / airway bill was printed for these orders"
+              >
+                Printed
+              </span>
+            )}
+          </div>
           <div className="text-sm text-slate-500">
             {formatTime(batch.created_at)}
             {showStore && batch.store_name ? ` · ${batch.store_name}` : ""}
@@ -181,7 +225,7 @@ function BatchRow({ batch, showStore, busy, onDownload, onPrint, onRemoveOrders 
         </div>
 
         <div className="text-sm font-medium text-slate-700">
-          {batch.courier ? courierLabel(batch.courier) : <span className="text-slate-400">—</span>}
+          {couriers || <span className="text-slate-400">—</span>}
         </div>
 
         <div className="min-w-0 text-sm">
@@ -243,6 +287,8 @@ function BatchRow({ batch, showStore, busy, onDownload, onPrint, onRemoveOrders 
         </div>
       </div>
 
+      {generate ? <div className="space-y-2 px-4 pb-3">{generate}</div> : null}
+
       {expanded ? (
         <div className="border-t border-surface-border bg-white px-4 py-3">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
@@ -278,6 +324,14 @@ function BatchRow({ batch, showStore, busy, onDownload, onPrint, onRemoveOrders 
               >
                 <Checkbox checked={selected.has(e.order_number)} onChange={() => toggle(e.order_number)} />
                 {e.order_number}
+                {e.order_id && !e.tracking_number ? (
+                  <span
+                    className="text-[11px] text-amber-600"
+                    title="No tracking number - waiting for the courier, or its booking was cancelled. Not printed from this batch."
+                  >
+                    no tracking
+                  </span>
+                ) : null}
               </label>
             ))}
             {removed.map((e) => (
@@ -297,27 +351,45 @@ function BatchRow({ batch, showStore, busy, onDownload, onPrint, onRemoveOrders 
 }
 
 function HistorySection() {
-  const [search, setSearch] = useState("");
-  const [appliedSearch, setAppliedSearch] = useState("");
-  const [kind, setKind] = useState("");
-  const [courier, setCourier] = useState("");
+  // Back to this page: filters, page and the last batches as they were
+  // left, shown at once and refreshed quietly (user, 2026-11-24).
+  const { recall, remember } = useRememberedData("batchHistory");
+  const [search, setSearch] = useRememberedState("historySearch", "");
+  const [appliedSearch, setAppliedSearch] = useRememberedState("historyAppliedSearch", "");
+  const [kind, setKind] = useRememberedState("historyKind", "");
+  const [courier, setCourier] = useRememberedState("historyCourier", "");
   const [couriers, setCouriers] = useState([]);
   // Shared across screens for the session (store/dateFilterStore).
   const { dateFrom, dateTo, setDateFrom, setDateTo } = useSessionDateRange();
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(25);
-  const [batches, setBatches] = useState([]);
-  const [count, setCount] = useState(0);
-  const [loading, setLoading] = useState(true);
+  const [page, setPage] = useRememberedState("historyPage", 1);
+  const [pageSize, setPageSize] = useRememberedState("historyPageSize", 25);
+  const viewKey = [appliedSearch, kind, courier, dateFrom, dateTo, page, pageSize].join("|");
+  const [arrival] = useState(() => recall()?.[viewKey] || null);
+  const [batches, setBatches] = useState(() => arrival?.batches || []);
+  const [count, setCount] = useState(() => arrival?.count || 0);
+  const [loading, setLoading] = useState(() => !arrival);
   const [error, setError] = useState("");
   // "download:<docId>" / "print:<docId>" - one document action at a time.
   const [busy, setBusy] = useState(null);
   // {batch, orderNumbers, onDone} while the remove confirmation is open.
   const [removing, setRemoving] = useState(null);
   const [removeBusy, setRemoveBusy] = useState(false);
+  const [notice, setNotice] = useState("");
+  // Generating from a batch card - same as Daily Batch's buttons.
+  // Smartlane's load sheet is per Smartlane courier, picked per batch.
+  const [smartlaneCourierByBatch, setSmartlaneCourierByBatch] = useState({});
+  // {batch, courier, orders} while the load sheet confirmation is open.
+  const [confirmLoadSheet, setConfirmLoadSheet] = useState(null);
+  const [airwayBillOrders, setAirwayBillOrders] = useState(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async ({ quiet = false } = {}) => {
+    const cached = recall()?.[viewKey];
+    if (cached) {
+      setBatches(cached.batches);
+      setCount(cached.count);
+    } else if (!quiet) {
+      setLoading(true);
+    }
     setError("");
     try {
       const data = await printBatchService.listBatches({
@@ -331,11 +403,13 @@ function HistorySection() {
       });
       setBatches(data.results || []);
       setCount(data.count || 0);
+      remember({ ...(recall() || {}), [viewKey]: { batches: data.results || [], count: data.count || 0 } });
     } catch (err) {
       setError(err.message || "Failed to load batches");
     } finally {
       setLoading(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appliedSearch, kind, courier, dateFrom, dateTo, page, pageSize]);
 
   useEffect(() => {
@@ -368,10 +442,77 @@ function HistorySection() {
     [batches]
   );
 
-  function onSearchSubmit(e) {
-    e.preventDefault();
-    setPage(1);
-    setAppliedSearch(search.trim());
+  // Generates a document from a batch card; once saved it's filed into this
+  // batch (its orders are all in it), so the list reloads to show it.
+  async function generate(key, fn, doneMessage) {
+    setBusy(key);
+    setError("");
+    setNotice("");
+    try {
+      await fn();
+      setNotice(doneMessage);
+      await load({ quiet: true });
+    } catch (err) {
+      setError(err.message || "Print failed");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function onAirwayBill(batch, courier, orders) {
+    if (courier.smartlane) {
+      setAirwayBillOrders(orders);
+      return;
+    }
+    generate(
+      `${batch.id}:${courier.key}:airway_bill`,
+      () => courier.airwayBill(orders.map((o) => o.id)),
+      `${courier.label} airway bill for ${batch.batch_number} downloaded.`
+    );
+  }
+
+  function onConfirmLoadSheet() {
+    const { batch, courier, orders } = confirmLoadSheet;
+    setConfirmLoadSheet(null);
+    const ids = orders.map((o) => o.id);
+    generate(
+      `${batch.id}:${courier.key}:loadsheet`,
+      () =>
+        courier.smartlane
+          ? ordersService.printSmartlaneLoadSheet(ids, smartlaneCourierByBatch[batch.id])
+          : courier.loadSheet(ids),
+      `${courier.label} load sheet for ${batch.batch_number} downloaded.`
+    );
+  }
+
+  function renderGenerate(batch) {
+    const { groups, notPrintable } = batchPrintGroups(batch);
+    if (!groups.length && !notPrintable) return null;
+    return (
+      <>
+        {groups.map(({ courier, orders }) => (
+          <DailyCourierGroup
+            key={courier.key}
+            courier={courier}
+            orders={orders}
+            busy={busy}
+            busyKeyBase={`${batch.id}:${courier.key}`}
+            smartlaneCourier={smartlaneCourierByBatch[batch.id] || ""}
+            onSmartlaneCourierChange={(value) =>
+              setSmartlaneCourierByBatch((prev) => ({ ...prev, [batch.id]: value }))
+            }
+            onAirwayBill={(printOrders) => onAirwayBill(batch, courier, printOrders)}
+            onLoadSheet={(printOrders) => setConfirmLoadSheet({ batch, courier, orders: printOrders })}
+          />
+        ))}
+        {notPrintable ? (
+          <p className="px-1 text-xs text-slate-500">
+            {notPrintable} order{notPrintable === 1 ? "" : "s"} without a tracking number (waiting for the
+            courier, or the booking was cancelled) - not printed from here.
+          </p>
+        ) : null}
+      </>
+    );
   }
 
   async function runDocumentAction(key, fn) {
@@ -407,23 +548,18 @@ function HistorySection() {
   return (
     <>
       <div className="mt-4 flex flex-wrap items-center gap-2">
-        <form
-          onSubmit={onSearchSubmit}
-          className="flex w-full flex-wrap items-center gap-1.5 sm:w-auto sm:flex-nowrap"
-        >
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search order number…"
-            className="w-full rounded-md border border-surface-border px-3 py-2 text-sm outline-none focus:border-brand-500 sm:w-56"
-          />
-          <button
-            type="submit"
-            className="rounded-md border border-surface-border bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-surface"
-          >
-            Search
-          </button>
-        </form>
+        <SearchBox
+          value={search}
+          onChange={setSearch}
+          onSearch={(term) => {
+            setPage(1);
+            setAppliedSearch(term);
+          }}
+          suggestions={batches.flatMap((b) => (b.entries || []).map((e) => e.order_number))}
+          placeholder="Search order number…"
+          className="w-full sm:w-auto"
+          inputClassName="w-full sm:w-56"
+        />
 
         <select
           value={kind}
@@ -475,6 +611,9 @@ function HistorySection() {
       {error ? (
         <p className="mt-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
       ) : null}
+      {notice ? (
+        <p className="mt-4 rounded-md bg-green-50 px-3 py-2 text-sm text-green-700">{notice}</p>
+      ) : null}
 
       <div className="mt-4 space-y-5">
         {loading ? (
@@ -485,7 +624,7 @@ function HistorySection() {
           <div className="rounded-lg border border-surface-border bg-white px-4 py-6 text-center text-sm text-slate-500">
             {appliedSearch || kind || courier || dateFrom || dateTo
               ? "No batches match these filters."
-              : "No batches yet - generate a load sheet or airway bill from Daily Batch or the Orders page."}
+              : "No batches yet - a batch is made each time orders are booked with a courier."}
           </div>
         ) : (
           days.map(({ day, batches: dayBatches }) => {
@@ -517,6 +656,7 @@ function HistorySection() {
                       onRemoveOrders={(b, orderNumbers, onDone) =>
                         setRemoving({ batch: b, orderNumbers, onDone })
                       }
+                      generate={renderGenerate(batch)}
                     />
                   ))}
                 </ul>
@@ -564,6 +704,39 @@ function HistorySection() {
           generated stay exactly as they were printed - they&apos;ll still list these orders.
         </p>
       </Modal>
+
+      <Modal
+        open={Boolean(confirmLoadSheet)}
+        onClose={() => setConfirmLoadSheet(null)}
+        title={`Generate ${confirmLoadSheet?.courier.label || ""} load sheet?`}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setConfirmLoadSheet(null)}>
+              Cancel
+            </Button>
+            <Button onClick={onConfirmLoadSheet}>Generate</Button>
+          </>
+        }
+      >
+        <p className="text-sm text-slate-700">
+          Load sheet for {confirmLoadSheet?.orders.length} order
+          {confirmLoadSheet?.orders.length === 1 ? "" : "s"} of {confirmLoadSheet?.batch.batch_number}.
+        </p>
+        <p className="mt-2 text-sm text-slate-500">
+          This hands the parcels over to the courier - the orders move to Awaiting Dispatched.
+          {confirmLoadSheet?.courier.key === "postex"
+            ? " PostEx makes a load sheet only once per parcel; parcels already on one come back as the copy saved then."
+            : ""}
+        </p>
+      </Modal>
+
+      <AirwayBillFilterModal
+        orders={airwayBillOrders}
+        onClose={() => {
+          setAirwayBillOrders(null);
+          load({ quiet: true });
+        }}
+      />
     </>
   );
 }
@@ -587,6 +760,13 @@ const DAILY_COURIERS = [
     accounts: ["barqraftar"],
     airwayBill: (ids) => barqraftarService.printLabels(ids),
     loadSheet: (ids) => barqraftarService.printLoadSheet(ids),
+  },
+  {
+    key: "leopards",
+    label: "Leopards",
+    accounts: ["leopards"],
+    airwayBill: (ids) => leopardsService.printAirwayBills(ids),
+    loadSheet: (ids) => leopardsService.printLoadSheet(ids),
   },
   {
     key: "smartlane",
@@ -734,8 +914,11 @@ function DailyCourierGroup({
 function DailyBatchSection() {
   // Shared across screens for the session (store/dateFilterStore).
   const { dateFrom, dateTo, setDateFrom, setDateTo } = useSessionDateRange();
-  const [days, setDays] = useState([]);
-  const [loading, setLoading] = useState(true);
+  // Back to this page: the last days at once, refreshed quietly.
+  const { recall, remember } = useRememberedData("dailyBatch");
+  const viewKey = `${dateFrom}|${dateTo}`;
+  const [days, setDays] = useState(() => recall()?.[viewKey] || []);
+  const [loading, setLoading] = useState(() => !recall()?.[viewKey]);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   // "<date>:<courier>:<kind>" of the document being generated.
@@ -747,16 +930,20 @@ function DailyBatchSection() {
   const [confirmLoadSheet, setConfirmLoadSheet] = useState(null);
 
   const load = useCallback(async () => {
-    setLoading(true);
+    const cached = recall()?.[viewKey];
+    if (cached) setDays(cached);
+    else setLoading(true);
     setError("");
     try {
       const data = await printBatchService.listDaily({ date_from: dateFrom, date_to: dateTo });
       setDays(data || []);
+      remember({ ...(recall() || {}), [viewKey]: data || [] });
     } catch (err) {
       setError(err.message || "Failed to load daily batches");
     } finally {
       setLoading(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dateFrom, dateTo]);
 
   useEffect(() => {
@@ -877,7 +1064,7 @@ function DailyBatchSection() {
                     {unbooked ? (
                       <p className="px-4 text-sm text-slate-500">
                         {groups.length ? "+ " : ""}
-                        {unbooked} order{unbooked === 1 ? "" : "s"} not booked through PostEx or BarqRaftar - no
+                        {unbooked} order{unbooked === 1 ? "" : "s"} not booked through an integrated courier - no
                         documents to generate here.
                       </p>
                     ) : null}
@@ -923,14 +1110,15 @@ function DailyBatchSection() {
 export default function BatchPage() {
   // Daily Batch is the page itself; History opens from the icon in the
   // top-right corner and closes back to it.
-  const [showHistory, setShowHistory] = useState(false);
+  // Back to this page opens the part (Daily Batch / History) it was left on.
+  const [showHistory, setShowHistory] = useRememberedState("showHistory", false);
 
   return (
     <div>
       <div className="flex items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold text-slate-900" title={showHistory
-              ? "Every batch ever printed, by day - its load sheet and airway bill side by side, re-downloaded or reprinted exactly as generated, never regenerated."
+              ? "Every batch, by day - one per courier booking (only the orders that got booked), plus older print-made ones. Generate a batch's airway bill / load sheet from its card; the ones already printed are kept beside it, re-downloaded exactly as generated."
               : "Every order that reached Ready to Print, grouped by day - (re-)generate an airway bill or load sheet for the whole day, whether or not anyone has printed one yet."}>Batch</h1>
         </div>
         <button

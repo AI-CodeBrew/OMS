@@ -49,6 +49,16 @@ class CitiesAdminService {
     return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.city(id)}`, { method: "DELETE" });
   }
 
+  // Misspellings Fix Cities learned from people's fixes: {learned_after, spellings}.
+  listSpellings(q = "") {
+    const qs = q ? `?${new URLSearchParams({ q })}` : "";
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.citySpellings}${qs}`);
+  }
+
+  removeSpelling(id) {
+    return request(`${apiConfig.baseUrl}${API_ENDPOINTS.admin.citySpelling(id)}`, { method: "DELETE" });
+  }
+
   // Pulls PostEx's and BarqRaftar's city lists. Answers {added: {courier: n},
   // errors: {courier: message}, count, cities}.
   importFromCouriers() {

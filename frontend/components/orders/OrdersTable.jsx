@@ -93,6 +93,37 @@ function tagText(order) {
   return order.workflow_tag;
 }
 
+// Fix Cities' mark beside the city (backend oms.city_fixer) - its own badge,
+// never the order's tag. "Check needed" only while the order can still be
+// changed (Awaiting Confirmation).
+function CityFixBadge({ order }) {
+  const fix = order.city_fix;
+  if (fix === "auto" || fix === "manual") {
+    const how = fix === "auto" ? "automatically" : "by hand";
+    return (
+      <span
+        className="mt-0.5 inline-block whitespace-nowrap rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700"
+        title={`City fixed ${how}${order.city_before_fix ? ` - was "${order.city_before_fix}"` : ""}${
+          order.city_fix_note ? ` (${order.city_fix_note})` : ""
+        }`}
+      >
+        City Fixed
+      </span>
+    );
+  }
+  if (fix === "check" && order.workflow_card === "awaiting_confirmation") {
+    return (
+      <span
+        className="mt-0.5 inline-block whitespace-nowrap rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700"
+        title={order.city_fix_note || "Fix Cities couldn't be sure - check it in Fix Cities"}
+      >
+        City check needed
+      </span>
+    );
+  }
+  return null;
+}
+
 function statusLabel(status) {
   return STATUS_LABELS[status] || String(status || "").replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
@@ -334,7 +365,10 @@ export default function OrdersTable({
                     })()}
                   </td>
                 ) : null}
-                <td className="px-3 py-1.5 text-slate-700">{order.city || "—"}</td>
+                <td className="px-3 py-1.5 text-slate-700">
+                  <div>{order.city || "—"}</div>
+                  <CityFixBadge order={order} />
+                </td>
                 <td className="px-3 py-1.5 text-slate-700">
                   <div className="capitalize">{order.fulfillment_status}</div>
                   {/* Who ships it - kept off the Courier column, which names

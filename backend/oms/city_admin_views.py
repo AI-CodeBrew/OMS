@@ -44,3 +44,21 @@ def city_detail(request, city_id):
 @permission_classes([IsSuperAdmin])
 def city_import(request):
     return Response({"success": True, **service.import_from_couriers(), **service.list_cities()})
+
+
+@api_view(["GET"])
+@permission_classes([IsSuperAdmin])
+def spellings(request):
+    """The spellings Fix Cities learned from people's fixes."""
+    return Response({"success": True, **service.list_spellings(request.query_params.get("q", ""))})
+
+
+@api_view(["DELETE"])
+@permission_classes([IsSuperAdmin])
+def spelling_detail(request, spelling_id):
+    """Forget one learned spelling (a wrong one)."""
+    try:
+        service.delete_spelling(spelling_id)
+    except CityAdminError as exc:
+        return Response({"success": False, "error": exc.message}, status=exc.status_code)
+    return Response({"success": True})

@@ -61,6 +61,62 @@ function KindIcon({ kind, className = "h-5 w-5" }) {
   );
 }
 
+// Any picture type (user, 2026-11-23) - the browser's image/* or, when it
+// can't tell (HEIC on Windows), the file name. SVG is refused: it can carry
+// script. Same rules as the server (oms/receivings_api.py).
+const PICTURE_EXT = /\.(jpe?g|jfif|png|webp|gif|bmp|tiff?|avif|heic|heif)$/i;
+const SVG_FILE = /\.svgz?$/i;
+
+function pictureProblem(file) {
+  if (SVG_FILE.test(file.name) || file.type === "image/svg+xml") {
+    return `${file.name} is an SVG file (not allowed)`;
+  }
+  if (!file.type.startsWith("image/") && !PICTURE_EXT.test(file.name)) return `${file.name} isn't a picture`;
+  if (file.size > MAX_BYTES) return `${file.name} is bigger than 15 MB`;
+  return "";
+}
+
+// A picture, or - for a type this browser can't show (HEIC/TIFF outside
+// Safari) - a plain tile with its type, instead of a broken image.
+function Picture({ url, name, className = "h-full w-full object-cover" }) {
+  const [broken, setBroken] = useState(false);
+  if (broken) {
+    const ext = (name.split(".").pop() || "").toUpperCase().slice(0, 5);
+    return (
+      <span className="flex h-full w-full flex-col items-center justify-center bg-slate-100 p-1 text-center text-[10px] leading-tight text-slate-500">
+        <span className="font-semibold">{ext || "FILE"}</span>
+        <span>No preview</span>
+      </span>
+    );
+  }
+  // eslint-disable-next-line @next/next/no-img-element
+  return <img src={url} alt={name} className={className} onError={() => setBroken(true)} />;
+}
+
+// The big view: the picture, or a Download link when it can't be shown here.
+function PicturePreview({ url, name }) {
+  const [broken, setBroken] = useState(false);
+  if (broken) {
+    return (
+      <div className="py-10 text-center text-sm text-slate-600">
+        <p>This browser can&apos;t show {name}.</p>
+        <a href={url} download={name} className="mt-3 inline-block font-medium text-brand-700 underline">
+          Download it
+        </a>
+      </div>
+    );
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={url}
+      alt={name}
+      className="mx-auto max-h-[65vh] w-auto rounded-md"
+      onError={() => setBroken(true)}
+    />
+  );
+}
+
 // A saved picture: the storage zone is private, so it's fetched with the
 // login's headers and shown from a blob: URL.
 function Thumb({ image, onOpen }) {
@@ -90,8 +146,7 @@ function Thumb({ image, onOpen }) {
       className="h-16 w-16 shrink-0 overflow-hidden rounded-md border border-surface-border bg-slate-100 hover:ring-2 hover:ring-brand-500"
     >
       {url ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={url} alt={image.name} className="h-full w-full object-cover" />
+        <Picture url={url} name={image.name} />
       ) : (
         <span className="text-[10px] text-slate-400">{failed ? "Not found" : "…"}</span>
       )}
@@ -121,15 +176,9 @@ function ReceivingModal({ kind, couriers, onClose, onSaved }) {
     setError("");
     const problems = [];
     const ok = picked.filter((file) => {
-      if (!file.type.startsWith("image/") && !/\.(jpe?g|png|webp|heic|heif|gif)$/i.test(file.name)) {
-        problems.push(`${file.name} isn't a picture`);
-        return false;
-      }
-      if (file.size > MAX_BYTES) {
-        problems.push(`${file.name} is bigger than 15 MB`);
-        return false;
-      }
-      return true;
+      const problem = pictureProblem(file);
+      if (problem) problems.push(problem);
+      return !problem;
     });
     setFiles((list) => {
       const room = MAX_IMAGES - list.length;
@@ -231,8 +280,7 @@ function ReceivingModal({ kind, couriers, onClose, onSaved }) {
             <div className="mt-1 grid grid-cols-3 gap-2 sm:grid-cols-4">
               {files.map((f, i) => (
                 <div key={f.url} className="relative aspect-square overflow-hidden rounded-md border border-surface-border">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={f.url} alt={f.file.name} className="h-full w-full object-cover" />
+                  <Picture url={f.url} name={f.file.name} />
                   {!saving ? (
                     <button
                       type="button"
@@ -264,7 +312,7 @@ function ReceivingModal({ kind, couriers, onClose, onSaved }) {
             >
               <KindIcon kind={kind} className="h-7 w-7" />
               <span className="font-medium">Choose from gallery</span>
-              <span className="text-xs text-slate-400">One or more pictures · up to {MAX_IMAGES}, 15 MB each</span>
+              <span className="text-xs text-slate-400">Any picture - JPG, PNG, WEBP, HEIC… · up to {MAX_IMAGES}, 15 MB each</span>
             </button>
           )}
         </div>
@@ -451,8 +499,7 @@ export default function ReceivingsPage() {
 
       {preview ? (
         <Modal open onClose={() => setPreview(null)} title={preview.name} width="max-w-4xl">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={preview.url} alt={preview.name} className="mx-auto max-h-[65vh] w-auto rounded-md" />
+          <PicturePreview url={preview.url} name={preview.name} />
         </Modal>
       ) : null}
     </div>
