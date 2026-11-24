@@ -45,11 +45,6 @@ export default function CriticalOrdersPage() {
   const [page, setPage] = useRememberedState("page", 1);
   const [pageSize, setPageSize] = useRememberedState("pageSize", 10);
   const listKey = (reason, pg, size, q) => `${reason}|${pg}|${size}|${q}`;
-  const [error, setError] = useState("");
-  const [detailOrderId, setDetailOrderId] = useState(null);
-  // The details panel's previous / next arrows step through this list.
-  const orderNav = useOrderNav(orders, detailOrderId, setDetailOrderId);
-  const [couriers, setCouriers] = useState([]);
   // The same search as All Orders (order no., customer, phone, product,
   // SKU, tracking, city; commas for several) - within the picked card.
   const [search, setSearch] = useRememberedState("search", "");
@@ -58,6 +53,12 @@ export default function CriticalOrdersPage() {
   const [orders, setOrders] = useState(() => arrival?.orders || []);
   const [count, setCount] = useState(() => arrival?.count || 0);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [detailOrderId, setDetailOrderId] = useState(null);
+  // The details panel's previous / next arrows step through this list.
+  // (Below `orders` - used above its declaration it crashed the page.)
+  const orderNav = useOrderNav(orders, detailOrderId, setDetailOrderId);
+  const [couriers, setCouriers] = useState([]);
 
   const loadSummary = useCallback(async () => {
     try {

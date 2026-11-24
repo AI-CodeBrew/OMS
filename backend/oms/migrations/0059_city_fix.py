@@ -4,6 +4,13 @@
 
 from django.db import migrations, models
 
+from core.rls import platform_admin_only_policy_sql
+
+# A platform-wide table (no organization_id) - super admin only for any
+# direct Postgres/PostgREST client; Django bypasses RLS as usual.
+RLS = platform_admin_only_policy_sql("oms", "city_spellings")
+NO_RLS = 'alter table "oms"."city_spellings" disable row level security;'
+
 
 class Migration(migrations.Migration):
 
@@ -45,4 +52,5 @@ class Migration(migrations.Migration):
                 ],
             },
         ),
+        migrations.RunSQL(sql=RLS, reverse_sql=NO_RLS),
     ]
