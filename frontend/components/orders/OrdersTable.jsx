@@ -52,6 +52,8 @@ const TAG_TONE = {
   "Moving towards Customer City": "indigo",
   "Rider on the Way": "indigo",
   "Waiting for Shipper Advice": "red",
+  // Refused, but Leopards hasn't opened a Shipper Advice request (yet).
+  "Ready for Return": "amber",
   "Reattempt Requested": "amber",
   "Return Requested": "amber",
   "Moving back to Warehouse": "amber",

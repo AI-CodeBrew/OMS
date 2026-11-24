@@ -1076,11 +1076,27 @@ def send_shipper_advice_to_courier(order, *, advice, remarks):
             raise InvalidTransition("Leopards isn't connected - can't send the shipper advice.")
         try:
             rows = leopards_client.shipper_advice_list(connection, shipment.tracking_number)
-            request_row = next((r for r in rows if isinstance(r, dict) and r.get("id")), None)
+            request_row = leopards_services.open_advice_request(rows)
             if request_row is None:
+                # Leopards would refuse it: out of the Shipper Advice Needed
+                # card now (tag "Ready for Return"), not on the next poll -
+                # saved even though this advice fails (no transaction here).
+                moved = leopards_services.mark_no_advice_request(order)
+                answered = any(
+                    isinstance(r, dict) and str(r.get("shipper_advice_status") or "").strip().upper() in ("RA", "RT")
+                    for r in rows
+                )
                 raise InvalidTransition(
-                    "Leopards hasn't asked for shipper advice on this parcel yet - it only accepts "
-                    "advice once it opens a request for an undelivered parcel."
+                    (
+                        "Leopards' shipper advice request for this parcel is already answered"
+                        if answered else "Leopards hasn't asked for shipper advice on this parcel yet"
+                    )
+                    + " - it only accepts advice while it has an open request for an undelivered parcel."
+                    + (
+                        " The order is now tagged Ready for Return and has left the Shipper Advice Needed "
+                        "card; it comes back by itself when Leopards opens a request."
+                        if moved else ""
+                    )
                 )
             leopards_client.update_shipper_advice(
                 connection, advice_id=request_row["id"], cn_number=shipment.tracking_number,
@@ -3407,6 +3423,9 @@ def _shipper_advice_needed(qs):
     # asking, so it leaves this card and just stays in Undelivered (user,
     # 2026-11-19). Orders with no courier tag (manual couriers, Smartlane,
     # imports) can't say - they stay as before.
+    # Leopards: its Shipper Advice list decides the tag - "Ready for Return"
+    # (no open request, out of this card) until the list has an open request
+    # (leopards.services.sync_shipper_advice_requests, user 2026-11-24).
     entered = (
         OrderStatusEvent.all_objects.filter(order_id=OuterRef("pk"), to_status="attempt")
         .exclude(from_status="attempt")

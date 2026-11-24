@@ -339,6 +339,20 @@ def shipper_advice_list(connection, cn_number):
     return _list(body, "data")
 
 
+def shipper_advice_requests(connection, *, start=0, length=500):
+    """POST shipperAdviceList for the whole account - one page (`start`,
+    `length`) of every parcel's shipper-advice request, open (PI) or
+    answered (RA / RT)."""
+    body = _request(
+        "POST", "/shipperAdviceList/format/json/", connection, context="Shipper advice list",
+        body={
+            "product": "", "status": "", "origionID": "", "destinationID": "",
+            "dateFrom": "", "toDate": "", "Cn_number": "", "start": int(start), "length": int(length),
+        },
+    )
+    return _list(body, "data")
+
+
 def update_shipper_advice(connection, *, advice_id, cn_number, status, remarks):
     """POST updateShipperAdvice - status "RA" (re-attempt) or "RT" (return)."""
     return _request(

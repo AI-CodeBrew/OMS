@@ -468,11 +468,12 @@ class LeopardsShipmentActionView(APIView):
                 return Response({"detail": "remarks are required"}, status=http_status.HTTP_400_BAD_REQUEST)
             try:
                 rows = client.shipper_advice_list(connection, tracking_number)
-                advice = next((r for r in rows if isinstance(r, dict) and r.get("id")), None)
+                advice = services.open_advice_request(rows)
                 if advice is None:
                     return Response(
-                        {"detail": "Leopards has no shipper-advice request for this parcel - it only asks "
-                                   "for advice on parcels it couldn't deliver."},
+                        {"detail": "Leopards has no open shipper-advice request for this parcel - it only asks "
+                                   "for advice on parcels it couldn't deliver, and a request already answered "
+                                   "can't be answered again."},
                         status=http_status.HTTP_404_NOT_FOUND,
                     )
                 result = client.update_shipper_advice(

@@ -8,7 +8,9 @@ goes live, so orders don't wait for their next Leopards update.
 - Still moving (Dispatched, Out for Delivery, Undelivered): each parcel is
   read again from Leopards and applied exactly as the poller would (its
   newest tracking line wins) - so a refused parcel moves to Undelivered /
-  Waiting for Shipper Advice. Then Leopards' shipper-advice list is read.
+  Ready for Return. Then Leopards' shipper-advice list is read: parcels with
+  an open request get "Waiting for Shipper Advice" (the dry run's "=>" words
+  show the sheet's tag, before that list is read).
 - Already Delivered / Returned: only the Sub Status and Tag are set
   (Returned: Awaiting Scan, or Return Received once the Returns Desk has it).
 - Not picked up yet: untouched.

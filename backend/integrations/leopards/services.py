@@ -26,6 +26,7 @@ import logging
 import re
 import time
 from datetime import timedelta
+from zoneinfo import ZoneInfo
 
 from django.db import transaction
 from django.db.models import F
@@ -993,10 +994,17 @@ def apply_leopards_status(order, stage, *, tracking_number="", actor_user_id=Non
 _SHEET_STATUSES = {"dispatched", "out_for_delivery", "attempt", "delivered", "returned"}
 
 
-def _record_sheet_words(order, stage, *, label, reason):
+def _record_sheet_words(order, stage, *, label, reason, advice_open=False):
     """The order's Sub Status, Tag and reason from FynkTech's sheet
-    (status_map), once its status has moved. A repeat of the same Ready for
-    Return after our Shipper Advice keeps "Reattempt / Return Requested"."""
+    (status_map), once its status has moved.
+
+    Ready for Return: "Waiting for Shipper Advice" only when Leopards' Shipper
+    Advice list has an open request for the parcel (`advice_open`, from
+    sync_shipper_advice_requests) - else "Ready for Return", out of the
+    Shipper Advice Needed card (user, 2026-11-24). A repeat of the same
+    Ready for Return keeps the tag it already has from the list ("Waiting
+    for Shipper Advice") or from our Shipper Advice ("Reattempt / Return
+    Requested") - the list sync is what moves it on."""
     from oms import services as oms_services
 
     words = status_map.sheet_words(stage, attempt=attempt_number(label), reason=reason)
@@ -1008,12 +1016,13 @@ def _record_sheet_words(order, stage, *, label, reason):
     if stage in ("picked", "dispatched") and oms_services.workflow_card(order) == "return_in_transit":
         words = status_map.SUB_RETURNING
     sub_status, tag = words
-    if (
-        stage == "waiting_advice"
-        and order.courier_status == sub_status
-        and order.courier_tag in (status_map.TAG_REATTEMPT_REQUESTED, status_map.TAG_RETURN_REQUESTED)
-    ):
-        tag = order.courier_tag
+    if stage == "waiting_advice" and not advice_open:
+        if order.courier_status == sub_status and order.courier_tag in (
+            status_map.SUB_WAITING_ADVICE[1], status_map.TAG_REATTEMPT_REQUESTED, status_map.TAG_RETURN_REQUESTED,
+        ):
+            tag = order.courier_tag
+        else:
+            tag = status_map.TAG_READY_FOR_RETURN
     keep_reason = stage in ("attempt", "waiting_advice", "return_in_progress") and reason
     changed = oms_services.record_courier_words(
         order, sub_status=sub_status, tag=tag,
@@ -1024,12 +1033,13 @@ def _record_sheet_words(order, stage, *, label, reason):
     return changed
 
 
-def _apply_status(shipment, *, label, stage, history_entry=None, payload=None, reason=""):
+def _apply_status(shipment, *, label, stage, history_entry=None, payload=None, reason="", advice_open=False):
     """Records one Leopards status on the shipment, restores a tracking
     number Shopify's own sync may have blanked on the order, self-heals a
     stuck Booking Pending, then applies the stage. Shared by the webhook
-    (a pushed event) and the poller (a tracked row). Returns True if the
-    order visibly changed."""
+    (a pushed event) and the poller (a tracked row); `advice_open` only from
+    the Shipper Advice list sync. Returns True if the order visibly
+    changed."""
     from oms.models import Order
     from oms import services as oms_services
 
@@ -1094,7 +1104,7 @@ def _apply_status(shipment, *, label, stage, history_entry=None, payload=None, r
                     order.order_number, order.status, label)
 
     order.refresh_from_db()
-    words_changed = _record_sheet_words(order, stage, label=label, reason=reason)
+    words_changed = _record_sheet_words(order, stage, label=label, reason=reason, advice_open=advice_open)
     return filled_tracking or words_changed or (order.status != before_status)
 
 
@@ -1215,42 +1225,125 @@ def handle_webhook_event(connection, payload):
 
 # ------------------------------------------------- Shipper advice requests --
 
+# Leopards' Shipper Advice list (shipperAdviceList): one row per request it
+# opened for a parcel it couldn't deliver. "PI" = open, waiting for our
+# word; "RA" (re-attempt) / "RT" (return) = answered.
+_ADVICE_OPEN = "PI"
+_ADVICE_ANSWERED = {"RA", "RT"}
+# The account-wide list is read in pages of this many rows, at most this
+# many pages a run.
+_ADVICE_PAGE_SIZE = 500
+_ADVICE_MAX_PAGES = 10
+# At most this many "Waiting for Shipper Advice" parcels missing from the
+# list are asked about one by one per run (see sync_shipper_advice_requests).
+_ADVICE_CONFIRM_LIMIT = 50
+# Leopards writes its times in Pakistan time.
+_LEOPARDS_TZ = ZoneInfo("Asia/Karachi")
+
+
+def _advice_status(row):
+    return str((row or {}).get("shipper_advice_status") or "").strip().upper()
+
+
+def open_advice_request(rows):
+    """The open request among one parcel's Shipper Advice list rows - the
+    one updateShipperAdvice should answer - or None. An open (PI) row first;
+    a row with a status we don't know counts as open too (Leopards stays the
+    judge); an answered one (RA / RT) never - answering it again isn't
+    asking Leopards anything."""
+    rows = [r for r in rows or [] if isinstance(r, dict) and r.get("id")]
+    return next((r for r in rows if _advice_status(r) == _ADVICE_OPEN), None) or next(
+        (r for r in rows if _advice_status(r) not in _ADVICE_ANSWERED), None
+    )
+
+
+def mark_no_advice_request(order):
+    """Leopards has no open Shipper Advice request for this order's parcel
+    (a refused advice, or the request closed): "Waiting for Shipper Advice"
+    (or no tag) -> "Ready for Return", so it leaves the Shipper Advice Needed
+    card and just stays in Undelivered. It comes back by itself once
+    Leopards opens a request (sync_shipper_advice_requests). Returns whether
+    the order changed."""
+    from oms import services as oms_services
+
+    if order.courier_tag not in ("", status_map.SUB_WAITING_ADVICE[1]):
+        return False
+    return oms_services.record_courier_words(
+        order, sub_status=order.courier_status, tag=status_map.TAG_READY_FOR_RETURN,
+    )
+
+
+def _open_advice_requests(connection):
+    """{cn: row} - every open (PI) request on the account's Shipper Advice
+    list, read page by page. Raises LeopardsAPIError if a page can't be
+    read."""
+    waiting, seen = {}, set()
+    for page in range(_ADVICE_MAX_PAGES):
+        rows = [
+            r for r in client.shipper_advice_requests(
+                connection, start=page * _ADVICE_PAGE_SIZE, length=_ADVICE_PAGE_SIZE,
+            )
+            if isinstance(r, dict)
+        ]
+        new = 0
+        for row in rows:
+            key = str(row.get("id") or "") or repr(sorted(row.items()))
+            if key in seen:
+                continue
+            seen.add(key)
+            new += 1
+            cn = str(row.get("cn_number") or "").strip()
+            if cn and _advice_status(row) == _ADVICE_OPEN:
+                waiting[cn] = row
+        # A short page is the last one; a page with nothing new means
+        # Leopards ignored `start` and sent the same rows again.
+        if len(rows) < _ADVICE_PAGE_SIZE or not new:
+            break
+    return waiting
+
+
+def _answered_since(order, asked):
+    """Whether our Shipper Advice was given at or after Leopards opened this
+    request (its created_date, Pakistan time) - Leopards' list then just
+    hasn't caught up yet."""
+    if not order.shipper_advice_at or not asked:
+        return False
+    ours = order.shipper_advice_at.astimezone(_LEOPARDS_TZ).strftime("%Y-%m-%d %H:%M")
+    return ours >= asked[:16]
+
+
 def sync_shipper_advice_requests(connection):
-    """The backup behind Ready for Return: Leopards' list of parcels waiting
-    for our Shipper Advice (status PI). Each such parcel booked from OMS -
-    not delivered, returned or cancelled, and not already answered by us
-    after Leopards asked - is put on Undelivered / "Waiting for Shipper
-    Advice" with Leopards' reason. Returns how many orders changed."""
+    """Leopards' Shipper Advice list decides the "Shipper Advice Needed"
+    card for Leopards (user, 2026-11-19 / 2026-11-24 - only parcels the
+    courier takes advice on right now):
+
+    - An open request (PI) on a parcel booked through `connection` - not
+      delivered, returned or cancelled, and not already answered by us
+      after Leopards asked - puts the order on Undelivered / "Waiting for
+      Shipper Advice" with Leopards' reason (into the card).
+    - An order still tagged "Waiting for Shipper Advice" whose parcel isn't
+      on the list as open is asked about once more on its own (the
+      account-wide list may not hold every request); still no open request
+      -> "Ready for Return" (out of the card, still in Undelivered).
+
+    Returns how many orders changed."""
     from oms.models import Order
 
     try:
-        body = client._request(
-            "POST", "/shipperAdviceList/format/json/", connection, context="Shipper advice list",
-            body={"product": "", "status": "", "origionID": "", "destinationID": "", "dateFrom": "",
-                  "toDate": "", "Cn_number": "", "start": 0, "length": 500},
-        )
+        waiting = _open_advice_requests(connection)
     except LeopardsAPIError:
         logger.exception("leopards: shipper advice list failed for org %s", connection.organization_id)
         return 0
-    waiting = {}
-    for row in client._list(body, "data"):
-        if not isinstance(row, dict) or str(row.get("shipper_advice_status") or "").upper() != "PI":
-            continue
-        cn = str(row.get("cn_number") or "").strip()
-        if cn:
-            waiting[cn] = row
-    if not waiting:
-        return 0
 
+    shipments = _shipments_for(connection).exclude(tracking_number="")
     updated = 0
-    for shipment in LeopardsShipment.all_objects.filter(is_active=True, tracking_number__in=list(waiting)):
+    for shipment in shipments.filter(tracking_number__in=list(waiting)) if waiting else []:
         row = waiting[shipment.tracking_number]
         order = Order.all_objects.filter(id=shipment.order_id).first()
         if not order or order.status in TERMINAL_STATUSES:
             continue
-        # Already answered after Leopards asked: Leopards' list catches up.
         asked = str(row.get("created_date") or "")
-        if order.shipper_advice_at and asked and order.shipper_advice_at.strftime("%Y-%m-%d %H:%M") >= asked[:16]:
+        if _answered_since(order, asked):
             continue
         entry = {"status": "Ready for Return", "reason": str(row.get("reason") or ""),
                  "activity_date": asked, "source": "shipper advice list"}
@@ -1258,11 +1351,34 @@ def sync_shipper_advice_requests(connection):
             with tenant_context(shipment.organization_id):
                 if _apply_status(
                     shipment, label="Ready for Return", stage="waiting_advice", history_entry=entry,
-                    reason=str(row.get("reason") or ""),
+                    reason=str(row.get("reason") or ""), advice_open=True,
                 ):
                     updated += 1
         except Exception:  # noqa: BLE001 - one parcel's failure must not drop the rest
             logger.exception("leopards: shipper advice sync failed for %s", shipment.tracking_number)
+
+    stale = (
+        shipments.filter(order__courier_tag=status_map.SUB_WAITING_ADVICE[1])
+        .exclude(order__status__in=TERMINAL_STATUSES)
+        .exclude(tracking_number__in=list(waiting))
+        .order_by("order__updated_at", "id")[:_ADVICE_CONFIRM_LIMIT]
+    )
+    for shipment in stale:
+        try:
+            rows = client.shipper_advice_list(connection, shipment.tracking_number)
+        except LeopardsAPIError:
+            logger.warning("leopards: couldn't check %s's shipper advice request", shipment.tracking_number,
+                           exc_info=True)
+            continue
+        if open_advice_request(rows) is not None:
+            continue
+        try:
+            with tenant_context(shipment.organization_id):
+                order = Order.all_objects.filter(id=shipment.order_id).first()
+                if order and mark_no_advice_request(order):
+                    updated += 1
+        except Exception:  # noqa: BLE001
+            logger.exception("leopards: shipper advice close failed for %s", shipment.tracking_number)
     return updated
 
 

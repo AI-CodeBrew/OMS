@@ -20,6 +20,12 @@ SUB_OUT_FOR_DELIVERY = ("Out For Delivery", "Rider on the Way")
 SUB_DELIVERED = ("Delivered", "Delivered")
 # Ready for Return: Leopards waits for our Shipper Advice.
 SUB_WAITING_ADVICE = ("Refused by Customer", "Waiting for Shipper Advice")
+# Ready for Return, but Leopards has no open request for our advice on its
+# Shipper Advice list (not opened yet, or closed) - it would refuse one, so
+# the order stays out of the "Shipper Advice Needed" card (user, 2026-11-24).
+# "Waiting for Shipper Advice" is only given while the list has an open
+# request (services.sync_shipper_advice_requests).
+TAG_READY_FOR_RETURN = "Ready for Return"
 # Being Return / Reverse Leg: already on its way back (Return in Transit).
 SUB_RETURNING = ("Returning", "Moving back to Warehouse")
 SUB_RETURNED = ("Returned to Warehouse", "Awaiting Scan")
@@ -60,7 +66,7 @@ ATTEMPT_REASONS = {
 ALL_TAGS = list(dict.fromkeys([
     SUB_PICKED[1], SUB_IN_TRANSIT[1], SUB_OUT_FOR_DELIVERY[1],
     *[tag for _base, tag in ATTEMPT_REASONS.values()],
-    SUB_WAITING_ADVICE[1], TAG_REATTEMPT_REQUESTED, TAG_RETURN_REQUESTED,
+    SUB_WAITING_ADVICE[1], TAG_READY_FOR_RETURN, TAG_REATTEMPT_REQUESTED, TAG_RETURN_REQUESTED,
     SUB_RETURNING[1], SUB_RETURNED[1], TAG_RETURN_RECEIVED,
 ]))
 
