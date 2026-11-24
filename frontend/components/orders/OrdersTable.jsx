@@ -33,6 +33,8 @@ const TAG_TONE = {
   "Loadsheet Printed": "blue",
   "Printed Airwaybill": "blue",
   "To be packed": "amber",
+  // Update Tag, before any booking - not printed yet (To be packed is).
+  "Ready to Pack": "blue",
   // Update Tag: waiting for stock to arrive.
   "Awaiting Stock/China": "amber",
   "Awaiting Stock/Local": "amber",

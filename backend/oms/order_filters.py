@@ -195,6 +195,8 @@ def _tag_choices():
          {"Printed Loadsheet"}),
         (TAG_TO_BE_PACKED, "To be packed", _not_packed_tag_q({TAG_TO_BE_PACKED}), {"To Be Packed"}),
         (TAG_PACKED, "Packed", _packed_q(), set()),
+        # Update Tag's "can be packed" - before printing (To be packed is printed).
+        ("Ready to Pack", "Ready to Pack", Q(tag__iexact="Ready to Pack", packed_at__isnull=True), {"Ready To Pack"}),
         # Update Tag's stock tags - set by hand while an order waits for stock.
         ("Awaiting Stock/China", "Awaiting Stock/China", Q(tag="Awaiting Stock/China"), set()),
         ("Awaiting Stock/Local", "Awaiting Stock/Local", Q(tag="Awaiting Stock/Local"), set()),

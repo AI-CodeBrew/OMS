@@ -35,6 +35,7 @@ from django.utils import timezone
 from core.events import publish_event
 
 from .models import Courier, Order, OrderItem, OrderStatusEvent
+from .services import tag_for_status
 
 # The sheets carry wall-clock local time with no offset, while the project
 # runs on UTC - reading them as UTC would shift every date by the offset.
@@ -521,8 +522,11 @@ def _row_changes(row, order, courier_lookup):
 
     if row["cn"] and order.tracking_number != row["cn"]:
         changes["tracking_number"] = row["cn"][:100]
-    if row["tags"] and order.tag != row["tags"]:
-        changes["tag"] = row["tags"][:100]
+    if row["tags"]:
+        # Before a booking, To be packed is stored as Ready to Pack (services.tag_for_status).
+        sheet_tag = tag_for_status(row["tags"][:100], final_status)
+        if order.tag != sheet_tag:
+            changes["tag"] = sheet_tag
     if row["invoice_number"] and order.invoice_number != row["invoice_number"]:
         changes["invoice_number"] = row["invoice_number"][:100]
     # The courier's charge, kept out of the order total (Order.courier_charges).
@@ -1909,8 +1913,10 @@ def run_status_update_import(organization_id, file_obj, *, dry_run=True, actor_u
             stamp = _STATUS_STAMPS.get(row["status"])
             if stamp and not getattr(order, stamp):
                 changes[stamp] = row["booking_date"] or timezone.now()
-        if row["tags"] and row["tags"][:100] != (order.tag or ""):
-            changes["tag"] = row["tags"][:100]
+        if row["tags"]:
+            sheet_tag = tag_for_status(row["tags"][:100], changes.get("status") or order.status)
+            if sheet_tag != (order.tag or ""):
+                changes["tag"] = sheet_tag
         if row["cn"] and not (order.tracking_number or "").strip():
             changes["tracking_number"] = row["cn"][:100]
         # Booking Date: the file's, as the order's Booked At (final, like

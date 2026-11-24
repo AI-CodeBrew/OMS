@@ -29,8 +29,10 @@ const FIELD_BY_ACTION = {
 // Shipper Advice's choices (backend: oms.services.SHIPPER_ADVICES).
 const SHIPPER_ADVICES = ["Reattempt", "Return"];
 
-// Update Tag's fixed choices for now.
-const UPDATE_TAG_OPTIONS = ["To be packed", "Awaiting Stock/China", "Awaiting Stock/Local"];
+// Update Tag's fixed choices for now. "Ready to Pack", not "To be packed":
+// that one is only given by printing in Assigning Courier, and an order
+// tagged it here mixed with the printed ones there (user, 2026-11-24).
+const UPDATE_TAG_OPTIONS = ["Ready to Pack", "Awaiting Stock/China", "Awaiting Stock/Local"];
 
 const ACTION_TITLES = {
   assign_courier: "Assign courier",

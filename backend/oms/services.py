@@ -701,14 +701,32 @@ LEGACY_AIRWAYBILL_PRINTED = "Printed Airwaybill"
 AIRWAYBILL_PRINTED_TAGS = frozenset({TAG_AIRWAYBILL_PRINTED, LEGACY_AIRWAYBILL_PRINTED})
 # One of the two documents printed, not yet both.
 PRINT_TAGS = AIRWAYBILL_PRINTED_TAGS | {TAG_LOADSHEET_PRINTED}
-OWN_PRIORITY_TAGS = frozenset({TAG_TO_BE_PACKED, "Ready to Pack"} | PRINT_TAGS)
+# Update Tag's "this one can be packed" before any courier booking (user,
+# 2026-11-24) - not To be packed, which only printing gives (both documents
+# printed, in Assigning Courier). Kept apart so an approved order arriving
+# in Assigning Courier never mixes with the ones already printed; printing
+# replaces it with the print tags as usual.
+TAG_READY_TO_PACK = "Ready to Pack"
+OWN_PRIORITY_TAGS = frozenset({TAG_TO_BE_PACKED, TAG_READY_TO_PACK} | PRINT_TAGS)
+# No booking yet, so nothing can have been printed.
+UNBOOKED_STATUSES = frozenset(WORKFLOW_CARD_STATUSES["awaiting_confirmation"] | WORKFLOW_CARD_STATUSES["approved"])
+
+
+def tag_for_status(tag, status):
+    """The tag as it may be stored on an order in `status`: before a
+    booking, "To be packed" (any spelling) is Ready to Pack - Update Tag,
+    Revert, a sheet import all go through here."""
+    tag = (tag or "").strip()
+    if status in UNBOOKED_STATUSES and tag.casefold() in ("to be packed", "ready to pack"):
+        return TAG_READY_TO_PACK
+    return tag
 
 
 def set_order_tag(order, *, tag, actor_user_id=None):
     """Update Tag: the order's own free-form tag (Order.tag - the orders
     table's Tag column). The status doesn't change; the change is in the
     order log."""
-    tag = (tag or "").strip()[:100]
+    tag = tag_for_status((tag or "").strip()[:100], order.status)
     if tag == order.tag:
         return order
     old = order.tag
@@ -1150,7 +1168,7 @@ def revert_to_awaiting_confirmation(order, *, tag, actor_user_id=None):
     """The Approved card's Revert: back to New (Awaiting Confirmation) with
     a tag saying why, to be checked and approved again. Only before a
     courier booking - nothing is booked or taken from stock in this card."""
-    tag = (tag or "").strip()[:100]
+    tag = tag_for_status((tag or "").strip()[:100], "new")
     if not tag:
         raise InvalidTransition("Pick a tag for the revert.")
     if order.status not in WORKFLOW_CARD_STATUSES["approved"]:
