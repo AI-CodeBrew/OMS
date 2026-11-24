@@ -707,7 +707,11 @@ PRINT_TAGS = AIRWAYBILL_PRINTED_TAGS | {TAG_LOADSHEET_PRINTED}
 # in Assigning Courier never mixes with the ones already printed; printing
 # replaces it with the print tags as usual.
 TAG_READY_TO_PACK = "Ready to Pack"
-OWN_PRIORITY_TAGS = frozenset({TAG_TO_BE_PACKED, TAG_READY_TO_PACK} | PRINT_TAGS)
+# Ready to Pack isn't one of them: it shows only before a booking
+# (Awaiting Confirmation, Approved). Once a courier is assigned the card's
+# own To be printed shows, until printing gives the print tags (user,
+# 2026-11-24) - see latest_tag.
+OWN_PRIORITY_TAGS = frozenset({TAG_TO_BE_PACKED} | PRINT_TAGS)
 # No booking yet, so nothing can have been printed.
 UNBOOKED_STATUSES = frozenset(WORKFLOW_CARD_STATUSES["awaiting_confirmation"] | WORKFLOW_CARD_STATUSES["approved"])
 
@@ -2267,6 +2271,8 @@ def latest_tag(order):
         card == "awaiting_confirmation"
         or not card_tag
         or (order.tag in OWN_PRIORITY_TAGS and not order.packed_at)
+        # Ready to Pack on the Approved card too - not after booking.
+        or (order.tag == TAG_READY_TO_PACK and card == "approved")
     ):
         return order.tag
     attempts = order.delivery_attempts or 0

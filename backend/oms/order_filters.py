@@ -183,6 +183,7 @@ def _tag_choices():
     order moves through them, then Update Tag's stock tags:
     [(value, label, Q, also-accepted values)]."""
     from oms.services import (
+        UNBOOKED_STATUSES,
         AIRWAYBILL_PRINTED_TAGS, TAG_AIRWAYBILL_PRINTED, TAG_LOADSHEET_PRINTED, TAG_PACKED,
         TAG_RETURN_RECEIVED_DAMAGED, TAG_RETURN_RECEIVED_GOOD, TAG_TO_BE_PACKED, TAG_TO_BE_PRINTED,
     )
@@ -196,7 +197,10 @@ def _tag_choices():
         (TAG_TO_BE_PACKED, "To be packed", _not_packed_tag_q({TAG_TO_BE_PACKED}), {"To Be Packed"}),
         (TAG_PACKED, "Packed", _packed_q(), set()),
         # Update Tag's "can be packed" - before printing (To be packed is printed).
-        ("Ready to Pack", "Ready to Pack", Q(tag__iexact="Ready to Pack", packed_at__isnull=True), {"Ready To Pack"}),
+        # Only before a booking - after it the order shows To be printed (and
+        # is found under it) until printed.
+        ("Ready to Pack", "Ready to Pack", Q(tag__iexact="Ready to Pack", status__in=UNBOOKED_STATUSES),
+         {"Ready To Pack"}),
         # Update Tag's stock tags - set by hand while an order waits for stock.
         ("Awaiting Stock/China", "Awaiting Stock/China", Q(tag="Awaiting Stock/China"), set()),
         ("Awaiting Stock/Local", "Awaiting Stock/Local", Q(tag="Awaiting Stock/Local"), set()),

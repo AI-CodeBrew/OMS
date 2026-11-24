@@ -175,12 +175,14 @@ export const EDIT_LOCKED_STATUSES = new Set([
 // Airwaybill Printed or Loadsheet Printed after one, To be packed after both
 // (backend: oms.services.mark_orders_printed). Scan-pack (packed_at) still
 // shows Packed over all. "Printed Airwaybill" is the old wording.
+// Not "Ready to Pack": that one shows only before a booking (Awaiting
+// Confirmation, Approved) - once a courier is assigned the card's To be
+// printed shows until printing (user, 2026-11-24; backend latest_tag).
 const OWN_PRIORITY_TAGS = new Set([
   "To be packed",
   "Airwaybill Printed",
   "Loadsheet Printed",
   "Printed Airwaybill",
-  "Ready to Pack",
 ]);
 
 // The ONE tag an order shows - the latest: in Awaiting Confirmation its own
@@ -210,7 +212,8 @@ export function latestTag(order) {
     !order.packed_at &&
     (order.workflow_card === "awaiting_confirmation" ||
       !order.workflow_tag ||
-      OWN_PRIORITY_TAGS.has(order.tag))
+      OWN_PRIORITY_TAGS.has(order.tag) ||
+      (order.tag === "Ready to Pack" && order.workflow_card === "approved"))
   ) {
     return { text: order.tag, own: true };
   }
