@@ -79,12 +79,13 @@ export function AdviceOpenBadge({ order, className = "" }) {
     return (
       <span
         className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-indigo-50 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700 ring-1 ring-inset ring-indigo-200 ${className}`}
-        title={`Shipper Advice sent${to}: ${givenText(a) || "given"}.${
+        title={`Shipper Advice sent${to}${a.auto ? " automatically (Auto Reattempt)" : ""}: ${givenText(a) || "given"}.${
           a.status ? ` ${a.courier} status: ${a.status}.` : ""
         } It shows "Open for advice" again only if the courier asks again after its next try.`}
       >
         <CheckIcon className="h-2.5 w-2.5" />
         {a.advice ? `Advice given · ${a.advice}` : "Advice given"}
+        {a.auto ? <span className="font-semibold">(Auto)</span> : null}
       </span>
     );
   }

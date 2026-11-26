@@ -1134,7 +1134,7 @@ def send_shipper_advice_to_courier(order, *, advice, remarks):
     return ""
 
 
-def set_shipper_advice(order, *, advice, remarks="", actor_user_id=None):
+def set_shipper_advice(order, *, advice, remarks="", actor_user_id=None, auto=False):
     """Undelivered's Shipper Advice: what the store wants the courier to do
     after a failed delivery - Reattempt or Return - with remarks (a new
     time, a corrected address, ...). Sent to the courier's portal first
@@ -1170,8 +1170,11 @@ def set_shipper_advice(order, *, advice, remarks="", actor_user_id=None):
         order=order,
         from_status=order.status,
         to_status=order.status,
+        # `auto`: sent by Auto Shipper Advice (oms.auto_advice) - "(sent to
+        # PostEx, auto)", read back by the serializer's advice history.
         note=f"Shipper advice: {advice}" + (f" - {remarks}" if remarks else "")
-        + (f" (sent to {sent_to})" if sent_to else " (saved in OMS only - no courier booking to send it to)"),
+        + (f" (sent to {sent_to}{', auto' if auto else ''})" if sent_to
+           else " (saved in OMS only - no courier booking to send it to)"),
         actor_user_id=actor_user_id,
     )
     publish_event(
@@ -3521,7 +3524,9 @@ def advice_open_map(orders):
       couriers (manual, Smartlane, imports) can't say, so they get an
       entry only once advice was given.
 
-    Five queries at most for the whole page, whatever its size."""
+    - "auto": the advice was sent by Auto Shipper Advice (oms.auto_advice).
+
+    Six queries at most for the whole page, whatever its size."""
     from integrations.barqraftar.models import BarqRaftarShipment
     from integrations.leopards.models import LeopardsShipment
     from integrations.postex.models import PostExShipment
@@ -3609,7 +3614,23 @@ def advice_open_map(orders):
             "sent": sent,
             "advice": order.shipper_advice if sent else "",
             "advice_at": order.shipper_advice_at.isoformat() if sent and order.shipper_advice_at else None,
+            "auto": False,
         }
+    # Given by Auto Shipper Advice (oms.auto_advice): its "sent" log at the
+    # same moment as the order's shipper_advice_at.
+    sent_orders = {o.id: o for o in undelivered if (result.get(str(o.id)) or {}).get("sent") and o.shipper_advice_at}
+    if sent_orders:
+        from .models import AutoAdviceLog
+
+        for order_id, at in (
+            AutoAdviceLog.all_objects.filter(order_id__in=list(sent_orders), result=AutoAdviceLog.RESULT_SENT)
+            .values("order_id")
+            .annotate(at=Max("created_at"))
+            .values_list("order_id", "at")
+        ):
+            advised = sent_orders[order_id].shipper_advice_at
+            if at and abs((at - advised).total_seconds()) <= 120:
+                result[str(order_id)]["auto"] = True
     return result
 
 

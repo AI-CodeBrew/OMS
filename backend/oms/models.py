@@ -1005,3 +1005,39 @@ class ProductSku(TenantScopedModel):
 
     def __str__(self):
         return f"{self.product_name} -> {self.sku}"
+
+
+class AutoAdviceLog(TenantScopedModel):
+    """One step of Auto Shipper Advice (oms.auto_advice, user 2026-11-26) on
+    an order the courier opened for advice: what it would send (dry run),
+    sent, or what the courier refused. Shown in Critical Orders > Shipper
+    Advice Needed's log, and read back so it doesn't send twice."""
+
+    RESULT_WOULD_SEND = "would_send"
+    RESULT_SENT = "sent"
+    RESULT_REFUSED = "refused"
+    RESULT_ERROR = "error"
+    RESULT_CHOICES = [
+        (RESULT_WOULD_SEND, "Would send (dry run)"),
+        (RESULT_SENT, "Sent"),
+        (RESULT_REFUSED, "Refused by courier"),
+        (RESULT_ERROR, "Error"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="auto_advice_logs")
+    courier = models.CharField(max_length=50, blank=True, default="")
+    advice = models.CharField(max_length=20, default="Reattempt")
+    result = models.CharField(max_length=20, choices=RESULT_CHOICES)
+    message = models.CharField(max_length=500, blank=True, default="")
+
+    class Meta:
+        db_table = '"oms"."auto_advice_log"'
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["order", "-created_at"], name="oms_autoadv_order_idx"),
+            models.Index(fields=["organization", "-created_at"], name="oms_autoadv_org_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.order_id} {self.result}"

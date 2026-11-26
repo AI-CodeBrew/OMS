@@ -99,6 +99,30 @@ class OrdersService {
     return data;
   }
 
+  // Critical Orders > Shipper Advice Needed's Auto Reattempt switch
+  // (backend: oms.auto_advice): {scope: "store" | "hub" | null, enabled,
+  // hub_on, mode: "dry_run" | "live", interval_minutes, remarks,
+  // today: {sent, would_send, refused}, log: [...]}.
+  async autoAdvice() {
+    const response = await fetch(`${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderAutoAdvice}`, {
+      headers: authService.getAuthHeaders(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Failed to load Auto Reattempt");
+    return data;
+  }
+
+  async setAutoAdvice(enabled) {
+    const response = await fetch(`${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderAutoAdvice}`, {
+      method: "POST",
+      headers: { ...authService.getAuthHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: Boolean(enabled) }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Failed to change Auto Reattempt");
+    return data;
+  }
+
   async dashboard(params = {}) {
     const response = await fetch(
       `${apiConfig.baseUrl}${API_ENDPOINTS.oms.orderDashboard}${buildQuery(params)}`,

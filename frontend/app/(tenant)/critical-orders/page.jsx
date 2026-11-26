@@ -9,6 +9,7 @@ import Pagination from "../../../components/shared/Pagination";
 import SearchBox from "../../../components/shared/SearchBox";
 import OrdersTable from "../../../components/orders/OrdersTable";
 import CsvExportButton from "../../../components/orders/CsvExportButton";
+import AutoAdviceBar from "../../../components/orders/AutoAdviceBar";
 import ordersService from "../../../services/ordersService";
 import couriersService from "../../../services/couriersService";
 import { useEffectiveUser } from "../../../store/authStore";
@@ -213,6 +214,15 @@ export default function CriticalOrdersPage() {
             />
           ) : null}
         </div>
+        {/* Shipper Advice Needed: the Auto Reattempt switch - this store's,
+            or in the Dispatch Hub every Hub store's (backend oms.auto_advice). */}
+        {active === "shipper_advice" ? (
+          <AutoAdviceBar
+            canWrite={canWrite}
+            refreshKey={activeReason?.count}
+            onOpenOrder={setDetailOrderId}
+          />
+        ) : null}
         {appliedSearch && !loading && orders.length === 0 && active ? (
           <p className="mb-3 rounded-md bg-surface px-3 py-2 text-sm text-slate-600">
             No orders in this card match &quot;{appliedSearch}&quot;.

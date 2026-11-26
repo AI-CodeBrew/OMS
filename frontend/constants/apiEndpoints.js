@@ -103,6 +103,7 @@ export const API_ENDPOINTS = {
     orderStoreOptions: "/api/oms/orders/store-options/",
     orderProductLookup: "/api/oms/orders/product-lookup/",
     orderCriticalSummary: "/api/oms/orders/critical-summary/",
+    orderAutoAdvice: "/api/oms/orders/auto-advice/",
     orderImport: "/api/oms/orders/import-csv/",
     orderImportOrders: "/api/oms/orders/import-orders/",
     orderImportTemplate: "/api/oms/orders/import-template/",

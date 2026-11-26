@@ -176,6 +176,14 @@ function ShipperAdviceHistory({ order }) {
               >
                 {h.advice}
               </span>
+              {h.auto ? (
+                <span
+                  className="rounded-full bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700 ring-1 ring-inset ring-indigo-200"
+                  title="Sent by Auto Reattempt (Critical Orders > Shipper Advice Needed)"
+                >
+                  Auto
+                </span>
+              ) : null}
               {h.remarks ? <span>{h.remarks}</span> : null}
               <span className="text-xs text-slate-500">
                 {new Date(h.at).toLocaleString()}

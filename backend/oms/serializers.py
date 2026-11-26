@@ -509,13 +509,20 @@ class OrderSerializer(serializers.ModelSerializer):
             if text.endswith(")") and " (" in text:
                 text, sent_to = text.rsplit(" (", 1)
                 sent_to = sent_to[:-1]
+            # "(sent to PostEx, auto)" - Auto Shipper Advice (oms.auto_advice).
+            auto = sent_to.endswith(", auto")
+            if auto:
+                sent_to = sent_to[: -len(", auto")]
             advice, _, remarks = text.partition(" - ")
             out.append({
                 "advice": advice.strip(),
                 "remarks": remarks.strip(),
                 "sent_to": sent_to,
+                "auto": auto,
                 "at": e["created_at"].isoformat(),
-                "by": emails.get(str(e["actor_user_id"]), "") if e["actor_user_id"] else "",
+                "by": "Auto Shipper Advice" if auto else (
+                    emails.get(str(e["actor_user_id"]), "") if e["actor_user_id"] else ""
+                ),
             })
         return out
 

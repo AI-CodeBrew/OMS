@@ -344,6 +344,8 @@ class OrderViewSet(viewsets.ModelViewSet):
         "returns_summary": {"read": ("wms.returns_desk",)},
         "scan_pack": {"write": ("wms.packing",)},
         "scan_return": {"write": ("wms.returns_desk",)},
+        # Critical Orders > Shipper Advice Needed's Auto Reattempt switch.
+        "auto_advice": {"read": ORDER_VIEW_PAGES, "write": ("oms.critical_orders",)},
     }
     # Returns Desk and Packing are WMS pages (see frontend's
     # ModuleSidebar.canAccessPath, which already lets wms-only staff onto
@@ -813,6 +815,46 @@ class OrderViewSet(viewsets.ModelViewSet):
             {"store": request.query_params.get("store") or ""},
         )
         return Response({"reasons": services.critical_summary(qs)})
+
+    # -- Auto Shipper Advice (user, 2026-11-26 - oms.auto_advice) -------------
+
+    @staticmethod
+    def _auto_advice_scope(request):
+        """("store", [org]) for one store (or a super admin acting as it),
+        ("hub", [hub orgs]) inside the Dispatch Hub, (None, []) for the
+        super admin's all-stores view - no switch there."""
+        from core.middleware import HUB_HEADER
+
+        if is_hub_request(request):
+            if (request.META.get(HUB_HEADER) or "") == "all":
+                return None, []
+            return "hub", [str(i) for i in request.organization_ids]
+        if getattr(request, "organization_id", None):
+            return "store", [str(request.organization_id)]
+        return None, []
+
+    @action(detail=False, methods=["get", "post"], url_path="auto-advice")
+    def auto_advice(self, request):
+        """Critical Orders > Shipper Advice Needed's Auto Reattempt switch.
+        GET: {scope, enabled, hub_on, mode, today, log}. POST {enabled}:
+        turn it on/off for this store, or - inside the Dispatch Hub - for
+        every Hub store."""
+        from . import auto_advice
+
+        scope, org_ids = self._auto_advice_scope(request)
+        if request.method == "POST":
+            if not scope:
+                return Response({"detail": "Open a store or the Dispatch Hub to switch Auto Shipper Advice."},
+                                status=status.HTTP_400_BAD_REQUEST)
+            try:
+                auto_advice.set_switch(
+                    scope=scope, organization_id=org_ids[0] if scope == "store" else None,
+                    enabled=bool(request.data.get("enabled")), actor_user_id=getattr(request, "user_id", None),
+                    actor_email=getattr(request, "auth_email", "") or "",
+                )
+            except ValueError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(auto_advice.status_for(scope=scope, organization_ids=org_ids))
 
     # -- Fix Cities (user, 2026-11-23 - oms.city_fixer) ------------------------
 

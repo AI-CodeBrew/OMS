@@ -95,6 +95,12 @@ class Organization(models.Model):
     # Off: an order is taken from Shopify once, when it lands. On: later
     # Shopify updates apply until the order is booked with a courier.
     shopify_resync_orders = models.BooleanField(default=False, db_default=False)
+    # Auto Shipper Advice (user, 2026-11-26 - oms.auto_advice): every order
+    # of this store that its courier opens for advice gets "Reattempt" by
+    # itself. Switched in Critical Orders > Shipper Advice Needed. On the
+    # hidden platform organization (is_platform) it's the Dispatch Hub's
+    # switch - for every Hub store's orders.
+    auto_shipper_advice = models.BooleanField(default=False, db_default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

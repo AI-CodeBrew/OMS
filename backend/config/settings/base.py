@@ -334,6 +334,13 @@ LEOPARDS_API_BASE_URL = env(
 )
 LEOPARDS_AUTO_POLL = env("LEOPARDS_AUTO_POLL", default="false").lower() == "true"
 LEOPARDS_AUTO_POLL_INTERVAL_SECONDS = int(env("LEOPARDS_AUTO_POLL_INTERVAL_SECONDS", default="900"))
+
+# Auto Shipper Advice (oms.auto_advice, user 2026-11-26) - every order a
+# courier opens for advice, in a store (or the Dispatch Hub) whose switch is
+# on, gets "Reattempt" by itself. "dry_run" (default): only logs what it
+# would send; "live": sends; "off": the background check doesn't run.
+AUTO_SHIPPER_ADVICE_MODE = env("AUTO_SHIPPER_ADVICE_MODE", default="dry_run").strip().lower()
+AUTO_SHIPPER_ADVICE_INTERVAL_SECONDS = int(env("AUTO_SHIPPER_ADVICE_INTERVAL_SECONDS", default="300"))
 # OMS's own order webhooks on the "Keep updating orders from Shopify" stores
 # (integrations/shopify_webhook_check.py). On wherever the courier pollers
 # are (the real server) unless set; off locally.
