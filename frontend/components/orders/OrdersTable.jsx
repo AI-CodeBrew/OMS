@@ -401,8 +401,8 @@ export default function OrdersTable({
                       </span>
                     );
                   })()}
-                  {/* Undelivered: is the courier waiting for our advice now -
-                      on its own line under the status. */}
+                  {/* Undelivered: Open for advice / Advice given / Not open
+                      yet - on its own line under the status. */}
                   {order.advice_open && order.workflow_card === "undelivered" ? (
                     <div className="mt-0.5">
                       <AdviceOpenBadge order={order} />

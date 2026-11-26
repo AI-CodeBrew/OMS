@@ -6,7 +6,7 @@ from decimal import Decimal
 
 from django.db import transaction
 from django.db.models import (
-    BooleanField, Count, DateTimeField, Exists, ExpressionWrapper, F, OuterRef, Q, Subquery,
+    BooleanField, Count, DateTimeField, Exists, ExpressionWrapper, F, Max, OuterRef, Q, Subquery,
 )
 from django.db.models.functions import Coalesce
 from django.utils import timezone
@@ -1157,9 +1157,11 @@ def set_shipper_advice(order, *, advice, remarks="", actor_user_id=None):
     order.shipper_advice_remarks = remarks
     order.shipper_advice_at = timezone.now()
     advice_fields = ["shipper_advice", "shipper_advice_remarks", "shipper_advice_at", "updated_at"]
-    if order.courier_tag:
+    if order.courier_tag or sent_to:
         # Leopards' sheet: "Reattempt Requested" / "Return Requested" until
-        # its next status arrives.
+        # its next status arrives. Also when the courier took it but the
+        # order had no tag yet - the tag is what marks the advice as given
+        # (out of Shipper Advice Needed, "Advice given" pill).
         order.courier_tag = "Reattempt Requested" if advice == "Reattempt" else "Return Requested"
         advice_fields.append("courier_tag")
     order.save(update_fields=advice_fields)
@@ -3500,12 +3502,26 @@ _ADVICE_SENT_TAGS = {"Reattempt Requested", "Return Requested"}
 
 
 def advice_open_map(orders):
-    """{order id: {"open", "courier", "status", "sent"}} for the Undelivered
-    orders among `orders` booked through a courier that says whether it's
-    waiting for advice (PostEx, BarqRaftar, Leopards) - the Orders list's
-    "Open for advice" badge and the Shipper Advice popup's warning. Orders
-    it can't tell about (manual couriers, Smartlane, imports) are left out.
-    Three queries for the whole page, whatever its size."""
+    """{order id: {"open", "courier", "status", "sent", "advice", "advice_at"}}
+    for the Undelivered orders among `orders` - the Orders list's advice pill
+    and the Shipper Advice popup's warning:
+
+    - "open": the courier is waiting for our advice right now, by its own
+      status (PostEx, BarqRaftar, Leopards) and none sent for it yet ->
+      "Open for advice".
+    - "sent": our advice for this stay in Undelivered was given (user,
+      2026-11-26: "when the advice is added, do not show open, show given
+      shipper advice" - every courier) -> "Advice given". From the tag we
+      set when sending ("Reattempt / Return Requested") or, once the
+      courier's next status has replaced that tag (PostEx "Attempted",
+      BarqRaftar "Re-Attempt"), from shipper_advice_at being after the
+      order last came into Undelivered. If the courier asks again (its tag
+      back to "Waiting for Shipper Advice") it's "open" again.
+    - neither: "Not open yet" - PostEx / BarqRaftar / Leopards only; other
+      couriers (manual, Smartlane, imports) can't say, so they get an
+      entry only once advice was given.
+
+    Five queries at most for the whole page, whatever its size."""
     from integrations.barqraftar.models import BarqRaftarShipment
     from integrations.leopards.models import LeopardsShipment
     from integrations.postex.models import PostExShipment
@@ -3514,6 +3530,15 @@ def advice_open_map(orders):
     if not undelivered:
         return {}
     ids = [o.id for o in undelivered]
+    # When each order last came into Undelivered - the same moment the
+    # Shipper Advice Needed card counts from (_shipper_advice_needed).
+    entered = dict(
+        OrderStatusEvent.all_objects.filter(order_id__in=ids, to_status="attempt")
+        .exclude(from_status="attempt")
+        .values("order_id")
+        .annotate(at=Max("created_at"))
+        .values_list("order_id", "at")
+    )
 
     def active(model, *fields):
         # The live booking per order - the newest active row with a CN.
@@ -3535,9 +3560,24 @@ def advice_open_map(orders):
     except ImportError:  # pragma: no cover
         barq_labels = {}
 
+    def given(order):
+        # Our advice for this stay in Undelivered - not one from an earlier
+        # failed attempt.
+        since = entered.get(order.id) or order.created_at
+        return bool(order.shipper_advice and order.shipper_advice_at and since and order.shipper_advice_at >= since)
+
+    other_courier_ids = {
+        o.courier_id for o in undelivered
+        if o.courier_id and o.id not in postex and o.id not in barq and o.id not in leopards and given(o)
+    }
+    courier_names = (
+        dict(Courier.all_objects.filter(id__in=other_courier_ids).values_list("id", "name"))
+        if other_courier_ids else {}
+    )
+
     result = {}
     for order in undelivered:
-        sent = order.courier_tag in _ADVICE_SENT_TAGS
+        tagged_sent = order.courier_tag in _ADVICE_SENT_TAGS
         if order.id in postex:
             status = (postex[order.id]["status_label"] or "").strip()
             is_open = status.lower() in ADVICE_OPEN_POSTEX_STATUSES
@@ -3556,9 +3596,20 @@ def advice_open_map(orders):
                 "courier": "Leopards",
                 "status": "Open request" if is_open else (f"{label} - no open request" if label else "No open request"),
             }
+        elif given(order):
+            is_open = False
+            entry = {"courier": courier_names.get(order.courier_id, ""), "status": ""}
         else:
             continue
-        result[str(order.id)] = {**entry, "open": bool(is_open and not sent), "sent": sent}
+        is_open = bool(is_open and not tagged_sent)
+        sent = not is_open and (tagged_sent or given(order))
+        result[str(order.id)] = {
+            **entry,
+            "open": is_open,
+            "sent": sent,
+            "advice": order.shipper_advice if sent else "",
+            "advice_at": order.shipper_advice_at.isoformat() if sent and order.shipper_advice_at else None,
+        }
     return result
 
 

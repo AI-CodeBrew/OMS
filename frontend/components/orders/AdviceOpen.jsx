@@ -1,5 +1,7 @@
 "use client";
 
+import { formatDateTime } from "../../lib/formatDate";
+
 // Is the courier waiting for our Shipper Advice right now - by the courier's
 // own status (backend: oms.services.advice_open_map, order.advice_open =
 // {open, courier, status, sent}, null when the courier can't say). User,
@@ -59,13 +61,33 @@ function CheckIcon({ className = "h-4 w-4" }) {
   );
 }
 
+// "Reattempt, 26/11/2026, 03:40 PM" - the advice we gave and when.
+function givenText(a) {
+  return [a.advice, a.advice_at ? formatDateTime(a.advice_at) : ""].filter(Boolean).join(", ");
+}
+
 // The small pill under an Undelivered order's status: "Open for advice"
-// (green, live dot) while the courier waits for it, "Not open yet" (grey)
-// before it opens. Nothing once advice was sent (the Shipper Advice column
-// shows it) or when the courier can't say.
+// (green, live dot) while the courier waits for it, "Advice given ·
+// Reattempt / Return" (indigo) once we sent it - every courier (user,
+// 2026-11-26) - and "Not open yet" (grey) before the courier opens it.
+// Nothing when the courier can't say and no advice was given.
 export function AdviceOpenBadge({ order, className = "" }) {
   const a = info(order);
-  if (!a || (a.sent && !a.open)) return null;
+  if (!a) return null;
+  if (a.sent && !a.open) {
+    const to = a.courier ? ` to ${a.courier}` : "";
+    return (
+      <span
+        className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-indigo-50 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700 ring-1 ring-inset ring-indigo-200 ${className}`}
+        title={`Shipper Advice sent${to}: ${givenText(a) || "given"}.${
+          a.status ? ` ${a.courier} status: ${a.status}.` : ""
+        } It shows "Open for advice" again only if the courier asks again after its next try.`}
+      >
+        <CheckIcon className="h-2.5 w-2.5" />
+        {a.advice ? `Advice given · ${a.advice}` : "Advice given"}
+      </span>
+    );
+  }
   if (a.open) {
     return (
       <span
@@ -121,10 +143,12 @@ export function AdviceOpenNotice({ orders }) {
   const allSent = closed.every((x) => x.a.sent);
   const title = single
     ? first.sent
-      ? "Advice was already sent for this order"
+      ? `Advice already given for this order${first.advice ? ` (${first.advice})` : ""}`
       : `${first.courier} hasn't opened this order for advice yet`
-    : `${closed.length} of ${total} orders aren't open for advice`;
-  const opens = [...new Set(closed.map((x) => x.a.courier))]
+    : allSent
+      ? `Advice already given for ${closed.length} of ${total} orders`
+      : `${closed.length} of ${total} orders aren't open for advice`;
+  const opens = [...new Set(closed.filter((x) => !x.a.sent).map((x) => x.a.courier))]
     .map((c) => `${c} at ${OPENS_AT[c] || "its own advice step"}`)
     .join(", ");
 
@@ -138,10 +162,17 @@ export function AdviceOpenNotice({ orders }) {
             {closed.slice(0, 5).map(({ order, a }) => (
               <li key={order.id} className="flex flex-wrap items-center gap-x-1.5 text-xs text-amber-900">
                 {!single ? <span className="font-medium">{order.order_number}</span> : null}
-                <span className="inline-flex items-center gap-1 rounded-full bg-white/70 px-1.5 py-0.5 text-[11px] text-amber-800 ring-1 ring-inset ring-amber-200">
-                  <ClockIcon />
-                  {a.sent ? `Advice sent - ${a.courier}: ${a.status}` : `${a.courier}: ${a.status}`}
-                </span>
+                {a.sent ? (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-indigo-50 px-1.5 py-0.5 text-[11px] text-indigo-700 ring-1 ring-inset ring-indigo-200">
+                    <CheckIcon className="h-2.5 w-2.5" />
+                    {`Advice given${givenText(a) ? ` - ${givenText(a)}` : ""}`}
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-white/70 px-1.5 py-0.5 text-[11px] text-amber-800 ring-1 ring-inset ring-amber-200">
+                    <ClockIcon />
+                    {`${a.courier}: ${a.status}`}
+                  </span>
+                )}
               </li>
             ))}
             {closed.length > 5 ? (
@@ -150,7 +181,7 @@ export function AdviceOpenNotice({ orders }) {
           </ul>
           <p className="mt-2 text-xs leading-relaxed text-amber-800">
             {allSent
-              ? "The courier already has your advice and moved on - it asks again only if the next delivery fails."
+              ? "The courier already has your advice - a second one is most likely refused. It opens again only if the courier asks again after its next try."
               : `The courier will most likely refuse it. Advice opens ${opens} - usually a few hours after the failed attempt.`}{" "}
             You can still send it; the courier decides.
           </p>
