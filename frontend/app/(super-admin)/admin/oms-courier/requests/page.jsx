@@ -377,8 +377,8 @@ function RequestCard({ request, onAnswered }) {
         <p className="mt-4 text-xs text-amber-700">
           This store isn&apos;t in the Dispatch Hub yet - an approved courier does nothing until it
           is.{" "}
-          <Link href="/admin/dispatch-hub" className="font-medium underline">
-            Add it to the Hub
+          <Link href="/admin/stores" className="font-medium underline">
+            Add it to the Hub on Stores
           </Link>
         </p>
       ) : null}

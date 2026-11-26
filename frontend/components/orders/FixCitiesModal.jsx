@@ -163,6 +163,33 @@ function CityPicker({ cities, value, onChange, onUse, busy, autoFocus }) {
   );
 }
 
+// The order's city and address, line by line, so the address can be read
+// before picking a city (user, 2026-11-25). `cityRow` replaces the City
+// line (Fixed shows before -> after there); the words that matched a city
+// are marked. Rows from an older backend only have the joined `address`.
+function AddressDetails({ row, phrases, cityRow }) {
+  const line1 = row.address_line1 ?? row.address;
+  const lines = [
+    ["Address 1", line1, true],
+    ["Address 2", row.address_line2, false],
+    ["Postal code", row.postal_code, false],
+  ].filter(([, value, always]) => always || (value || "").trim());
+  return (
+    <dl className="mt-1.5 grid grid-cols-[5.5rem_minmax(0,1fr)] gap-x-3 gap-y-0.5 rounded-md border border-surface-border bg-slate-50 px-2.5 py-1.5 text-sm">
+      <dt className="text-xs leading-5 text-slate-500">City</dt>
+      <dd className="min-w-0">{cityRow}</dd>
+      {lines.map(([label, value]) => (
+        <div key={label} className="contents">
+          <dt className="text-xs leading-5 text-slate-500">{label}</dt>
+          <dd className="min-w-0 break-words text-slate-700">
+            <Highlighted text={value} phrases={phrases} />
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
 function OrderHead({ row }) {
   return (
     <div className="flex flex-wrap items-baseline gap-x-2 text-sm">
@@ -181,13 +208,11 @@ function CheckRow({ row, cities, busy, onUse }) {
   return (
     <li className="rounded-md border border-surface-border bg-white px-3 py-2.5">
       <OrderHead row={row} />
-      <div className="mt-1 text-sm text-slate-700">
-        City: <span className="font-medium text-red-700">{row.city ? `"${row.city}"` : "(blank)"}</span>
-        <span className="mx-1.5 text-slate-300">·</span>
-        <span className="text-slate-600">
-          <Highlighted text={row.address} phrases={row.highlight} />
-        </span>
-      </div>
+      <AddressDetails
+        row={row}
+        phrases={row.highlight}
+        cityRow={<span className="font-medium text-red-700">{row.city ? `"${row.city}"` : "(blank)"}</span>}
+      />
       {row.note ? <div className="mt-0.5 text-xs text-slate-500">{row.note}</div> : null}
 
       <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -264,21 +289,24 @@ function FixedRow({ row, busy, onUndo }) {
     <li className="flex items-start justify-between gap-3 rounded-md border border-surface-border bg-white px-3 py-2.5">
       <div className="min-w-0">
         <OrderHead row={row} />
-        <div className="mt-1 text-sm">
-          <span className="text-slate-500 line-through">{row.city_before_fix || "(blank)"}</span>
-          <span className="mx-1.5 text-slate-400">→</span>
-          <span className="font-medium text-emerald-800">{row.city}</span>
-          <span
-            className={`ml-2 rounded-full px-2 py-0.5 text-[11px] font-medium ${
-              auto ? "bg-emerald-50 text-emerald-700" : "bg-sky-50 text-sky-700"
-            }`}
-          >
-            {auto ? "Automatically" : "By hand"}
-          </span>
-        </div>
-        <div className="mt-0.5 truncate text-xs text-slate-500" title={row.address}>
-          <Highlighted text={row.address} phrases={row.highlight || [row.city.toLowerCase()]} />
-        </div>
+        <AddressDetails
+          row={row}
+          phrases={row.highlight || [(row.city || "").toLowerCase()]}
+          cityRow={
+            <span>
+              <span className="text-slate-500 line-through">{row.city_before_fix || "(blank)"}</span>
+              <span className="mx-1.5 text-slate-400">→</span>
+              <span className="font-medium text-emerald-800">{row.city}</span>
+              <span
+                className={`ml-2 rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                  auto ? "bg-emerald-50 text-emerald-700" : "bg-sky-50 text-sky-700"
+                }`}
+              >
+                {auto ? "Automatically" : "By hand"}
+              </span>
+            </span>
+          }
+        />
         {row.city_fix_note || row.note ? (
           <div className="mt-0.5 text-xs text-slate-400">{row.note || row.city_fix_note}</div>
         ) : null}

@@ -8,6 +8,7 @@ import { formatPakPhone } from "../../lib/formatPhone";
 import { STATUS_LABELS, cardTab, latestTag } from "./statusConfig";
 
 import { formatDateTime } from "../../lib/formatDate";
+import { AdviceOpenBadge } from "./AdviceOpen";
 
 // A self-delivered order's courier - shown as its Tracking ID too (no CN).
 const SELF_DELIVER = "Self Deliver";
@@ -400,6 +401,13 @@ export default function OrdersTable({
                       </span>
                     );
                   })()}
+                  {/* Undelivered: is the courier waiting for our advice now -
+                      on its own line under the status. */}
+                  {order.advice_open && order.workflow_card === "undelivered" ? (
+                    <div className="mt-0.5">
+                      <AdviceOpenBadge order={order} />
+                    </div>
+                  ) : null}
                 </td>
                 {/* Sub Status (the courier's own word) right beside Status. */}
                 {showSubStatusColumn ? (

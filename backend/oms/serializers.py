@@ -295,6 +295,11 @@ class OrderSerializer(serializers.ModelSerializer):
     # Other orders that look like this one placed twice (services.
     # get_duplicate_map) - [] when none; null where the list didn't ask.
     duplicate_of = serializers.SerializerMethodField()
+    # Undelivered: is the courier waiting for our Shipper Advice right now,
+    # by its own status (services.advice_open_map) - {"open", "courier",
+    # "status", "sent"}; null when the courier can't say or the view didn't
+    # ask.
+    advice_open = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -350,6 +355,7 @@ class OrderSerializer(serializers.ModelSerializer):
             "shipper_advice_at",
             "shipper_advice_history",
             "duplicate_of",
+            "advice_open",
             "total_amount",
             "coupon_discount",
             "extra_discount",
@@ -472,6 +478,9 @@ class OrderSerializer(serializers.ModelSerializer):
         if dup_map is None:
             return None
         return dup_map.get(str(order.id), [])
+
+    def get_advice_open(self, order):
+        return (self.context.get("advice_map") or {}).get(str(order.id))
 
     def get_shipper_advice_history(self, order):
         if not self.context.get("with_advice_history"):

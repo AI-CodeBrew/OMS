@@ -542,6 +542,11 @@ def row(order, diagnosis=None):
         "city_fix": order.city_fix,
         "city_fix_note": order.city_fix_note,
         "address": order_address(order),
+        # Shown line by line in the popup, to check the address before
+        # picking a city (user, 2026-11-25).
+        "address_line1": order.address_line1,
+        "address_line2": order.address_line2,
+        "postal_code": order.postal_code,
     }
     if diagnosis is not None:
         data.update({

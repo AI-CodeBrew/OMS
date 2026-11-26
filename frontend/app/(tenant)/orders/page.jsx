@@ -1473,6 +1473,7 @@ export default function OrdersPage() {
         currentCourier={[...new Set(pendingOrders.map((o) => o.courier_name).filter(Boolean))].join(", ")}
         currentTag={[...new Set(pendingOrders.map((o) => latestTag(o)?.text).filter(Boolean))].join(", ")}
         courierReason={[...new Set(pendingOrders.map((o) => o.courier_reason).filter(Boolean))].join(", ")}
+        adviceOrders={pendingOrders}
         couriers={
           pendingAction?.action === "assign_courier" && bookingAccounts.length
             ? // Only the synthetic booking-account entries actually book

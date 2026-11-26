@@ -50,7 +50,9 @@ export default function TenantHeader({ activeModule }) {
     // would only open All Orders again.
     const target =
       actingStore?.exitTo ||
-      (actingStore?.allStores ? "/admin/organizations" : actingStore?.hub ? "/admin/dispatch-hub" : "/admin/stores");
+      // The Hub opens straight in now - going back to its tab would only
+      // open it again (user, 2026-11-26).
+      (actingStore?.allStores || actingStore?.hub ? "/admin/organizations" : "/admin/stores");
     // Only navigates: the admin panel's layout leaves the store as it opens.
     // Leaving it here first left this page with no store for a moment, and
     // the page's own guard then raced off to Stores (user, 2026-11-24).

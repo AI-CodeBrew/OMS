@@ -1,6 +1,8 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import EditableField from "../../shared/EditableField";
+import ordersService from "../../../services/ordersService";
 import FynkTechDispatchTag from "../FynkTechDispatchTag";
 import TrackingLink from "../../shared/TrackingLink";
 import { ReplacementMark, TicketMark } from "../OrdersTable";
@@ -16,23 +18,94 @@ const ITEM_FIELDS = [
   ["quantity", "Qty", "number"],
 ];
 
+// A product added in Edit (user, 2026-11-25): blank until typed; `_new`
+// marks it for the checks on Save (OrderDetailPanel) and `_key` keeps its
+// row steady. Saved like the others - the backend recreates the whole list.
+let newItemSeq = 0;
+function newItem() {
+  newItemSeq += 1;
+  return { product_name: "", barcode: "", unit_price: "", quantity: 1, pack_units: 1, _new: true, _key: `new-${newItemSeq}` };
+}
+
 // Line items edit through the detail panel's single Edit (draft.items),
 // saved together with every other field - no per-item Edit/Save here.
 export default function LineItemsTab({ order, draft, editing, onChange }) {
   const items = editing ? draft.items : order.items;
+  const listId = `order-${order.id}-products`;
+  // Product name / SKU suggestions from the store's product list, like New
+  // Order: a name fills its SKU and an SKU its name - only into a blank box
+  // or one filled this way before, never over what was typed.
+  const [hints, setHints] = useState([]);
+  const lookupTimer = useRef(null);
+  const [focusKey, setFocusKey] = useState(null);
+  useEffect(() => () => clearTimeout(lookupTimer.current), []);
+  // The lookup answers after more typing - it must change the latest list.
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+
+  function lookupProduct(index, field, value) {
+    clearTimeout(lookupTimer.current);
+    const q = (value || "").trim();
+    if (q.length < 2) return;
+    lookupTimer.current = setTimeout(async () => {
+      const results = await ordersService.productLookup({ q, organization_id: order.organization_id });
+      setHints(results);
+      const low = q.toLowerCase();
+      const exact = results.find((r) =>
+        field === "product_name" ? r.product_name.toLowerCase() === low : r.sku && r.sku.toLowerCase() === low
+      );
+      if (!exact) return;
+      onChange(
+        "items",
+        draftRef.current.items.map((item, i) => {
+          if (i !== index) return item;
+          if (field === "product_name" && exact.sku && (!item.barcode || item._autoSku)) {
+            return { ...item, barcode: exact.sku, _autoSku: true };
+          }
+          if (field === "barcode" && (!item.product_name || item._autoName)) {
+            return { ...item, product_name: exact.product_name, _autoName: true };
+          }
+          return item;
+        })
+      );
+    }, 300);
+  }
 
   function onItemChange(index, field, value) {
     onChange(
       "items",
-      draft.items.map((item, i) => (i === index ? { ...item, [field]: value } : item))
+      draft.items.map((item, i) =>
+        i === index
+          ? {
+              ...item,
+              [field]: value,
+              // Typed by hand now - no longer the auto-filled one.
+              ...(field === "product_name" ? { _autoName: false } : {}),
+              ...(field === "barcode" ? { _autoSku: false } : {}),
+            }
+          : item
+      )
     );
+    if (field === "product_name" || field === "barcode") lookupProduct(index, field, value);
+  }
+
+  // Adds a blank product at the end (on Save it joins the order; its price
+  // goes on the total).
+  function onItemAdd() {
+    const item = newItem();
+    setFocusKey(item._key);
+    onChange("items", [...draft.items, item]);
   }
 
   // The bin: takes the product off the order (on Save). The total follows -
   // its price comes off, everything else stays. The last product can't go.
   function onItemRemove(index) {
     const item = draft.items[index];
-    if (!window.confirm(`Remove "${item.product_name}" from this order? Its price comes off the total when you Save.`)) {
+    const blank = item._new && !(item.product_name || "").trim();
+    if (
+      !blank &&
+      !window.confirm(`Remove "${item.product_name}" from this order? Its price comes off the total when you Save.`)
+    ) {
       return;
     }
     onChange(
@@ -87,20 +160,53 @@ export default function LineItemsTab({ order, draft, editing, onChange }) {
         </div>
       </div>
 
+      {editing ? (
+        <>
+          <datalist id={`${listId}-names`}>
+            {hints.map((h) => (
+              <option key={`n-${h.product_name}|${h.sku}`} value={h.product_name}>
+                {h.sku}
+              </option>
+            ))}
+          </datalist>
+          <datalist id={`${listId}-skus`}>
+            {hints
+              .filter((h) => h.sku)
+              .map((h) => (
+                <option key={`s-${h.sku}|${h.product_name}`} value={h.sku}>
+                  {h.product_name}
+                </option>
+              ))}
+          </datalist>
+        </>
+      ) : null}
+
       <div className="mt-3 space-y-2">
         {items.map((item, index) => (
-          <div key={item.id || index} className="rounded-md border border-surface-border bg-white p-3">
+          <div
+            key={item.id || item._key || index}
+            className={`rounded-md border bg-white p-3 ${item._new ? "border-brand-200 bg-brand-50/30" : "border-surface-border"}`}
+          >
             {editing ? (
               <div className="flex items-start gap-3">
                 <div className="grid flex-1 grid-cols-2 gap-3 sm:grid-cols-4">
                   {ITEM_FIELDS.map(([field, label, type]) => (
                     <EditableField
                       key={field}
-                      label={label}
+                      label={item._new && field === "product_name" ? "New product" : label}
                       type={type}
                       editing
                       value={item[field]}
                       onChange={(v) => onItemChange(index, field, v)}
+                      list={
+                        field === "product_name" ? `${listId}-names` : field === "barcode" ? `${listId}-skus` : undefined
+                      }
+                      placeholder={
+                        item._new
+                          ? { product_name: "Type a product name", barcode: "Optional", unit_price: "0.00" }[field]
+                          : undefined
+                      }
+                      autoFocus={field === "product_name" && item._key === focusKey}
                     />
                   ))}
                 </div>
@@ -155,6 +261,15 @@ export default function LineItemsTab({ order, draft, editing, onChange }) {
           </div>
         ))}
       </div>
+      {editing ? (
+        <button
+          type="button"
+          onClick={onItemAdd}
+          className="mt-2 rounded-md border border-dashed border-surface-border px-3 py-1.5 text-xs font-medium text-brand-600 hover:border-brand-500 hover:bg-brand-50"
+        >
+          + Add another product
+        </button>
+      ) : null}
     </div>
   );
 }

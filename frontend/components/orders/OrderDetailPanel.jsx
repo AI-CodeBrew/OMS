@@ -29,6 +29,7 @@ import {
 import barqraftarService from "../../app/(tenant)/integrations/barq-raftar/_lib/barqraftarService";
 import postexService from "../../app/(tenant)/integrations/postex/_lib/postexService";
 import leopardsService from "../../app/(tenant)/integrations/leopards/_lib/leopardsService";
+import { AdviceOpenBadge } from "./AdviceOpen";
 
 const EDITABLE_FIELDS = [
   "customer_name",
@@ -101,6 +102,20 @@ function serializeItem(item) {
   };
 }
 
+// What stops Save on the products: one with no name (a product added and
+// left empty), a quantity under 1, or an added product with no price.
+function itemsProblem(items) {
+  for (const item of items || []) {
+    const name = (item.product_name || "").trim();
+    if (!name) return "Each product needs a name - type one, or remove the empty product.";
+    if (!(Number(item.quantity) >= 1)) return `Enter a quantity of 1 or more for ${name}.`;
+    if (item._new && String(item.unit_price ?? "").trim() === "") {
+      return `Enter a price for ${name} (0 if it's free).`;
+    }
+  }
+  return "";
+}
+
 function buildDraft(order) {
   const draft = {};
   EDITABLE_FIELDS.forEach((field) => {
@@ -137,11 +152,15 @@ function buildPatch(order, draft) {
 function ShipperAdviceHistory({ order }) {
   const history = order.shipper_advice_history || [];
   const waiting = order.workflow_card === "undelivered";
-  if (!history.length && !(waiting && order.courier_reason)) return null;
+  if (!history.length && !(waiting && (order.courier_reason || order.advice_open))) return null;
   return (
     <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50/60 px-4 py-3 text-sm">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <p className="font-semibold text-slate-800">Shipper Advice</p>
+        <p className="flex items-center gap-2 font-semibold text-slate-800">
+          Shipper Advice
+          {/* Is the courier waiting for it now (its own status). */}
+          <AdviceOpenBadge order={order} />
+        </p>
         {waiting && order.courier_reason ? (
           <p className="text-xs text-amber-800">Courier&apos;s reason: {order.courier_reason}</p>
         ) : null}
@@ -311,6 +330,11 @@ export default function OrderDetailPanel({
   }
 
   async function onSave() {
+    const problem = itemsProblem(draft.items);
+    if (problem) {
+      setError(problem);
+      return;
+    }
     setSaving(true);
     setError("");
     try {
@@ -647,6 +671,8 @@ export default function OrderDetailPanel({
         fromCard={cardTab(order?.workflow_card)?.label}
         currentCourier={order?.courier_name}
         currentTag={order ? latestTag(order)?.text || "" : ""}
+        courierReason={order?.courier_reason || ""}
+        adviceOrders={order ? [order] : []}
         couriers={
           pendingAction === "assign_courier" && bookingAccounts.length
             ? // Booking accounts stay first/default; real courier rows are

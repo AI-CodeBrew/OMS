@@ -6,6 +6,7 @@ import Button from "../shared/Button";
 import CityInput from "../shared/CityInput";
 import { CANCEL_REASON_OTHER, CANCEL_REASONS, SMARTLANE_LOAD_SHEET_COURIERS } from "./statusConfig";
 import ordersService from "../../services/ordersService";
+import { AdviceOpenNotice } from "./AdviceOpen";
 
 const FIELD_BY_ACTION = {
   assign_courier: { key: "courier_id", label: "Courier", type: "courier-select" },
@@ -164,8 +165,10 @@ const CONFIRM_BY_ACTION = {
 // fromCard: the card the orders are in now - the confirm popup's title.
 // currentCourier: Change Courier's "Previous courier" line; currentTag:
 // Update Tag's "Previous tag" line; courierReason: Shipper Advice's
-// "Courier's reason" line (Leopards' reason for the failed delivery).
-export default function OrderActionModal({ action, couriers, options, count, fromCard, currentCourier, currentTag, courierReason, onSubmit, onClose, submitting }) {
+// "Courier's reason" line (Leopards' reason for the failed delivery);
+// adviceOrders: the orders a Shipper Advice goes to - the warning when the
+// courier hasn't opened them for advice (AdviceOpenNotice).
+export default function OrderActionModal({ action, couriers, options, count, fromCard, currentCourier, currentTag, courierReason, adviceOrders, onSubmit, onClose, submitting }) {
   const field = action ? FIELD_BY_ACTION[action] : null;
   const [value, setValue] = useState("");
   // Shipper Advice's remarks, beside its dropdown.
@@ -234,6 +237,7 @@ export default function OrderActionModal({ action, couriers, options, count, fro
   return (
     <Modal open title={ACTION_TITLES[action] || action} onClose={onClose}>
       <p className="mb-3 text-sm text-slate-500">Applying to {orders}.</p>
+      {action === "shipper_advice" ? <AdviceOpenNotice orders={adviceOrders} /> : null}
       {action === "change_courier" ? (
         <div className="mb-3">
           <span className="mb-1 block text-xs font-medium text-slate-700">Previous courier</span>

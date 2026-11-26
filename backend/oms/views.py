@@ -488,6 +488,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                 **self.get_serializer_context(),
                 "probability_map": probability_map,
                 "duplicate_map": services.get_duplicate_map(rows),
+                "advice_map": services.advice_open_map(rows),
             },
         )
         payload = {
@@ -581,6 +582,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                 **self.get_serializer_context(),
                 "probability_map": probability_map,
                 "duplicate_map": services.get_duplicate_map(rows),
+                "advice_map": services.advice_open_map(rows),
             }
         )
         if page is not None:
@@ -1206,6 +1208,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                 # Every Shipper Advice given on this order (detail only).
                 "with_advice_history": True,
                 "duplicate_map": services.get_duplicate_map([instance]),
+                "advice_map": services.advice_open_map([instance]),
             },
         )
         return Response(serializer.data)

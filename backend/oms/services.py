@@ -3426,21 +3426,140 @@ def _shipper_advice_needed(qs):
     # Leopards: its Shipper Advice list decides the tag - "Ready for Return"
     # (no open request, out of this card) until the list has an open request
     # (leopards.services.sync_shipper_advice_requests, user 2026-11-24).
+    #
+    # Booked through PostEx / BarqRaftar / Leopards (user, 2026-11-26): only
+    # while that courier itself is open for our advice - the same signals as
+    # the "Open for advice" badge (advice_open_map): PostEx "Delivery Under
+    # Review", BarqRaftar "Return Confirmation", Leopards an open request -
+    # and our advice for it isn't sent yet. Not open yet: it stays in
+    # Undelivered only, and comes here by itself once the courier opens it
+    # (again, after a later failed attempt too).
+    from integrations.barqraftar.models import BarqRaftarShipment
+    from integrations.leopards.models import LeopardsShipment
+    from integrations.postex.models import PostExShipment
+
+    def booked(model, *conditions, **filters):
+        return Exists(
+            model.all_objects.filter(order_id=OuterRef("pk"), is_active=True)
+            .exclude(tracking_number="")
+            .filter(*conditions, **filters)
+        )
+
+    postex_open = Q()
+    for label in ADVICE_OPEN_POSTEX_STATUSES:
+        postex_open |= Q(status_label__iexact=label)
     entered = (
         OrderStatusEvent.all_objects.filter(order_id=OuterRef("pk"), to_status="attempt")
         .exclude(from_status="attempt")
         .order_by("-created_at")
         .values("created_at")[:1]
     )
+    by_courier = Q(_postex=True) | Q(_barq=True) | Q(_leopards=True)
+    courier_open = (
+        (Q(_postex_open=True) | Q(_barq_open=True) | (Q(_leopards=True) & Q(courier_tag=WAITING_FOR_ADVICE_TAG)))
+        & ~Q(courier_tag__in=_ADVICE_SENT_TAGS)
+    )
+    # Anything else (manual couriers, Smartlane, imports) can't say - as
+    # before: no advice since it came into Undelivered, and no courier tag
+    # saying it moved on.
+    as_before = (
+        (Q(shipper_advice_at__isnull=True) | Q(shipper_advice_at__lt=F("_undelivered_since")))
+        & (Q(courier_tag="") | Q(courier_tag=WAITING_FOR_ADVICE_TAG))
+    )
     return (
         card_queryset(qs, "undelivered")
         # No recorded move into Undelivered (e.g. imported that way): from
         # when the order was created - never updated_at, which giving the
         # advice itself changes.
-        .annotate(_undelivered_since=Coalesce(Subquery(entered), "created_at", output_field=DateTimeField()))
-        .filter(Q(shipper_advice_at__isnull=True) | Q(shipper_advice_at__lt=F("_undelivered_since")))
-        .filter(Q(courier_tag="") | Q(courier_tag=WAITING_FOR_ADVICE_TAG))
+        .annotate(
+            _undelivered_since=Coalesce(Subquery(entered), "created_at", output_field=DateTimeField()),
+            _postex=booked(PostExShipment),
+            _postex_open=booked(PostExShipment, postex_open),
+            _barq=booked(BarqRaftarShipment),
+            _barq_open=booked(BarqRaftarShipment, status_code=ADVICE_OPEN_BARQRAFTAR_CODE),
+            _leopards=booked(LeopardsShipment),
+        )
+        .filter((by_courier & courier_open) | (~by_courier & as_before))
     )
+
+
+# Whether the courier takes our Shipper Advice right now - from the courier's
+# OWN status, not our wording of it (user, 2026-11-26). Checked on live: every
+# advice PostEx accepted (39 of 39) came while it said "Delivery Under Review"
+# (code 0008), every one BarqRaftar accepted (34 of 35) while it said "Return
+# Confirmation" (code 12). Right after the failed attempt ("Attempt Made" /
+# "Return by Consignee") both refuse - they open it hours later. Leopards:
+# an open request on its Shipper Advice list, which is the only thing that
+# gives its orders the "Waiting for Shipper Advice" tag
+# (integrations.leopards.services.sync_shipper_advice_requests).
+ADVICE_OPEN_POSTEX_STATUSES = {"delivery under review", "under verification"}
+ADVICE_OPEN_BARQRAFTAR_CODE = 12
+# Our own advice was sent: the courier moves on (PostEx "Attempted",
+# BarqRaftar "Re-Attempt Requested") - not open again until its next ask.
+_ADVICE_SENT_TAGS = {"Reattempt Requested", "Return Requested"}
+
+
+def advice_open_map(orders):
+    """{order id: {"open", "courier", "status", "sent"}} for the Undelivered
+    orders among `orders` booked through a courier that says whether it's
+    waiting for advice (PostEx, BarqRaftar, Leopards) - the Orders list's
+    "Open for advice" badge and the Shipper Advice popup's warning. Orders
+    it can't tell about (manual couriers, Smartlane, imports) are left out.
+    Three queries for the whole page, whatever its size."""
+    from integrations.barqraftar.models import BarqRaftarShipment
+    from integrations.leopards.models import LeopardsShipment
+    from integrations.postex.models import PostExShipment
+
+    undelivered = [o for o in orders if workflow_card(o) == "undelivered"]
+    if not undelivered:
+        return {}
+    ids = [o.id for o in undelivered]
+
+    def active(model, *fields):
+        # The live booking per order - the newest active row with a CN.
+        rows = {}
+        for row in (
+            model.all_objects.filter(order_id__in=ids, is_active=True)
+            .exclude(tracking_number="")
+            .order_by("id")
+            .values("order_id", *fields)
+        ):
+            rows[row["order_id"]] = row
+        return rows
+
+    postex = active(PostExShipment, "status_label")
+    barq = active(BarqRaftarShipment, "status_code", "status_label")
+    leopards = active(LeopardsShipment, "status_label")
+    try:
+        from integrations.barqraftar.services import _CODE_TO_LABEL as barq_labels
+    except ImportError:  # pragma: no cover
+        barq_labels = {}
+
+    result = {}
+    for order in undelivered:
+        sent = order.courier_tag in _ADVICE_SENT_TAGS
+        if order.id in postex:
+            status = (postex[order.id]["status_label"] or "").strip()
+            is_open = status.lower() in ADVICE_OPEN_POSTEX_STATUSES
+            entry = {"courier": "PostEx", "status": status}
+        elif order.id in barq:
+            code = barq[order.id]["status_code"]
+            status = barq_labels.get(code) or barq[order.id]["status_label"] or ""
+            is_open = code == ADVICE_OPEN_BARQRAFTAR_CODE
+            entry = {"courier": "BarqRaftar", "status": status}
+        elif order.id in leopards:
+            from integrations.leopards.services import status_name
+
+            is_open = order.courier_tag == WAITING_FOR_ADVICE_TAG
+            label = status_name(leopards[order.id]["status_label"] or "")
+            entry = {
+                "courier": "Leopards",
+                "status": "Open request" if is_open else (f"{label} - no open request" if label else "No open request"),
+            }
+        else:
+            continue
+        result[str(order.id)] = {**entry, "open": bool(is_open and not sent), "sent": sent}
+    return result
 
 
 CRITICAL_REASONS = [

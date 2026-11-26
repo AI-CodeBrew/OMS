@@ -282,6 +282,19 @@ def row_status_and_reason(row):
     # First / Second Attempt (PN1 / PN2), counted by those lines.
     if detail and _normalize_status(detail[0]) == "pending" and detail[1]:
         return ("PN2" if _failed_attempts(row) >= 2 else "PN1"), detail[1]
+    # On the way back Leopards' own status says "Being Return" while its
+    # newest lines are the return trip's scans - "Arrived at Station",
+    # "Dispatched", "Assigned to courier" (the rider bringing it back to the
+    # shipper). Read as forward moves they took orders out of Return in
+    # Transit into Out For Delivery (43 orders on live, 2026-11-25) - its own
+    # status wins then (user, 2026-11-26).
+    if (
+        booked
+        and status_stage(booked) == "return_in_progress"
+        and detail
+        and status_stage(detail[0]) in ("at_courier", "picked", "dispatched", "out_for_delivery")
+    ):
+        return booked, str(remarks or "")
     if detail and status_stage(detail[0]) is not None:
         return detail[0], detail[1]
     if booked:
