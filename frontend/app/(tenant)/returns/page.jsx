@@ -18,6 +18,8 @@ import ReturnBreakdownModal from "../../../components/wms/ReturnBreakdownModal";
 import ReturnsImportModal from "../../../components/wms/ReturnsImportModal";
 import Modal from "../../../components/shared/Modal";
 import TrackingLink from "../../../components/shared/TrackingLink";
+import ReceivingStatus from "../../../components/orders/ReceivingStatus";
+import { latestTag } from "../../../components/orders/statusConfig";
 
 import { formatDateTime } from "../../../lib/formatDate";
 import { useRememberedData, useRememberedState } from "../../../lib/pageMemory";
@@ -26,30 +28,33 @@ const OrderDetailPanel = dynamic(() => import("../../../components/orders/OrderD
   ssr: false,
 });
 
-// Every returned order is in one of two buckets - "" (Total) is both:
-// Awaiting Scan (the courier says returned, not scanned in yet) and
-// Received (scanned in). Drives both the summary cards and the table
-// filter, so a card click and its badge always agree.
+// The desk's cards (user, 2026-11-26 - a parcel can reach the warehouse
+// before the courier marks it returned, so Return in Transit is scanned
+// here too): "" Total = Return in Transit + Returned; "transit" = Return in
+// Transit not received yet; "awaiting" = Returned not received yet
+// (Awaiting Scan); "received" = scanned in, either way. Drives both the
+// summary cards and the table filter, so a card click and its rows agree.
 
 function formatDate(value) {
   return value ? formatDateTime(value) : "—";
 }
 
-// The Received badge: just what the parcel came back as - Good, or Damaged
-// / Lost - no unit counts.
-function conditionText(breakdown, condition) {
-  if (!breakdown?.length) return condition === "bad" ? "Damaged" : "Good";
-  const any = (key) => breakdown.some((l) => l[key] > 0);
-  return [any("good") ? "Good" : "", any("damaged") ? "Damaged" : "", any("lost") ? "Lost" : ""]
-    .filter(Boolean)
-    .join(" / ");
+function bucketParams(bucket) {
+  if (bucket === "transit") return { status: "card:return_in_transit", received: "no" };
+  if (bucket === "awaiting") return { status: "returned", received: "no" };
+  if (bucket === "received") return { status: "card:all_returns", received: "yes" };
+  // Total: on the way back or back, scanned or not.
+  return { status: "card:all_returns", received: undefined };
 }
 
-function bucketParams(bucket) {
-  if (bucket === "awaiting") return { status: "returned", received: "no" };
-  if (bucket === "received") return { status: "returned", received: "yes" };
-  // Total: every returned order, scanned or not.
-  return { status: "returned", received: undefined };
+// Return in Transit or Returned - and whether the desk can still receive it.
+function cardName(order) {
+  if (order.workflow_card === "return_in_transit") return "Return in Transit";
+  return order.status === "returned" ? "Returned" : "";
+}
+
+function canReceive(order) {
+  return !order.return_received_at && (order.status === "returned" || order.workflow_card === "return_in_transit");
 }
 
 function SummaryCard({ label, value, tone = "default", hint, active = false, onClick }) {
@@ -75,12 +80,13 @@ function SummaryCard({ label, value, tone = "default", hint, active = false, onC
 }
 
 /**
- * Returns desk. Orders arrive here when the courier reports them returned
- * (status = "returned"). The parcel physically turns up later, and
- * scanning it here records what happened to it: "good" puts its stock
- * back (see wms.services.restock_from_return, idempotent - a repeat scan
- * of the same parcel can't double-count), "bad" marks it received and
- * damaged without ever touching inventory.
+ * Returns desk. Orders show here from Return in Transit (the courier is
+ * bringing the parcel back) and Returned. The parcel physically turns up,
+ * sometimes before the courier marks it returned, and scanning it here -
+ * in either card - records what happened to it (its Receiving Status):
+ * good units go back into stock (wms.services.restock_from_return,
+ * idempotent - a repeat scan can't double-count), damaged / lost ones
+ * never touch inventory. The order's tag stays the courier mapping's.
  */
 export default function ReturnsPage() {
   const { canWrite } = usePageAccess("wms.returns_desk");
@@ -123,9 +129,8 @@ export default function ReturnsPage() {
     setExporting(true);
     setError("");
     try {
-      // The card on screen: Awaiting Scan / Received / everything.
-      const received = bucket === "awaiting" ? "no" : bucket === "received" ? "yes" : undefined;
-      await wmsService.exportReturns({ ...pageFilters, received });
+      // The card on screen: Return in Transit / Awaiting Scan / Received / everything.
+      await wmsService.exportReturns({ ...pageFilters, bucket: bucket || "all" });
     } catch (err) {
       setError(err.message || "Export failed");
     } finally {
@@ -279,16 +284,25 @@ export default function ReturnsPage() {
           cards span the top and Scan sits beside the list, as before. */}
       <div className="mt-3 space-y-3">
         <div>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             <SummaryCard
               label="Total Returns"
-              value={summary.total_returns ?? 0}
+              value={summary.desk_total ?? summary.total_returns ?? 0}
+              hint="Return in Transit and Returned, scanned or not"
               active={bucket === ""}
               onClick={() => applyBucket("")}
             />
             <SummaryCard
+              label="Return in Transit"
+              value={summary.desk_in_transit ?? 0}
+              tone="warning"
+              hint="Courier is bringing it back, not scanned yet - scan it if it has reached the warehouse"
+              active={bucket === "transit"}
+              onClick={() => applyBucket("transit")}
+            />
+            <SummaryCard
               label="Awaiting Scan"
-              value={summary.awaiting_scan ?? 0}
+              value={summary.desk_awaiting_scan ?? summary.awaiting_scan ?? 0}
               tone="warning"
               hint="Courier returned, not yet scanned"
               active={bucket === "awaiting"}
@@ -296,9 +310,9 @@ export default function ReturnsPage() {
             />
             <SummaryCard
               label="Received"
-              value={summary.received_all ?? 0}
+              value={summary.desk_received ?? summary.received_all ?? 0}
               tone="success"
-              hint="Scanned in and counted"
+              hint="Scanned in and counted - in Return in Transit or Returned"
               active={bucket === "received"}
               onClick={() => applyBucket("received")}
             />
@@ -337,8 +351,9 @@ export default function ReturnsPage() {
                 </button>
               ) : null}
             </div>
-            {/* Awaiting Scan: Scan on the right, opening the scan box in a popup. */}
-            {bucket === "awaiting" && canWrite ? (
+            {/* Scan on the right, opening the scan box in a popup - any card:
+                Return in Transit parcels are scanned too. */}
+            {canWrite ? (
               <Button onClick={() => setScanOpen(true)} className="ml-auto">
                 Scan
               </Button>
@@ -353,8 +368,10 @@ export default function ReturnsPage() {
                   <th className="px-3 py-2 text-left">Tracking ID</th>
                   <th className="px-3 py-2 text-left">Customer</th>
                   <th className="px-3 py-2 text-left">Courier</th>
+                  <th className="px-3 py-2 text-left">Status</th>
+                  <th className="px-3 py-2 text-left">Tag</th>
                   <th className="px-3 py-2 text-left">Returned</th>
-                  <th className="px-3 py-2 text-left">Received</th>
+                  <th className="px-3 py-2 text-left">Receiving Status</th>
                   <th className="px-3 py-2 text-left">Scanned By</th>
                   <th className="px-3 py-2 text-right">Amount</th>
                   <th className="px-3 py-2" />
@@ -363,18 +380,20 @@ export default function ReturnsPage() {
               <tbody>
                 {loading && orders.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="px-3 py-6 text-center text-slate-500">
+                    <td colSpan={11} className="px-3 py-6 text-center text-slate-500">
                       Loading…
                     </td>
                   </tr>
                 ) : orders.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="px-3 py-6 text-center text-slate-500">
+                    <td colSpan={11} className="px-3 py-6 text-center text-slate-500">
                       {bucket === "awaiting"
                           ? "Nothing awaiting scan."
-                          : bucket === "received"
-                            ? "No returns received yet."
-                            : "No returned orders."}
+                          : bucket === "transit"
+                            ? "Nothing in Return in Transit waiting to be scanned."
+                            : bucket === "received"
+                              ? "No returns received yet."
+                              : "No returns."}
                     </td>
                   </tr>
                 ) : (
@@ -395,21 +414,26 @@ export default function ReturnsPage() {
                       </td>
                       <td className="px-3 py-2 text-slate-600">{order.customer_name}</td>
                       <td className="px-3 py-2 text-slate-600">{order.courier_name || "—"}</td>
+                      <td className="px-3 py-2">
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                            order.status === "returned" ? "bg-red-50 text-red-700" : "bg-amber-50 text-amber-700"
+                          }`}
+                        >
+                          {cardName(order) || "—"}
+                        </span>
+                      </td>
+                      <td
+                        className="max-w-[12rem] truncate px-3 py-2 text-xs text-slate-600"
+                        title={latestTag(order)?.text || ""}
+                      >
+                        {latestTag(order)?.text || "—"}
+                      </td>
                       <td className="px-3 py-2 text-slate-500">
                         {formatDate(order.status === "returned" ? order.returned_at : order.return_in_progress_at)}
                       </td>
                       <td className="px-3 py-2">
-                        {order.status !== "returned" ? (
-                          <span className="text-slate-400">—</span>
-                        ) : order.return_received_at ? (
-                          <span className="text-slate-500">
-                            {formatDate(order.return_received_at)}
-                          </span>
-                        ) : (
-                          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700">
-                            Awaiting scan
-                          </span>
-                        )}
+                        <ReceivingStatus order={order} />
                       </td>
                       <td className="px-3 py-2 text-slate-500">
                         {order.return_received_by_email || "—"}
@@ -418,25 +442,7 @@ export default function ReturnsPage() {
                         {order.total_amount}
                       </td>
                       <td className="px-3 py-2 text-right">
-                        {order.status !== "returned" ? (
-                          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600">
-                            Not received
-                          </span>
-                        ) : order.return_received_at ? (
-                          <span
-                            className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
-                              order.return_condition === "bad"
-                                ? "bg-red-100 text-red-700"
-                                : "bg-green-100 text-green-700"
-                            }`}
-                          >
-                            {conditionText(order.return_breakdown, order.return_condition)}
-                          </span>
-                        ) : !canWrite ? (
-                          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700">
-                            Awaiting Scan
-                          </span>
-                        ) : (
+                        {!canReceive(order) || !canWrite ? null : (
                           <button
                             type="button"
                             disabled={rowBusyId === order.order_number}
@@ -509,7 +515,7 @@ export default function ReturnsPage() {
 
       <ReturnsImportModal
         open={importOpen}
-        filters={pageFilters}
+        filters={{ ...pageFilters, bucket }}
         onClose={() => setImportOpen(false)}
         onImported={() => load()}
       />

@@ -9,6 +9,7 @@ import { STATUS_LABELS, cardTab, latestTag } from "./statusConfig";
 
 import { formatDateTime } from "../../lib/formatDate";
 import { AdviceOpenBadge } from "./AdviceOpen";
+import ReceivingStatus from "./ReceivingStatus";
 
 // A self-delivered order's courier - shown as its Tracking ID too (no CN).
 const SELF_DELIVER = "Self Deliver";
@@ -60,9 +61,6 @@ const TAG_TONE = {
   "Moving back to Warehouse": "amber",
   "Awaiting Scan": "amber",
   "Return Received": "green",
-  // A received return, by its Returns Desk count (backend oms.services.return_received_tag).
-  "Return Received - Good": "green",
-  "Return Received - Damaged": "red",
   // PostEx's sheet tags (backend integrations/postex/status_map.py).
   Voided: "red",
   "Moving from Courier Hub": "indigo",
@@ -234,6 +232,8 @@ export default function OrdersTable({
   showSubStatusColumn = false,
   // Undelivered: the store's Shipper Advice (Reattempt / Return + remarks).
   showShipperAdviceColumn = false,
+  // Return in Transit / Returned: the Returns Desk's Receiving Status.
+  showReceivingColumn = false,
   // Row ⋮ menu: "Recreate order" - the form then asks Replacement or New
   // order before opening pre-filled from this order.
   onRecreate,
@@ -245,7 +245,8 @@ export default function OrdersTable({
     (showProductColumn ? 1 : 0) +
     (showTransitColumn ? 1 : 0) +
     (showSubStatusColumn ? 1 : 0) +
-    (showShipperAdviceColumn ? 1 : 0);
+    (showShipperAdviceColumn ? 1 : 0) +
+    (showReceivingColumn ? 1 : 0);
 
   return (
     <div className="max-h-[70vh] overflow-auto rounded-lg border border-surface-border bg-white">
@@ -273,6 +274,7 @@ export default function OrdersTable({
             {showSubStatusColumn ? <th className="w-40 px-3 py-2">Sub Status</th> : null}
             <th className="w-40 px-3 py-2">Tag</th>
             {showShipperAdviceColumn ? <th className="w-44 px-3 py-2">Shipper Advice</th> : null}
+            {showReceivingColumn ? <th className="w-40 px-3 py-2">Receiving Status</th> : null}
             <th className="w-32 px-3 py-2">Contact</th>
             <th className="w-24 px-3 py-2">Courier</th>
             {showTransitColumn ? <th className="w-24 px-3 py-2">In Transit</th> : null}
@@ -471,6 +473,11 @@ export default function OrdersTable({
                     ) : (
                       <span className="text-slate-300">—</span>
                     )}
+                  </td>
+                ) : null}
+                {showReceivingColumn ? (
+                  <td className="px-3 py-1.5">
+                    <ReceivingStatus order={order} />
                   </td>
                 ) : null}
                 <td className="px-3 py-1.5 text-slate-500">{formatPakPhone(order.customer_phone) || "—"}</td>

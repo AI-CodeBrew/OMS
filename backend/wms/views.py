@@ -824,8 +824,35 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 def _returnable(order):
-    """A parcel the returns desk can receive."""
-    return order.status == "returned" and not order.return_received_at
+    """A parcel the returns desk can receive: Returned, or still Return in
+    Transit (user, 2026-11-26 - it can reach the warehouse before the
+    courier marks it returned), not yet received."""
+    return oms_services.can_receive_return(order)
+
+
+def _desk_bucket(params):
+    """(received, scope) for the Returns Desk card on screen (`bucket`):
+    "" Total = Return in Transit + Returned; "transit" = Return in Transit
+    not received; "awaiting" = Returned not received; "received" = received
+    (either). The older `received=yes/no` (Returned only) still works."""
+    bucket = params.get("bucket")
+    if bucket == "transit":
+        return False, "transit"
+    if bucket == "awaiting":
+        return False, "returned"
+    if bucket == "received":
+        return True, "all"
+    if bucket == "all":
+        return None, "all"
+    received = {"yes": True, "no": False}.get(params.get("received") or "")
+    return received, "returned"
+
+
+def _not_receivable(order):
+    """Why the desk can't receive this order (it isn't a return), or ""."""
+    if order.status == "returned" or oms_services.workflow_card(order) == "return_in_transit":
+        return ""
+    return f"Order is {oms_services.card_label(order)}, not Return in Transit or Returned"
 
 
 def _packable(order):
@@ -928,16 +955,15 @@ def _lookup_return(order, raw_identifier):
     anything is written."""
     if order is None:
         return {"success": False, "reason": "not_found", "order_number": raw_identifier}
-    if order.status != "returned":
-        return {
-            "success": False,
-            "reason": f"Order is {order.get_status_display()}, not Returned",
-            "order_number": order.order_number,
-        }
+    problem = _not_receivable(order)
+    if problem:
+        return {"success": False, "reason": problem, "order_number": order.order_number}
     if order.return_received_at:
         return {"success": False, "reason": "Already received", "order_number": order.order_number}
     return {
         "success": True,
+        # Return in Transit / Returned - the desk says which.
+        "card": oms_services.card_label(order),
         # The receive that follows names this exact order - an order
         # number alone can be on orders in several stores (_pick_one).
         "order_id": str(order.id),
@@ -959,12 +985,9 @@ def _receive_return(
     tracking number or order number."""
     if order is None:
         return {"success": False, "reason": "not_found", "order_number": raw_identifier}
-    if order.status != "returned":
-        return {
-            "success": False,
-            "reason": f"Order is {order.get_status_display()}, not Returned",
-            "order_number": order.order_number,
-        }
+    problem = _not_receivable(order)
+    if problem:
+        return {"success": False, "reason": problem, "order_number": order.order_number}
 
     try:
         breakdown = services.build_return_breakdown(order, counts, condition=condition)
@@ -1033,8 +1056,8 @@ class ReturnRestockView(viewsets.ViewSet):
         from . import returns_io
 
         pkt = ZoneInfo("Asia/Karachi")
-        received = {"yes": True, "no": False}.get(request.query_params.get("received") or "")
-        qs = returns_io.returned_orders(org_filter(request), request.query_params, received=received)
+        received, scope = _desk_bucket(request.query_params)
+        qs = returns_io.returned_orders(org_filter(request), request.query_params, received=received, scope=scope)
         when = lambda v: v.astimezone(pkt).strftime("%d/%m/%Y %I:%M %p") if v else ""
         return self._csv_response(returns_io.export_rows(qs, when), "returns.csv")
 
@@ -1044,7 +1067,10 @@ class ReturnRestockView(viewsets.ViewSet):
         Awaiting Scan (with the page's dates / search), Good = full qty."""
         from . import returns_io
 
-        qs = returns_io.returned_orders(org_filter(request), request.query_params, received=False)
+        # The card on screen: Return in Transit's parcels, else Awaiting Scan's
+        # (Returned, not received) as before.
+        scope = "transit" if request.query_params.get("bucket") == "transit" else "returned"
+        qs = returns_io.returned_orders(org_filter(request), request.query_params, received=False, scope=scope)
         return self._csv_response(returns_io.import_sheet_rows(qs), "returns_import.csv")
 
     @action(detail=False, methods=["post"], url_path="import", parser_classes=[MultiPartParser, FormParser])
@@ -1081,7 +1107,7 @@ class ReturnRestockView(viewsets.ViewSet):
         order, raw_identifier, problem = _find_order(org_filter(request), request.data, prefer=_returnable)
         if problem:
             return Response(_ambiguous(raw_identifier, problem))
-        if order is not None and order.status == "returned" and not order.return_received_at:
+        if order is not None and _returnable(order):
             _with_items(order)  # only a receivable parcel's lines are read
         return Response(_lookup_return(order, raw_identifier))
 
@@ -1114,7 +1140,7 @@ class ReturnRestockView(viewsets.ViewSet):
         order, raw_identifier, problem = _find_order(org_filter(request), request.data, prefer=_returnable)
         if problem:
             return Response(_ambiguous(raw_identifier, problem))
-        if order is not None and order.status == "returned":
+        if order is not None and _returnable(order):
             _with_items(order)
         return Response(
             _receive_return(
@@ -1151,7 +1177,7 @@ class ReturnRestockView(viewsets.ViewSet):
             )
 
         found = _orders_by_number(org_filter(request), order_numbers, prefer=_returnable)
-        _with_items(*(order for order, _ in found.values() if order is not None and order.status == "returned"))
+        _with_items(*(order for order, _ in found.values() if order is not None and _returnable(order)))
         note = (request.data.get("note") or "")[:255]
         actor_email = getattr(request, "auth_email", "") or ""
         results = []

@@ -381,8 +381,11 @@ def restock_from_return(
         "return_breakdown",
         "updated_at",
     ]
-    if getattr(order, "courier_tag", ""):
-        # Leopards' sheet: Awaiting Scan -> Return Received once scanned here.
+    if getattr(order, "courier_tag", "") and order.status == "returned":
+        # The sheets: Awaiting Scan -> Return Received once scanned here. A
+        # parcel received while still Return in Transit (user, 2026-11-26)
+        # keeps the courier's tag there; it becomes Return Received when the
+        # courier marks it Returned (oms.services.record_courier_words).
         order.courier_tag = "Return Received"
         update_fields.append("courier_tag")
 
@@ -766,6 +769,10 @@ def balance_sku_against_orders(organization_id, warehouse, sku, *, note):
         "quantity", "pack_units", "order__status", "order__return_received_at", "order__return_condition"
     ):
         units = qty * max(pack or 1, 1)
+        if received and condition != "bad":
+            # Received good at the Returns Desk - back on the shelf, whether
+            # the courier says Returned yet or still Return in Transit.
+            continue
         if status in out_statuses or (status == "returned" and (not received or condition == "bad")):
             out += units
     available = inbound - out

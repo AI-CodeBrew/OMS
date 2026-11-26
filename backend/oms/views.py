@@ -1560,9 +1560,22 @@ class OrderViewSet(viewsets.ModelViewSet):
             ).exclude(status="returned"),
             params,
         )
+        # The desk's cards (user, 2026-11-26): Return in Transit parcels can
+        # be received too - Total = In Transit (not received) + Awaiting
+        # Scan + Received (either).
+        desk = self._apply_filters(
+            services.card_queryset(Order.objects.filter(**org_filter(request)), "all_returns"), params,
+        ).aggregate(
+            total=Count("id"),
+            transit_waiting=Count("id", filter=Q(status__in=services.RETURNABLE_STATUSES,
+                                                 return_received_at__isnull=True)),
+            received=Count("id", filter=Q(return_received_at__isnull=False)),
+            received_in_transit=Count("id", filter=Q(status__in=services.RETURNABLE_STATUSES,
+                                                     return_received_at__isnull=False)),
+        )
         return Response(
             {
-                # The desk's cards: Total = Awaiting Scan + Received.
+                # The Reports page's tiles - Returned orders, as before.
                 "total_returns": returned,
                 "awaiting_scan": returned - received_all,
                 "received_all": received_all,
@@ -1571,6 +1584,12 @@ class OrderViewSet(viewsets.ModelViewSet):
                 "received": received,
                 "damaged": damaged,
                 "return_in_progress": in_progress_qs.count(),
+                # The Returns Desk's cards.
+                "desk_total": desk["total"],
+                "desk_in_transit": desk["transit_waiting"],
+                "desk_awaiting_scan": returned - received_all,
+                "desk_received": desk["received"],
+                "desk_received_in_transit": desk["received_in_transit"],
             }
         )
 

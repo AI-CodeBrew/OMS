@@ -117,7 +117,7 @@ const FixCitiesModal = dynamic(() => import("../../../components/orders/FixCitie
 const EMPTY_FILTERS = {
   city: "", courier_id: "", gateway: "", date_from: "", date_to: "", store: "", product: "", dispatch_requested: "",
   f_oms_id: "", f_store_order_id: "", f_customer: "", f_phone: "", f_tracking: "",
-  f_shop: "", f_city: "", f_province: "", f_courier: "", f_tag: "", f_city_fix: "",
+  f_shop: "", f_city: "", f_province: "", f_courier: "", f_tag: "", f_city_fix: "", f_receiving: "",
 };
 // "critical" is time-dependent rather than a status an order is moved into,
 // so the backend never caches it or includes it in the warmup - leave it
@@ -1422,6 +1422,7 @@ export default function OrdersPage() {
           showTransitColumn={activeStatus === CRITICAL_TAB}
           showSubStatusColumn={SUB_STATUS_TABS.has(activeStatus)}
           showShipperAdviceColumn={activeStatus === "card:undelivered" || activeStatus === "card:return_in_transit"}
+          showReceivingColumn={activeStatus === "card:return_in_transit" || activeStatus === "card:returned"}
           onRecreate={
             canEditOrders
               ? (order) => {

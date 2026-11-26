@@ -67,12 +67,18 @@ export const SCAN_DESKS = {
   returns: {
     deskId: "returns",
     title: "Scan returned parcel",
+    // Return in Transit parcels are scanned too (user, 2026-11-26) - the
+    // lookup says which card the order is in.
     hint: "Scanning only finds the parcel - nothing is recorded until you confirm its count in the popup.",
     actionLabel: "Check",
     fieldLabel: "Tracking number",
     onScan: (trackingNumber) => wmsService.lookupReturn({ trackingNumber }),
     renderSuccess: (entry) =>
-      entry.restocked ? describeReturnOutcome(entry) : "Found — count the items in the popup",
+      entry.restocked
+        ? describeReturnOutcome(entry)
+        : entry.card
+          ? "Found (" + entry.card + ") — count the items in the popup"
+          : "Found — count the items in the popup",
     phoneCount: {
       receive: (orderNumber, breakdown) => wmsService.scanReturn({ orderNumber, breakdown }),
     },

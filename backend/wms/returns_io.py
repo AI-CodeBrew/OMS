@@ -1,13 +1,15 @@
 """Returns desk - Export (order list) and Import (SKU-wise counts).
 
-Export: every returned order the desk shows (its card, dates, search) - one
-row per order, with what was counted when it was received.
+Export: every order the desk shows (its card, dates, search) - Return in
+Transit and Returned (user, 2026-11-26) - one row per order, with its
+Receiving Status and what was counted when it was received.
 
 Import: the desk's count popup for many parcels at once - one row per
 order line (SKU, or product name for a line without SKU) with its Good /
 Damaged / Lost units. Each order goes through exactly what a scan does
 (wms.views._receive_return -> services.build_return_breakdown +
-restock_from_return): it must be Returned and not yet received, every
+restock_from_return): it must be Returned or Return in Transit and not yet
+received, every
 line's good + damaged + lost must equal its quantity, and only good units
 go back into stock. An order already received is never received twice.
 """
@@ -18,6 +20,7 @@ import re
 
 from django.db import transaction
 
+from oms import services as oms_services
 from oms.models import Order
 
 from . import services
@@ -56,12 +59,14 @@ def _breakdown_totals(order):
     return totals
 
 
-def returned_orders(org_kwargs, params, received=None):
-    """The desk's orders: Returned, with the page's filters (search, dates).
-    received: None (all), True, False."""
+def returned_orders(org_kwargs, params, received=None, scope="all"):
+    """The desk's orders, with the page's filters (search, dates): scope
+    "all" = Return in Transit + Returned, "transit" = Return in Transit
+    only, "returned" = Returned only. received: None (all), True, False."""
     from oms.views import OrderViewSet
 
-    qs = Order.objects.filter(status="returned", **org_kwargs)
+    card = {"transit": "return_in_transit", "returned": "returned"}.get(scope, "all_returns")
+    qs = oms_services.card_queryset(Order.objects.filter(**org_kwargs), card)
     filters = {k: v for k, v in params.items() if k in ("search", "search_field", "date_from", "date_to")}
     qs = OrderViewSet()._apply_filters(qs, filters)
     if received is True:
@@ -75,14 +80,14 @@ def returned_orders(org_kwargs, params, received=None):
 
 EXPORT_HEADERS = [
     "Store Order ID", "OMS Order ID", "Store", "CN", "Courier", "Customer Name", "Phone", "City",
-    "Returned At", "Received", "Received At", "Received By", "Condition",
-    "Good", "Damaged", "Lost", "Return Reason",
+    "Status", "Tag", "Returning Since", "Returned At", "Receiving Status", "Received", "Received At", "Received By",
+    "Condition", "Good", "Damaged", "Lost", "Return Reason",
 ]
 
 
 def export_rows(qs, when):
     yield EXPORT_HEADERS
-    for order in qs.order_by("-returned_at", "-created_at").iterator(chunk_size=500):
+    for order in qs.order_by("-returned_at", "-return_in_progress_at", "-created_at").iterator(chunk_size=500):
         totals = _breakdown_totals(order)
         received = bool(order.return_received_at)
         condition = ""
@@ -98,7 +103,11 @@ def export_rows(qs, when):
             order.customer_name,
             _as_text(order.customer_phone),
             order.city,
+            oms_services.card_label(order),
+            oms_services.latest_tag(order),
+            when(order.return_in_progress_at),
             when(order.returned_at),
+            oms_services.receiving_status(order),
             "Yes" if received else "No",
             when(order.return_received_at),
             order.return_received_by_email or "",
@@ -230,8 +239,8 @@ def plan_import(org_kwargs, file_obj):
             "problem": problem,
         }
         if order is not None and not problem:
-            if order.status != "returned":
-                entry["problem"] = f"Order is {order.get_status_display()}, not Returned"
+            if not (order.status == "returned" or oms_services.workflow_card(order) == "return_in_transit"):
+                entry["problem"] = f"Order is {oms_services.card_label(order)}, not Return in Transit or Returned"
             elif order.return_received_at:
                 entry["problem"] = "Already received"
             else:

@@ -22,6 +22,8 @@ export const LIST_FILTERS = [
   { key: "f_tag", label: "Tag" },
   // Fix Cities' badge: fixed automatically / by hand / check needed.
   { key: "f_city_fix", label: "City Fix" },
+  // Return in Transit / Returned: what the Returns Desk did with the parcel.
+  { key: "f_receiving", label: "Receiving Status" },
 ];
 export const FIELD_FILTER_KEYS = [...TEXT_FILTERS, ...LIST_FILTERS].map((f) => f.key);
 // Dispatch Hub / All Orders: organizations (`store`, comma-separated ids)

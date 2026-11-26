@@ -122,6 +122,9 @@ def all_orders_report(queryset, org_kwargs, *, text=csv_report.as_text):
         "Delivered At (PKT)",
         "Returned At Warehouse (PKT)",
         "Proofs",
+        # Not Received / Received - Good / Damaged ... (user, 2026-11-26) -
+        # last, so no column a sheet reads by position moves.
+        "Receiving Status",
     ]
 
     # Date and time, in Pakistan time - the server runs in UTC,
@@ -198,6 +201,7 @@ def all_orders_report(queryset, org_kwargs, *, text=csv_report.as_text):
                 when(order.delivered_at),
                 when(order.return_received_at),
                 csv_report.courier_proofs(order),
+                services.receiving_status(order),
             ]
             # As the order screen says it: paid online is Prepaid.
             payment = (

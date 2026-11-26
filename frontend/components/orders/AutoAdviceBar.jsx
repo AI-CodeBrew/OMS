@@ -128,6 +128,13 @@ export default function AutoAdviceBar({ canWrite, refreshKey = 0, onOpenOrder, o
     load();
   }, [load, refreshKey]);
 
+  // The check runs on the server every few minutes - keep the counts fresh
+  // without a page reload.
+  useEffect(() => {
+    const timer = setInterval(load, 60000);
+    return () => clearInterval(timer);
+  }, [load]);
+
   async function save(enabled) {
     setSaving(true);
     setError("");

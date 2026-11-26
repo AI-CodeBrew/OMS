@@ -2284,9 +2284,6 @@ def latest_tag(order):
         "assigning_courier", "dispatched", "undelivered", "return_in_transit", "returned", "delivered",
     ):
         return card_tag
-    # A received return always shows Return Received - Good / Damaged.
-    if card == "returned" and order.return_received_at:
-        return card_tag
     # Scan-pack sets packed_at → show Packed over the print tags / To be packed.
     if order.tag and (
         card == "awaiting_confirmation"
@@ -2319,14 +2316,42 @@ def card_queryset(qs, card):
     return qs
 
 
-TAG_RETURN_RECEIVED_GOOD = "Return Received - Good"
-TAG_RETURN_RECEIVED_DAMAGED = "Return Received - Damaged"
+# The couriers' sheets (status_map SUB_RETURNED): a Returned order is
+# "Awaiting Scan" until the Returns Desk scans it, "Return Received" after.
+TAG_AWAITING_SCAN = "Awaiting Scan"
+TAG_RETURN_RECEIVED = "Return Received"
 
 
-def return_received_tag(order):
-    """A received return's tag: Good when the Returns Desk counted every
-    unit good, Damaged when any unit was damaged or lost."""
-    return TAG_RETURN_RECEIVED_DAMAGED if order.return_condition == "bad" else TAG_RETURN_RECEIVED_GOOD
+def can_receive_return(order):
+    """Whether the Returns Desk can receive (scan and count) this order's
+    parcel: Returned, or still Return in Transit - a parcel can reach the
+    warehouse before the courier marks it returned (user, 2026-11-26).
+    Not once received."""
+    if order.return_received_at:
+        return False
+    return order.status == "returned" or workflow_card(order) == "return_in_transit"
+
+
+RECEIVING_NOT_RECEIVED = "Not Received"
+
+
+def receiving_status(order):
+    """The Receiving Status column (Orders' Return in Transit / Returned,
+    the Returns Desk, both reports): "Not Received", or "Received - Good" /
+    "Received - Damaged" / "Received - Good / Damaged / Lost" from the
+    Returns Desk count. Blank for an order that isn't a return."""
+    if order.return_received_at:
+        breakdown = order.return_breakdown or []
+        parts = [
+            label for key, label in (("good", "Good"), ("damaged", "Damaged"), ("lost", "Lost"))
+            if any(int((line or {}).get(key) or 0) > 0 for line in breakdown)
+        ]
+        if not parts:
+            parts = ["Damaged" if order.return_condition == "bad" else "Good"]
+        return "Received - " + " / ".join(parts)
+    if order.status == "returned" or workflow_card(order) == "return_in_transit":
+        return RECEIVING_NOT_RECEIVED
+    return ""
 
 
 def workflow_tag(order):
@@ -2367,11 +2392,10 @@ def workflow_tag(order):
         # (Airwaybill Printed / Loadsheet Printed / To be packed - see
         # mark_orders_printed) shows instead (latest_tag).
         return TAG_PACKED if order.packed_at else TAG_TO_BE_PRINTED
-    # Once the Returns Desk has received the parcel, Returned says so - and
-    # how it came back (user, 2026-11-18): Good when every unit was good,
-    # else Damaged (wms.services.restock_from_return's return_condition).
-    if card == "returned" and order.return_received_at:
-        return return_received_tag(order)
+    # Return in Transit / Returned keep the courier sheet's tag whether or
+    # not the Returns Desk has received the parcel (user, 2026-11-26) - how
+    # it came back is the Receiving Status column (receiving_status), no
+    # longer a "Return Received - Good / Damaged" tag.
     # A courier with FynkTech's status sheet (Leopards) gives its own tag
     # on the cards it drives (Order.courier_tag).
     courier_tag = (getattr(order, "courier_tag", "") or "").strip()
@@ -2785,9 +2809,15 @@ def record_courier_words(order, *, sub_status, tag, reason=None):
     Status (Order.courier_status), Tag (Order.courier_tag) and - when given
     - its reason (Order.courier_reason) in one go, and tells open Orders
     pages. Only when something changed. Returns whether it did."""
+    tag = (tag or "").strip()
+    # The sheets' Returned tag is "Awaiting Scan" - a parcel the Returns
+    # Desk already received (maybe while still Return in Transit, user
+    # 2026-11-26) is "Return Received", as the sheet says after the scan.
+    if tag == TAG_AWAITING_SCAN and order.return_received_at:
+        tag = TAG_RETURN_RECEIVED
     changes = {
         "courier_status": (sub_status or "").strip()[:100],
-        "courier_tag": (tag or "").strip()[:100],
+        "courier_tag": tag[:100],
     }
     if reason is not None:
         changes["courier_reason"] = (reason or "").strip()[:255]

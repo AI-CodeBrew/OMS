@@ -17,7 +17,7 @@ from django.db.models.functions import Lower, Trim
 # Filters typed in (one or more values each).
 TEXT_FILTERS = ("f_oms_id", "f_store_order_id", "f_customer", "f_phone", "f_tracking")
 # Filters picked from filter_options' list.
-LIST_FILTERS = ("f_shop", "f_city", "f_province", "f_courier", "f_tag", "f_city_fix")
+LIST_FILTERS = ("f_shop", "f_city", "f_province", "f_courier", "f_tag", "f_city_fix", "f_receiving")
 ALL_FILTERS = TEXT_FILTERS + LIST_FILTERS
 
 # Picked under Province for orders whose city has no province on the super
@@ -30,6 +30,26 @@ CITY_FIX_CHOICES = [
     ("manual", "City fixed - by hand"),
     ("check", "City check needed"),
 ]
+# Receiving Status's choices (oms.services.receiving_status, user
+# 2026-11-26) - Return in Transit and Returned orders, by what the Returns
+# Desk did with the parcel.
+RECEIVING_CHOICES = [
+    ("not_received", "Not Received"),
+    ("good", "Received - Good"),
+    ("bad", "Received - Damaged / Lost"),
+]
+
+
+def _receiving_q(value):
+    from oms.services import RETURNABLE_STATUSES
+
+    returns = Q(status="returned") | Q(return_in_progress_at__isnull=False, status__in=RETURNABLE_STATUSES)
+    if value == "not_received":
+        return returns & Q(return_received_at__isnull=True)
+    received = Q(return_received_at__isnull=False)
+    if value == "bad":
+        return received & Q(return_condition="bad")
+    return received & ~Q(return_condition="bad")
 
 
 def _values(params, key):
@@ -141,10 +161,14 @@ def apply_field_filters(qs, params):
     if _values(params, "f_city_fix"):
         qs = qs.filter(city_fix__in=fixes)
 
+    receiving = [v for v in _values(params, "f_receiving") if v in dict(RECEIVING_CHOICES)]
+    if _values(params, "f_receiving"):
+        qs = qs.filter(_any([_receiving_q(v) for v in receiving])) if receiving else qs.none()
+
     return qs
 
 
-OPTION_FIELDS = ("f_shop", "f_city", "f_province", "f_courier", "f_tag", "f_city_fix")
+OPTION_FIELDS = ("f_shop", "f_city", "f_province", "f_courier", "f_tag", "f_city_fix", "f_receiving")
 OPTION_LIMIT = 300
 
 
@@ -185,7 +209,7 @@ def _tag_choices():
     from oms.services import (
         UNBOOKED_STATUSES,
         AIRWAYBILL_PRINTED_TAGS, TAG_AIRWAYBILL_PRINTED, TAG_LOADSHEET_PRINTED, TAG_PACKED,
-        TAG_RETURN_RECEIVED_DAMAGED, TAG_RETURN_RECEIVED_GOOD, TAG_TO_BE_PACKED, TAG_TO_BE_PRINTED,
+        TAG_TO_BE_PACKED, TAG_TO_BE_PRINTED,
     )
 
     return [
@@ -204,19 +228,7 @@ def _tag_choices():
         # Update Tag's stock tags - set by hand while an order waits for stock.
         ("Awaiting Stock/China", "Awaiting Stock/China", Q(tag="Awaiting Stock/China"), set()),
         ("Awaiting Stock/Local", "Awaiting Stock/Local", Q(tag="Awaiting Stock/Local"), set()),
-        # Returns the Returns Desk has received (oms.services.return_received_tag).
-        (TAG_RETURN_RECEIVED_GOOD, TAG_RETURN_RECEIVED_GOOD, _return_received_q("good"), set()),
-        (TAG_RETURN_RECEIVED_DAMAGED, TAG_RETURN_RECEIVED_DAMAGED, _return_received_q("bad"), set()),
     ]
-
-
-def _return_received_q(condition):
-    """Returned orders the Returns Desk received: "good" = every unit good,
-    "bad" = some damaged or lost (wms.services.restock_from_return)."""
-    received = Q(status="returned", return_received_at__isnull=False)
-    if condition == "bad":
-        return received & Q(return_condition="bad")
-    return received & ~Q(return_condition="bad")
 
 
 def _courier_tags():
@@ -286,6 +298,14 @@ def filter_options(qs, field, q=""):
                 r for r in rows
                 if q in r["label"].lower() or q in r["value"].lower()
             ]
+        return rows, False
+    elif field == "f_receiving":
+        rows = [
+            {"value": v, "label": label, "count": qs.order_by().filter(_receiving_q(v)).count()}
+            for v, label in RECEIVING_CHOICES
+        ]
+        if q:
+            rows = [r for r in rows if q in r["label"].lower()]
         return rows, False
     elif field == "f_city_fix":
         in_use = dict(qs.order_by().exclude(city_fix="").values_list("city_fix").annotate(n=Count("id")))
