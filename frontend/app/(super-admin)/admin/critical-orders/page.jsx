@@ -4,7 +4,6 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import useAuthStore from "../../../../store/authStore";
 import adminTeamService, { exitTargetFor } from "../../../../services/adminTeamService";
-import { lastPage } from "../../../../lib/pageMemory";
 
 // The super admin's Critical Orders tab: every store's critical orders (the
 // same Critical Orders screen a store has), Hub store or not, in one place.
@@ -35,8 +34,7 @@ export default function CriticalOrdersAdminPage() {
           pages,
           exitTo: exitTargetFor(access, ["critical_orders", "all_orders"], "/admin/organizations"),
         });
-        // Back where it was left, shown at once (user, 2026-11-27).
-        router.replace(lastPage() || "/critical-orders");
+        router.replace("/critical-orders");
       }, 0);
     };
     // The access this login already has opens it at once; only the first

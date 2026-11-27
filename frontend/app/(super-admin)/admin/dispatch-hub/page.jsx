@@ -4,7 +4,6 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import useAuthStore from "../../../../store/authStore";
 import adminTeamService, { exitTargetFor } from "../../../../services/adminTeamService";
-import { lastPage } from "../../../../lib/pageMemory";
 
 // Where a limited login lands in the Hub - its first page.
 const HUB_LANDING = [
@@ -45,11 +44,11 @@ export default function DispatchHubPage() {
           // has (none: no way out but log out).
           exitTo: exitTargetFor(access, ["dispatch_hub"], "/admin/organizations"),
         });
-        // Back where the Hub was left - its page and card, its data shown
-        // at once (user, 2026-11-27); its first page on the first visit.
-        // Replaced, not added: Back from there goes to the page before it -
-        // this one would only open the Hub again.
-        router.replace(lastPage() || (first ? first[1] : "/dashboard"));
+        // Replaced, not added: Back from the Hub's first page goes to the
+        // page before it - this one would only open the Hub again. Pages
+        // already visited in the Hub show their last data at once
+        // (lib/viewCache, pageMemory).
+        router.replace(first ? first[1] : "/dashboard");
       }, 0);
     };
     // The access this login already has opens the Hub at once (user,
