@@ -169,7 +169,10 @@ export default function LandingPage() {
   return (
     <div className="landing">
       <header className="landing__nav">
-        <span className="landing__nav-spacer" aria-hidden="true" />
+        <a href="#top" className="landing__nav-brand" aria-label="FynkTech OMS">
+          <BrandLogo className="landing__nav-logo" alt="" />
+          <span className="landing__nav-name">FynkTech OMS</span>
+        </a>
         <nav className="landing__nav-links" aria-label="Page">
           <a href="#product">Product</a>
           <a href="#how">How it works</a>
