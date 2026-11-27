@@ -12,23 +12,11 @@ import authService, {
 } from "../../../services/authService";
 import healthService from "../../../services/healthService";
 import { isReturnsAssociate } from "../../../components/layout/moduleNav";
+import BrandLogo from "../../../components/shared/BrandLogo";
 
+// The OMS logo (components/shared/BrandLogo).
 function LogoMark({ className = "h-10 w-10" }) {
-  return (
-    <svg viewBox="0 0 40 40" fill="none" className={className} aria-hidden="true">
-      <defs>
-        <linearGradient id="oms-logo-g" x1="4" y1="2" x2="36" y2="38" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#60a5fa" />
-          <stop offset="1" stopColor="#2563eb" />
-        </linearGradient>
-      </defs>
-      <rect width="40" height="40" rx="11" fill="url(#oms-logo-g)" />
-      <path d="M20 8.5l9.5 5.25v10.5L20 29.5l-9.5-5.25v-10.5L20 8.5z" fill="white" fillOpacity="0.22" />
-      <path d="M20 8.5l9.5 5.25L20 19l-9.5-5.25L20 8.5z" fill="white" />
-      <path d="M20 19v10.5l-9.5-5.25v-10.5L20 19z" fill="white" fillOpacity="0.55" />
-      <path d="M20 19v10.5l9.5-5.25v-10.5L20 19z" fill="white" fillOpacity="0.8" />
-    </svg>
-  );
+  return <BrandLogo className={className} alt="" />;
 }
 
 export default function LoginPage() {

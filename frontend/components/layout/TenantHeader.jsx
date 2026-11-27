@@ -9,6 +9,7 @@ import authService from "../../services/authService";
 import useAuthStore, { useEffectiveUser } from "../../store/authStore";
 import useCriticalOrdersStore from "../../store/criticalOrdersStore";
 import { getVisibleModules } from "./moduleNav";
+import BrandLogo from "../shared/BrandLogo";
 
 function ChevronIcon({ className }) {
   return (
@@ -86,6 +87,7 @@ export default function TenantHeader({ activeModule }) {
               <BackArrowIcon className="h-5 w-5" />
             </button>
           ) : null}
+          <BrandLogo className="h-8 w-8 ring-1 ring-white/25" alt="" />
           <span className="text-lg font-bold tracking-tight text-white">OMS</span>
         </div>
 

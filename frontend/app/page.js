@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import OrderDeskMock from "../components/landing/OrderDeskMock";
+import BrandLogo from "../components/shared/BrandLogo";
 import "./landing.css";
 
 const DEMO_WHATSAPP =
@@ -354,7 +355,10 @@ export default function LandingPage() {
       <footer className="landing__footer landing__band--dark">
         <div className="landing__footer-inner">
           <div>
-            <p className="landing__footer-brand">OMS</p>
+            <p className="landing__footer-brand">
+              <BrandLogo className="landing__footer-logo" alt="" />
+              OMS
+            </p>
             <p>© {new Date().getFullYear()} FynkTech · Order · Warehouse · Finance</p>
           </div>
           <div className="landing__footer-links">

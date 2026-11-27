@@ -1,3 +1,5 @@
+import BrandLogo from "../shared/BrandLogo";
+
 // Logo marks for every integration, shared by the tenant Integrations
 // page and the super admin's so a store and the platform team see the
 // same mark for the same service.
@@ -36,17 +38,10 @@ export function SmartlaneLogo({ className }) {
   );
 }
 
-// Generic on purpose - OMS Courier is the platform's own service, so it
-// doesn't wear the logo of the courier account behind it.
+// OMS Courier is the platform's own service: it wears the OMS logo (user,
+// 2026-11-27), never the logo of the courier account behind it.
 export function OmsCourierLogo({ className }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
-      <path d="M2 7h11v9H2z" stroke="#111827" strokeWidth="1.5" strokeLinejoin="round" />
-      <path d="M13 10h4l4 3v3h-8z" stroke="#111827" strokeWidth="1.5" strokeLinejoin="round" />
-      <circle cx="6.5" cy="18" r="1.8" stroke="#111827" strokeWidth="1.5" />
-      <circle cx="17.5" cy="18" r="1.8" stroke="#111827" strokeWidth="1.5" />
-    </svg>
-  );
+  return <BrandLogo className={className} alt="" />;
 }
 
 // Stacked on two lines so the 10-char name still fits inside the 48px tile.

@@ -5,28 +5,12 @@ import { useRouter } from "next/navigation";
 import Button from "../../../components/shared/Button";
 import InteractiveGrid from "../../../components/shared/InteractiveGrid";
 import PasswordInput from "../../../components/shared/PasswordInput";
+import BrandLogo from "../../../components/shared/BrandLogo";
 import authService, { takeLoginNotice } from "../../../services/authService";
 
 // Chrome paints autofilled fields light blue; keep them white like the rest.
 const AUTOFILL =
   "[&:-webkit-autofill]:[-webkit-text-fill-color:#0f172a] [&:-webkit-autofill]:shadow-[inset_0_0_0_1000px_#ffffff]";
-
-function ShieldIcon({ className }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
-      <path d="M12 3l8 3v6c0 4.5-3.2 8.2-8 9-4.8-.8-8-4.5-8-9V6l8-3z" />
-      <path d="M9 12l2 2 4-4" />
-    </svg>
-  );
-}
 
 // Orbit tones: the same animation is drawn twice, once clipped to each half of
 // the page. On the dark half it is light, on the light half it is dark.
@@ -125,7 +109,7 @@ function Orbit({ tone, clip }) {
         <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
           <span className={`absolute -inset-3 rounded-full border ${t.coreRing}`} />
           <span className={`relative flex h-20 w-20 items-center justify-center rounded-full ${t.core}`}>
-            <ShieldIcon className="h-9 w-9" />
+            <BrandLogo className="h-20 w-20" alt="" />
           </span>
         </div>
       </div>
@@ -221,9 +205,7 @@ export default function SuperAdminLoginPage() {
         <div className="pointer-events-none absolute -bottom-10 right-44 h-24 w-24 rounded-full border-2 border-[#0a1a33]/20" />
         <div className="relative z-10 w-full max-w-sm">
           <div className="mb-6 flex items-center gap-3 lg:hidden">
-            <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#0a1a33] text-[#d4a853]">
-              <ShieldIcon className="h-6 w-6" />
-            </span>
+            <BrandLogo className="h-11 w-11" alt="" />
             <p className="text-xs font-semibold uppercase tracking-[0.25em] text-[#0a1a33]">
               OMS &middot; Control Center
             </p>

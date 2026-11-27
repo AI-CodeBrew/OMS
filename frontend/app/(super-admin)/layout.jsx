@@ -23,6 +23,7 @@ import {
   AlertIcon,
 } from "../../components/layout/navIcons";
 import adminTeamService from "../../services/adminTeamService";
+import BrandLogo from "../../components/shared/BrandLogo";
 
 const NAV = [
   {
@@ -222,14 +223,17 @@ function SuperAdminShell({ children }) {
         >
           <div className={`border-b border-white/10 py-4 ${expanded ? "px-5" : "px-0 text-center"}`}>
             {expanded ? (
-              <>
-                <p className="text-xs font-semibold uppercase tracking-wider text-brand-200">OMS</p>
-                <p className="mt-0.5 whitespace-nowrap text-sm font-semibold text-white">Super Admin</p>
-              </>
+              <div className="flex items-center gap-2.5">
+                <BrandLogo className="h-8 w-8 ring-1 ring-white/25" alt="" />
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wider text-brand-200">OMS</p>
+                  <p className="mt-0.5 whitespace-nowrap text-sm font-semibold text-white">Super Admin</p>
+                </div>
+              </div>
             ) : (
-              <p className="text-xs font-bold uppercase tracking-wider text-brand-200" title="OMS Super Admin">
-                SA
-              </p>
+              <span className="inline-flex" title="OMS Super Admin">
+                <BrandLogo className="h-8 w-8 ring-1 ring-white/25" alt="OMS Super Admin" />
+              </span>
             )}
           </div>
           <nav className={`flex flex-1 flex-col gap-1 py-3 ${expanded ? "px-3" : "items-center px-0"}`}>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import BrandLogo from "../shared/BrandLogo";
 
 const TABS = [
   { value: "all", label: "All" },
@@ -157,11 +158,7 @@ export default function OrderDeskMock({ compact = false }) {
     <div className={`desk-mock ${compact ? "desk-mock--compact" : ""}`} aria-hidden="true">
       <div className="desk-mock__chrome">
         <div className="desk-mock__topbar">
-          <span className="desk-mock__mark" title="OMS">
-            <span />
-            <span />
-            <span />
-          </span>
+          <BrandLogo className="desk-mock__brand" alt="OMS" />
           <nav className="desk-mock__modules">
             <span className="is-active">OMS</span>
             <span>WMS</span>

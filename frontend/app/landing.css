@@ -543,6 +543,17 @@
   display: none;
 }
 
+/* The OMS logo (components/shared/BrandLogo) in the footer and the mock. */
+.landing__footer-logo {
+  width: 1.75rem;
+  height: 1.75rem;
+}
+
+.desk-mock__brand {
+  width: 1.35rem;
+  height: 1.35rem;
+}
+
 .desk-mock__modules {
   display: flex;
   justify-content: center;
@@ -1276,6 +1287,9 @@
 }
 
 .landing__footer-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
   margin: 0 0 0.2rem;
   font-family: var(--font-fraunces), Georgia, serif;
   font-size: 1.1rem;
