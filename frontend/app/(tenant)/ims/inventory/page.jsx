@@ -1,9 +1,10 @@
 "use client";
 
 import usePageAccess from "../../../../lib/usePageAccess";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import wmsService from "../../../../services/wmsService";
 import useLoadingStore from "../../../../store/loadingStore";
+import { onViewCacheClear, viewCacheScope } from "../../../../lib/viewCache";
 import Button from "../../../../components/shared/Button";
 import SearchBox from "../../../../components/shared/SearchBox";
 import Pagination from "../../../../components/shared/Pagination";
@@ -34,6 +35,65 @@ const ACTIVITY_CARDS = [
   { value: "inactive", key: "inactive", label: "Inactive SKUs", tone: "warning", hint: "In stock, no orders" },
   { value: "out_of_stock", key: "out_of_stock", label: "Out of Stock", tone: "danger", hint: "None in stock" },
 ];
+
+// Switching a card or a page is instant (user, 2026-11-27: the card changed
+// first, the old card's rows stayed, and only then the new ones loaded). The
+// server works out every row of a tab for any card anyway, so one request
+// fetches the whole tab, and its cards and pages are picked here with no
+// request. Kept for this browser tab per store (viewCacheScope), so coming
+// back, or to the other tab, shows the last rows at once and refreshes them
+// quietly. A tab with more rows than one request carries (FULL_PAGE) falls
+// back to the server's paging per card; its table empties while it loads,
+// so it never shows the old card's rows.
+const FULL_PAGE = 500; // the server's page_size cap
+const FRESH_MS = 30000; // shown from the cache without a refresh while this young
+const inventoryCache = new Map();
+const prefetching = new Set();
+// Logging out forgets it, like the Orders / Dashboard cache.
+onViewCacheClear(() => inventoryCache.clear());
+
+function tabKey(tab, search) {
+  return `${viewCacheScope()}|${tab}|${search}`;
+}
+
+function pagedKey(tab, search, activity, page, pageSize) {
+  return `${tabKey(tab, search)}|${activity}|${page}|${pageSize}`;
+}
+
+// Only under the store / login it was fetched for - a reply that comes back
+// after a switch is never kept for the other one.
+function remember(key, entry) {
+  if (!key.startsWith(`${viewCacheScope()}|`)) return;
+  if (inventoryCache.size > 60) inventoryCache.clear();
+  inventoryCache.set(key, { ...entry, at: Date.now() });
+}
+
+function tabEntry(data, paged) {
+  const rows = data.results || [];
+  const count = data.count || 0;
+  return { full: !paged, rows, count, summary: data.summary || {} };
+}
+
+// The other tab, fetched in the background so clicking it is instant too.
+async function prefetchTab(tab, search) {
+  const key = tabKey(tab, search);
+  if (inventoryCache.has(key) || prefetching.has(key)) return;
+  prefetching.add(key);
+  try {
+    const data = await wmsService.inventoryOverview({
+      page: 1,
+      page_size: FULL_PAGE,
+      search: search || undefined,
+      sku: tab,
+    });
+    const entry = tabEntry(data, false);
+    remember(key, entry.count > entry.rows.length ? { full: false } : entry);
+  } catch {
+    // Only a speed-up - the tab loads itself when clicked.
+  } finally {
+    prefetching.delete(key);
+  }
+}
 
 function SummaryCard({ label, value, tone = "default", hint, active, onClick }) {
   const tones = {
@@ -76,11 +136,19 @@ export default function WmsPage() {
   const beginLoading = useLoadingStore((s) => s.begin);
   const endLoading = useLoadingStore((s) => s.end);
   const [warehouses, setWarehouses] = useState([]);
-  const [stock, setStock] = useState([]);
-  const [count, setCount] = useState(0);
+  // What the table shows: {key, tab, search, full, rows, count, summary}.
+  // full: rows is the whole tab (every card) - the card and page are picked
+  // below. Otherwise rows is the server's page of the card. null: loading a
+  // tab / card not seen yet.
+  const [table, setTable] = useState(() => {
+    const key = tabKey("with", "");
+    const cached = inventoryCache.get(key);
+    return cached?.rows ? { key, tab: "with", search: "", ...cached } : null;
+  });
+  // The tabs' counts - the same for both tabs, so kept while the other loads.
+  const [tabCounts, setTabCounts] = useState(() => table?.summary || {});
+  // Push to Shopify's pending count.
   const [summary, setSummary] = useState({});
-  // The cards' counts (Total / Active / Inactive / Out of Stock).
-  const [activityCounts, setActivityCounts] = useState({});
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const [search, setSearch] = useState("");
@@ -90,7 +158,7 @@ export default function WmsPage() {
   // tab - products with no SKU yet, counted by their orders' product name.
   // A PO line naming one moves it over (backend wms.services.adopt_no_sku_product).
   const [skuTab, setSkuTab] = useState("with");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => !table);
   const [error, setError] = useState("");
   const [adjusting, setAdjusting] = useState(null);
   const [viewing, setViewing] = useState(null);
@@ -125,31 +193,113 @@ export default function WmsPage() {
     }
   }, []);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError("");
+  // Push to Shopify's pending count - apart from the table, so it never
+  // holds the rows back.
+  const loadPushCount = useCallback(async () => {
     try {
-      const [stockData, summaryData] = await Promise.all([
-        wmsService.inventoryOverview({
-          page,
-          page_size: pageSize,
-          search: appliedSearch || undefined,
-          activity: activity || undefined,
-          sku: skuTab,
-        }),
-        // Still read for Push to Shopify's pending count.
-        wmsService.stockSummary(),
-      ]);
-      setStock(stockData.results || []);
-      setCount(stockData.count || 0);
-      setActivityCounts(stockData.summary || {});
-      setSummary(summaryData);
-    } catch (err) {
-      setError(err.message || "Failed to load stock");
-    } finally {
-      setLoading(false);
+      setSummary(await wmsService.stockSummary());
+    } catch {
+      // Non-fatal - the button just shows no count.
     }
-  }, [page, pageSize, appliedSearch, activity, skuTab]);
+  }, []);
+
+  // load() reads what's picked now from here, so a card / page click (picked
+  // from the tab's rows) doesn't make a new load.
+  const picked = useRef({});
+  picked.current = { skuTab, appliedSearch, activity, page, pageSize };
+  // Per view: the newest request's number (an older reply never overwrites
+  // a newer one) and which views have a request on the way.
+  const latestRequest = useRef(new Map());
+  const requestSeq = useRef(0);
+  const inflight = useRef(new Set());
+
+  const show = useCallback((entry) => {
+    setTable(entry);
+    setTabCounts({ with_sku: entry.summary?.with_sku, no_sku: entry.summary?.no_sku });
+  }, []);
+
+  // The table for what's picked: from the cache at once when it has it
+  // (refreshed quietly unless just fetched), else fetched. force: after a
+  // change here - always fetched, with the rows kept on screen meanwhile.
+  const load = useCallback(
+    async ({ force = false } = {}) => {
+      const { skuTab: tab, appliedSearch: search, activity: card, page: pg, pageSize: size } = picked.current;
+      const tKey = tabKey(tab, search);
+      const known = inventoryCache.get(tKey);
+      const paged = Boolean(known && !known.full);
+      const key = paged ? pagedKey(tab, search, card, pg, size) : tKey;
+      // Its reply is shown only if this view is still the one picked - a
+      // click elsewhere meanwhile leaves it in the cache for later.
+      const stillPicked = () => {
+        const now = picked.current;
+        return (
+          now.skuTab === tab &&
+          now.appliedSearch === search &&
+          (!paged || (now.activity === card && now.page === pg && now.pageSize === size))
+        );
+      };
+      // Already on the way (a quick click back): that reply will show it.
+      if (!force && inflight.current.has(key)) return;
+      const seq = ++requestSeq.current;
+      latestRequest.current.set(key, seq);
+      const isLatest = () => latestRequest.current.get(key) === seq;
+      const cached = paged ? inventoryCache.get(key) : known;
+      // What these rows are for - the table shows them only while that is
+      // what's picked (tableMatches below).
+      const meta = { key, tab, search, card, page: pg, pageSize: size };
+      setError("");
+      if (!force && cached?.rows) {
+        show({ ...meta, ...cached });
+        setLoading(false);
+        if (Date.now() - cached.at < FRESH_MS) {
+          if (!paged && !search) prefetchTab(tab === "with" ? "missing" : "with", "");
+          return;
+        }
+      } else if (!force) {
+        setLoading(true);
+      }
+      inflight.current.add(key);
+      let retry = false;
+      try {
+        const data = await wmsService.inventoryOverview(
+          paged
+            ? { page: pg, page_size: size, search: search || undefined, activity: card || undefined, sku: tab }
+            : { page: 1, page_size: FULL_PAGE, search: search || undefined, sku: tab }
+        );
+        const entry = tabEntry(data, paged);
+        if (!paged && entry.count > entry.rows.length) {
+          // Too many for one request - this tab pages on the server, per
+          // card: fetched again that way below.
+          remember(tKey, { full: false });
+          retry = stillPicked();
+        } else if (isLatest()) {
+          remember(key, entry);
+          if (stillPicked()) {
+            show({ ...meta, ...entry, at: Date.now() });
+            setLoading(false);
+            if (!paged && !search) prefetchTab(tab === "with" ? "missing" : "with", "");
+          }
+        }
+      } catch (err) {
+        if (isLatest() && stillPicked()) {
+          setError(err.message || "Failed to load stock");
+          setLoading(false);
+        }
+      } finally {
+        inflight.current.delete(key);
+      }
+      if (retry) load({ force: true });
+    },
+    [show]
+  );
+
+  // After a change here (stock adjusted, imported, pushed, synced): every
+  // cached tab is out of date.
+  const reload = useCallback(async () => {
+    inventoryCache.clear();
+    loadPushCount();
+    await load({ force: true });
+  }, [load, loadPushCount]);
 
   async function onSyncShopify() {
     if (!window.confirm("Click to confirm")) {
@@ -165,7 +315,7 @@ export default function WmsPage() {
         `Synced ${result.total_skus} SKU${result.total_skus === 1 ? "" : "s"} from Shopify — ` +
           `${result.created} new, ${result.updated} updated, ${result.unchanged} unchanged.`
       );
-      await load();
+      await reload();
     } catch (err) {
       setError(err.message || "Failed to sync from Shopify");
     } finally {
@@ -179,8 +329,52 @@ export default function WmsPage() {
   }, [loadWarehouses]);
 
   useEffect(() => {
+    loadPushCount();
+  }, [loadPushCount]);
+
+  // A tab or a search: its rows (from the cache at once when seen before).
+  useEffect(() => {
     load();
-  }, [load]);
+  }, [load, skuTab, appliedSearch]);
+
+  // A card or a page is picked from the tab's rows - a request only for a
+  // tab too big for one request (paged on the server).
+  const pagedTable = Boolean(table && !table.full);
+  useEffect(() => {
+    if (pagedTable) load();
+    // Only a card / page / page size change - a tab change loads above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activity, page, pageSize]);
+
+  // The table's rows are shown only for what's picked now - in the same
+  // render as the click, so a new tab / card never shows the old one's
+  // rows, not even for a moment; it shows Loading until its own come. A new
+  // search in the same tab keeps the old rows, dimmed, meanwhile.
+  const tableMatches =
+    Boolean(table) &&
+    table.tab === skuTab &&
+    table.search === appliedSearch &&
+    (table.full || (table.card === activity && table.page === page && table.pageSize === pageSize));
+  const searching = Boolean(table) && !tableMatches && table.tab === skuTab && table.search !== appliedSearch;
+  const shown = tableMatches || searching ? table : null;
+  const busy = (loading || !tableMatches) && !error;
+
+  // The rows on screen: the picked card's page of the tab's rows - or the
+  // server's page, for a paged tab.
+  const cardRows = useMemo(() => {
+    if (!shown) return [];
+    if (!shown.full) return shown.rows || [];
+    return activity ? shown.rows.filter((r) => r.activity === activity) : shown.rows;
+  }, [shown, activity]);
+  const stock = shown?.full ? cardRows.slice((page - 1) * pageSize, page * pageSize) : cardRows;
+  const count = shown ? (shown.full ? cardRows.length : shown.count) : 0;
+  // The cards' counts (Total / Active / Inactive / Out of Stock) - none
+  // while a tab not seen yet loads, rather than the other tab's.
+  const activityCounts = shown?.summary || null;
+  const searchSuggestions = useMemo(
+    () => cardRows.flatMap((item) => [item.product_name, item.sku]),
+    [cardRows]
+  );
 
   const hasWarehouse = warehouses.length > 0;
 
@@ -203,7 +397,7 @@ export default function WmsPage() {
               setAppliedSearch(term);
               setPage(1);
             }}
-            suggestions={stock.flatMap((item) => [item.product_name, item.sku])}
+            suggestions={searchSuggestions}
             placeholder="Search SKU or product"
             className="flex-1 sm:flex-none"
             inputClassName="w-full sm:w-60"
@@ -260,11 +454,11 @@ export default function WmsPage() {
         <>
           <div className="mt-3 flex gap-1 border-b border-surface-border">
             {[
-              { key: "with", label: "Inventory", count: activityCounts.with_sku, hint: "Products with a SKU" },
+              { key: "with", label: "Inventory", count: tabCounts.with_sku, hint: "Products with a SKU" },
               {
                 key: "missing",
                 label: "No SKUs",
-                count: activityCounts.no_sku,
+                count: tabCounts.no_sku,
                 hint: "Products with no SKU yet - counted by their orders' product name. A PO with the product's name and a SKU moves it to Inventory.",
               },
             ].map((tab) => (
@@ -299,7 +493,7 @@ export default function WmsPage() {
               <SummaryCard
                 key={card.key}
                 label={card.label}
-                value={activityCounts[card.key] ?? 0}
+                value={activityCounts ? activityCounts[card.key] ?? 0 : "…"}
                 tone={card.tone}
                 hint={card.hint}
                 active={activity === card.value}
@@ -338,8 +532,8 @@ export default function WmsPage() {
                   <th className="w-10 px-2 py-2.5" />
                 </tr>
               </thead>
-              <tbody>
-                {loading && stock.length === 0 ? (
+              <tbody className={`transition-opacity ${busy && stock.length ? "opacity-50" : ""}`}>
+                {busy && stock.length === 0 ? (
                   <tr>
                     <td colSpan={13} className="px-3 py-6 text-center text-slate-500">
                       Loading…
@@ -446,13 +640,13 @@ export default function WmsPage() {
         onClose={() => setAdjusting(null)}
         onAdjusted={async () => {
           setAdjusting(null);
-          await load();
+          await reload();
         }}
       />
       <ShopifyPushModal
         open={pushOpen}
         onClose={() => setPushOpen(false)}
-        onPushed={load}
+        onPushed={reload}
       />
       <InventoryItemDetailModal item={viewing} onClose={() => setViewing(null)} />
       <InventoryImportModal
@@ -460,7 +654,7 @@ export default function WmsPage() {
         onClose={() => setImportOpen(false)}
         onImported={(result) => {
           setNotice(`Import done - ${result.update} updated, ${result.create} added.`);
-          load();
+          reload();
         }}
       />
     </div>

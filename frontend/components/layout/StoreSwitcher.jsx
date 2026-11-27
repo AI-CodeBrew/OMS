@@ -7,6 +7,7 @@ import GreenTick from "../shared/GreenTick";
 import storesService from "../../services/storesService";
 import useAuthStore, { useEffectiveUser } from "../../store/authStore";
 import { invalidateViewCache } from "../../lib/viewCache";
+import { lastPage } from "../../lib/pageMemory";
 
 function ChevronIcon({ className }) {
   return (
@@ -83,7 +84,8 @@ export default function StoreSwitcher() {
     try {
       await storesService.switchTo(store.id);
       invalidateViewCache();
-      router.push("/dashboard");
+      // The page last open in that store, if any (user, 2026-11-27).
+      router.push(lastPage() || "/dashboard");
     } catch (err) {
       window.alert(err.message || "Could not switch store");
     } finally {

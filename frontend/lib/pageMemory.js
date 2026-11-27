@@ -64,6 +64,31 @@ export function useRememberedState(name, initial, onArrival) {
   return [value, set];
 }
 
+// ---- The last page of each store / Hub ---------------------------------
+//
+// Going back into the Hub, All Orders or a store opens the page last open
+// there (with its card / tab in the address), not its first page (user,
+// 2026-11-27: "if I move again to that, the previous load should be
+// there"). Its data is then shown at once from the caches.
+
+function lastPageKey() {
+  return `${PREFIX}${accountKey(useAuthStore.getState())}|lastPage`;
+}
+
+/** The tenant layout records each page opened - per store / Hub. */
+export function rememberLastPage(path) {
+  writeStored(lastPageKey(), path);
+}
+
+/** The page last open in the store / Hub being operated now (call after
+ * entering it), or null. Only this app's own store pages. */
+export function lastPage() {
+  const path = readStored(lastPageKey());
+  if (typeof path !== "string" || !path.startsWith("/") || path.startsWith("//")) return null;
+  if (path.startsWith("/admin") || path.startsWith("/login")) return null;
+  return path;
+}
+
 /** Forgets every remembered page (on logout - the next person at this
  * computer starts clean). */
 export function clearPageMemory() {

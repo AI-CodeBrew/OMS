@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { usePathname, useRouter } from "next/navigation";
+import { Suspense, useEffect, useRef, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import ProtectedRoute from "../../components/shared/ProtectedRoute";
 import LoadingOverlay from "../../components/shared/LoadingOverlay";
 import TenantHeader from "../../components/layout/TenantHeader";
@@ -14,7 +14,7 @@ import {
   getVisibleModules,
 } from "../../components/layout/moduleNav";
 import useAuthStore, { lastActingStore, useEffectiveUser } from "../../store/authStore";
-import { useScrollMemory } from "../../lib/pageMemory";
+import { rememberLastPage, useScrollMemory } from "../../lib/pageMemory";
 import authService, {
   ACCESS_REVOKED_CODE,
   ORG_SUSPENDED_CODE,
@@ -56,6 +56,18 @@ function mergeLiveAccess(access) {
     refreshToken: state.refreshToken,
     user: { ...user, pages, modules },
   });
+}
+
+// Records the page on screen (with its card / tab) as this store's / the
+// Hub's last page - entering it again opens there (lib/pageMemory).
+function RememberLastPage() {
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const query = searchParams?.toString() || "";
+  useEffect(() => {
+    if (pathname) rememberLastPage(query ? `${pathname}?${query}` : pathname);
+  }, [pathname, query]);
+  return null;
 }
 
 function TenantShell({ children }) {
@@ -163,6 +175,9 @@ function TenantShell({ children }) {
   return (
     <div className="min-h-screen bg-brand-800">
       <LoadingOverlay />
+      <Suspense fallback={null}>
+        <RememberLastPage />
+      </Suspense>
       <CriticalOrdersAlert />
       <TenantHeader activeModule={navModule} />
       <MobileNav activeModule={navModule} />

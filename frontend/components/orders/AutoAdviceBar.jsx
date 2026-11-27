@@ -7,14 +7,15 @@
 // Hub, one switch for every Hub store. While the server runs it as a dry
 // run, nothing is sent - the log lists what it would have sent.
 
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import Modal from "../shared/Modal";
 import Button from "../shared/Button";
 import ordersService from "../../services/ordersService";
 import { formatDateTime } from "../../lib/formatDate";
 
 const RESULT = {
-  would_send: { label: "Would send", cls: "bg-amber-50 text-amber-700 ring-amber-200" },
+  // A dry-run row - nothing was sent to the courier.
+  would_send: { label: "Dry run · not sent", cls: "bg-slate-100 text-slate-500 ring-slate-200" },
   sent: { label: "Sent", cls: "bg-emerald-50 text-emerald-700 ring-emerald-200" },
   refused: { label: "Refused", cls: "bg-red-50 text-red-700 ring-red-200" },
   error: { label: "Error", cls: "bg-red-50 text-red-700 ring-red-200" },
@@ -75,8 +76,23 @@ function LogTable({ rows, showStore, onOpenOrder }) {
         <tbody>
           {rows.map((r, i) => {
             const result = RESULT[r.result] || RESULT.error;
+            // The first dry-run row after real ones: a heading, so the
+            // trial rows aren't read as sent.
+            const dryRunStart =
+              r.result === "would_send" && (i === 0 || rows[i - 1].result !== "would_send");
             return (
-              <tr key={`${r.order_id}-${r.at}-${i}`} className="border-b border-surface-border/60 align-top last:border-0">
+              <Fragment key={`${r.order_id}-${r.at}-${i}`}>
+                {dryRunStart ? (
+                  <tr>
+                    <td
+                      colSpan={showStore ? 6 : 5}
+                      className="bg-slate-50 px-1 py-1.5 text-[11px] font-medium uppercase tracking-wide text-slate-500"
+                    >
+                      Dry run - only listed, nothing was sent to the courier
+                    </td>
+                  </tr>
+                ) : null}
+              <tr className={`border-b border-surface-border/60 align-top last:border-0 ${r.result === "would_send" ? "opacity-70" : ""}`}>
                 <td className="whitespace-nowrap py-2 pr-3 text-slate-500">{formatDateTime(r.at)}</td>
                 <td className="whitespace-nowrap py-2 pr-3">
                   {onOpenOrder ? (
@@ -100,6 +116,7 @@ function LogTable({ rows, showStore, onOpenOrder }) {
                 </td>
                 <td className="py-2 text-slate-600">{r.result === "sent" || r.result === "would_send" ? r.advice : r.message}</td>
               </tr>
+              </Fragment>
             );
           })}
         </tbody>

@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import tenantsService from "../../../../services/tenantsService";
 import dispatchHubAdminService from "../../../../services/dispatchHubAdminService";
 import useAuthStore from "../../../../store/authStore";
-import { useRememberedData, useRememberedState } from "../../../../lib/pageMemory";
+import { lastPage, useRememberedData, useRememberedState } from "../../../../lib/pageMemory";
 import GreenTick from "../../../../components/shared/GreenTick";
 import Modal from "../../../../components/shared/Modal";
 import Button from "../../../../components/shared/Button";
@@ -246,7 +246,8 @@ Orders not yet booked with a courier (Awaiting ` +
   function openStore(org) {
     const modules = enabledModules(org);
     enterStore({ id: org.id, name: org.name, modules, is_manual_store: org.is_manual_store });
-    router.push(modules.includes("oms") || modules.length === 0 ? "/orders" : "/dashboard");
+    // Back on the page last open in this store, if any (user, 2026-11-27).
+    router.push(lastPage() || (modules.includes("oms") || modules.length === 0 ? "/orders" : "/dashboard"));
   }
 
   return (

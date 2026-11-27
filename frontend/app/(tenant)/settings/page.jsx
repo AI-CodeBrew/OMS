@@ -12,6 +12,7 @@ import teamService from "../../../services/teamService";
 import storesService from "../../../services/storesService";
 import { tenantsService } from "../../../services/tenantsService";
 import { invalidateViewCache } from "../../../lib/viewCache";
+import { lastPage } from "../../../lib/pageMemory";
 import { useEffectiveUser } from "../../../store/authStore";
 import { useBankDetailsGate } from "../../../lib/useBankDetailsGate";
 import BankDetailsModal from "../../../components/billing/BankDetailsModal";
@@ -777,7 +778,8 @@ function StoresTab() {
     try {
       await storesService.switchTo(id);
       invalidateViewCache();
-      router.push("/dashboard");
+      // The page last open in that store, if any (user, 2026-11-27).
+      router.push(lastPage() || "/dashboard");
     } catch (err) {
       setError(err.message || "Could not switch store");
     } finally {

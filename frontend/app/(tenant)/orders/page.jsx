@@ -12,6 +12,7 @@ import {
   getCachedCounts,
   getCachedOrdersList,
   invalidateViewCache,
+  isOrdersListFresh,
   ordersListKey,
   setCachedCounts,
   setCachedOrdersList,
@@ -461,8 +462,9 @@ export default function OrdersPage() {
       setLoading(false);
       // Nothing to fetch: a store's warm tabs (live updates keep them
       // current while this page is open) or a filtered view seen this
-      // visit. Arriving, or the Hub (no warmup): refreshed quietly below.
-      if (!arriving && !isHubRef.current && (alreadyWarm || !plain)) return;
+      // visit. Arriving, the Hub (no warmup), or rows an order change made
+      // out of date (lib/viewCache): refreshed quietly below.
+      if (!arriving && !isHubRef.current && isOrdersListFresh(key) && (alreadyWarm || !plain)) return;
     } else if (!force) {
       setOrders([]);
       setOrderCount(0);

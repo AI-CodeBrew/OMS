@@ -14,6 +14,7 @@ import {
   dashboardRangeForPreset,
   getCachedDashboard,
   invalidateViewCache,
+  isDashboardFresh,
   setCachedDashboard,
   viewCacheToken,
 } from "../../../lib/viewCache";
@@ -314,8 +315,9 @@ function Dashboard() {
         setData(cached);
         setLoading(false);
         // Nothing to fetch: a range already seen this visit (presets warm,
-        // or this custom range). Arriving, or the Hub: refreshed quietly.
-        if (!arriving && !hubRef.current && (!isPreset || dashboardPresetsAreWarm())) return;
+        // or this custom range). Arriving, the Hub, or numbers an order
+        // change made out of date (lib/viewCache): refreshed quietly.
+        if (!arriving && !hubRef.current && isDashboardFresh(key) && (!isPreset || dashboardPresetsAreWarm())) return;
       } else if (!force) {
         setLoading(true);
         setData(null);

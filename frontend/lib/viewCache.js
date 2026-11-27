@@ -8,18 +8,42 @@
 // switch, so Back into the Hub or a store shows its last data at once
 // (user, 2026-11-24) - the page then refreshes it quietly (see the Orders
 // page's and Dashboard's load). authStore sets the scope.
+//
+// An order change no longer drops any of it (user, 2026-11-27: the Hub
+// loaded everything again after a visit to a store - every courier update
+// there had wiped the Hub's copy too). It marks every view's data out of
+// date instead: a page still shows it at once and refreshes it quietly
+// (the is...Fresh checks below). Only logging out drops it (clearViewCache).
 
 const scopes = new Map();
 let scope = "";
 let warmupGeneration = 0;
+// Counts writes and "out of date" marks, in order: an entry is fresh while
+// it was written after its view was last marked out of date.
+let clock = 0;
 
 function current() {
   let entry = scopes.get(scope);
   if (!entry) {
-    entry = { lists: new Map(), counts: null, dashboards: new Map() };
+    entry = { lists: new Map(), counts: null, dashboards: new Map(), staleBefore: 0 };
     scopes.set(scope, entry);
   }
   return entry;
+}
+
+function stamp(value) {
+  clock += 1;
+  return { value, at: clock };
+}
+
+function isFresh(slot) {
+  return Boolean(slot) && slot.at > current().staleBefore;
+}
+
+/** The view itself (login + store / Hub), without the generation - for a
+ * page's own cache that should outlive order changes (the Inventory page). */
+export function viewCacheScope() {
+  return scope;
 }
 
 /** Which view's cache reads and writes go to - authStore calls this when
@@ -95,30 +119,44 @@ export function dashboardPresetKeys() {
 }
 
 export function getCachedOrdersList(key) {
-  return current().lists.get(key) || null;
+  return current().lists.get(key)?.value || null;
+}
+
+/** False once an order changed after this list was fetched - show it, but
+ * fetch it again. */
+export function isOrdersListFresh(key) {
+  return isFresh(current().lists.get(key));
 }
 
 export function setCachedOrdersList(key, value, token) {
   if (stale(token)) return;
-  current().lists.set(key, value);
+  current().lists.set(key, stamp(value));
 }
 
 export function getCachedCounts() {
-  return current().counts;
+  return current().counts?.value || null;
+}
+
+function countsAreFresh() {
+  return isFresh(current().counts);
 }
 
 export function setCachedCounts(value, token) {
   if (stale(token)) return;
-  current().counts = value;
+  current().counts = stamp(value);
 }
 
 export function getCachedDashboard(key) {
-  return current().dashboards.get(key) || null;
+  return current().dashboards.get(key)?.value || null;
+}
+
+export function isDashboardFresh(key) {
+  return isFresh(current().dashboards.get(key));
 }
 
 export function setCachedDashboard(key, value, token) {
   if (stale(token)) return;
-  current().dashboards.set(key, value);
+  current().dashboards.set(key, stamp(value));
 }
 
 // Changes with the view too, so a warmup started in one view is never
@@ -143,29 +181,48 @@ export function applyWarmup(payload, pageSize) {
   });
 }
 
+// Warm = cached and fresh: out-of-date tabs get the background warmup again.
 export function unfilteredListsAreWarm(pageSize, statuses) {
-  if (!getCachedCounts()) return false;
+  if (!countsAreFresh()) return false;
   return statuses.every((status) =>
-    Boolean(
-      getCachedOrdersList(
-        ordersListKey({
-          status: status === "all" ? undefined : status,
-          page: 1,
-          pageSize,
-          filters: {},
-        })
-      )
+    isOrdersListFresh(
+      ordersListKey({
+        status: status === "all" ? undefined : status,
+        page: 1,
+        pageSize,
+        filters: {},
+      })
     )
   );
 }
 
 export function dashboardPresetsAreWarm() {
-  return dashboardPresetKeys().every((key) => Boolean(getCachedDashboard(key)));
+  return dashboardPresetKeys().every((key) => isDashboardFresh(key));
 }
 
-/** Drops every view's cached data - an order changed (it may show in the
- * Hub and in its store alike), or the user logged out. */
+/** An order changed (it may show in the Hub and in its store alike), or a
+ * setting that changes the lists: every view's data is out of date. Kept,
+ * not dropped - shown at once and refreshed quietly (see the top). A reply
+ * already on its way is not stored (viewCacheToken changes). */
 export function invalidateViewCache() {
+  clock += 1;
+  scopes.forEach((entry) => {
+    entry.staleBefore = clock;
+  });
+  warmupGeneration += 1;
+}
+
+// Pages' own caches (the Inventory page's) - dropped with this one.
+const clearListeners = new Set();
+
+export function onViewCacheClear(fn) {
+  clearListeners.add(fn);
+}
+
+/** Drops every view's data - on logout, so the next person at this
+ * computer never sees it. */
+export function clearViewCache() {
   scopes.clear();
   warmupGeneration += 1;
+  clearListeners.forEach((fn) => fn());
 }
